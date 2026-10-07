@@ -18,7 +18,7 @@ import { connection } from "../src/data/client.js";
 import { conflictOnConditionFailure, isCancelledAsTooLarge, isItemTooLarge, startsWithAny } from "../src/data/errors.js";
 import { retryDelay } from "../src/data/documents.js";
 import { MAX_MONEY, money } from "../src/data/money.js";
-import { gsi1, keys, strip } from "../src/data/keys.js";
+import { date, dateFormat, gsi1, isCalendarDay, keys, strip } from "../src/data/keys.js";
 import { legacy } from "../src/data/legacy-sheets.js";
 import { billingAccess, deletionLastDay, deletionTime, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, PAYMENT_GRACE_DAYS, READ_ONLY_RETENTION_DAYS, teamCounts } from "../src/data/model.js";
 import { tableName } from "../src/data/schema.js";
@@ -30,6 +30,20 @@ import { contextFor, fakeDb, offlineDb, REGION } from "./helpers.js";
 const offline = offlineDb();
 
 describe("keys (ADR 0005)", () => {
+  it("takes only dates that exist, from 2000 on, and lets the index take any date's form", () => {
+    for (const day of ["2000-01-01", "2026-10-07", "2028-02-29", "2026-12-31", "9999-12-31"]) expect(date(day)).toBe(day);
+    for (const day of ["2026-02-30", "2026-04-31", "2025-02-29", "0000-01-01", "1999-12-31", "2026-13-01", "2026-1-01", "", undefined, 20261007]) {
+      expect(() => date(day), String(day)).toThrow(InvalidInputError);
+    }
+    // The date index and a date range's bounds only need the form
+    expect(dateFormat("2026-02-30")).toBe("2026-02-30");
+    expect(dateFormat("0000-01-01")).toBe("0000-01-01");
+    expect(() => dateFormat("2026-2-30")).toThrow(InvalidInputError);
+    expect(isCalendarDay("1970-01-01")).toBe(true);
+    expect(isCalendarDay("1970-02-30")).toBe(false);
+    expect(isCalendarDay("2026-99-99")).toBe(false);
+  });
+
   it("builds every entity's key", () => {
     expect(keys.team("t1")).toEqual({ PK: "TEAM#t1", SK: "META" });
     expect(keys.member("t1", "u1")).toEqual({ PK: "TEAM#t1", SK: "MEMBER#u1" });
@@ -42,9 +56,7 @@ describe("keys (ADR 0005)", () => {
     expect(keys.audit("t1", "2026-09-25T00:00:00.000Z", "e1")).toEqual({ PK: "TEAM#t1", SK: "AUDIT#2026-09-25T00:00:00.000Z#e1" });
     expect(keys.stripe("cus_1")).toEqual({ PK: "STRIPE#cus_1", SK: "TEAM" });
     expect(keys.webhook("evt_1")).toEqual({ PK: "WEBHOOK#evt_1", SK: "DONE" });
-    expect(gsi1.projectsByDate("t1", "2026-09-25", "s1")).toEqual({ GSI1PK: "TEAM#t1#PROJECTS", GSI1SK: "2026-09-25#s1" });
     expect(gsi1.projectsPartition("t1")).toBe("TEAM#t1#PROJECTS");
-    expect(() => gsi1.projectsByDate("t1", "25/09/2026", "s1")).toThrow(InvalidInputError);
     expect(gsi1.inviteToken("abc")).toEqual({ GSI1PK: "INVITE#abc", GSI1SK: "INVITE" });
   });
 
@@ -56,7 +68,6 @@ describe("keys (ADR 0005)", () => {
     expect(() => keys.product("t1", "a\nb")).toThrow(InvalidInputError);
     expect(() => keys.product("t1", "x".repeat(257))).toThrow(InvalidInputError);
     expect(() => keys.usage("t1", "2026-13")).toThrow(InvalidInputError);
-    expect(() => gsi1.projectsByDate("t1", "25/09/2026", "s1")).toThrow(InvalidInputError);
     expect(() => keys.team(42 as unknown as string)).toThrow(InvalidInputError);
   });
 

@@ -26,7 +26,7 @@
 import { GetCommand, QueryCommand, type QueryCommandOutput } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { InvalidInputError } from "./errors.js";
-import { date as checkDate, gsi1, keys, prefixes, teamPartition } from "./keys.js";
+import { dateFormat, gsi1, keys, prefixes, teamPartition } from "./keys.js";
 import { legacy } from "./legacy-sheets.js";
 import type { Page } from "./query.js";
 import { GSI1 } from "./schema.js";
@@ -62,7 +62,7 @@ export function projectKeyFor(teamId: string, projectId: string, item: Item | un
 export function projectAttributes(teamId: string, projectId: string, rawDate: unknown, layout: ProjectLayout): Item {
   let day = "";
   try {
-    day = checkDate(rawDate);
+    day = dateFormat(rawDate);
   } catch {
     // no date, or not one: sorts first
   }
@@ -253,8 +253,8 @@ export async function projectItemsByDatePage(
   let range = "";
   if (options.from !== undefined || options.to !== undefined) {
     // `<date>#<id>` sorts between `<from>#` and `<to>#~` for every ID
-    values[":from"] = `${checkDate(options.from ?? "0000-01-01")}#`;
-    values[":to"] = `${checkDate(options.to ?? "9999-12-31")}#~`;
+    values[":from"] = `${dateFormat(options.from ?? "0000-01-01")}#`;
+    values[":to"] = `${dateFormat(options.to ?? "9999-12-31")}#~`;
     range = " AND GSI1SK BETWEEN :from AND :to";
   }
   const fetched = await Promise.all(

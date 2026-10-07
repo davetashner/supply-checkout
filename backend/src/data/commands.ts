@@ -39,7 +39,7 @@ import { type Db, connection, storable } from "./client.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
 import { MAX_DOCUMENT_BYTES, projectItem } from "./documents.js";
 import { ConflictError, InvalidInputError, NotFoundError, StockChangedError, TooLargeError, isCancelledAsTooLarge } from "./errors.js";
-import { BOUGHT_SUFFIX, adhocProjectId, barcode, date as checkDate, id as checkId, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
+import { BOUGHT_SUFFIX, adhocProjectId, barcode, date as checkDate, dateFormat, id as checkId, isCalendarDay, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
 import { count as checkCount, MAX_MONEY, MAX_QUANTITY, money, quantity as checkQuantity, roundCents, storedMoney } from "./money.js";
 import { type Page, queryPage } from "./query.js";
 import { legacy } from "./legacy-sheets.js";
@@ -747,8 +747,13 @@ export async function quickTake(db: Db, ctx: TeamContext, input: QuickTakeInput,
   writable(db, ctx);
   const opId = operationId(input.operationId);
   const { key, qty, oneOff } = takeInput(input);
-  const day = input.date === undefined ? now.toISOString().slice(0, 10) : projectDate(input.date);
-  const request = JSON.stringify({ command: "quickTake", userId: ctx.userId, key, qty, ...oneOff, date: day });
+  const today = now.toISOString().slice(0, 10);
+  const sent = input.date === undefined ? undefined : projectDate(input.date);
+  // A real day from before 2000 is a device clock that's wrong (reset to 1970, say): the project
+  // gets the server's UTC day instead. The fingerprint keeps the day as sent, so a retry of the
+  // same take (before or after this rule) is still the same request and replays.
+  const day = sent === undefined ? today : isDate(sent) ? sent : today;
+  const request = JSON.stringify({ command: "quickTake", userId: ctx.userId, key, qty, ...oneOff, date: sent ?? day });
   const at = now.toISOString();
 
   return execute(db, ctx, opId, "quickTake", request, now, async () => {
@@ -795,12 +800,24 @@ export async function quickTake(db: Db, ctx: TeamContext, input: QuickTakeInput,
   });
 }
 
-/** A date sent with a quick take: YYYY-MM-DD. */
+/** A date sent with a quick take: YYYY-MM-DD, a day that exists (any year; quickTake replaces one before 2000). */
 function projectDate(value: unknown): string {
   try {
-    return checkDate(value);
+    const day = dateFormat(value);
+    if (isCalendarDay(day)) return day;
   } catch {
-    throw new InvalidInputError("date must be YYYY-MM-DD");
+    // not even the form
+  }
+  throw new InvalidInputError("date must be YYYY-MM-DD");
+}
+
+/** True for a day keys.date takes: it exists, and it's from 2000 on. */
+function isDate(day: string): boolean {
+  try {
+    checkDate(day);
+    return true;
+  } catch {
+    return false;
   }
 }
 

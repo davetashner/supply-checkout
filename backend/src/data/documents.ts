@@ -418,6 +418,8 @@ async function write(
   for (let attempt = 1; ; attempt++) {
     const item = await readItem(db, collection, ctx.teamId, id);
     const before = item ? fromItem(collection, item) : undefined;
+    // Before anything about the body: the app's whole-item PUTs (marking an item ordered, src/main.js)
+    // carry the stock they saw, and a stale one must be a conflict (409), not a refused stock (400)
     if (expected !== undefined && (before?.version ?? 0) !== expected) throw new ConflictError("This document changed; reload and try again");
     // Kept for the lines of equipment bought for a client (ADR 0017), which aren't products
     if (collection === "products" && !before && id.endsWith(BOUGHT_SUFFIX)) throw new InvalidInputError(`An item's key can't end in "${BOUGHT_SUFFIX}"`);

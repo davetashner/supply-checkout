@@ -75,10 +75,40 @@ export function barcode(value: unknown): string {
   return value;
 }
 
-/** A project date, YYYY-MM-DD, as the app stores it. */
-export function date(value: unknown): string {
+/**
+ * A date's form only, YYYY-MM-DD: what the date index sorts by, and the
+ * bounds of a date range. Lets through dates that don't exist (2026-02-30),
+ * so a project stored with one keeps its place in the index.
+ */
+export function dateFormat(value: unknown): string {
   if (typeof value !== "string" || !DATE.test(value)) throw new InvalidInputError("Invalid date");
   return value;
+}
+
+/** The first year a date may have: earlier is a typo (0026 for 2026). */
+export const MIN_DATE_YEAR = 2000;
+
+/**
+ * A date someone sends, YYYY-MM-DD, as the app stores it: one that exists
+ * (2026-02-30 doesn't), from MIN_DATE_YEAR on. Checked by reading it back
+ * through a UTC Date. Only values a write sets are checked with it: a stored
+ * value carried over unchanged isn't (reorder.ts), and the date index takes
+ * any dateFormat.
+ */
+export function date(value: unknown): string {
+  const day = dateFormat(value);
+  if (Number(day.slice(0, 4)) < MIN_DATE_YEAR || !isCalendarDay(day)) throw new InvalidInputError("Invalid date");
+  return day;
+}
+
+/**
+ * True when a well-formed YYYY-MM-DD day exists on the calendar (whatever its
+ * year): it reads back the same through a UTC Date. An engine that can't
+ * parse it gives an invalid Date, which is false, never a thrown RangeError.
+ */
+export function isCalendarDay(day: string): boolean {
+  const d = new Date(`${day}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === day;
 }
 
 /** A rate window's UTC stamp: the ISO time cut to the minute, hour or day. */
@@ -259,11 +289,7 @@ export const prefixes = {
 
 /** GSI1 keys. */
 export const gsi1 = {
-  /** Projects by date: one index partition per team, sorted by date then ID. */
-  projectsByDate: (teamId: string, projectDate: string, projectId: string) => ({
-    GSI1PK: `TEAM#${id(teamId, "team ID")}#PROJECTS`,
-    GSI1SK: `${date(projectDate)}#${id(projectId, "project ID")}`,
-  }),
+  /** Projects by date: one index partition per team, sorted by date then ID (projectAttributes in project-items.ts builds the sort key). */
   projectsPartition: (teamId: string) => `TEAM#${id(teamId, "team ID")}#PROJECTS`,
   inviteToken: (tokenHash: string) => ({ GSI1PK: `INVITE#${tokenHash}`, GSI1SK: "INVITE" }),
   /** A closed team's META item, in the partition the purge reads, by when it's due (ISO 8601). */

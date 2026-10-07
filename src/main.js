@@ -624,7 +624,10 @@ function lowStatus(p) {
 // isn't flagged while it's on order, until a restock above the level (the server ends the order
 // then, src/reorder.js) or a cancel. The whole item is saved, as the editor saves it, without its
 // acknowledgment, which the order replaces; made against the item as this page has it, so if it
-// changed meanwhile the latest shows instead (write()).
+// changed meanwhile the latest shows instead (write()). The body carries the stock this page saw:
+// if it moved since, the item's version moved too (every stock change bumps it), and the server
+// checks the version first (409, "someone else changed this") before it would refuse the stock
+// (400). That order in backend/src/data/documents.ts write() must stay, here and in cancelOrder.
 function orderModal(key) {
   const p = own(products, key);
   if (!p) return;
@@ -633,7 +636,7 @@ function orderModal(key) {
     <p class="muted" style="margin-top:-6px">${esc(p.name || "Unnamed item")}</p>
     <form id="f" style="display:grid;gap:14px">
       <div class="field"><label for="fOrderQty">How many ordered</label><input type="number" id="fOrderQty" required min="1" max="${MAX_COUNT}" step="1" inputmode="numeric" data-autofocus value="${Number.isInteger(p.reorderQty) ? p.reorderQty : ""}"></div>
-      <div class="field"><label for="fOrderOn">Ordered on</label><input type="date" id="fOrderOn" required value="${todayISO()}"></div>
+      <div class="field"><label for="fOrderOn">Ordered on</label><input type="date" id="fOrderOn" required min="2000-01-01" value="${todayISO()}"></div>
       <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Mark ordered</button></div>
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
@@ -645,6 +648,7 @@ function orderModal(key) {
     });
   });
 }
+// A PUT with the stock this page saw, like orderModal's: the version check (409) comes first
 function cancelOrder(key) {
   const p = own(products, key);
   if (!p) return;
