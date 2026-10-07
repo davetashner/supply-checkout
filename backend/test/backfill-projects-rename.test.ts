@@ -1,7 +1,7 @@
 // The projects-rename backfill (src/data/projects-rename.ts) and its CLI mode
 // (scripts/backfill.ts). The DynamoDB suites are skipped unless
 // DYNAMODB_ENDPOINT is set (CI sets it; locally,
-// npm run test:ddb -- test/projects-rename.test.ts).
+// npm run test:ddb -- test/backfill-projects-rename.test.ts).
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
