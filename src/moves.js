@@ -17,6 +17,7 @@
 // Each resolves, once the project and the storage count have saved, to { quantity, line }: for a
 // return, how many came back and the line as it is now.
 import { int, own, uid, hasStock, round2 } from "./format.js";
+import { ackEnds } from "./reorder.js";
 
 // claude.ai's db has no transactions or conditional writes, so the artifact build makes each
 // action's write detectable instead: it saves a mark for the action (a random ID) in the same
@@ -78,7 +79,16 @@ async function move(db, action, command, projectId, body, partial, plan) {
 async function addStock(db, key, delta, mark) {
   const ref = db.doc("products/" + key), got = await ref.get(), cur = got.exists ? got.data() : undefined;
   if (!delta || !cur || marked(cur, mark) || (!hasStock(cur) && delta < 0)) return;
-  await ref.update({ stock: Math.max(0, (hasStock(cur) ? cur.stock : 0) + delta), ops: remember(cur, mark) });
+  const stock = Math.max(0, (hasStock(cur) ? cur.stock : 0) + delta);
+  // A restock above the reorder level ends the team's low-stock acknowledgment (src/reorder.js),
+  // as the server's commands do. update can't remove a field, so that's a set of the whole item.
+  if (delta > 0 && ackEnds(cur, stock)) {
+    const next = { ...cur, stock, ops: remember(cur, mark) };
+    delete next.ackedAtStock;
+    await ref.set(next);
+    return;
+  }
+  await ref.update({ stock, ops: remember(cur, mark) });
 }
 
 // item: the line as this page has it with the checkout added (its name, price and cost; the
@@ -262,6 +272,8 @@ async function setCount(ref, body, change) {
   // was open keeps that action's retry from moving the stock again (see move above)
   delete next.ops;
   if (cur && Array.isArray(cur.ops)) next.ops = cur.ops;
+  // A count above the reorder level, or no count at all, ends the low-stock acknowledgment
+  if (ackEnds(next, hasStock(next) ? next.stock : null)) delete next.ackedAtStock;
   await ref.set(next);
   if (moved) throw countChanged(now);
 }
@@ -279,6 +291,9 @@ function setItem(db, key, body, change) {
     if (marks.some(m => marked(cur, m))) return;
     // Added to the stock saved now, in case it changed since the app's copy
     const stock = (hasStock(cur) ? cur.stock : 0) + change.lines.reduce((a, l) => a + l.quantity, 0);
-    await ref.set({ ...body, stock, ops: remember(cur, ...marks) });
+    const next = { ...body, stock, ops: remember(cur, ...marks) };
+    // Bought in above the reorder level: the low-stock acknowledgment ends (src/reorder.js)
+    if (ackEnds(next, stock)) delete next.ackedAtStock;
+    await ref.set(next);
   });
 }

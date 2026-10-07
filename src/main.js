@@ -613,6 +613,8 @@ function drawLow(all, kinds) {
 // page has it, so if it changed meanwhile the latest shows instead (write()).
 function acknowledge(key) {
   const p = own(products, key);
+  // Deleted (or no longer low) since the list was drawn: the redraw that follows says so
+  if (!p || !isLow(p)) return;
   write(() => db.doc("products/" + key).update({ ackedAtStock: p.stock }), "Acknowledged. It's flagged again if stock falls below " + p.stock + ".");
 }
 async function copyReorder() {

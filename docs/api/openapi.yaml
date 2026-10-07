@@ -2999,8 +2999,10 @@ components:
             The team's acknowledgment of the item's low-stock alert: the stock when someone
             acknowledged it (a PATCH of `{ ackedAtStock: <stock> }`). The app keeps the alert quiet
             while `stock` is at or above it. A return, a receipt or a count through the stock
-            command, or a CSV import, that leaves `stock` above `reorderAt` removes it. Writes never
-            compare it with `stock`, so an old one never blocks an edit.
+            command, or a CSV import, that leaves `stock` above `reorderAt` removes it, and so does
+            an uncount. A write that changes `reorderAt` and carries the stored value over
+            unchanged drops it. Writes never compare it with `stock`, so an old one never blocks an
+            edit.
         updatedAt: { type: string, format: date-time }
     Project:
       type: object

@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
 import { InvalidInputError } from "../src/data/index.js";
-import { ackEnds, ackOnRaise, ackRemoval, checkReorderFields } from "../src/data/reorder.js";
+import { ackEnds, ackOnCount, ackOnRaise, ackRemoval, checkReorderFields } from "../src/data/reorder.js";
 import type { Observability } from "../src/observability/index.js";
 import { MemoryTable } from "./memory-table.js";
 
@@ -108,23 +108,51 @@ describe("the rules (reorder.ts)", () => {
     expect(ackEnds({ reorderAt: "5", ackedAtStock: 3 }, 0)).toBe(true);
   });
 
-  it("adds to a raising stock change only for an acknowledged item, pinned to the stock it read", () => {
+  it("conditions a raising stock change on what its decision was made on, and leaves checkouts alone", () => {
+    const level = { names: { "#reorderAt": "reorderAt" }, values: { ":readLevel": 5 }, clauses: ["#reorderAt = :readLevel"] };
     expect(ackOnRaise(undefined, 5)).toBeUndefined();
-    expect(ackOnRaise({ stock: 3, reorderAt: 5 }, 5)).toBeUndefined();
+    // A checkout (or nothing) adds nothing, acknowledged or not
     expect(ackOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, -1)).toBeUndefined();
     expect(ackOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 0)).toBeUndefined();
-    expect(ackOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 2)).toEqual({ remove: false, names: { "#stock": "stock" }, values: { ":seenStock": 3 }, clause: "#stock = :seenStock" });
+    // None read: still none when it commits
+    expect(ackOnRaise({ stock: 3, reorderAt: 5 }, 5)).toEqual({ remove: false, names: { "#ackedAtStock": "ackedAtStock" }, values: {}, clauses: ["attribute_not_exists(#ackedAtStock)"] });
+    // One read: the level as read, and the side of it the new stock lands on (3 + 2 = 5 stays; 3 + 3 = 6 crosses)
+    expect(ackOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 2)).toEqual({ remove: false, names: level.names, values: { ...level.values, ":threshold": 3 }, clauses: [...level.clauses, "#stock <= :threshold"] });
     expect(ackOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 3)).toEqual({
       remove: true,
-      names: { "#stock": "stock", "#ackedAtStock": "ackedAtStock" },
-      values: { ":seenStock": 3 },
-      clause: "#stock = :seenStock",
+      names: { ...level.names, "#ackedAtStock": "ackedAtStock" },
+      values: { ...level.values, ":threshold": 2 },
+      clauses: [...level.clauses, "#stock > :threshold"],
     });
-    // Not counted yet: a receipt starts the count, from nothing
-    expect(ackOnRaise({ reorderAt: 5, ackedAtStock: 0 }, 6)).toEqual({ remove: true, names: { "#stock": "stock", "#ackedAtStock": "ackedAtStock" }, values: {}, clause: "attribute_not_exists(#stock)" });
+    // Not counted yet: a receipt starts the count at delta, if it's still not counted
+    expect(ackOnRaise({ reorderAt: 5, ackedAtStock: 0 }, 6)).toEqual({ remove: true, names: { ...level.names, "#ackedAtStock": "ackedAtStock" }, values: level.values, clauses: [...level.clauses, "attribute_not_exists(#stock)"] });
+    expect(ackOnRaise({ reorderAt: 5, ackedAtStock: 0 }, 5)).toEqual({ remove: false, names: level.names, values: level.values, clauses: [...level.clauses, "attribute_not_exists(#stock)"] });
+    // No level, or a stray one: always removed, while the level is still as read
+    expect(ackOnRaise({ stock: 3, ackedAtStock: 3 }, 1)).toEqual({ remove: true, names: { "#reorderAt": "reorderAt", "#ackedAtStock": "ackedAtStock" }, values: {}, clauses: ["attribute_not_exists(#reorderAt)"] });
+    expect(ackOnRaise({ stock: 3, reorderAt: "5", ackedAtStock: 3 }, 1)).toEqual({ remove: true, names: { "#reorderAt": "reorderAt", "#ackedAtStock": "ackedAtStock" }, values: { ":readLevel": "5" }, clauses: ["#reorderAt = :readLevel"] });
     expect(ackRemoval(undefined)).toBe("");
     expect(ackRemoval({ remove: false })).toBe("");
     expect(ackRemoval({ remove: true })).toBe(" REMOVE #ackedAtStock");
+  });
+
+  it("conditions a count on the acknowledgment and level as read", () => {
+    expect(ackOnCount({ stock: 3, reorderAt: 5 }, 9)).toEqual({ remove: false, names: { "#ackedAtStock": "ackedAtStock" }, values: {}, clauses: ["attribute_not_exists(#ackedAtStock)"] });
+    expect(ackOnCount({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 5)).toEqual({ remove: false, names: { "#reorderAt": "reorderAt" }, values: { ":readLevel": 5 }, clauses: ["#reorderAt = :readLevel"] });
+    expect(ackOnCount({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 6)).toMatchObject({ remove: true, names: { "#ackedAtStock": "ackedAtStock" } });
+  });
+
+  it("drops an acknowledgment carried over unchanged when the level changes, and keeps one the write sets", () => {
+    const stored = { reorderAt: 5, ackedAtStock: 3 };
+    const write = (data: Record<string, unknown>) => (checkReorderFields(data, stored), data);
+    expect(write({ reorderAt: 5, ackedAtStock: 3 })).toEqual({ reorderAt: 5, ackedAtStock: 3 });
+    expect(write({ reorderAt: 8, ackedAtStock: 3 })).toEqual({ reorderAt: 8 });
+    expect(write({ ackedAtStock: 3 })).toEqual({});
+    expect(write({ reorderAt: 8, ackedAtStock: 2 })).toEqual({ reorderAt: 8, ackedAtStock: 2 });
+    expect(write({ reorderAt: 8 })).toEqual({ reorderAt: 8 });
+    // A new item's are as written
+    const created = { reorderAt: 8, ackedAtStock: 3 };
+    checkReorderFields(created);
+    expect(created).toEqual({ reorderAt: 8, ackedAtStock: 3 });
   });
 });
 
@@ -149,6 +177,23 @@ describe("the product routes", () => {
     expect(edit).toMatchObject({ status: 200, body: { version: 4, data: { name: "Gloves, large", ackedAtStock: 3 } } });
     // An acknowledgment made on the version before is refused like any stale write: the app shows the latest
     expect(await call("PATCH", PRODUCT, { data: { ackedAtStock: 9 }, expectedVersion: 3 })).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
+  });
+
+  it("drop the acknowledgment when a write changes the level and carries the old one over, as the app's editor does", async () => {
+    seed();
+    const patch = await call("PATCH", PRODUCT, { data: { reorderAt: 8 }, expectedVersion: 3 });
+    expect(patch).toMatchObject({ status: 200, body: { version: 4, data: { reorderAt: 8, reorderQty: 24, stock: 3 } } });
+    expect(patch.body.data).not.toHaveProperty("ackedAtStock");
+    // Setting a level and a new acknowledgment together keeps the new one
+    expect(await call("PATCH", PRODUCT, { data: { reorderAt: 4, ackedAtStock: 3 }, expectedVersion: 4 })).toMatchObject({ status: 200, body: { data: { reorderAt: 4, ackedAtStock: 3 } } });
+    // A PUT with the level unchanged keeps it; removing the level drops it
+    const rest: Record<string, unknown> = { ...gloves };
+    delete rest.reorderAt;
+    expect(await call("PUT", PRODUCT, { data: { ...gloves, reorderAt: 4 }, expectedVersion: 5 })).toMatchObject({ status: 200, body: { data: { ackedAtStock: 3 } } });
+    const removed = await call("PUT", PRODUCT, { data: rest, expectedVersion: 6 });
+    expect(removed.status).toBe(200);
+    expect(removed.body.data).not.toHaveProperty("ackedAtStock");
+    expect(removed.body.data).not.toHaveProperty("reorderAt");
   });
 
   it("let contributors and owners set levels and acknowledge, and not viewers or other teams", async () => {
