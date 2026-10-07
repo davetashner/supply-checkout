@@ -18,7 +18,7 @@ import { connection } from "../src/data/client.js";
 import { conflictOnConditionFailure, isCancelledAsTooLarge, isItemTooLarge, startsWithAny } from "../src/data/errors.js";
 import { retryDelay } from "../src/data/documents.js";
 import { MAX_MONEY, money } from "../src/data/money.js";
-import { gsi1, keys, strip } from "../src/data/keys.js";
+import { date, dateFormat, gsi1, keys, strip } from "../src/data/keys.js";
 import { legacy } from "../src/data/legacy-sheets.js";
 import { billingAccess, deletionLastDay, deletionTime, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, PAYMENT_GRACE_DAYS, READ_ONLY_RETENTION_DAYS, teamCounts } from "../src/data/model.js";
 import { tableName } from "../src/data/schema.js";
@@ -30,6 +30,17 @@ import { contextFor, fakeDb, offlineDb, REGION } from "./helpers.js";
 const offline = offlineDb();
 
 describe("keys (ADR 0005)", () => {
+  it("takes only dates that exist, from 2000 on, and lets the index take any date's form", () => {
+    for (const day of ["2000-01-01", "2026-10-07", "2028-02-29", "2026-12-31", "9999-12-31"]) expect(date(day)).toBe(day);
+    for (const day of ["2026-02-30", "2026-04-31", "2025-02-29", "0000-01-01", "1999-12-31", "2026-13-01", "2026-1-01", "", undefined, 20261007]) {
+      expect(() => date(day), String(day)).toThrow(InvalidInputError);
+    }
+    // The date index and a date range's bounds only need the form
+    expect(dateFormat("2026-02-30")).toBe("2026-02-30");
+    expect(dateFormat("0000-01-01")).toBe("0000-01-01");
+    expect(() => dateFormat("2026-2-30")).toThrow(InvalidInputError);
+  });
+
   it("builds every entity's key", () => {
     expect(keys.team("t1")).toEqual({ PK: "TEAM#t1", SK: "META" });
     expect(keys.member("t1", "u1")).toEqual({ PK: "TEAM#t1", SK: "MEMBER#u1" });

@@ -127,9 +127,13 @@ describe("the rules (reorder.ts)", () => {
     const order = { orderedQty: 24, orderedOn: "2026-10-07" };
     expect(() => checkReorderFields({ ...order })).not.toThrow();
     for (const orderedQty of [0, -1, 2.5, "24", null, 1_000_001]) expect(() => checkReorderFields({ ...order, orderedQty }), String(orderedQty)).toThrow(/orderedQty must be a whole number from 1/);
-    for (const orderedOn of ["2026-13-01", "2026-10-7", "Oct 7", "", 20261007, null, "2026-10-07T00:00:00Z"]) {
+    // Dates that don't exist, and years before 2000, are refused too (keys.date)
+    for (const orderedOn of ["2026-13-01", "2026-10-7", "Oct 7", "", 20261007, null, "2026-10-07T00:00:00Z", "2026-02-30", "2026-04-31", "2025-02-29", "0000-01-01", "1999-12-31"]) {
       expect(() => checkReorderFields({ ...order, orderedOn }), String(orderedOn)).toThrow("orderedOn must be a date, YYYY-MM-DD");
     }
+    for (const orderedOn of ["2000-01-01", "2028-02-29", "2026-12-31"]) expect(() => checkReorderFields({ ...order, orderedOn }), orderedOn).not.toThrow();
+    // An impossible date already stored, carried over unchanged, still saves (pilot data written before this check)
+    expect(() => checkReorderFields({ ...order, orderedOn: "2026-02-30" }, { ...order, orderedOn: "2026-02-30" })).not.toThrow();
     expect(() => checkReorderFields({ orderedQty: 24 })).toThrow("orderedQty and orderedOn go together");
     expect(() => checkReorderFields({ orderedOn: "2026-10-07" })).toThrow("orderedQty and orderedOn go together");
     // Dropping half of a stored order is refused; a stray half already stored, carried over, isn't
@@ -293,6 +297,25 @@ describe("orders (supply-checkout-005.14)", () => {
     expect((await call("POST", "/teams/team-a/imports", { importId: randomUUID(), csv: "name,barcode,price,stock\nNitrile gloves,0123,12.50,30\n" }, OWNER)).status).toBe(200);
     expect(stored()).toMatchObject({ stock: 30, reorderAt: 5 });
     expect(stored()).not.toHaveProperty("orderedOn");
+  });
+});
+
+describe("dates (keys.date)", () => {
+  it("refuses an impossible quick-take date, and a project stored with one still saves and keeps its place in the date index", async () => {
+    seed(gloves, { date: "2026-02-30" });
+    const take = await call("POST", "/teams/team-a/adhoc/checkout", { operationId: op(), productKey: "0123", quantity: 1, date: "2026-02-30" });
+    expect(take).toMatchObject({ status: 400, body: { error: { message: "date must be YYYY-MM-DD" } } });
+    const project = table.get("TEAM#team-a", "PROJECT#s1") as Record<string, unknown>;
+    const data = Object.fromEntries(Object.entries(project).filter(([k]) => !["PK", "SK", "type", "id", "version"].includes(k) && !k.startsWith("GSI")));
+    const saved = await call("PUT", "/teams/team-a/projects/s1", { data: { ...data, client: "Echo Studio" }, expectedVersion: 1 });
+    expect(saved).toMatchObject({ status: 200, body: { data: { date: "2026-02-30", client: "Echo Studio" } } });
+    expect(table.get("TEAM#team-a", "PROJECT#s1")?.GSI1SK).toBe("2026-02-30#s1");
+  });
+
+  it("an order made against an older version is refused as a conflict, not for its stock (the app's PUT carries the stock it saw)", async () => {
+    seed({ ...gloves, stock: 2, version: 4 });
+    const res = await call("PUT", PRODUCT, { data: { ...gloves, stock: 3, orderedQty: 24, orderedOn: "2026-10-07" }, expectedVersion: 3 });
+    expect(res).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
   });
 });
 

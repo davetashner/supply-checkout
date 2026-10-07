@@ -3015,10 +3015,11 @@ components:
             Marked ordered (supply-checkout-005.14): how many, in eaches. Always with `orderedOn`;
             a write with only one of the two is 400. The app marks an item ordered with a PUT of
             the item that sets both and leaves out `ackedAtStock`, and cancels with a PUT without
-            both. While it's set the app doesn't flag the item. The stock commands, an uncount and
+            both. While it's set the app doesn't flag the item, even at 0 stock, until it's cancelled
+            or a restock above `reorderAt` ends it. The stock commands, an uncount and
             the CSV import remove both exactly as they remove `ackedAtStock`; a new `reorderAt`
             keeps them.
-        orderedOn: { type: string, format: date, description: "The day it was ordered, `YYYY-MM-DD`. Always with `orderedQty`." }
+        orderedOn: { type: string, format: date, description: "The day it was ordered, `YYYY-MM-DD`: a date that exists, from 2000 on (a stored one carried over unchanged isn't checked). Always with `orderedQty`." }
         updatedAt: { type: string, format: date-time }
     Project:
       type: object
