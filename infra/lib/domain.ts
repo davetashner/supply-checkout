@@ -15,6 +15,9 @@ export function envDomain(config: Pick<DeploymentConfig, "envName" | "domainName
   return config.envName === "prod" ? config.domainName : `${config.envName}.${config.domainName}`;
 }
 
+/** The label of the test mail subdomain, `e2e.<env domain>` (hostNames().testMail; the journeys stack's JOURNEY_MAIL_LABEL). */
+export const TEST_MAIL_LABEL = "e2e";
+
 export interface HostNames {
   /** The zone apex. Serves the demo until the real app launches (supply-checkout-sy6). */
   readonly apex: string;
@@ -55,7 +58,7 @@ export function hostNames(config: Pick<DeploymentConfig, "envName" | "domainName
     auth: `auth.${apex}`,
     opsAuth: `ops-auth.${apex}`,
     mailFrom: `mail.${apex}`,
-    testMail: `e2e.${apex}`,
+    testMail: `${TEST_MAIL_LABEL}.${apex}`,
   };
 }
 
