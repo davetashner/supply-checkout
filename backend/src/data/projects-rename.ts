@@ -30,7 +30,7 @@
 // flooded.
 
 import { createHash } from "node:crypto";
-import { GetCommand, QueryCommand, ScanCommand, TransactWriteCommand, UpdateCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { GSI1 } from "./schema.js";
 
@@ -45,7 +45,6 @@ const TEAM = "TEAM#";
 const MOVE = "MOVE#";
 const PRODUCT = "PRODUCT#";
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
 type Item = Record<string, unknown>;
 
@@ -112,6 +111,10 @@ export interface ProjectsRenameReport {
   readonly retries: number;
   /** Old items whose ID isn't a valid ID: left alone. */
   readonly invalid: number;
+  /** Team partitions whose ID isn't a valid ID (the all-teams scan): left alone. */
+  readonly invalidTeams: number;
+  /** --team named a team with no META item: probably a typo. */
+  readonly teamMissing: boolean;
   /** Old items not read because of the limit. */
   readonly leftByLimit: number;
   /** About how many bytes the old items hold, and the largest one (DynamoDB's limit is 400 KB). */
@@ -190,8 +193,9 @@ async function indexCount(db: Db, partition: string): Promise<number> {
 }
 
 /** Every team that has an item under the old prefix or a movement with an old attribute: a Scan of keys only. */
-async function teamsToRename(db: Db, from: Spelling): Promise<string[]> {
+async function teamsToRename(db: Db, from: Spelling): Promise<{ teams: string[]; invalid: number }> {
   const teams = new Set<string>();
+  const bad = new Set<string>();
   let ExclusiveStartKey: Item | undefined;
   do {
     const page = await connection(db).doc.send(
@@ -208,10 +212,11 @@ async function teamsToRename(db: Db, from: Spelling): Promise<string[]> {
     for (const item of page.Items ?? []) {
       const teamId = String(item.PK).slice(TEAM.length);
       if (ID.test(teamId)) teams.add(teamId);
+      else bad.add(String(item.PK));
     }
     ExclusiveStartKey = page.LastEvaluatedKey;
   } while (ExclusiveStartKey);
-  return [...teams].sort();
+  return { teams: [...teams].sort(), invalid: bad.size };
 }
 
 /** A value in a canonical form for hashing: maps by sorted key, sets sorted, binary as base64. */
@@ -231,7 +236,7 @@ function canonical(value: unknown): unknown {
 }
 
 /** The attributes the rename changes: left out of the comparison. */
-const RENAMED = new Set(["SK", "GSI1PK", "GSI1SK", "type"]);
+const RENAMED = new Set(["SK", "GSI1PK", "type"]);
 
 /** A stable hash of an item's attributes, the renamed ones left out. */
 export function renameHash(item: Item): string {
@@ -296,16 +301,9 @@ export function projectTotals(item: Item): ProjectTotals {
 
 const sameTotals = (a: ProjectTotals, b: ProjectTotals) => JSON.stringify(a) === JSON.stringify(b);
 
-/** The item at its new key: SK, GSI1PK (and GSI1SK, if it had none) and type renamed, everything else as read. */
+/** The item at its new key: SK, GSI1PK and type renamed, everything else (GSI1SK included) as read. */
 export function renamedItem(item: Item, teamId: string, docId: string, to: Spelling): Item {
-  const date = typeof item.date === "string" && DATE.test(item.date) ? item.date : "";
-  return {
-    ...item,
-    SK: `${to.sk}${docId}`,
-    GSI1PK: `${TEAM}${teamId}${to.index}`,
-    GSI1SK: typeof item.GSI1SK === "string" ? item.GSI1SK : `${date}#${docId}`,
-    type: to.type,
-  };
+  return { ...item, SK: `${to.sk}${docId}`, GSI1PK: `${TEAM}${teamId}${to.index}`, type: to.type };
 }
 
 /** The condition that an item is still the version read. */
@@ -342,7 +340,15 @@ async function moveOne(db: Db, teamId: string, docId: string, from: Spelling, to
     try {
       if (existing) {
         if (renameHash(existing) !== hash) return { kind: "conflict" };
-        await connection(db).doc.send(new DeleteCommand({ TableName: db.tableName, Key: oldKey, ...sameVersion(old) }));
+        // Only while the copy is still the one compared, so a copy deleted meanwhile can't lose both
+        await connection(db).doc.send(
+          new TransactWriteCommand({
+            TransactItems: [
+              { ConditionCheck: { TableName: db.tableName, Key: newKey, ...sameVersion(existing) } },
+              { Delete: { TableName: db.tableName, Key: oldKey, ...sameVersion(old) } },
+            ],
+          }),
+        );
         await writes.pause(1);
         return { kind: "duplicate", hash, totals, docId };
       }
@@ -433,7 +439,14 @@ export async function renameProjects(db: Db, options: ProjectsRenameOptions): Pr
   if (options.team !== undefined && !ID.test(options.team)) throw new Error("Invalid team ID");
   if (options.limit !== undefined && !(Number.isInteger(options.limit) && options.limit > 0)) throw new Error("Invalid limit");
 
-  const teamIds = options.team !== undefined ? [options.team] : await teamsToRename(db, from);
+  let teamIds: string[];
+  let invalidTeams = 0;
+  let teamMissing = false;
+  if (options.team !== undefined) {
+    teamIds = [options.team];
+    // A typo would otherwise find nothing and look like success
+    teamMissing = !(await get(db, { PK: `${TEAM}${options.team}`, SK: "META" }));
+  } else ({ teams: teamIds, invalid: invalidTeams } = await teamsToRename(db, from));
   const surveys: Survey[] = [];
   for (const teamId of teamIds) surveys.push(await survey(db, teamId, from, to));
 
@@ -442,7 +455,7 @@ export async function renameProjects(db: Db, options: ProjectsRenameOptions): Pr
     const teams: ExportedTeam[] = [];
     for (const s of surveys) {
       const pk = `${TEAM}${s.teamId}`;
-      teams.push({ teamId: s.teamId, items: [...s.olds, ...(await underPrefix(db, pk, MOVE))] });
+      teams.push({ teamId: s.teamId, items: [...s.olds, ...(await underPrefix(db, pk, to.sk)), ...(await underPrefix(db, pk, MOVE))] });
     }
     await options.exportTo(teams);
     exported = teams.reduce((n, t) => n + t.items.length, 0);
@@ -506,7 +519,7 @@ export async function renameProjects(db: Db, options: ProjectsRenameOptions): Pr
     }
   }
 
-  const report = { apply, from: from.sk, to: to.sk, teams: surveys.length, found, moved, duplicates, conflicts, gone, failed, retries, invalid, leftByLimit, bytes, largest, movements, ...(exported === undefined ? {} : { exported }) };
+  const report = { apply, from: from.sk, to: to.sk, teams: surveys.length, invalidTeams, teamMissing, found, moved, duplicates, conflicts, gone, failed, retries, invalid, leftByLimit, bytes, largest, movements, ...(exported === undefined ? {} : { exported }) };
   if (!apply) return report;
   return { ...report, verification: await verify(db, done, from, to, options.indexWaitMs ?? INDEX_WAIT_MS, sleep) };
 }

@@ -853,7 +853,9 @@ A line such as `changed by something else first, left alone: 1` is a race the co
 - Movements get `sheetId` and `fromSheetId` renamed, on the condition that the old names are still there and the new ones aren't.
 - One write at a time, about 25 a second. `--limit <n>` stops after n sheets and leaves the movements for a full run.
 - `--reverse` does the same from `PROJECT#` back to `SHEET#`: the rollback. It's the same code, and it's tested both ways.
-- `--export-to <path>` writes the team's `SHEET#` and `MOVE#` items to a new JSON file (owner-only, never over an existing file) before anything is written. It refuses a path inside the repo: the file holds client names and prices.
+- `--export-to <path>` writes the team's `SHEET#`, `PROJECT#` and `MOVE#` items to a new JSON file (owner-only, never over an existing file) before anything is written. It refuses a path inside the repo, or inside any folder with a `.git` entry (so a worktree's main checkout too), compared as the disk spells it: the file holds client names and prices.
+- `--team` on a team with no `META` item (a typo) says so, and the run is never `Done.`
+- `--expect-account <id>` (any backfill mode) stops before reading anything unless the profile signs in to that account.
 
 The output is counts and check names only: no team, sheet or user IDs, names or emails. A dry run (the default) counts the sheets it would move, the conflicts, the movements, and about how many bytes the sheets hold (the largest must stay well under DynamoDB's 400 KB). After `--apply` it checks, and prints `Done.` only when all of them hold (otherwise `Not done`, and it exits 1):
 
@@ -863,7 +865,7 @@ The output is counts and check names only: no team, sheet or user IDs, names or 
 - every product's `stock` is what it was;
 - no movement still has `sheetId` or `fromSheetId`.
 
-A user taking or returning stock during the run changes a stock count and fails that check; run it again (it finds nothing left to move and checks again) once things are quiet. Run it outside 8am to 8pm Eastern if you can, for the canary and the pilot's day.
+A user taking or returning stock during the run changes a stock count and fails that check, and a user editing a project after it moved and before the checks fails the hash and totals checks the same way; run it again (it finds nothing left to move and checks again) once things are quiet. Run it outside 8am to 8pm Eastern if you can, for the canary and the pilot's day.
 
 The runbook. `<profile>`, `<teamId>`, `<recovery point ARN>` and `<path>` are placeholders: keep the real values out of the repo, and put the recovery point in the bead.
 
@@ -883,6 +885,7 @@ date -u +%Y-%m-%dT%H:%M:%SZ                              # the PITR time to rest
 aws dynamodb describe-continuous-backups --table-name supply-checkout-prod-app $P   # PITR is ENABLED
 
 # 2. Export and dry run: read the counts (and the account on the first line)
+B="$B --expect-account <account ID>"                     # stops unless the profile signs in to prod's account
 npm run backfill -- projects-rename $B --team <teamId> --export-to <path outside the repo>/rename-<teamId>.json
 
 # 3. Apply, then the final check: a second run finds nothing to move and prints Done.

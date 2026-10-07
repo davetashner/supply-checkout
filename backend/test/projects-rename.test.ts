@@ -3,9 +3,10 @@
 // DYNAMODB_ENDPOINT is set (CI sets it; locally,
 // npm run test:ddb -- test/projects-rename.test.ts).
 
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { afterAll, describe, expect, it } from "vitest";
@@ -38,6 +39,7 @@ function sheetData(n: number) {
 
 async function seedTeam(db: Db, sheets: number, extra: { movements?: number; teamId?: string } = {}) {
   const teamId = extra.teamId ?? newTeamId();
+  await put(db, { PK: `TEAM#${teamId}`, SK: "META", type: "team", teamId, name: `Team ${teamId}`, version: 1 });
   for (let n = 1; n <= sheets; n++) await put(db, sheetItem(teamId, `s${n}`, sheetData(n), n));
   await put(db, { PK: `TEAM#${teamId}`, SK: "PRODUCT#gloves", type: "product", key: "gloves", name: "Gloves", stock: 12, version: 3 });
   for (let n = 1; n <= (extra.movements ?? 0); n++) {
@@ -82,11 +84,10 @@ describe("the rename's pieces", () => {
     expect(renameHash({ a: new Set(["y", "x"]), b: new Uint8Array([1]), c: new Map([["k", 1]]) })).toBe(renameHash({ c: { k: 1 }, b: new Uint8Array([1]), a: new Set(["x", "y"]) }));
   });
 
-  it("dates the index key as documents.ts does when an item has none", () => {
-    const { GSI1SK: _gsk, ...noKey } = sheetItem("t1", "s1", sheetData(1), 1);
-    void _gsk;
-    expect(renamedItem(noKey, "t1", "s1", PROJECTS).GSI1SK).toBe("2026-09-02#s1");
-    expect(renamedItem({ ...noKey, date: "someday" }, "t1", "s1", SHEETS)).toMatchObject({ GSI1SK: "#s1", GSI1PK: "TEAM#t1#SHEETS", SK: "SHEET#s1", type: "sheet" });
+  it("keeps the index sort key as read, and counts it in the hash", () => {
+    const item = sheetItem("t1", "s1", sheetData(1), 1);
+    expect(renamedItem(item, "t1", "s1", SHEETS)).toMatchObject({ GSI1SK: "2026-09-02#s1", GSI1PK: "TEAM#t1#SHEETS", SK: "SHEET#s1", type: "sheet" });
+    expect(renameHash({ ...item, GSI1SK: "2026-09-03#s1" })).not.toBe(renameHash(item));
   });
 
   it("adds totals as sheet-math.js does: supplies charged, equipment lost charged, equipment on loan apart", () => {
@@ -108,10 +109,12 @@ describe("the rename's pieces", () => {
   });
 
   it("formats a report with every line it has, and none it doesn't", () => {
-    const base = { apply: true, from: "SHEET#", to: "PROJECT#", teams: 1, found: 3, moved: 1, duplicates: 1, conflicts: 1, gone: 1, failed: 1, retries: 2, invalid: 1, leftByLimit: 1, bytes: 300, largest: 120, exported: 4 };
+    const base = { apply: true, from: "SHEET#", to: "PROJECT#", teams: 1, invalidTeams: 1, teamMissing: true, found: 3, moved: 1, duplicates: 1, conflicts: 1, gone: 1, failed: 1, retries: 2, invalid: 1, leftByLimit: 1, bytes: 300, largest: 120, exported: 4 };
     const lines = formatRenameReport({ ...base, movements: { found: 0, renamed: 0, conflicts: 0, raced: 0, skipped: true }, verification: { ok: false, checks: [{ check: "x", ok: false }, { check: "y", ok: true }] } });
     expect(lines).toEqual([
       "SHEET# to PROJECT#, teams: 1",
+      "No team META item for --team: check the team ID",
+      "Team partitions whose ID isn't a valid ID, left alone: 1",
       "Exported 4 items to the file first",
       "Items under SHEET#: 3 (about 300 bytes; the largest about 120)",
       "  moved: 1",
@@ -128,7 +131,7 @@ describe("the rename's pieces", () => {
       "  ok: y",
       "Not done: see above. Run it again (it skips what's moved), or roll back with --reverse.",
     ]);
-    const quiet = formatRenameReport({ ...base, apply: false, duplicates: 0, conflicts: 0, gone: 0, failed: 0, retries: 0, invalid: 0, leftByLimit: 0, exported: undefined, movements: { found: 2, renamed: 1, conflicts: 1, raced: 1, skipped: false } });
+    const quiet = formatRenameReport({ ...base, apply: false, invalidTeams: 0, teamMissing: false, duplicates: 0, conflicts: 0, gone: 0, failed: 0, retries: 0, invalid: 0, leftByLimit: 0, exported: undefined, movements: { found: 2, renamed: 1, conflicts: 1, raced: 1, skipped: false } });
     expect(quiet).toEqual([
       "SHEET# to PROJECT#, teams: 1",
       "Items under SHEET#: 3 (about 300 bytes; the largest about 120)",
@@ -157,6 +160,23 @@ describe("where an export may go", () => {
     expect(exportPath(join(outside, "new.json"), [outside])).toEqual({ problem: expect.stringContaining("outside the repo") });
   });
 
+  it("refuses anywhere under a folder with a .git entry, even with no roots given: a worktree's main checkout too", () => {
+    const nested = join(outside, "checkout", "deep", "er");
+    mkdirSync(nested, { recursive: true });
+    mkdirSync(join(outside, "checkout", ".git"));
+    expect(exportPath(join(nested, "x.json"), [])).toEqual({ problem: expect.stringContaining("outside the repo") });
+    // This repo's main checkout, from wherever this runs (a worktree is inside it)
+    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: import.meta.dirname, encoding: "utf8" }).trim();
+    expect(exportPath(join(dirname(common), "rename-t.json"), [])).toEqual({ problem: expect.stringContaining("outside the repo") });
+    expect(exportPath(join(dirname(common), "rename-t.json"), [import.meta.dirname])).toEqual({ problem: expect.stringContaining("outside the repo") });
+  });
+
+  const lower = import.meta.dirname.toLowerCase();
+  it.skipIf(lower === import.meta.dirname || !existsSync(lower))("refuses a path inside the repo spelled in another case, on a case-insensitive disk", () => {
+    const root = join(import.meta.dirname, "..", "..");
+    expect(exportPath(join(lower, "export.json"), [root])).toEqual({ problem: expect.stringContaining("outside the repo") });
+  });
+
   it("refuses rename options on other modes, and bad values, before reading", async () => {
     const run = async (args: string[]) => {
       const err: string[] = [];
@@ -170,6 +190,21 @@ describe("where an export may go", () => {
     expect(await run(["projects-rename", ...base, "--limit", "0"])).toMatchObject({ code: 2, err: expect.stringContaining("--limit must be") });
     expect(await run(["projects-rename", ...base, "--limit", "2x"])).toMatchObject({ code: 2 });
     expect(await run(["projects-rename", ...base, "--export-to", join(import.meta.dirname, "export.json")])).toMatchObject({ code: 2, err: expect.stringContaining("outside the repo") });
+  });
+
+  it("stops before reading unless the profile signs in to --expect-account's account", async () => {
+    const run = async (args: string[]) => {
+      const err: string[] = [];
+      const deps = { callerAccount: async () => "111111111111", connect: () => ({}) as Db };
+      const code = await main(args, () => {}, (l) => err.push(l), deps);
+      return { code, err: err.join("\n") };
+    };
+    const prod = ["projects-rename", "--table", "supply-checkout-test-app", "--region", REGION, "--profile", "p"];
+    expect(await run([...prod, "--expect-account", "222222222222"])).toMatchObject({ code: 1, err: expect.stringContaining("not 222222222222 (--expect-account): nothing was read or written") });
+    expect(await run([...prod, "--expect-account", "12"])).toMatchObject({ code: 2, err: expect.stringContaining("12-digit") });
+    expect(await run(["projects-rename", "--table", "t", "--region", REGION, "--endpoint", "http://localhost:1", "--expect-account", "111111111111"])).toMatchObject({ code: 2 });
+    // The right account goes on to connect
+    expect(await run([...prod, "--expect-account", "111111111111"])).toMatchObject({ code: 1, err: expect.stringMatching(/^Failed: /) });
   });
 
   it("reports a failure without item contents", async () => {
@@ -189,9 +224,9 @@ describe.skipIf(!endpoint)("the projects rename on DynamoDB Local", () => {
   const opts = (more: Partial<ProjectsRenameOptions> = {}): ProjectsRenameOptions => ({ apply: true, ...fast, ...more });
 
   it("finds nothing to do for an empty team, and verifies it", async () => {
-    const teamId = newTeamId();
+    const teamId = await seedTeam(table.db, 0);
     const report = await renameProjects(table.db, opts({ team: teamId }));
-    expect(report).toMatchObject({ teams: 1, found: 0, moved: 0, movements: { found: 0 } });
+    expect(report).toMatchObject({ teams: 1, found: 0, moved: 0, teamMissing: false, movements: { found: 0 } });
     expect(report.verification?.ok).toBe(true);
     expect(formatRenameReport(report).at(-1)).toBe("Done.");
   });
@@ -237,7 +272,10 @@ describe.skipIf(!endpoint)("the projects rename on DynamoDB Local", () => {
     await put(db, renamedItem(s1, teamId, "s1", PROJECTS));
     await put(db, { ...renamedItem(s2, teamId, "s2", PROJECTS), client: "Edited since" });
 
-    expect(await renameProjects(db, opts({ apply: false, team: teamId }))).toMatchObject({ found: 3, moved: 1, duplicates: 1, conflicts: 1 });
+    const exported: string[] = [];
+    const exportTo = async (teams: readonly { items: readonly Record<string, unknown>[] }[]) => void exported.push(...teams.flatMap((t) => t.items.map((i) => String(i.SK))));
+    expect(await renameProjects(db, opts({ apply: false, team: teamId, exportTo }))).toMatchObject({ found: 3, moved: 1, duplicates: 1, conflicts: 1, exported: 5 });
+    expect(exported.sort()).toEqual(["PROJECT#s1", "PROJECT#s2", "SHEET#s1", "SHEET#s2", "SHEET#s3"]);
     const report = await renameProjects(db, opts({ team: teamId }));
     expect(report).toMatchObject({ found: 3, moved: 1, duplicates: 1, conflicts: 1 });
     expect(report.verification?.ok).toBe(false);
@@ -246,6 +284,26 @@ describe.skipIf(!endpoint)("the projects rename on DynamoDB Local", () => {
     expect(await rawItem(db, `TEAM#${teamId}`, "SHEET#s1")).toBeUndefined();
     expect(await rawItem(db, `TEAM#${teamId}`, "SHEET#s2")).toEqual(s2);
     expect((await rawItem(db, `TEAM#${teamId}`, "PROJECT#s2"))?.client).toBe("Edited since");
+  });
+
+  it("never deletes the old item when the equal copy is deleted before the delete: it moves it instead", async () => {
+    const { db } = table;
+    const teamId = await seedTeam(db, 1);
+    const s1 = (await rawItem(db, `TEAM#${teamId}`, "SHEET#s1")) as Record<string, unknown>;
+    await put(db, renamedItem(s1, teamId, "s1", PROJECTS));
+    const removeCopy = () => connection(db).doc.send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "PROJECT#s1" } } }] }));
+    const report = await renameProjects(interleaved(db, removeCopy), opts({ team: teamId }));
+    expect(report).toMatchObject({ moved: 1, duplicates: 0, retries: 1 });
+    // The copy counted before the run is gone, which the count check reports
+    expect(report.verification?.checks.filter((c) => !c.ok).map((c) => c.check)).toEqual(["PROJECT# items = PROJECT# items before + moved"]);
+    expect(await rawItem(db, `TEAM#${teamId}`, "PROJECT#s1")).toEqual(renamedItem(s1, teamId, "s1", PROJECTS));
+  });
+
+  it("says when --team names no team, and never calls it done", async () => {
+    const report = await renameProjects(table.db, opts({ team: newTeamId() }));
+    expect(report).toMatchObject({ teamMissing: true, found: 0 });
+    expect(report.verification?.ok).toBe(true);
+    expect(formatRenameReport(report).at(-1)).toMatch(/^Not done/);
   });
 
   it("retries a sheet edited between its read and the move, and moves the edited one", async () => {
@@ -372,5 +430,11 @@ describe.skipIf(!endpoint)("the projects rename of every team on DynamoDB Local"
     for (const t of [a, b, c]) expect(await partition(db, t, "SHEET#")).toHaveLength(0);
     expect(await rawItem(db, "USER#someone", "SHEET#looks-like-one")).toBeDefined();
     expect(await renameProjects(db, { apply: true, ...fast })).toMatchObject({ teams: 0, found: 0, verification: { ok: true } });
+
+    // A team partition whose ID isn't valid is counted, and holds back Done
+    await put(db, { PK: "TEAM#bad id", SK: "SHEET#s1", type: "sheet", version: 1 });
+    const bad = await renameProjects(db, { apply: true, ...fast });
+    expect(bad).toMatchObject({ teams: 0, invalidTeams: 1 });
+    expect(formatRenameReport(bad).at(-1)).toMatch(/^Not done/);
   });
 });

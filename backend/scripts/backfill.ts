@@ -17,6 +17,7 @@
 //
 // --endpoint points it at DynamoDB Local instead (tests, local development).
 
+import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
@@ -44,7 +45,8 @@ Modes (run in this order after the deploy):
     --team <id>         one team (a Query); all teams (a key-only Scan) without it
     --reverse           PROJECT# back to SHEET#: the rollback
     --limit <n>         stop after n items (movements are left for a run without it)
-    --export-to <path>  first write the team's SHEET# and MOVE# items to a new file outside the repo
+    --export-to <path>  first write the team's SHEET#, PROJECT# and MOVE# items to a new file outside the repo
+--expect-account <id> (any mode) stops before reading unless the profile signs in to that account.
 
 Without --apply it's a dry run: it reads the table and writes nothing.
 It prints the AWS account the profile signs in to before it reads or writes.
@@ -77,41 +79,50 @@ export interface Deps {
   readonly repoRoots?: () => string[];
 }
 
-/** The checkout that holds a path: the nearest folder up from it with a .git entry. */
-function checkoutOf(start: string): string | undefined {
-  for (let dir = resolve(start); ; dir = dirname(dir)) {
-    if (existsSync(join(dir, ".git"))) return dir;
-    if (dirname(dir) === dir) return undefined;
+/** A path as the filesystem spells it: symlinks resolved and, on a case-insensitive disk, its real case. */
+function canonical(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
   }
 }
 
-/** The checkouts of the current folder and of this script (a worktree's main checkout holds it too). */
+/** The main checkout of the repo a folder is in (the parent of git's common dir), so a worktree's main checkout counts too. */
+function mainCheckout(dir: string): string | undefined {
+  const git = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, encoding: "utf8", timeout: 5_000 });
+  const common = git.status === 0 ? git.stdout.trim() : "";
+  return common ? dirname(common) : undefined;
+}
+
+/** The checkouts an export must stay out of: the current folder's and this script's, and their main checkouts. */
 function repoRoots(): string[] {
-  return [checkoutOf(process.cwd()), checkoutOf(dirname(fileURLToPath(import.meta.url)))].filter((r): r is string => r !== undefined);
+  const dirs = [process.cwd(), dirname(fileURLToPath(import.meta.url))];
+  return dirs.map(mainCheckout).filter((r): r is string => r !== undefined);
 }
 
 /**
  * Where an export may go: a new file, in a folder that exists, outside every
  * checkout (the file holds client names and prices, and the repo is public).
+ * Refused under any of `roots`, and under any folder with a .git entry (a
+ * checkout, or a worktree inside one), compared as the filesystem spells it.
  * Returns the resolved path, or why not.
  */
 export function exportPath(path: string, roots: readonly string[]): { path: string } | { problem: string } {
   const absolute = resolve(path);
   let folder: string;
   try {
-    folder = realpathSync(dirname(absolute));
+    folder = realpathSync.native(dirname(absolute));
   } catch {
     return { problem: `--export-to's folder doesn't exist: ${dirname(absolute)}` };
   }
   const target = join(folder, basename(absolute));
-  for (const root of roots) {
-    let real: string;
-    try {
-      real = realpathSync(root);
-    } catch {
-      real = resolve(root);
-    }
-    if (target === real || target.startsWith(real + sep)) return { problem: `--export-to must be outside the repo (${real}): the export holds client names and prices` };
+  const inside = (root: string) => target === root || target.startsWith(root.endsWith(sep) ? root : root + sep);
+  const refused = (root: string) => ({ problem: `--export-to must be outside the repo (${root}): the export holds client names and prices` });
+  for (const root of roots.map(canonical)) if (inside(root)) return refused(root);
+  for (let dir = folder; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, ".git"))) return refused(dir);
+    if (dirname(dir) === dir) break;
   }
   if (existsSync(target)) return { problem: `--export-to names a file that exists; give a new one: ${target}` };
   return { path: target };
@@ -136,6 +147,8 @@ function writeExport(path: string, table: string, region: string, reverse: boole
 export function formatRenameReport(r: ProjectsRenameReport): string[] {
   const wouldBe = r.apply ? "" : " (dry run: would be)";
   const lines = [`${r.from} to ${r.to}, teams: ${r.teams}`];
+  if (r.teamMissing) lines.push("No team META item for --team: check the team ID");
+  if (r.invalidTeams) lines.push(`Team partitions whose ID isn't a valid ID, left alone: ${r.invalidTeams}`);
   if (r.exported !== undefined) lines.push(`Exported ${r.exported} items to the file first`);
   lines.push(`Items under ${r.from}: ${r.found} (about ${r.bytes} bytes; the largest about ${r.largest})`);
   lines.push(`  moved: ${r.moved}${wouldBe}`);
@@ -161,7 +174,7 @@ export function formatRenameReport(r: ProjectsRenameReport): string[] {
   lines.push("Verification:");
   for (const c of r.verification.checks) lines.push(`  ${c.ok ? "ok" : "FAILED"}: ${c.check}`);
   lines.push(
-    r.verification.ok && !r.conflicts && !r.failed && !r.leftByLimit
+    r.verification.ok && !r.conflicts && !r.failed && !r.leftByLimit && !r.invalid && !r.invalidTeams && !r.teamMissing
       ? "Done."
       : "Not done: see above. Run it again (it skips what's moved), or roll back with --reverse.",
   );
@@ -273,6 +286,7 @@ export async function main(
         reverse: { type: "boolean", default: false },
         limit: { type: "string" },
         "export-to": { type: "string" },
+        "expect-account": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
       },
     });
@@ -344,12 +358,23 @@ export async function main(
     return 2;
   }
 
+  const expectAccount = values["expect-account"];
+  if (expectAccount !== undefined && (!/^\d{12}$/.test(expectAccount) || values.endpoint)) {
+    err(`--expect-account takes a 12-digit account ID, and needs --profile (not --endpoint)\n\n${USAGE}`);
+    return 2;
+  }
+
   const credentials = values.profile && !values.endpoint ? defaultProvider({ profile: values.profile }) : undefined;
   let where = `at ${values.endpoint}`;
   if (credentials) {
     try {
       // Before anything is read or written, so the owner sees which account this is
-      where = `in account ${await deps.callerAccount(values.region, credentials)} (profile ${values.profile})`;
+      const account = await deps.callerAccount(values.region, credentials);
+      if (expectAccount !== undefined && account !== expectAccount) {
+        err(`The profile signs in to account ${account}, not ${expectAccount} (--expect-account): nothing was read or written`);
+        return 1;
+      }
+      where = `in account ${account} (profile ${values.profile})`;
     } catch (e) {
       err(`Failed to identify the profile's account: ${(e as Error).name}: ${(e as Error).message}`);
       return 1;
