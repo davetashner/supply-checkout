@@ -108,10 +108,12 @@ describe("skippedForTest", () => {
     expect(skippedForTest(BusinessMetric.SignUps, { test: "true" })).toBe(false);
     expect(skippedForTest(BusinessMetric.SignUps, { test: 1 })).toBe(false);
     // A failure a test hits is a real failure, and it's counted
-    for (const metric of [BusinessMetric.ReceiptReadFailures, BusinessMetric.InvitesFailed, BusinessMetric.CheckoutSessionErrors, BusinessMetric.SeatSyncQueueFailures, BusinessMetric.TeamClosedNoticeFailures]) {
+    for (const metric of [BusinessMetric.ReceiptReadFailures, BusinessMetric.InvitesFailed, BusinessMetric.CheckoutSessionErrors, BusinessMetric.SeatSyncQueueFailures, BusinessMetric.TeamClosedNoticeFailures, BusinessMetric.ConditionalWriteConflicts, BusinessMetric.ReceiptTrialCapReached]) {
       expect(skippedForTest(metric, { test: true }), metric).toBe(false);
     }
-    for (const metric of TEST_SKIPPED_METRICS) expect(metric).not.toMatch(/Fail|Error|Drift|Refused|Bounce|Complaint/);
+    for (const metric of TEST_SKIPPED_METRICS) expect(metric).not.toMatch(/Fail|Error|Drift|Refused|Bounce|Complaint|Conflict|Cap/);
+    // A failure's denominator is sent too (infra/test/observability.test.ts checks every ratio alarm)
+    for (const metric of [BusinessMetric.Writes, BusinessMetric.ReceiptReads]) expect(skippedForTest(metric, { test: true }), metric).toBe(false);
   });
 });
 
@@ -345,7 +347,7 @@ describe("the mark grants nothing", () => {
 });
 
 describe("customer-activity metrics leave test teams out", () => {
-  it("doesn't send a test team's writes, conflicts, invites, closure and reopening; sends a customer's", async () => {
+  it("doesn't send a test team's sign-up, invites, closure and reopening; sends its writes and conflicts (a ratio alarm's two sides), marked; sends a customer's", async () => {
     const probe = await newTeam(PROBE);
     const customer = await newTeam(OWNER, "Customer");
     for (const [id, user, name] of [
@@ -363,7 +365,9 @@ describe("customer-activity metrics leave test teams out", () => {
     const expected = [BusinessMetric.SignUps, BusinessMetric.Writes, BusinessMetric.ConditionalWriteConflicts, BusinessMetric.InvitesSent, BusinessMetric.TeamsClosed, BusinessMetric.TeamClosedNotices, BusinessMetric.TeamsReopened, BusinessMetric.TeamReopenedNotices];
     expect(of(probe.id).map((m) => m.metric)).toEqual(expected);
     expect(of(customer.id).map((m) => m.metric)).toEqual(expected);
-    expect(of(probe.id).every((m) => m.metadata.test === true && !m.sent)).toBe(true);
+    expect(of(probe.id).every((m) => m.metadata.test === true)).toBe(true);
+    // Writes and ConditionalWriteConflicts are the "Writes rejected" alarm's two sides: both sent, marked
+    expect(of(probe.id).filter((m) => m.sent).map((m) => m.metric)).toEqual([BusinessMetric.Writes, BusinessMetric.ConditionalWriteConflicts]);
     expect(of(customer.id).every((m) => !("test" in m.metadata) && m.sent)).toBe(true);
   });
 

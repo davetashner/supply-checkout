@@ -445,7 +445,7 @@ describe("the monthly limit", () => {
 });
 
 describe("a test team (supply-checkout-o60.2)", () => {
-  it("is held to the same limit, and its reads, tokens and limit hits are marked test (left out of the metrics)", async () => {
+  it("is held to the same limit, and its reads, tokens and limit hits are marked test", async () => {
     table.put({ ...table.get("TEAM#team-a", "META"), test: true });
     const counted: { metric: string; metadata: Record<string, unknown> }[] = [];
     const obs = fakeObservability();

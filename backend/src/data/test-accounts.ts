@@ -10,6 +10,9 @@
 //   `<domain>.example` is one.
 // - A test team is a team a test account created: createTeam writes
 //   `test: true` on its META item, and nothing else ever sets or clears it.
+//   So a test team stays marked even if ownership later passes to a non-test
+//   account (only we can make that happen, from a test account); the journey
+//   tests must never hand a test team to a non-test account.
 //
 // What the mark does, and only this: the handlers leave test accounts and
 // teams out of the customer-activity business metrics (TEST_SKIPPED_METRICS

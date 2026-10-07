@@ -210,19 +210,21 @@ export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMe
  * Failure, drift and health metrics aren't here on purpose, like AWS's own
  * metrics: a failure a test run hits is a real failure, and it's counted
  * (with `test: true` in its metadata, to tell it apart in Logs Insights).
+ * Nor is a failure's denominator: an alarm's ratio needs both sides from the
+ * same traffic (infra/test/observability.test.ts checks every ratio alarm),
+ * so Writes (for ConditionalWriteConflicts) and ReceiptReads (for
+ * ReceiptReadFailures) are sent too. Nor ReceiptTrialCapReached: the
+ * account-wide trial cap being reached blocks real customers, whoever's read
+ * reached it.
  */
 export const TEST_SKIPPED_METRICS: ReadonlySet<BusinessMetricName> = new Set<BusinessMetricName>([
   BusinessMetric.SignUps,
   BusinessMetric.Checkouts,
   BusinessMetric.Returns,
-  BusinessMetric.Writes,
-  BusinessMetric.ConditionalWriteConflicts,
-  BusinessMetric.ReceiptReads,
   BusinessMetric.ReceiptLines,
   BusinessMetric.ReceiptTokens,
   BusinessMetric.ReceiptRateLimited,
   BusinessMetric.ReceiptLimitReached,
-  BusinessMetric.ReceiptTrialCapReached,
   BusinessMetric.ReceiptTrialsNearLimit,
   BusinessMetric.ReceiptPaidTeamsNearLimit,
   BusinessMetric.InvitesSent,

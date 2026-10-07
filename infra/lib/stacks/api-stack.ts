@@ -1006,13 +1006,6 @@ export class ApiStack extends SupplyCheckoutStack {
                 StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
               },
             }),
-            // Teams' receipt counters (supply-checkout-wxx): a team's record shows its reads by
-            // month and in its trial, and GET /ops/receipts ranks every team's month. Only
-            // BatchGetItem (exact keys: no Query, so no listing of a team's sort keys), only
-            // the keys and `receipts`, which only the USAGE# counters have, and only with a
-            // projection (a read without one would return whole items). Residual risk, accepted:
-            // IAM can't limit sort keys, so this role could confirm that a guessed key exists in
-            // any TEAM# partition (it gets back PK and SK only, no other attributes)
             // Teams' test marks (supply-checkout-o60.2): the Test badge on the list and a team's record.
             // GSI3 projects 20 attributes, the most it can, so the mark is read from the META items:
             // only BatchGetItem, only the keys and `test`, and only with a projection. Same residual
@@ -1028,6 +1021,13 @@ export class ApiStack extends SupplyCheckoutStack {
                 StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
+            // Teams' receipt counters (supply-checkout-wxx): a team's record shows its reads by
+            // month and in its trial, and GET /ops/receipts ranks every team's month. Only
+            // BatchGetItem (exact keys: no Query, so no listing of a team's sort keys), only
+            // the keys and `receipts`, which only the USAGE# counters have, and only with a
+            // projection (a read without one would return whole items). Residual risk, accepted:
+            // IAM can't limit sort keys, so this role could confirm that a guessed key exists in
+            // any TEAM# partition (it gets back PK and SK only, no other attributes)
             new PolicyStatement({
               sid: "TeamReceiptCountersReadOnly",
               effect: Effect.ALLOW,
