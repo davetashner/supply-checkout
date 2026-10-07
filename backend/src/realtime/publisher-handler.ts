@@ -108,6 +108,8 @@ interface Outgoing {
   readonly changes: number;
   /** The old-named copy of an event (LEGACY_EVENT_COLLECTIONS). */
   readonly legacy?: true;
+  /** The stream record's ID, which a collection event's ID is made from (a copy's `eventId` has a suffix). */
+  readonly recordId: string;
   readonly eventId: string;
   /** Stream time in epoch milliseconds, when known. */
   readonly at?: number;
@@ -141,10 +143,20 @@ function changeEventFields(record: DynamoDBRecord, change: DocumentChange, colle
 }
 
 /**
+ * The suffix on the event ID of an old-named copy: `<record ID>#sheets`. A
+ * client remembers event IDs to drop a retried batch's repeats, and an old
+ * one records the ID before it looks at the collection (src/aws/live.js), so
+ * with the same ID it would drop the `sheets` copy it needs as a repeat of the
+ * `projects` event it ignores. Deterministic, so a retried batch's copy has the
+ * same ID as before.
+ */
+export const legacyEventId = (eventId: string, collection: EventCollection) => `${eventId}#${collection}`;
+
+/**
  * The records to publish, in batch order, skipping everything that isn't a
  * team's document. A project's change goes out as `projects` and then again
- * as `sheets` (LEGACY_EVENT_COLLECTIONS), with the same event ID: one record,
- * two names for its collection.
+ * as `sheets` (LEGACY_EVENT_COLLECTIONS), the copy with its own event ID
+ * (legacyEventId): one record, two names for its collection.
  */
 export function outgoing(records: readonly DynamoDBRecord[]): Outgoing[] {
   const out: Outgoing[] = [];
@@ -153,9 +165,11 @@ export function outgoing(records: readonly DynamoDBRecord[]): Outgoing[] {
     if (!change) return;
     const legacy = LEGACY_EVENT_COLLECTIONS[change.collection];
     for (const collection of legacy ? [change.collection, legacy] : [change.collection]) {
-      const event = changeEventFields(record, change, collection);
       const copy = collection !== change.collection;
+      const fields = changeEventFields(record, change, collection);
+      const event = copy ? { ...fields, eventId: legacyEventId(fields.eventId, collection) } : fields;
       out.push({
+        recordId: fields.eventId,
         index,
         sequenceNumber: record.dynamodb?.SequenceNumber ?? "",
         teamId: change.teamId,
@@ -187,7 +201,7 @@ export function coalesce(events: readonly Outgoing[], after: number): Outgoing[]
     const event: CollectionEvent = {
       v: COLLECTION_EVENT_FORMAT,
       teamId: first.teamId,
-      eventId: `${first.eventId}~${last.eventId}`,
+      eventId: first.legacy ? legacyEventId(`${first.recordId}~${last.recordId}`, first.collection) : `${first.recordId}~${last.recordId}`,
       collection: first.collection,
       op: "list",
       changes: list.length,

@@ -248,6 +248,9 @@ export class RealtimeStack extends SupplyCheckoutStack {
       maxRecordAge: Duration.hours(1),
       onFailure: new SqsDlq(dlq),
       filters: [
+        // Five filters: Lambda's limit per event source mapping (PRODUCT#, PROJECT#, SHEET#,
+        // MEMBER#, META). Another needs one of these dropped (SHEET# once the projects
+        // rename's backfill is done, supply-checkout-005.6) or a combined pattern
         ...[...DOCUMENT_SK_PREFIXES, AUDIENCE_SK.prefix].map((prefix) => FilterCriteria.filter({ dynamodb: { Keys: { SK: { S: FilterRule.beginsWith(prefix) } } } })),
         FilterCriteria.filter({ dynamodb: { Keys: { SK: { S: FilterRule.isEqual(AUDIENCE_SK.exact) } } } }),
       ],

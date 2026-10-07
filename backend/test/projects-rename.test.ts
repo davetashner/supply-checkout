@@ -7,7 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { DynamoDBRecord } from "aws-lambda";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
 import {
@@ -25,7 +25,7 @@ import {
 import type { Observability } from "../src/observability/index.js";
 import type { Audience } from "../src/realtime/audience.js";
 import { COLLECTION_EVENT_AFTER, LEGACY_EVENT_COLLECTIONS } from "../src/realtime/channels.js";
-import { createPublisherHandler } from "../src/realtime/publisher-handler.js";
+import { createPublisherHandler, outgoing } from "../src/realtime/publisher-handler.js";
 import { MemoryTable } from "./memory-table.js";
 
 const NOW = Date.parse("2026-10-06T12:00:00Z");
@@ -421,6 +421,28 @@ describe("commands under either spelling", () => {
     expect(table.get(A, "SHEET#adhoc-1")).toMatchObject({ status: "closed" });
   });
 
+  it("fails a write to a version-less old item that the backfill moved meanwhile, instead of making it again under SHEET#", async () => {
+    legacy(A, "nv", { version: undefined });
+    let moved = false;
+    table.afterGet = (item) => {
+      if (moved || item?.SK !== "SHEET#nv") return;
+      moved = true;
+      table.put({ ...item, SK: "PROJECT#nv", GSI1PK: `${A}#PROJECTS`, type: "project" });
+      table.delete(A, "SHEET#nv");
+    };
+    // An item without a version reads as version 1
+    for (const [method, body] of [["PATCH", { data: { client: "Late" }, expectedVersion: 1 }], ["PUT", { data: { client: "Late" }, expectedVersion: 1 }]] as const) {
+      moved = false;
+      if (!table.get(A, "SHEET#nv")) {
+        table.delete(A, "PROJECT#nv");
+        legacy(A, "nv", { version: undefined });
+      }
+      expect((await call(method, "/teams/team-a/projects/nv", body)).status, method).toBe(409);
+      expect(table.get(A, "SHEET#nv"), method).toBeUndefined();
+      expect(table.get(A, "PROJECT#nv"), method).toMatchObject({ client: "Echo" });
+    }
+  });
+
   it("fails a write that raced the backfill moving the project, instead of putting the old item back", async () => {
     legacy(A, "s1");
     let moved = false;
@@ -581,7 +603,76 @@ describe("live updates under both collection names", () => {
       [2, "projects", "list", records.length],
       [2, "sheets", "list", records.length],
     ]);
-    expect(published[0]?.eventId).toBe(published[1]?.eventId);
+    expect(published[0]?.eventId).toBe(`${records[0]?.eventID}~${records.at(-1)?.eventID}`);
+    expect(published[1]?.eventId).toBe(`${records[0]?.eventID}~${records.at(-1)?.eventID}#sheets`);
     expect(counted).toEqual({ LiveUpdates: records.length });
+  });
+});
+
+describe("an old client's live updates (src/aws/live.js and src/aws/db.js as they are before the rename)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("applies the sheets copy of a project's change after ignoring the projects one, and drops only a retried repeat", async () => {
+    vi.useFakeTimers();
+    const sockets: { onopen?: () => void; onmessage?: (m: { data: string }) => void; onclose?: () => void; sent: Record<string, unknown>[]; close: () => void }[] = [];
+    class FakeSocket {
+      onopen?: () => void;
+      onmessage?: (m: { data: string }) => void;
+      onclose?: () => void;
+      sent: Record<string, unknown>[] = [];
+      constructor() {
+        sockets.push(this);
+      }
+      send(text: string) {
+        this.sent.push(JSON.parse(text) as Record<string, unknown>);
+      }
+      close() {}
+    }
+    vi.stubGlobal("WebSocket", FakeSocket);
+    vi.stubGlobal("document", { hidden: false, addEventListener: () => {} });
+    vi.stubGlobal("window", { addEventListener: () => {} });
+    // The web build's live updates, as shipped: imported, not copied
+    const liveUrl = new URL("../../src/aws/live.js", import.meta.url).href;
+    const { createLive } = (await import(liveUrl)) as { createLive: (o: Record<string, unknown>) => { start: () => void; stop: () => void } };
+    // db.js's onEvent before the rename: only the collections the page reads, "sheets" among them
+    const colls: Record<string, true> = { products: true, sheets: true };
+    const applied: Record<string, unknown>[] = [];
+    const live = createLive({
+      url: "wss://events.example",
+      host: "events.example",
+      channel: "/users/u1",
+      token: () => "t",
+      onEvent: (ev: Record<string, unknown>) => {
+        if (Object.hasOwn(colls, ev.collection as string)) applied.push(ev);
+      },
+      onResync: () => {},
+    });
+    live.start();
+    const sock = sockets[0];
+    if (!sock) throw new Error("no socket");
+    sock.onopen?.();
+    sock.onmessage?.({ data: JSON.stringify({ type: "connection_ack", connectionTimeoutMs: 300000 }) });
+    const subId = sock.sent.find((m) => m.type === "subscribe")?.id;
+    sock.onmessage?.({ data: JSON.stringify({ type: "subscribe_success", id: subId }) });
+
+    const rec = (sk: string, id: string): DynamoDBRecord =>
+      ({ eventID: id, eventName: "MODIFY", dynamodb: { Keys: { PK: { S: "TEAM#team-a" }, SK: { S: sk } }, NewImage: { version: { N: "2" } }, SequenceNumber: "1" } }) as DynamoDBRecord;
+    const deliver = (payloads: string[]) => {
+      for (const event of payloads) sock.onmessage?.({ data: JSON.stringify({ type: "data", id: subId, event }) });
+    };
+    const events = outgoing([rec("PROJECT#p1", "r1"), rec("SHEET#s1", "r2")]).map((e) => e.payload);
+    expect(events.map((e) => (JSON.parse(e) as { collection: string }).collection)).toEqual(["projects", "sheets", "projects", "sheets"]);
+    deliver(events);
+    expect(applied.map((e) => [e.collection, e.id, e.eventId])).toEqual([
+      ["sheets", "p1", "r1#sheets"],
+      ["sheets", "s1", "r2#sheets"],
+    ]);
+    // A retried batch sends the same events again: those are repeats, and dropped
+    deliver(events);
+    expect(applied).toHaveLength(2);
+    live.stop();
   });
 });

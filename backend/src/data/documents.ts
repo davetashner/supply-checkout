@@ -427,9 +427,11 @@ async function write(
       values[`:${field}`] = item[field];
       return `#${field} = :${field}`;
     };
+    // An item that exists must still exist: an unchanged missing version is also true of a
+    // missing item, and a project's item can be moved by the rename's backfill meanwhile
     const condition = !item
       ? "attribute_not_exists(PK)"
-      : [unchanged("version"), ...(collection === "products" ? [unchanged("stock")] : [])].join(" AND ");
+      : ["attribute_exists(PK)", unchanged("version"), ...(collection === "products" ? [unchanged("stock")] : [])].join(" AND ");
     const put = {
       TableName: db.tableName,
       // Back where it was read from; a new project is PROJECT# (project-items.ts)

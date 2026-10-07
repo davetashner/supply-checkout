@@ -89,38 +89,40 @@ function idOf(item: Item): string {
   return sk.slice((sk.startsWith(prefixes.sheet) ? prefixes.sheet : prefixes.project).length);
 }
 
+/** How many twin checks (GetItem) are in flight at once. */
+const TWIN_CHECKS_AT_ONCE = 25;
+
 /**
- * The IDs of every `PROJECT#` item in the team, strongly consistent: keys
- * only. Read only while a page has `SHEET#` items (the rename's window, until
- * the backfill), so it costs a listing of the projects already moved, which
- * before the backfill is few and after it never runs. (A Query, which the
- * data-access role may make; it has no BatchGetItem.)
+ * The IDs among `ids` that also have a `PROJECT#` item: one consistent,
+ * keys-only GetItem each in the team's partition, so the cost is bounded by
+ * the page, not the team. Runs only for a page with `SHEET#` items (the
+ * rename's window, until the backfill), and never after it.
  */
-async function projectIds(db: Db, teamId: string): Promise<Set<string>> {
+async function withProjectItem(db: Db, teamId: string, ids: readonly string[]): Promise<Set<string>> {
   const found = new Set<string>();
-  let ExclusiveStartKey: Item | undefined;
-  do {
-    const page: QueryCommandOutput = await connection(db).doc.send(
-      new QueryCommand({
-        TableName: db.tableName,
-        KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
-        ExpressionAttributeValues: { ":pk": teamPartition(teamId), ":prefix": prefixes.project },
-        ProjectionExpression: "PK, SK",
-        ConsistentRead: true,
-        ExclusiveStartKey,
+  for (let i = 0; i < ids.length; i += TWIN_CHECKS_AT_ONCE) {
+    await Promise.all(
+      ids.slice(i, i + TWIN_CHECKS_AT_ONCE).map(async (id) => {
+        const { Item } = await connection(db).doc.send(
+          new GetCommand({ TableName: db.tableName, Key: keys.project(teamId, id), ProjectionExpression: "#sk", ExpressionAttributeNames: { "#sk": "SK" }, ConsistentRead: true }),
+        );
+        if (Item) found.add(id);
       }),
     );
-    for (const item of page.Items ?? []) found.add(idOf(item));
-    ExclusiveStartKey = page.LastEvaluatedKey;
-  } while (ExclusiveStartKey);
+  }
   return found;
 }
 
-/** `items` without the `SHEET#` ones whose `PROJECT#` twin exists. */
-async function withoutTwins(db: Db, teamId: string, items: Item[]): Promise<Item[]> {
-  const legacy = items.filter((item) => layoutOf(item) === "sheet");
+/**
+ * `items` without the `SHEET#` ones whose `PROJECT#` twin exists. A twin in
+ * `items` needs no read; `complete` says `items` holds every `PROJECT#` item
+ * in the team, so nothing else does either.
+ */
+async function withoutTwins(db: Db, teamId: string, items: Item[], complete = false): Promise<Item[]> {
+  const legacy = items.filter((item) => layoutOf(item) === "sheet").map(idOf);
   if (legacy.length === 0) return items;
-  const moved = await projectIds(db, teamId);
+  const here = new Set(items.filter((item) => layoutOf(item) === "project").map(idOf));
+  const moved = complete ? here : new Set([...here, ...(await withProjectItem(db, teamId, legacy.filter((id) => !here.has(id))))]);
   return items.filter((item) => layoutOf(item) === "project" || !moved.has(idOf(item)));
 }
 
@@ -144,7 +146,8 @@ export async function listProjectItems(db: Db, teamId: string): Promise<Item[]> 
       ExclusiveStartKey = page.LastEvaluatedKey;
     } while (ExclusiveStartKey);
   }
-  return withoutTwins(db, teamId, out);
+  // Every PROJECT# item is in `out`, so no reads are needed to find twins
+  return withoutTwins(db, teamId, out, true);
 }
 
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");

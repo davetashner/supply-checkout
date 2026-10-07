@@ -316,7 +316,8 @@ describe("the stream handler", () => {
     expect(byChannel()).toEqual({ [`/users/${A1}`]: ["put a", "delete b"], [`/users/${A2}`]: ["put a", "delete b"], [`/users/${B1}`]: ["put s1", "put s1"] });
     expect(published.find((p) => p.channel === `/users/${B1}`)?.events.map((e) => [e.collection, e.eventId])).toEqual([
       ["projects", records[2]?.eventID],
-      ["sheets", records[2]?.eventID],
+      // The copy has its own ID: an old client records IDs before it checks the collection (src/aws/live.js)
+      ["sheets", `${records[2]?.eventID}#sheets`],
     ]);
     // Each event says which team it's for: a user's channel carries all their teams
     expect(published.find((p) => p.channel === `/users/${B1}`)?.events[0]?.teamId).toBe(TEAM_B);
@@ -619,7 +620,7 @@ describe("the stream handler", () => {
       expect(list).toEqual([
         { v: 2, teamId: TEAM, eventId: `${imported[0]?.eventID}~${imported.at(-1)?.eventID}`, collection: "products", op: "list", changes: imported.length, at: AT * 1000 },
         { v: 1, teamId: TEAM, eventId: records[3]?.eventID, collection: "projects", id: "s1", op: "put", version: 2, at: AT * 1000 },
-        { v: 1, teamId: TEAM, eventId: records[3]?.eventID, collection: "sheets", id: "s1", op: "put", version: 2, at: AT * 1000 },
+        { v: 1, teamId: TEAM, eventId: `${records[3]?.eventID}#sheets`, collection: "sheets", id: "s1", op: "put", version: 2, at: AT * 1000 },
       ]);
       expect(events(`/users/${A2}`)).toEqual(list);
       // Another team's single change is a document event as ever

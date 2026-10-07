@@ -11,10 +11,10 @@
 // ordinary attributes that one update can change.
 
 import { randomUUID } from "node:crypto";
-import { DeleteCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
-import { barcode, date, id as checkId, productKey, strip } from "./keys.js";
+import { barcode, date, id as checkId, keys, productKey, strip } from "./keys.js";
 import { money } from "./money.js";
 import { listProjectItems, projectAttributes, projectItemsByDatePage, projectKeyFor, readProjectItem } from "./project-items.js";
 import { type Page, versionedSet } from "./query.js";
@@ -233,16 +233,33 @@ export async function removeSheetLine(db: Db, ctx: TeamContext, sheetId: string,
   return strip<Sheet>(Attributes) as Sheet;
 }
 
+/**
+ * Deletes a sheet. With `expectedVersion`, only the item as it is now (under
+ * whichever key), if its version is still that one; without, it's gone from
+ * both keys, as deleteDocument does (project-items.ts).
+ */
 export async function deleteSheet(db: Db, ctx: TeamContext, sheetId: string, expectedVersion?: number): Promise<void> {
   writable(db, ctx);
+  const id = checkId(sheetId, "sheet ID");
+  if (expectedVersion === undefined) {
+    await connection(db).doc.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          { Delete: { TableName: db.tableName, Key: keys.project(ctx.teamId, id) } },
+          { Delete: { TableName: db.tableName, Key: keys.sheet(ctx.teamId, id) } },
+        ],
+      }),
+    );
+    return;
+  }
   await connection(db).doc
     .send(
       new DeleteCommand({
         TableName: db.tableName,
-        Key: await existingKey(db, ctx, sheetId),
-        ...(expectedVersion === undefined
-          ? {}
-          : { ConditionExpression: "#version = :expected", ExpressionAttributeNames: { "#version": "version" }, ExpressionAttributeValues: { ":expected": expectedVersion } }),
+        Key: await existingKey(db, ctx, id),
+        ConditionExpression: "#version = :expected",
+        ExpressionAttributeNames: { "#version": "version" },
+        ExpressionAttributeValues: { ":expected": expectedVersion },
       }),
     )
     .catch(conflictOnConditionFailure("This sheet changed; reload and try again"));
