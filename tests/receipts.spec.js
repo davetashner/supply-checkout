@@ -12,6 +12,8 @@ const scanReceipt = async (page, opts = {}) => {
   await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
 };
 const line = (page, i) => page.locator(".rline").nth(i);
+// A browser without a camera: a line's Scan opens the photo picker (the live scanner is in live-scan.spec.js)
+const withoutCamera = () => Object.defineProperty(Navigator.prototype, "mediaDevices", { get: () => undefined, configurable: true });
 const saveBtn = (page) => page.getByRole("button", { name: "Save", exact: true });
 const tryAgain = (page) => page.getByRole("button", { name: "Try again" });
 const mock = (page, fn, arg) => page.evaluate(fn, arg);
@@ -217,6 +219,7 @@ test("warns when a line's barcode doesn't match the chosen inventory item", { ta
 });
 
 test("scans a barcode for a receipt line", { tag: ["@J5.2"] }, async ({ page }) => {
+  await page.addInitScript(withoutCamera);
   await page.addInitScript(() => { window.BarcodeDetector = class { async detect() { return [{ rawValue: "SKU1" }]; } }; });
   await scanReceipt(page);
   const chooser = page.waitForEvent("filechooser");
@@ -237,6 +240,7 @@ test("cancelling the receipt photo picker changes nothing", { tag: ["@J5.1"] }, 
 });
 
 test("a line barcode photo with no barcode leaves the line alone", { tag: ["@J5.2"] }, async ({ page }) => {
+  await page.addInitScript(withoutCamera);
   await page.addInitScript(() => { window.BarcodeDetector = class { async detect() { return []; } }; });
   await scanReceipt(page);
   const chooser = page.waitForEvent("filechooser");

@@ -131,6 +131,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 
 **Tests:**
 - `app.spec.js`: "creates a project recording client, date and who prepared it"; "checks out a new barcode, returns part of it, and finishes the return"; "storage counts go down on checkout and back up on return"; "adds an item that has no barcode"; "returning the same item again adds to what's already been returned"
+- `live-scan.spec.js`: scanning with the camera, including a blocked or missing camera and the photo fallback
 - `barcode.spec.js`: reading barcode photos, including when the photo can't be read
 - `projects.spec.js`: editing projects and lines, picking and returning items without barcodes, reopening and deleting
 - `concurrent.spec.js`: another person changing the same project at the same time

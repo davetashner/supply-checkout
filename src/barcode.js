@@ -10,22 +10,25 @@ async function loadBitmap(file) {
 // A failed load (a web build chunk on a bad connection) isn't kept, so the next scan tries again.
 // Two readers: "any" reads every format we take; "line" only 1D codes, for pixels turned a
 // quarter turn (a QR code or Data Matrix reads the same either way, so turning is for 1D codes).
+// Each tries hard (every row); the quick ones ("anyQuick", "lineQuick") read the middle rows
+// only, for the live scanner's frames, which come again and again.
 let zx = null;
-async function zxReader() {
+export async function zxReader() {
   if (zx) return zx;
   const { MultiFormatReader, BarcodeFormat: F, DecodeHintType, BinaryBitmap, HybridBinarizer, RGBLuminanceSource } = await import("./zxing.js");
   const LINE = [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.CODE_93, F.ITF, F.CODABAR];
-  const reader = (formats) => {
+  const reader = (formats, hard = true) => {
     const r = new MultiFormatReader(), hints = new Map();
     hints.set(DecodeHintType.POSSIBLE_FORMATS, formats);
-    hints.set(DecodeHintType.TRY_HARDER, true);
+    hints.set(DecodeHintType.TRY_HARDER, hard);
     r.setHints(hints);
     return { r, hints };
   };
   const bitmap = ({ L, width, height }) => new BinaryBitmap(new HybridBinarizer(new RGBLuminanceSource(L, width, height)));
-  return (zx = { any: reader([...LINE, F.QR_CODE, F.DATA_MATRIX]), line: reader(LINE), bitmap, F });
+  const ANY = [...LINE, F.QR_CODE, F.DATA_MATRIX];
+  return (zx = { any: reader(ANY), line: reader(LINE), anyQuick: reader(ANY, false), lineQuick: reader(LINE, false), bitmap, F });
 }
-function zxRead({ bitmap, F }, { r, hints }, pixels) {
+export function zxRead({ bitmap, F }, { r, hints }, pixels) {
   try {
     const res = r.decode(bitmap(pixels), hints);
     return { fmt: String(F[res.getBarcodeFormat()]).toLowerCase(), text: res.getText() };
@@ -35,13 +38,13 @@ function zxRead({ bitmap, F }, { r, hints }, pixels) {
 // Grayscale pixels of a canvas, a part of them, and the same turned a quarter turn. ZXing reads
 // a 1D code along rows only, and reverses each row itself (so a code upside down, at 180° or
 // 270°, needs no pass of its own); it can rotate a canvas source, but that is several times slower.
-function grays(canvas) {
+export function grays(canvas) {
   const { data, width, height } = canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height);
   const L = new Uint8ClampedArray(width * height);
   for (let i = 0; i < L.length; i++) L[i] = (data[4 * i] * 306 + data[4 * i + 1] * 601 + data[4 * i + 2] * 117) >> 10;
   return { L, width, height };
 }
-function turned({ L, width, height }) {
+export function turned({ L, width, height }) {
   const T = new Uint8ClampedArray(L.length);
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) T[x * height + (height - 1 - y)] = L[y * width + x];
   return { L: T, width: height, height: width };
@@ -63,7 +66,7 @@ function upcA(e) {
   const mid = last <= "2" ? a + b + last + "0000" + c + d + f : last === "3" ? a + b + c + "00000" + d + f : last === "4" ? a + b + c + d + "00000" + f : a + b + c + d + f + "0000" + last;
   return ns + mid + check;
 }
-function verdict(fmt, text) {
+export function verdict(fmt, text) {
   if (fmt === "ean_13" || fmt === "upc_a") return /^\d{12,13}$/.test(text) && checkDigitOk(text) ? "ok" : "bad";
   if (fmt === "ean_8") return /^\d{8}$/.test(text) && checkDigitOk(text) ? "weak" : "bad";
   if (fmt === "upc_e") return /^[01]\d{7}$/.test(text) && checkDigitOk(upcA(text)) ? "weak" : "bad";
@@ -101,7 +104,7 @@ function edges({ L, width: W, height: H }) {
 // at most BARS times as long as the code. The smallest code ZXing reads, an EAN-8 a pixel to the
 // bar, covers MIN_CELLS cells; a box's corner, fewer.
 const SPOT = 0.3, MIN_STEP = 4 * C * C, MIN_CELLS = 8, BARS = 2;
-function spots(px) {
+export function spots(px) {
   const { cw, ch, gx, gy } = edges(px), pw = cw + 2;
   // one-way edge strength per cell, in a grid with an empty border, so every cell has four neighbours
   const d = new Float32Array(pw * (ch + 2));
@@ -148,7 +151,7 @@ const SPOT_PASSES = [{ max: FULL }, { max: 1600 }, { max: 3000, slant: true }], 
 const TILE_PASSES = [{ max: FULL, t: 1000, div: 2 }, { max: 1000, t: 400, div: 4 }, { max: 1400, t: 560, div: 4 }, { max: 700, t: 250, div: 4 }];
 const BUDGET_MS = 6000;
 const pause = () => new Promise((r) => setTimeout(r));
-const blankCanvas = (w, h) => {
+export const blankCanvas = (w, h) => {
   const c = Object.assign(document.createElement("canvas"), { width: w, height: h }), g = c.getContext("2d", { willReadFrequently: true });
   g.fillStyle = "#fff"; g.fillRect(0, 0, w, h); // a transparent photo reads as white, not black
   g.imageSmoothingQuality = "high"; // shrinking averages the pixels, so thin bars don't alias away
@@ -166,7 +169,7 @@ function scaled(bmp, max, slant = false) {
   return c;
 }
 // A part of a canvas, as its own canvas
-function part(base, x, y, w, h) {
+export function part(base, x, y, w, h) {
   const c = blankCanvas(w, h);
   c.getContext("2d").drawImage(base, x, y, w, h, 0, 0, w, h);
   return c;
@@ -225,7 +228,16 @@ async function decodeImage(file) {
   }
   return null;
 }
+// A code the live scanner (src/live-scan.js) read for an input: it's handed over through the
+// input's change event, so whatever reads the input's photos takes it the same way.
+const taken = new WeakMap();
+export function deliver(input, code) {
+  taken.set(input, code);
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
 export async function scanFromInput(input) {
+  const live = taken.get(input);
+  if (live) { taken.delete(input); return live; }
   const file = input.files && input.files[0]; input.value = "";
   if (!file) return null;
   toast("Reading barcode…", 8000);

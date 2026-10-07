@@ -5,6 +5,7 @@ import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, has
 import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts, lostRows, lineLabel, isAdhoc, projectTitle, leftOut } from "./project-math.js";
 import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
+import { startScan } from "./live-scan.js";
 import { shrinkPhoto } from "./photo.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 import { projectCsv, projectsCsv, inventoryCsv, allJson } from "./export.js";
@@ -787,7 +788,7 @@ function pickReturnModal(s) {
 function codeEntryHTML(label) {
   return `<div class="scan-row">
       <label class="btn primary big" for="qScan">${esc(label)}</label>
-      <input class="vh" type="file" id="qScan" accept="image/*" capture="environment" aria-label="Barcode photo">
+      <input class="vh" type="file" id="qScan" accept="image/*" capture="environment" aria-label="Barcode photo" data-barcode>
       <form class="manual" id="qForm"><label class="vh" for="qCode">Barcode number</label><input type="text" id="qCode" inputmode="numeric" autocomplete="off" placeholder="Or type the barcode"><button type="submit" class="btn">Enter</button></form>
     </div>`;
 }
@@ -1023,7 +1024,7 @@ function productModal(key) {
       </fieldset>
       <div class="field"><label for="fCode">Barcode${p ? "" : " (optional)"}</label>
         ${p ? `<div class="code" style="margin:0">${esc(codeText(p.code))}</div>`
-            : `<div class="manual"><input type="text" id="fCode" inputmode="numeric" autocomplete="off" placeholder="Type, scan, or leave blank"><label class="btn" for="fScan">Scan</label></div><input class="vh" type="file" id="fScan" accept="image/*" capture="environment">`}
+            : `<div class="manual"><input type="text" id="fCode" inputmode="numeric" autocomplete="off" placeholder="Type, scan, or leave blank"><label class="btn" for="fScan">Scan</label></div><input class="vh" type="file" id="fScan" accept="image/*" capture="environment" data-barcode>`}
       </div>
       <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "data-autofocus" : ""}></div>
       <div class="field"><label for="fBrand">Brand (optional)</label><input type="text" id="fBrand" maxlength="${MAX_BRAND}" autocomplete="off" value="${esc(p ? brandOf(p) : "")}" placeholder="e.g. Glad"></div>
@@ -1305,7 +1306,7 @@ function renderReceipt() {
     </div>
     <h3 class="rhead">Items (${d.lines.length})</h3>
     <div class="rlines">${d.lines.map(lineHTML).join("")}</div>
-    <input class="vh" type="file" id="rScanFile" accept="image/*" capture="environment" aria-label="Barcode photo for this item">
+    <input class="vh" type="file" id="rScanFile" accept="image/*" capture="environment" aria-label="Barcode photo for this item" data-barcode>
     <button type="button" class="btn" id="rAddLine">+ Add item</button>
     <div class="panel" id="rSum"></div>
     <label class="check"><input type="checkbox" id="rSavePrices" ${d.savePrices ? "checked" : ""}> Also add client items to inventory with their prices</label>
@@ -1437,7 +1438,7 @@ $("#rBody").addEventListener("click", e => {
     const id = t.closest("[data-d]").dataset.d; d.dests = d.dests.filter(x => x.id !== id);
     d.lines.forEach(l => { if (l.dest === id) l.dest = d.dests[0].id; }); saveDraft(); renderReceipt();
   }
-  else if (t.matches("[data-scan]") && line) { rScanLine = line.id; $("#rScanFile").click(); }
+  else if (t.matches("[data-scan]") && line) { rScanLine = line.id; startScan($("#rScanFile")); }
   else if (t.dataset.name && line) { line.useName = t.dataset.name; saveDraft(); rerenderLine(line); }
   else if (t.dataset.price && line) { line.usePrice = t.dataset.price; saveDraft(); rerenderLine(line); }
   else if (t.matches("[data-split]") && line) {
