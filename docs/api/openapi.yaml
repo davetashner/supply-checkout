@@ -75,10 +75,12 @@ info:
       trimming) with no control characters, or `null`; it's stored trimmed,
       and a blank or `null` brand removes the field. A product's `name` and
       `brand` can't have control or invisible characters (bidi controls,
-      zero-width and tag characters, or text that isn't well-formed UTF-16),
-      except a zero-width joiner in an emoji sequence, joiners in scripts
-      that use them, and a subdivision flag's tags; like money, only where
-      the write changes the field (supply-checkout-1dg.12).
+      default-ignorable characters such as zero-width, tag and variation
+      selector characters, or text that isn't well-formed UTF-16), except a
+      zero-width joiner in an emoji sequence, one variation selector after
+      an emoji, joiners in scripts that use them, and the England, Scotland
+      and Wales flags' tags; like money, only where the write changes the
+      field (supply-checkout-1dg.12).
     - A product's `stock` changes only through the stock commands (the
       `commands` tag) and the CSV import, which record a movement for every
       change. A product `set` or `update` keeps the stored `stock`: leave it

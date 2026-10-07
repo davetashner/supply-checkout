@@ -1230,7 +1230,7 @@ const saveDraft = () => stored(k => { draft ? localStorage.setItem(k, JSON.strin
 
 // A name or brand on its one line of the prompt's list, as the server quotes it (inventoryList in
 // backend/src/receipts/prompt.ts): no line breaks, control or invisible characters, and no "|" of its own
-const cellText = (t, max) => visibleText(visibleText(t || "").replace(/[\s|]+/g, " ").trim().slice(0, max)).trim();
+const cellText = (t, max) => visibleText(visibleText(String(t || "").slice(0, 4 * max)).replace(/[\s|]+/g, " ").trim().slice(0, max)).trim();
 function receiptPrompt() {
   const inv = Object.entries(products).slice(0, 500);
   const ids = Object.create(null);

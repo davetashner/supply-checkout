@@ -54,7 +54,8 @@ export interface InventoryItem {
  * stored before they were refused can still have them.
  */
 function cellText(value: unknown, max: number): string {
-  const flat = withoutHiddenCharacters(String(value ?? "")).replace(/[\s|]+/g, " ").trim();
+  // Cut to a few times the limit first, so a long stored name isn't scanned whole
+  const flat = withoutHiddenCharacters(String(value ?? "").slice(0, 4 * max)).replace(/[\s|]+/g, " ").trim();
   // Cut at a whole character: a pair cut in half would leave a lone surrogate
   return withoutHiddenCharacters(flat.slice(0, max)).trim();
 }

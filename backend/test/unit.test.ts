@@ -178,6 +178,7 @@ describe("TeamContext (ADR 0005)", () => {
   it("refuses a product name with an invisible character before it reaches DynamoDB, naming the field only (supply-checkout-1dg.12)", async () => {
     const contributor = await contextFor("contributor");
     await expect(updateProduct(offline, contributor, "p1", { code: "", name: "Glo\u202eves", price: 1 }, 1)).rejects.toThrow(new InvalidInputError("name has an invisible or control character in it"));
+    await expect(updateProduct(offline, contributor, "p1", { code: "", name: "x".repeat(201), price: 1 }, 1)).rejects.toThrow(new InvalidInputError("Invalid product"));
   });
 });
 

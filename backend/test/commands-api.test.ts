@@ -167,6 +167,11 @@ describe("checkout", () => {
     expect(line()).toMatchObject({ name: "Rags box 👩\u200d🔧" });
     const blank = await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1, name: "\u200b\u202e", price: 1.5 });
     expect(blank.body.error).toEqual({ code: "bad_request", message: expect.stringMatching(/^name must be 1 to \d+ characters$/) });
+    // A name over the limit is refused before it's scanned, however it's made
+    const start = performance.now();
+    const long = await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1, name: "\u0915" + "\u093f".repeat(300_000), price: 1.5 });
+    expect(long.body.error).toEqual({ code: "bad_request", message: expect.stringMatching(/^name must be 1 to \d+ characters$/) });
+    expect(performance.now() - start).toBeLessThan(1000);
   });
 
   it("leaves stock alone for an item that doesn't track it, and rounds a legacy price to cents", async () => {

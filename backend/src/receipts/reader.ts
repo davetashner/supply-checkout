@@ -173,7 +173,8 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 function text(v: unknown): string | null {
   if (typeof v !== "string") return null;
   // Without invisible characters (src/text/hidden-characters.ts): a name read here can become an item's name
-  const t = withoutHiddenCharacters(withoutHiddenCharacters(v).replace(/\s+/g, " ").trim().slice(0, MAX_TEXT));
+  // (Cut to a few times the limit first, so only that much is scanned)
+  const t = withoutHiddenCharacters(withoutHiddenCharacters(v.slice(0, 4 * MAX_TEXT)).replace(/\s+/g, " ").trim().slice(0, MAX_TEXT));
   return t || null;
 }
 

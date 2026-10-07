@@ -273,8 +273,10 @@ export function operationId(value: unknown): string {
  * they were refused, and refusing it would stop those journeys for that item.
  */
 function lineName(value: unknown): string {
-  const name = typeof value === "string" ? withoutHiddenCharacters(value).trim() : "";
-  if (!name || name.length > MAX_NAME) throw new InvalidInputError(`name must be 1 to ${MAX_NAME} characters`);
+  // The length first, so only a short name is scanned
+  if (typeof value !== "string" || value.trim().length > MAX_NAME) throw new InvalidInputError(`name must be 1 to ${MAX_NAME} characters`);
+  const name = withoutHiddenCharacters(value).trim();
+  if (!name) throw new InvalidInputError(`name must be 1 to ${MAX_NAME} characters`);
   return name;
 }
 

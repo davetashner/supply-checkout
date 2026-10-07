@@ -34,13 +34,23 @@ export const numOrNull = n => (n === null || n === undefined || n === "" || isNa
 export const MAX_BRAND = 100;
 export const brandOf = p => String(p.brand ?? "").trim();
 // Text without the control and invisible characters the API refuses in an item's name and brand
-// (supply-checkout-1dg.12): bidi controls, zero-width and tag characters, lone surrogates. Control
-// characters and line separators become a space; the rest have no width and are removed. Kept: a
-// joiner between two emoji (👩‍🔧), joiners in scripts that use them, a subdivision flag's tags.
-// The rule and its reasons are backend/src/text/hidden-characters.ts, whose tests keep this in step.
+// (supply-checkout-1dg.12): bidi controls, zero-width, tag and other default-ignorable characters,
+// lone surrogates. Control characters and line separators become a space; the rest have no width
+// and are removed. Kept: a joiner between two emoji, one variation selector after an emoji, joiners
+// in scripts that use them, and the England, Scotland and Wales flags. The rule and its reasons
+// are backend/src/text/hidden-characters.ts (HIDDEN_TEXT), and a test keeps the two patterns identical.
 const JOINING = ["Arabic", "Syriac", "Nko", "Mongolian", "Devanagari", "Bengali", "Gurmukhi", "Gujarati", "Oriya", "Tamil", "Telugu", "Kannada", "Malayalam", "Sinhala"].map(s => `\\p{sc=${s}}`).join("");
-const HIDDEN = new RegExp(`(\\p{Extended_Pictographic}[\\p{Emoji_Modifier}\\uFE0F]?\\u200D(?=\\p{Extended_Pictographic})|[${JOINING}]\\p{M}*[\\u200C\\u200D](?=[${JOINING}])|\\u{1F3F4}[\\u{E0020}-\\u{E007E}]+\\u{E007F})|[\\p{Cc}\\u2028\\u2029\\p{Bidi_Control}\\u200B-\\u200D\\u2060-\\u2064\\uFEFF\\u{E0000}-\\u{E007F}\\uD800-\\uDFFF]`, "gu");
-export const visibleText = t => String(t).replace(HIDDEN, (c, kept) => kept ?? (/^[\p{Cc}\u2028\u2029]$/u.test(c) ? " " : ""));
+const EMOJI = "(?:\\p{Emoji_Presentation}|\\p{Emoji}\\uFE0F)";
+const FLAG_TAGS = ["gbeng", "gbsct", "gbwls"].map(t => [...t].map(c => `\\u{E00${c.charCodeAt(0).toString(16)}}`).join("")).join("|");
+const ALLOWED = [
+  `(?:\\p{Emoji_Presentation}\\p{Emoji_Modifier}?|\\p{Emoji}\\uFE0F)\\u200D(?=${EMOJI})`,
+  "\\p{Emoji}[\\uFE0E\\uFE0F]",
+  `(?=\\p{L})[${JOINING}]\\p{M}{0,4}[\\u200C\\u200D](?=(?=\\p{L})[${JOINING}])`,
+  `\\u{1F3F4}(?:${FLAG_TAGS})\\u{E007F}`,
+].join("|");
+const HIDDEN = "[\\p{Cc}\\p{Default_Ignorable_Code_Point}\\p{Bidi_Control}\\u2028\\u2029\\uFFF9-\\uFFFB\\uD800-\\uDFFF]";
+export const HIDDEN_TEXT = new RegExp(`(${ALLOWED})|${HIDDEN}`, "gu");
+export const visibleText = t => String(t).replace(HIDDEN_TEXT, (c, kept) => kept ?? (/^[\p{Cc}\u2028\u2029]$/u.test(c) ? " " : ""));
 // Where an item's name has one line: its brand after it, "Trash bags · Glad"
 export const nameWithBrand = p => [p.name, brandOf(p)].filter(Boolean).join(" · ");
 // Where it has a line of its own under the name, in lists

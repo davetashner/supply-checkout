@@ -381,6 +381,13 @@ describe("documents (the app's db contract)", () => {
     }
   });
 
+  it("refuses a product over the size limit before its name is scanned (supply-checkout-1dg.12)", async () => {
+    const start = performance.now();
+    const res = await call("PUT", "/teams/team-a/products/p1", { body: { data: { ...product, name: "\u0915" + "\u093f".repeat(150_000) } } });
+    expect(res.status).toBe(413);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
   it("saves a product whose name or brand was stored with an invisible character before they were refused, when the write leaves them unchanged (supply-checkout-1dg.12)", async () => {
     await call("PUT", "/teams/team-a/products/p1", { body: { data: product } });
     const name = "Nitrile \u202egloves", brand = "Ans\u200bell";

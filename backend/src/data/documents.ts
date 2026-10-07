@@ -180,6 +180,8 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
   for (const field of Object.keys(data)) {
     if (isReservedField(field)) throw new InvalidInputError(`"${field}" is set by the server`);
   }
+  // Within the size limit before any field is read, so no check below scans more than that
+  checkSize(data);
   // `stock` changes with an atomic ADD elsewhere (adjustStock), so it has to be a number
   if (collection === "products") {
     if ("stock" in data && typeof data.stock !== "number") throw new InvalidInputError("Invalid stock");
@@ -214,10 +216,14 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
       for (const field of ["price", "cost"] as const) if (Object.hasOwn(line, field)) line[field] = writtenMoney(line[field], stored, field);
     }
   }
+  checkSize(data);
+  return data;
+}
+
+function checkSize(data: DocumentData): void {
   if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_DOCUMENT_BYTES) {
     throw new TooLargeError(`Documents are limited to ${MAX_DOCUMENT_BYTES} bytes`);
   }
-  return data;
 }
 
 const PRODUCT_KINDS = new Set(["supply", "equipment"]);
