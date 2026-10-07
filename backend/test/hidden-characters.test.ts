@@ -121,6 +121,23 @@ describe("hidden characters (supply-checkout-1dg.12)", () => {
     expect(withoutHiddenCharacters(`❤\ufe0f${"\u{e0101}\ufe03\u{e0142}".repeat(10)} ok`)).toBe("❤\ufe0f ok");
   });
 
+  it("refuses and removes default-ignorable marks between a joining-script letter and its joiner", () => {
+    const hiddenMarks = (n: number) => Array.from({ length: n }, (_, i) => String.fromCodePoint(0xe0100 + (i % 240))).join("");
+    for (const [text, left] of [
+      ["\u0915\ufe01\u200d\u0937", "\u0915\u0937"], // a variation selector
+      ["\u0628\u{e0100}\u{e0101}\u{e0102}\u{e0103}\u200c\u0628", "\u0628\u0628"], // ideographic variation selectors
+      ["\u0628\u034f\u200c\u0628", "\u0628\u0628"], // the combining grapheme joiner
+      ["\u0915\u17b4\u200d\u0937", "\u0915\u0937"], // a Khmer inherent vowel
+      ["\u0915\u180b\u200d\u0937", "\u0915\u0937"], // a Mongolian selector
+      [Array.from({ length: 61 }, (_, i) => `\u0628${i < 60 ? hiddenMarks(2) + "\u200c" : ""}`).join(""), "\u0628".repeat(61)], // 120 hidden selectors
+    ]) {
+      expect(hasHiddenCharacter(text), JSON.stringify(text)).toBe(true);
+      expect(withoutHiddenCharacters(text), JSON.stringify(text)).toBe(left);
+    }
+    // Ordinary marks still sit between the letter and its joiner
+    expect(hasHiddenCharacter("\u0628\u0651\u064e\u200c\u0647")).toBe(false);
+  });
+
   it("refuses text that reads backwards with a direction override, and removes the override", () => {
     const text = "Nitrile gloves \u202e00.21$ \u202c· Ansell";
     expect(hasHiddenCharacter(text)).toBe(true);

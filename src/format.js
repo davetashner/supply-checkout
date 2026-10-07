@@ -45,7 +45,7 @@ const FLAG_TAGS = ["gbeng", "gbsct", "gbwls"].map(t => [...t].map(c => `\\u{E00$
 const ALLOWED = [
   `(?:\\p{Emoji_Presentation}\\p{Emoji_Modifier}?|\\p{Emoji}\\uFE0F)\\u200D(?=${EMOJI})`,
   "\\p{Emoji}[\\uFE0E\\uFE0F]",
-  `(?=\\p{L})[${JOINING}]\\p{M}{0,4}[\\u200C\\u200D](?=(?=\\p{L})[${JOINING}])`,
+  `(?=\\p{L})[${JOINING}](?:(?!\\p{Default_Ignorable_Code_Point})\\p{M}){0,4}[\\u200C\\u200D](?=(?=\\p{L})[${JOINING}])`,
   `\\u{1F3F4}(?:${FLAG_TAGS})\\u{E007F}`,
 ].join("|");
 const HIDDEN = "[\\p{Cc}\\p{Default_Ignorable_Code_Point}\\p{Bidi_Control}\\u2028\\u2029\\uFFF9-\\uFFFB\\uD800-\\uDFFF]";

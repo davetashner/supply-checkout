@@ -30,7 +30,9 @@
 //   symbol that has an emoji form (❤\ufe0f, 1\ufe0f⃣);
 // - a zero-width joiner or non-joiner (U+200C) after a letter of a script
 //   whose spelling uses them (Persian, Hindi, Sinhala and others), with up to
-//   four marks between, and before another letter of one;
+//   four marks between (marks that aren't themselves default-ignorable, so
+//   no variation selector or other hidden mark rides inside), and before
+//   another letter of one;
 // - the three subdivision flags in Unicode's recommended set: England,
 //   Scotland and Wales (🏴 followed by their tags and U+E007F).
 //
@@ -53,7 +55,7 @@ const FLAG_TAGS = ["gbeng", "gbsct", "gbwls"].map((t) => [...t].map((c) => `\\u{
 const ALLOWED = [
   `(?:\\p{Emoji_Presentation}\\p{Emoji_Modifier}?|\\p{Emoji}\\uFE0F)\\u200D(?=${EMOJI})`,
   "\\p{Emoji}[\\uFE0E\\uFE0F]",
-  `(?=\\p{L})[${JOINING}]\\p{M}{0,4}[\\u200C\\u200D](?=(?=\\p{L})[${JOINING}])`,
+  `(?=\\p{L})[${JOINING}](?:(?!\\p{Default_Ignorable_Code_Point})\\p{M}){0,4}[\\u200C\\u200D](?=(?=\\p{L})[${JOINING}])`,
   `\\u{1F3F4}(?:${FLAG_TAGS})\\u{E007F}`,
 ].join("|");
 
