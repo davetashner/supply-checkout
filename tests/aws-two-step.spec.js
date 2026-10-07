@@ -3,10 +3,8 @@
 // against the fake backend in tests/fake-aws.js. The server's side is in
 // backend/test/account-api.test.ts and billing-api.test.ts (supply-checkout-8jc.12).
 import { test, expect, modalViolations } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, USER, ORIGIN, AUTH, openAws, connected } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 test.use({ reducedMotion: "reduce" });
 
 const PORTAL = "/teams/t1/billing/portal";

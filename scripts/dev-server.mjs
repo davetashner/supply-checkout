@@ -1,5 +1,5 @@
 // Runs the app locally against the same in-memory runtime the tests use, so
-// it can be tried in a browser without publishing to claude.ai.
+// it can be tried in a browser without signing in.
 //
 //   npm run dev                      http://localhost:5173
 //   PORT=8080 npm run dev

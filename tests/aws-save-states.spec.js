@@ -4,12 +4,10 @@
 // connection is back, and a new sheet or item whose answer was lost is saved once. The same
 // states on the mock runtime are in tests/save-states.spec.js.
 import { test, expect, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, openAws, connected, sockets } from "./fake-aws.js";
 import { TIMEOUT } from "../src/aws/http.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
 const CHECKOUT = "/teams/t1/sheets/s1/checkout", RETURN = "/teams/t1/sheets/s1/return";
 const seeded = () => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`t1/${k}`, v]));

@@ -4,7 +4,6 @@
 // builds against the claude.ai runtime's mock (the artifact build's writes, section 6), then the
 // web build's commands against tests/fake-aws.js.
 import { test, expect, openApp, modal, lineRow } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, openAws, connected } from "./fake-aws.js";
 
 const gloves = { code: "G1", name: "Nitrile gloves", price: 12.5, cost: 9, stock: 50 };
@@ -441,7 +440,6 @@ test.describe("J14. Take supplies without a job sheet", { tag: ["@J14"] }, () =>
 });
 
 test.describe("the web build's quick take and move commands", { tag: ["@J14"] }, () => {
-  test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
   const docs = () => Object.fromEntries(Object.entries(seed).map(([k, v]) => [`t1/${k}`, v]));
 
   test("Quick take goes on the sheet the server picks, and a retry is applied once", { tag: ["@J14.1"] }, async ({ page }) => {

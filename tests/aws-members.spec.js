@@ -3,10 +3,8 @@
 // against the fake backend in tests/fake-aws.js. The server's side (the role checks and
 // the atomic owner count) is tested in backend/test/members-api.test.ts and roles.test.ts.
 import { test, expect, modalViolations } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, USER, openAws, connected } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 // The modal's entrance animation fades it in; axe must see its final colors
 test.use({ reducedMotion: "reduce" });
 

@@ -32,11 +32,10 @@ function uncovered(file) {
 }
 
 // The builds write hidden source maps (no sourceMappingURL comment), so attach
-// them here. The artifact's script is inline in the page; the web build's is a file.
+// them here.
 function sourceMapFor(url) {
   const path = url.slice(ORIGIN.length);
-  const file = BUILD === "artifact" && path === "" ? "app.js.map" : `${path}.map`;
-  return JSON.parse(readFileSync(distDir(BUILD) + file, "utf8"));
+  return JSON.parse(readFileSync(distDir(BUILD) + `${path}.map`, "utf8"));
 }
 
 export const options = {

@@ -4,7 +4,6 @@
 // the server works the markup out, only owners have the percentage, and owners set it in Team
 // settings.
 import { test, expect, openApp, modal, lineRow, modalViolations } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, USER, openAws, connected } from "./fake-aws.js";
 
 const ladder = { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, stock: 3 };
@@ -42,11 +41,11 @@ test.describe("equipment bought on a receipt for a client", { tag: ["@J5.3", "@J
     await review(page, draftOf([{ price: 130 }]));
     await expect(rline(page)).toContainText("Company equipment · bought for this client: charged on their sheet, not kept in storage");
     // The claude.ai build has no markup; the web build's page doesn't know it here (no team settings)
-    await expect(rline(page).locator("[data-charged]")).toHaveText(currentBuild() === "web" ? "Charged: receipt price + team markup" : "Charged: $130.00 each, the receipt price");
+    await expect(rline(page).locator("[data-charged]")).toHaveText("Charged: receipt price + team markup");
     await expect(rline(page).getByRole("button", { name: /Charge the receipt price/ })).toHaveCount(0);
     // The web build's total is short of the markup it doesn't know, and says so
-    await expect(rline(page).locator("[data-total]")).toHaveText(currentBuild() === "web" ? "$130.00 (before markup)" : "$130.00");
-    await expect(page.locator("#rSum tr").first().locator("td").last()).toHaveText(currentBuild() === "web" ? "$130.00 (before markup)" : "$130.00");
+    await expect(rline(page).locator("[data-total]")).toHaveText("$130.00 (before markup)");
+    await expect(page.locator("#rSum tr").first().locator("td").last()).toHaveText("$130.00 (before markup)");
     await rline(page).getByLabel("Charge a different price ($)").fill("150");
     await expect(rline(page).locator("[data-charged]")).toHaveText("Charged: $150.00 each, the price you typed");
     await expect(rline(page).locator("[data-total]")).toHaveText("$150.00");
@@ -116,12 +115,11 @@ test.describe("equipment bought on a receipt for a client", { tag: ["@J5.3", "@J
     await saveReceipt(page);
     await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
     expect((await doc(page, "sheets/s1")).items["LAD-1:bought"]).toMatchObject({ priceSet: "manual", priceSetBy: "Sam" });
-    await expect(lineRow(page, "(bought for this client)")).toContainText(currentBuild() === "web" ? "Price typed by Someone" : "Price typed by Sam");
+    await expect(lineRow(page, "(bought for this client)")).toContainText("Price typed by Someone");
   });
 });
 
 test.describe("the web build: the server prices it, and only owners have the markup", { tag: ["@J5.3", "@J2"] }, () => {
-  test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
   const docs = () => Object.fromEntries(Object.entries(seed).map(([k, v]) => [`t1/${k}`, v]));
   const local = (draft) => ({ storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t1", "supplyCheckout.receiptDraft.t1": JSON.stringify(draft) } } });
 

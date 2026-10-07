@@ -4,10 +4,8 @@
 // server's side is in backend/test/account-deletion-api.test.ts and closing.test.ts.
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, USER, AUTH, openAws, connected } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 // The modal's entrance animation fades it in; axe must see its final colors
 test.use({ reducedMotion: "reduce" });
 

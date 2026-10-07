@@ -1,4 +1,4 @@
-// The first-run checklist (web build only; src/main.js creates it behind WEB). After an owner
+// The first-run checklist (web build only; src/main.js creates it when the runtime has one). After an owner
 // names a new team (src/aws/account.js), a short list above the sheets and inventory gets the
 // empty team ready: add supplies (by hand, or a CSV from the import's template), invite the
 // crew, and create a first sheet. Each step ticks itself off from what's saved: the team has

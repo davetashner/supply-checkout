@@ -3,11 +3,9 @@
 import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, TEAM, USER, ORIGIN, AUTH, CONFIG, openAws, connected, lastSocket, sockets, emit, setVisible } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
 const seeded = (team = "t1") => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`${team}/${k}`, v]));
 const account = (page) => page.locator("#account");

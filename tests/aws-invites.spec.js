@@ -5,10 +5,8 @@
 // email, the single-use token, rate limits, the role checks) is in
 // backend/test/invites-api.test.ts and roles.test.ts.
 import { test, expect, modalViolations } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, USER, openAws, connected } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 // The modal's entrance animation fades it in; axe must see its final colors
 test.use({ reducedMotion: "reduce" });
 

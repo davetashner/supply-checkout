@@ -253,19 +253,15 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
         run: |
-          # artifact: the single index.html published to claude.ai
           # web: the hashed static bundle for CloudFront, plus the demo build for
           # supplycheckout.com (tests/demo.spec.js and the CSP tests run with the
           # web build). Coverage is measured in Chromium, the only browser that
-          # reports it. Pull requests run only these four jobs.
+          # reports it. Pull requests run only these two jobs.
           core='[
-            {"build": "artifact", "project": "desktop-chrome", "browser": "chromium", "coverage": "1"},
-            {"build": "artifact", "project": "iphone-safari", "browser": "webkit", "coverage": ""},
             {"build": "web", "project": "desktop-chrome", "browser": "chromium", "coverage": "1"},
             {"build": "web", "project": "iphone-safari", "browser": "webkit", "coverage": ""}
           ]'
-          # The other supported browsers, against the web build only: the artifact
-          # build runs on claude.ai, which Chrome and iPhone Safari cover. Edge is
+          # The other supported browsers. Edge is
           # branded Microsoft Edge (a system package), not Playwright's Chromium.
           # Samsung Internet shares Android Chrome's engine; see "Supported
           # browsers" in docs/testing.md.

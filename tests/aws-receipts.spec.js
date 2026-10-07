@@ -3,11 +3,9 @@
 // tests/fake-aws.js, and the app's review reads what comes back. The server's side is
 // backend/test/receipts-api.test.ts.
 import { test, expect, modal, modalViolations } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, TEAM, openAws, connected } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
 const READ = "/teams/t1/receipts/read";
 const seeded = () => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`t1/${k}`, v]));

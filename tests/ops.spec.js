@@ -6,10 +6,9 @@
 import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
-import { OPS, builtFiles, currentBuild } from "../scripts/builds.mjs";
+import { OPS, builtFiles } from "../scripts/builds.mjs";
 import { opsContentSecurityPolicy } from "../infra/lib/web/ops-content-security-policy.ts";
 
-test.skip(currentBuild() !== "web", "The operator page is built and tested with the web build");
 
 const DOMAIN = "supply-checkout.test";
 // Its own origin, like ops.<env domain>, so coverage of src/ ignores it
@@ -22,7 +21,7 @@ const CUSTOMER_ISS = "https://cognito-idp.example-1.amazonaws.com/example-1_Cust
 const CSP = opsContentSecurityPolicy({ api: `api.${DOMAIN}`, opsAuth: `ops-auth.${DOMAIN}` });
 const NOW = Date.parse("2026-10-02T12:00:00Z");
 
-const files = currentBuild() === "web" ? builtFiles(OPS) : new Map();
+const files = builtFiles(OPS);
 
 const jwt = (claims) => ["eyJhbGciOiJub25lIn0", Buffer.from(JSON.stringify(claims)).toString("base64url"), "sig"].join(".");
 const opsToken = (extra = {}) => jwt({ token_use: "access", client_id: CLIENT_ID, iss: OPS_ISS, exp: Math.floor(NOW / 1000) + 900, username: "ops-alice", "cognito:groups": ["operators"], ...extra });

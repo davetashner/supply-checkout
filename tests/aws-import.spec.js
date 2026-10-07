@@ -3,10 +3,8 @@
 // server's side (parsing, validation, all or nothing) is tested in backend/test/imports*.
 import { readFile } from "node:fs/promises";
 import { test, expect, modalViolations } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, openAws, connected } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 // The modal's entrance animation fades it in; axe must see its final colors
 test.use({ reducedMotion: "reduce" });
 

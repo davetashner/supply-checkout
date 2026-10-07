@@ -3,7 +3,6 @@
 // the web build a Ctrl/Cmd click opens the app in a new tab. A dialog that's saving stays open.
 import { test, expect, openApp, enterBarcode, modal } from "./helpers.js";
 import { usedState } from "./fixtures.js";
-import { currentBuild } from "../scripts/builds.mjs";
 
 const logo = (page) => page.getByRole("link", { name: "Supply Checkout home" });
 const pressed = (page, name) => page.getByRole("button", { name, exact: true });
@@ -84,7 +83,6 @@ test("the logo leaves a dialog that's saving open, so what was entered isn't los
 });
 
 test("in the web build, a Ctrl, Cmd or Shift click on the logo is left to the browser", async ({ page }) => {
-  test.skip(currentBuild() !== "web", "Only the web build is a page of its own to open again");
   await openEcho(page);
   // Whether the app took the click over; the check then stops the browser following the link
   const left = (mods) => logo(page).evaluate((a, m) => new Promise((done) => {
@@ -100,7 +98,6 @@ test("in the web build, a Ctrl, Cmd or Shift click on the logo is left to the br
 });
 
 test("in the web build, a Ctrl or Cmd click on the logo opens the app in a new tab", async ({ page, context, browserName, isMobile }) => {
-  test.skip(currentBuild() !== "web", "Only the web build is a page of its own to open again");
   test.skip(browserName !== "chromium" || isMobile, "Checked where Playwright opens the new tab itself: desktop Chromium");
   await openEcho(page);
   // Chromium starts loading a Ctrl/Cmd-click tab before Playwright can route it, so this checks

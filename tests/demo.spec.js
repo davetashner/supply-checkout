@@ -3,10 +3,9 @@
 // with the web build (BUILD=web), in every browser.
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, modal, lineRow } from "./helpers.js";
-import { DEMO, builtFiles, currentBuild } from "../scripts/builds.mjs";
+import { DEMO, builtFiles } from "../scripts/builds.mjs";
 import { fakeImage } from "./fixtures.js";
 
-test.skip(currentBuild() !== "web", "The demo is built and tested with the web build");
 
 // Served under a path, to show the build's URLs are relative. The origin differs
 // from the other suites', so coverage (of src/ in the web build) ignores it.
@@ -16,7 +15,7 @@ const ORIGIN = new URL(BASE).origin;
 const ALLOWED = [ORIGIN, "https://fonts.googleapis.com", "https://fonts.gstatic.com"];
 const THIRD_PARTY = /^https:\/\/fonts\.(googleapis|gstatic)\.com\//;
 
-const files = currentBuild() === "web" ? builtFiles(DEMO) : new Map();
+const files = builtFiles(DEMO);
 
 // Opens the demo and returns every URL the page requested
 async function openDemo(page) {

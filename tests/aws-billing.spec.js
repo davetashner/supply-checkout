@@ -4,10 +4,8 @@
 // side is in backend/test/billing-worker.test.ts and billing-api.test.ts.
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, openAws, connected } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 test.use({ reducedMotion: "reduce" });
 
 const ENDED = { status: "canceled", plan: "starter", subscriptionEnded: true, members: 4 };

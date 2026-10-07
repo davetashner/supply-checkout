@@ -1,8 +1,7 @@
 // The barcode favicon (src/icons/) in each build: the web build and the demo link the
-// SVG, a 32 px PNG and an apple-touch-icon, served alongside the page; the artifact
-// is one file, so it links only the SVG, inlined as a data: URI.
+// SVG, a 32 px PNG and an apple-touch-icon, served alongside the page.
 import { test, expect, openApp } from "./helpers.js";
-import { DEMO, builtFiles, currentBuild } from "../scripts/builds.mjs";
+import { DEMO, builtFiles } from "../scripts/builds.mjs";
 
 // Each icon link on the page, fetched from the page: its href, status and type
 const fetchIcons = (page) =>
@@ -17,10 +16,6 @@ const fetchIcons = (page) =>
   );
 
 function expectIcons(icons, build) {
-  if (build === "artifact") {
-    expect(icons).toEqual([{ rel: "icon", href: expect.stringMatching(/^data:image\/svg\+xml;base64,/), sizes: null, status: 200, type: "image/svg+xml", bytes: expect.any(Number) }]);
-    return;
-  }
   const prefix = build === DEMO ? "\\./assets/" : "/assets/";
   const icon = (rel, name, ext, sizes, type) => ({ rel, href: expect.stringMatching(new RegExp(`^${prefix}${name}-[\\w-]+\\.${ext}$`)), sizes, status: 200, type, bytes: expect.any(Number) });
   expect(icons).toEqual([
@@ -34,11 +29,10 @@ function expectIcons(icons, build) {
 test("the app links a barcode favicon that loads", async ({ page }) => {
   await openApp(page);
   await expect(page.getByText("Connecting…")).toBeHidden();
-  expectIcons(await fetchIcons(page), currentBuild());
+  expectIcons(await fetchIcons(page), "web");
 });
 
 test("the demo links a barcode favicon that loads under any path", async ({ page }) => {
-  test.skip(currentBuild() !== "web", "The demo is built and tested with the web build");
   // Its own origin, so coverage of src/ ignores it
   const base = "https://favicon-demo.supply-checkout.test/some/path/";
   const files = builtFiles(DEMO);

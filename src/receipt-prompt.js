@@ -1,4 +1,3 @@
-import { WEB } from "./build.js";
 
 export const RECEIPT_PROMPT = `The image is a photo of a store receipt for supplies. Extract the purchased line items.
 Reply with only JSON in this shape:
@@ -15,7 +14,7 @@ Rules:
 
 // `message`: the server's own words, used for `receipt_rate` (the web build's per-user rate
 // limit, src/aws/receipts.js), which says how long to wait
-export const sampleErr = (code, message) => WEB && code === "receipt_rate" ? message : ({
+export const sampleErr = (code, message) => code === "receipt_rate" ? message : ({
   not_granted: "Receipt reading needs permission to use Claude. Reload the page and allow it to try again.",
   sampling_disabled: "Receipt reading isn't available for this account.",
   rate_limited: "Too many requests right now. Wait a minute and try again.",

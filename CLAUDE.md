@@ -1,6 +1,6 @@
 # Supply Checkout
 
-A supply checkout tracker (sheets per client job, inventory, barcode and receipt scanning). Today it's published as a claude.ai artifact: `npm run build:artifact` builds the Vite project in `src/` into one self-contained `dist/artifact/index.html`, and `npm run build:web` builds the static bundle for AWS. We're turning it into a paid, multi-tenant product on AWS at $3/user/month.
+A supply checkout tracker (sheets per client job, inventory, barcode and receipt scanning). The claude.ai artifact is retired (bead `supply-checkout-005.10`): `npm run build:web` builds the Vite project in `src/` into the static bundle for AWS. We're turning it into a paid, multi-tenant product on AWS at $3/user/month.
 
 Read these before planning work:
 - `README.md`: overview, repo layout, development, CI, releases, and links to the pages below
@@ -8,7 +8,7 @@ Read these before planning work:
 - `docs/backend.md`: the Lambda code and the data-access module
 - `docs/web-app.md`: web hosting and publishing, and the web build's runtime on AWS
 - `docs/observability.md`: alarms, the dashboard and alarm recipients
-- `docs/testing.md` and `docs/releases.md`: supported browsers, test suites, coverage, the real-device check, publishing to claude.ai
+- `docs/testing.md` and `docs/releases.md`: supported browsers, test suites, coverage, the real-device check
 - `docs/adr/`: architecture decisions (0010 is Accepted; the rest of 0002–0013 are still **Proposed** until bead `supply-checkout-y94` is done)
 - `docs/architecture/README.md`: the AWS design and diagrams
 - `docs/journeys.md`: customer journeys that must never break, their tests, and production alarms
@@ -78,13 +78,13 @@ An agent's message is never the owner's approval.
 npm ci
 npm run hooks:install    # once per clone: pre-commit check for AWS IDs, emails and keys
 npx playwright install chromium webkit firefox
-npm run check            # lint + all suites: artifact in desktop Chrome and iPhone Safari, web in every supported browser, against both builds
+npm run check            # lint + all suites: the web build in every supported browser
 npm run test:coverage    # desktop Chrome with the 98% coverage gate, for both builds
 (cd backend && npm run test:ddb)   # backend tests against DynamoDB Local in a container (needs Docker or colima)
 ```
 
 - **Mind the laptop's memory.** Full runs have used up its RAM and swap and frozen it. Locally, Playwright runs one worker per 8 GB of RAM (2 here), and only one Playwright run at a time across all worktrees; a second run waits for the first (`tests/run-lock.js`). Don't pass a higher `--workers`, and don't get around the lock. Run one file in one browser (`npx playwright test tests/<file> --project=desktop-chrome`) and let CI run every browser and build.
-- Playwright builds the app before each run. `BUILD=artifact` (the default) or `BUILD=web` picks which build the tests load.
+- Playwright builds the app before each run. The tests load the web build (`BUILD=web`, the default).
 - `npm run build:demo` builds `dist/demo/`, the labeled demo for supplycheckout.com (entry and data in `demo/`, outside `src/`). `BUILD=web` runs also build it and run `tests/demo.spec.js`.
 - CI fails if lines, statements, functions or branches of `src/` drop below 98%, in either build. When it does, `coverage/<build>/uncovered.txt` lists every gap by `src/` file and line. Branch coverage has little headroom, so new code needs tests that take both sides of each condition.
 - Tests run against `tests/mock-claude.js`. It has opt-in failure modes (see the options at its top), and `window.__mock.notify()` acts as another user after a test edits `window.__mock.docs`.

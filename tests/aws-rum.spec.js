@@ -3,11 +3,9 @@
 // pool's guest credentials, and without query strings, email addresses, cookies or anything
 // about the signed-in user. Cognito and the RUM data plane are faked here.
 import { test, expect } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { readFileSync } from "node:fs";
 import { FakeBackend, FakeRum, RUM, RUM_REGION as REGION, TEAM, USER, CONFIG, openAws, connected } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "RUM is only in the web build");
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const withRum = (extra = {}, options = {}) => new FakeBackend({ ...options, config: { ...CONFIG, ...RUM, ...extra } });

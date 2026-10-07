@@ -6,9 +6,9 @@ A shared supply tracker for taking supplies from storage to client jobs and brin
 - **Inventory** – items, prices and how many are in storage. Checkouts subtract from storage; returns add back.
 - **Receipts** – photograph a store receipt and Claude reads the line items and prices, suggests matches against existing inventory, and lets you assign each item to a client's sheet or to general inventory before anything is saved.
 
-The app runs as a [Claude artifact](https://claude.ai/artifact/LcSb29dTE99AK4N6iuVFrj). claude.ai provides the shared database, sign-in, file downloads and receipt reading through `window.claude`; there is no server to run.
+The app is a static web page on AWS, with sign-in, a shared database, file downloads and receipt reading behind a small runtime interface (`window.claude`, [ADR 0004](docs/adr/0004-runtime-adapter.md)). It started as a claude.ai artifact; that build and its publishing are retired.
 
-The source is a small [Vite](https://vite.dev) project with no UI framework. One build of it is the single `index.html` published to claude.ai; another is a static bundle for the AWS version ([ADR 0004](docs/adr/0004-runtime-adapter.md)); a third is a labeled demo of that bundle for supplycheckout.com, which runs entirely in the browser until sign-in and the API exist.
+The source is a small [Vite](https://vite.dev) project with no UI framework. One build of it is a static bundle for the AWS version ([ADR 0004](docs/adr/0004-runtime-adapter.md)); another is a labeled demo of that bundle for supplycheckout.com, which runs entirely in the browser until sign-in and the API exist.
 
 ## Repository layout
 
@@ -18,22 +18,20 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `src/styles.css` | All of the app's styles. |
 | `src/icons/` | The barcode favicon: `favicon.svg` (the source, drawn on a 16 px grid so it stays crisp at 16 and 32 px, with dark-mode colors), and its PNG fallbacks `favicon-32.png` and `apple-touch-icon.png` (180 px), which `npm run icons` renders from the SVG. The web build and demo serve all three from `assets/`; the artifact inlines only the SVG, as a `data:` URI. |
 | `src/main.js` | App state, screens, modals, receipt review, and startup. |
-| `src/runtime.js` | `use()`, the one place the app reaches the claude.ai runtime (`window.claude`). |
+| `src/runtime.js` | `use()`, the one place the app reaches its runtime (`window.claude`). |
 | `src/aws/` | The web build's runtime ([ADR 0004](docs/adr/0004-runtime-adapter.md)): `window.claude` on the AWS backend. `main.js` loads `config.json` and installs it; `session.js` is sign-in (Managed Login, PKCE, tokens in memory); `account.js` is first sign-in, invites, the team bar and the `user` and `downloads` capabilities; `db.js` maps the app's `db` calls onto the data API; `live.js` is live updates over AppSync Events, with the polling fallback. See [The web app on AWS](docs/web-app.md#the-web-app-on-aws). |
 | `src/moves.js` | Checkout and return writes, in one place so the web build can switch to atomic commands (`supply-checkout-1dg.1`). |
-| `src/build.js` | `WEB`: false in the artifact build, so code only the web build can reach is left out of it (and out of its coverage). |
 | `src/format.js`, `src/sheet-math.js` | Formatting helpers and sheet totals, with no app state. |
 | `src/dom.js` | `$`, toast, modals, two-tap confirm buttons and number steppers. |
 | `src/barcode.js` | Reading barcodes from photos (the browser's detector, or ZXing, loaded the first time it's needed). |
 | `src/zxing.js` | The parts of ZXing (`@zxing/library`, from npm) the barcode reader uses. |
 | `src/receipt-prompt.js` | The receipt-reading prompt and its error messages. |
-| `vite.config.js` | The builds: `artifact`, `web`, `demo` and `ops` (below). |
+| `vite.config.js` | The builds: `web`, `demo`, `ops` and `site` (below). |
 | `demo/` | The demo build's entry (`main.js`: the in-memory runtime and the banner's styles) and the demo data (`data.js`), which `npm run dev` also uses. |
 | `site/` | The marketing home page for the apex (`npm run build:site`, [the web app](docs/web-app.md#the-web-app)): its clips (`site/clips/`, recorded by `npm run journeys:video -- --marketing`), styles and one small script. |
 | `ops/` | The operator page for `ops.<env domain>` (`npm run build:ops`, ADR 0015 §9): sign-in through the operator pool, teams, comps and the operator audit, with no customer app code. Unit tests: `ops/test/` (`npm run test:ops`, 100% coverage of `ops/lib/`); browser tests: `tests/ops.spec.js`. See [The operator page](docs/infrastructure.md#the-operator-page) and the [runbook](docs/runbooks/operator-page.md). |
 | `dist/` | Build output (not committed). |
 | `scripts/builds.mjs` | Builds and serves the builds for the tests. |
-| `scripts/page.mjs` | Wraps the artifact in the same document skeleton claude.ai adds at publish time. |
 | `scripts/validate-html.mjs` | HTML validation (html-validate). |
 | `scripts/check-links.mjs` | Checks that every relative link in `README.md`, `CLAUDE.md` and `docs/` reaches an existing file and heading (`npm run lint`). |
 | `scripts/dev-server.mjs` | Local dev server with the mock runtime (`npm run dev`). |
@@ -51,7 +49,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/backlog-page.mjs` | Builds the backlog page (Upcoming and Completed tabs) from the beads database into the main checkout's `dist/backlog/index.html`, from the template `scripts/backlog-page.html`, with only an allowlist of bead fields and no emails (`npm run backlog:page`), with a hash of its data in `dist/backlog/.hash`. The lead republishes it to the private backlog artifact, then runs `npm run backlog:published` to record it as published. Tests: `scripts/backlog-page.test.mjs` (`npm run test:scripts`). |
 | `scripts/backlog-stop-hook.mjs` | The Claude Code Stop hook in `.claude/settings.json`: in the main checkout, rebuilds the backlog page when the beads changed since it was last published, and asks Claude to republish it (and to run `npm run beads:pr` when the export is stale). Tests: `scripts/backlog-stop-hook.test.mjs`. |
 | `scripts/beads-pr.sh` | Refreshes the committed beads export through a `chore:` PR and lands it (`npm run beads:pr`); does nothing if the export is current, and lands an export PR that is already open instead of opening a second. `npm run land` runs it after a merge when the export is stale. |
-| `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), and the web build's runtime against a fake AWS backend (`tests/fake-aws.js`). |
+| `tests/` | Playwright end-to-end tests, run against an in-memory mock of the runtime (`tests/mock-claude.js`), and the web build's runtime against a fake AWS backend (`tests/fake-aws.js`). |
 | `infra/` | The AWS CDK app (TypeScript) for the SaaS version. Its own npm package; see [Infrastructure](docs/infrastructure.md). |
 | `backend/` | Lambda code for the SaaS version (TypeScript). `backend/src/data` is the data-access module, the only code that talks to DynamoDB. `backend/src/api` is the HTTP API's handlers (data and sign-in sessions). `backend/src/observability` is logging and business metrics. Its own npm package; see [Backend](docs/backend.md). |
 | `docs/api/openapi.yaml` | The HTTP API's OpenAPI description, including how the app's `db` calls map onto it. |
@@ -74,19 +72,18 @@ npm run check
 
 Microsoft Edge is a system install rather than one of Playwright's own browsers. `npx playwright install msedge` installs it (it asks for admin rights). The Edge tests run whenever Edge is installed, and always in CI.
 
-`npm run dev` serves `src/` with Vite's dev server at http://localhost:5173, against the same in-memory runtime the tests use, with demo sheets, inventory and a receipt, so it can be tried in a browser without publishing to claude.ai. Add `?seed=empty`, `?viewer`, `?nouser`, or `?mock={...}` with any `tests/mock-claude.js` option. Data resets on reload, and the page reloads when a file in `src/` changes.
+`npm run dev` serves `src/` with Vite's dev server at http://localhost:5173, against the same in-memory runtime the tests use, with demo sheets, inventory and a receipt, so it can be tried in a browser without signing in. Add `?seed=empty`, `?viewer`, `?nouser`, or `?mock={...}` with any `tests/mock-claude.js` option. Data resets on reload, and the page reloads when a file in `src/` changes.
 
 ### Builds
 
 | Command | Output | For |
 | --- | --- | --- |
-| `npm run build:artifact` | `dist/artifact/index.html` | claude.ai. One self-contained file with the script and styles inlined. Like the hand-written `index.html` it replaces, it's a page fragment (claude.ai adds the doctype, `<head>` and `<body>`), and it only loads fonts from Google Fonts. ZXing is inlined too, which makes it about 800 KB. It isn't minified, so it can be read before publishing. |
 | `npm run build:web` | `dist/web/` | CloudFront, at `app.`. `index.html` plus minified, content-hashed files in `assets/`, which can be cached forever. It runs the same app on the AWS backend through `src/aws/`, which reads `config.json` (written when publishing) to find the environment. |
 | `npm run build:demo` | `dist/demo/` | supplycheckout.com/demo/. The web build with `demo/main.js` running first: the in-memory runtime from the tests with the `npm run dev` demo data, receipt reading that returns a canned receipt after a pause, and CSV downloads saved in the browser. A banner says it's a demo, that nothing is saved and that data resets on reload. It makes no requests except to its own files and Google Fonts. Asset URLs are relative (`./assets/…`), so the folder works from any path. |
 
-`npm run build` runs all three. Each writes hidden source maps (`dist/artifact/app.js.map`, `dist/web/assets/*.js.map`, `dist/demo/assets/*.js.map`) with no `sourceMappingURL` comment in the code; the coverage run uses them.
+`npm run build` runs them all. Each writes hidden source maps (`dist/web/assets/*.js.map`, `dist/demo/assets/*.js.map`) with no `sourceMappingURL` comment in the code; the coverage run uses them.
 
-The demo's own code lives in `demo/`, outside `src/`, so the artifact and web builds don't include it and it isn't counted in `src/`'s coverage. `npm run publish:demo` builds it and publishes it to supplycheckout.com ([Web hosting and releases](docs/web-app.md#web-hosting-and-releases)).
+The demo's own code lives in `demo/`, outside `src/`, so the web build doesn't include it and it isn't counted in `src/`'s coverage. `npm run publish:demo` builds it and publishes it to supplycheckout.com ([Web hosting and releases](docs/web-app.md#web-hosting-and-releases)).
 
 `npm run lint` runs ESLint on `src/`, `demo/`, the scripts and the tests, checks the Markdown links, then builds all three and validates their HTML. `npm run check` also runs the public-safety check below and every test suite against both builds.
 
@@ -106,7 +103,7 @@ The stacks, deploying, the domain and email, sign-in, the data API and live upda
 
 ## Tests
 
-`npm test` runs these Playwright suites against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), once for each build: the artifact build in desktop Chrome and an iPhone-sized Safari (WebKit), and the web build in every browser and device project ([Supported browsers](docs/testing.md#supported-browsers)). `npm run test:artifact` and `npm run test:web` run one build (the web build's run also builds and tests the demo); `BUILD=web npx playwright test …` does the same for a single file or test, and `--project=desktop-firefox` picks one browser. Each run builds the app first (`tests/global-setup.js`), so it always tests the current source.
+`npm test` runs these Playwright suites against an in-memory mock of the runtime (`tests/mock-claude.js`) against the web build, in every browser and device project ([Supported browsers](docs/testing.md#supported-browsers)). `npm run test:web` is the same as `npm test` (the run also builds and tests the demo); `npx playwright test …` does the same for a single file or test, and `--project=desktop-firefox` picks one browser. Each run builds the app first (`tests/global-setup.js`), so it always tests the current source.
 
 The suites, running them on a laptop without running out of memory, coverage, and the supported browsers and their test projects are in [docs/testing.md](docs/testing.md).
 
@@ -141,7 +138,7 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |
 | Backend | Only when `backend/`, `docs/api/` or the CI workflow changes in the pull request or merge queue group (always on `main`, nightly and manual runs): `npm audit`, type-check and ESLint (with the DynamoDB ban), the handler and OpenAPI tests, and the data-access tests against DynamoDB Local, which runs as a service container |
 | Infra | Only when `infra/`, `backend/`, `scripts/npm-audit*` or the CI workflow changes in the pull request or merge queue group (always on `main`, nightly and manual runs): `npm audit` through `scripts/npm-audit.mjs`, which fails on high or critical advisories except the narrow, expiring exceptions in `scripts/npm-audit-exceptions.json`, then type-check and ESLint, the CDK unit and snapshot tests (which skip Lambda bundling), and a synth with cdk-nag (which bundles the handlers with esbuild from `backend/`) for the deployed region and for both regions; the tests also synth every stack, identity and web included, in each region on its own |
-| Tests (browser, artifact or web build) | All test suites. On a pull request, four parallel jobs: desktop Chrome and iPhone Safari against each build. On the merge queue, `main`, the nightly run (07:23 UTC) and manual runs, twelve: those four plus desktop Firefox, Safari and Edge, Android Chrome (Pixel portrait and landscape, Galaxy) and iPad Safari (portrait and landscape) against the web build. The `Detect changed areas` job picks the matrix. The web jobs also test the demo build and the CloudFront Content-Security-Policy. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
+| Tests (browser) | All test suites. On a pull request, two parallel jobs: desktop Chrome and iPhone Safari. On the merge queue, `main`, the nightly run (07:23 UTC) and manual runs, ten: those two plus desktop Firefox, Safari and Edge, Android Chrome (Pixel portrait and landscape, Galaxy) and iPad Safari (portrait and landscape) (all against the web build). The `Detect changed areas` job picks the matrix. The web jobs also test the demo build and the CloudFront Content-Security-Policy. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
 
 **Beads export only.** When a pull request, merge queue group or push to `main` changes `.beads/issues.jsonl` and nothing else (like the `chore: refresh the beads export` PRs from `npm run beads:pr`), only the PR title check, the secret scan, CodeQL and `Detect changed areas` run; every other job is skipped, and **CI passed** still succeeds. The export is public bead text, so gitleaks and `scripts/check-public-safety.mjs` still check it; nothing else reads it. CodeQL runs anyway because `main`'s ruleset has a code scanning rule: a pull request can't merge until it has CodeQL results for each language `main` has (`javascript-typescript` and `actions`), even when **CI passed** is green. The `Detect changed areas` job decides this (its `beads_only` output) by comparing with the pull request's base, the merge group's base on `main`, or the push's parent commit. A change that touches any other file, including this rule's own workflow, runs the usual jobs, and the nightly, manual and release runs always run everything.
 
@@ -149,9 +146,9 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 
 ## Releases
 
-`.github/workflows/release.yml` uses [release-please](https://github.com/googleapis/release-please). It keeps a release pull request open with the next version number and changelog, and starts CI on it (pull requests opened by GitHub Actions don't start CI on their own). Merging that PR tags the version, re-runs the full CI suite, then builds the artifact from the tag and attaches it to the GitHub Release as `index.html`, along with an SPDX JSON SBOM (`supply-checkout-<tag>.spdx.json`) and the [journey evidence pack](docs/releases.md#journey-evidence-pack): a report of each customer journey's steps and their tests, with one video per journey and the tests' traces, recorded against the test suite's fakes. Then it starts `.github/workflows/deploy.yml` for the tag, which plans (the diffs, after the owner's approval), then deploys the stateful stacks and the stateless stacks to prod, each behind an approval of its own ([Deploying a release](docs/releases.md#deploying-a-release)).
+`.github/workflows/release.yml` uses [release-please](https://github.com/googleapis/release-please). It keeps a release pull request open with the next version number and changelog, and starts CI on it (pull requests opened by GitHub Actions don't start CI on their own). Merging that PR tags the version, re-runs the full CI suite, then attaches an SPDX JSON SBOM (`supply-checkout-<tag>.spdx.json`) and the [journey evidence pack](docs/releases.md#journey-evidence-pack): a report of each customer journey's steps and their tests, with one video per journey and the tests' traces, recorded against the test suite's fakes. Then it starts `.github/workflows/deploy.yml` for the tag, which plans (the diffs, after the owner's approval), then deploys the stateful stacks and the stateless stacks to prod, each behind an approval of its own ([Deploying a release](docs/releases.md#deploying-a-release)).
 
-Before publishing a release, check scanning on real phones ([Real-device check](docs/releases.md#real-device-check)). Publishing the artifact to claude.ai is a manual step ([Publishing to claude.ai](docs/releases.md#publishing-to-claudeai)).
+Before publishing a release, check scanning on real phones ([Real-device check](docs/releases.md#real-device-check)).
 
 Dependabot opens weekly update PRs for npm packages and GitHub Actions.
 
@@ -165,9 +162,9 @@ Dependabot opens weekly update PRs for npm packages and GitHub Actions.
 | [docs/backend.md](docs/backend.md) | The Lambda code: logging and metrics, the data-access module, inventory commands, keys and its tests |
 | [docs/web-app.md](docs/web-app.md) | Web hosting and releases on CloudFront, publishing, and the web build's runtime on AWS |
 | [docs/testing.md](docs/testing.md) | Supported browsers, test suites, local runs and coverage |
-| [docs/releases.md](docs/releases.md) | Deploying a release, the real-device check and publishing to claude.ai |
+| [docs/releases.md](docs/releases.md) | Deploying a release, and the real-device check |
 | [docs/journeys.md](docs/journeys.md) | Customer journeys that must never break, their tests and alarms |
-| [docs/moving-to-the-web-app.md](docs/moving-to-the-web-app.md) | For customers: moving from the claude.ai artifact to the web app (export, what carries over, what happens to the artifact) |
+| [docs/moving-to-the-web-app.md](docs/moving-to-the-web-app.md) | For customers: moving from the old claude.ai artifact to the web app (export, what carries over, what happens to the artifact) |
 | [docs/architecture/README.md](docs/architecture/README.md) | The AWS design and diagrams |
 | [docs/adr/](docs/adr/) | Architecture decision records |
 | [docs/api/](docs/api/) | The HTTP API: OpenAPI description, inventory commands, onboarding and live updates |

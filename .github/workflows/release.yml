@@ -2,8 +2,7 @@ name: Release
 
 # release-please keeps a "chore(main): release x.y.z" pull request up to date
 # from Conventional Commit messages. Merging it tags the version and creates a
-# GitHub Release; the claude.ai artifact (dist/artifact/index.html, built from
-# the tag) and an SPDX SBOM are attached once the full check suite passes, and
+# GitHub Release; an SPDX SBOM is attached once the full check suite passes, and
 # then the journey evidence pack (a report, one video per journey and the traces).
 # Once the checks pass it also starts the deploy workflow for the tag, which waits for the
 # owner's approval in the production environment (docs/releases.md, "Deploying a release").
@@ -91,15 +90,8 @@ jobs:
           output-file: supply-checkout-${{ needs.release-please.outputs.tag_name }}.spdx.json
           upload-artifact: false
           upload-release-assets: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - name: Build the claude.ai artifact
-        run: npm run build:artifact
-      - name: Attach index.html and the SBOM to the release
-        run: gh release upload "$TAG" dist/artifact/index.html "supply-checkout-$TAG.spdx.json" --clobber
+      - name: Attach the SBOM to the release
+        run: gh release upload "$TAG" "supply-checkout-$TAG.spdx.json" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
