@@ -13,12 +13,12 @@ export const enabled = process.env.JOURNEY_VIDEO === "1";
 
 // The marketing clips (journeys/marketing.json) show made-up crew names, not the tests' "Test User"
 // and an unnamed teammate. Tests that assert a name take it from here, so they pass either way.
-export const persona = enabled && JSON.parse(process.env.JOURNEY_VIDEO_OPTIONS || "{}").marketing ? { user: "Maria Lopez", crew: "Dan Reyes", avatarUrl: initialsAvatar("ML") } : null;
+export const persona = enabled && JSON.parse(process.env.JOURNEY_VIDEO_OPTIONS || "{}").marketing ? { user: "Maria Lopez", crew: "Dan Reyes", avatarUrl: photoAvatar("maria-lopez.png") } : null;
 
-// The mock's avatar is an empty data: URL, which a browser draws as a broken image next to the name
-function initialsAvatar(initials) {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0E6B58"/><text x="16" y="21" font-family="Arial,sans-serif" font-size="13" font-weight="700" text-anchor="middle" fill="#fff">${initials}</text></svg>`;
-  return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+// The mock's avatar is an empty data: URL, which a browser draws as a broken image next to the name.
+// The persona's is a circular photo (transparent outside the circle) from tests/assets/.
+function photoAvatar(file) {
+  return `data:image/png;base64,${readFileSync(new URL(`./assets/${file}`, import.meta.url)).toString("base64")}`;
 }
 
 const STEP = /^J\d+\.\d+$/;
