@@ -1,10 +1,11 @@
 // node --test scripts/check-environments.test.mjs (part of npm run test:scripts)
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_REPO, ENVIRONMENTS, checkEnvironments, environmentProblems, ghApi, main } from "./check-environments.mjs";
+import { DEFAULT_REPO, ENVIRONMENTS, JOURNEYS_ENVIRONMENT, RULES, checkEnvironments, environmentProblems, ghApi, main, parseArgs } from "./check-environments.mjs";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -93,6 +94,62 @@ test("command line: the repository, and arguments it refuses", () => {
   assert.equal(DEFAULT_REPO, "davetashner/supply-checkout");
 });
 
+test("production-journeys: the same rules but no required reviewer, only when asked for", () => {
+  const { api, calls } = fakeApi();
+  assert.deepEqual(checkEnvironments("o/r", api, [JOURNEYS_ENVIRONMENT]), []);
+  assert.deepEqual(calls, [
+    "repos/o/r/environments/production-journeys",
+    "repos/o/r/environments/production-journeys/deployment-branch-policies?per_page=100",
+  ]);
+  // No reviewers is fine for it, and still refused for the deploy environments
+  const noReviewers = { ...good(JOURNEYS_ENVIRONMENT), protection_rules: [{ type: "branch_policy" }] };
+  assert.deepEqual(environmentProblems(JOURNEYS_ENVIRONMENT, noReviewers, mainOnly), []);
+  assert.deepEqual(environmentProblems(JOURNEYS_ENVIRONMENT, { ...noReviewers, protection_rules: undefined }, mainOnly), []);
+  for (const name of ENVIRONMENTS) assert.deepEqual(environmentProblems(name, { ...noReviewers, name }, mainOnly), [`${name}: no required reviewers`]);
+  // Everything else as for the others
+  const cases = [
+    [null, mainOnly, /^production-journeys: doesn't exist\. Create it \(docs\/releases\.md, "The production-journeys environment"\)/],
+    [{ ...noReviewers, can_admins_bypass: true }, mainOnly, /administrators can bypass/],
+    [{ ...noReviewers, can_admins_bypass: undefined }, mainOnly, /administrators can bypass/],
+    [{ ...noReviewers, deployment_branch_policy: null }, mainOnly, /Selected branches and tags/],
+    [{ ...noReviewers, deployment_branch_policy: { protected_branches: true, custom_branch_policies: false } }, mainOnly, /Selected branches and tags/],
+    [noReviewers, { branch_policies: [{ name: "main", type: "branch" }, { name: "feature/*", type: "branch" }] }, /exactly main \(branch\)/],
+    [noReviewers, { branch_policies: [{ name: "main", type: "tag" }] }, /exactly main \(branch\)/],
+    [noReviewers, null, /found none/],
+  ];
+  for (const [environment, policies, expected] of cases) {
+    const problems = environmentProblems(JOURNEYS_ENVIRONMENT, environment, policies);
+    assert.equal(problems.length, 1, JSON.stringify([environment, policies]));
+    assert.match(problems[0], expected);
+  }
+  // The deploy environments' message still points at their own settings
+  assert.match(environmentProblems("production", null, null)[0], /docs\/releases\.md, "Settings it needs"/);
+  assert.throws(() => environmentProblems("staging", good("staging"), mainOnly), /No rules for environment "staging"/);
+  assert.deepEqual(Object.fromEntries(Object.entries(RULES).map(([k, v]) => [k, v.requireReviewers])), {
+    production: true, "production-stateful": true, "production-journeys": false,
+  });
+});
+
+test("command line: --environment picks which to check", () => {
+  assert.deepEqual(parseArgs([]), { repo: DEFAULT_REPO, names: ENVIRONMENTS });
+  assert.deepEqual(parseArgs(["--environment", "production-journeys", "--repo", "o/r"]), { repo: "o/r", names: ["production-journeys"] });
+  assert.deepEqual(parseArgs(["--environment", "production", "--environment", "production-journeys", "--environment", "production"]).names, ["production", "production-journeys"]);
+  assert.throws(() => parseArgs(["--environment", "staging"]), /--environment must be one of production, production-stateful, production-journeys \(got "staging"\)/);
+  assert.throws(() => parseArgs(["--environment"]), /Unknown argument: --environment/);
+  const { api, calls } = fakeApi();
+  assert.deepEqual(main(["--repo", "o/r", "--environment", "production-journeys"], api), []);
+  assert.equal(calls.length, 2);
+  // Missing, it's a problem (and the default run doesn't look at it)
+  assert.match(main(["--repo", "o/r", "--environment", "production-journeys"], fakeApi({ "repos/o/r/environments/production-journeys": null }).api)[0], /production-journeys: doesn't exist/);
+});
+
+test("the command's output and exit codes", () => {
+  const script = path.join(root, "scripts", "check-environments.mjs");
+  const r = spawnSync(process.execPath, [script, "--environment", "staging"], { encoding: "utf8" });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /check-environments: --environment must be one of/);
+});
+
 test("gh api: JSON back, a 404 as null, anything else an error", () => {
   assert.deepEqual(ghApi("x", () => '{"a":1}'), { a: 1 });
   const fail = (stderr) => () => { const e = new Error("exit 1"); e.stderr = stderr; throw e; };
@@ -106,5 +163,7 @@ test("in step with infra/lib/config.ts", () => {
   assert.match(config, /GITHUB_STATEFUL_DEPLOY_ENVIRONMENT = "production-stateful";/);
   assert.match(config, /GITHUB_DEPLOY_ENVIRONMENTS = \[GITHUB_DEPLOY_ENVIRONMENT, GITHUB_STATEFUL_DEPLOY_ENVIRONMENT\]/);
   assert.deepEqual(ENVIRONMENTS, ["production", "production-stateful"]);
+  assert.match(config, /GITHUB_JOURNEYS_ENVIRONMENT = "production-journeys";/);
+  assert.equal(JOURNEYS_ENVIRONMENT, "production-journeys");
   assert.ok(config.includes(`name: "${DEFAULT_REPO}"`));
 });

@@ -62,6 +62,55 @@ Each check is tried 3 times, 5 seconds apart, with a 15-second timeout per reque
 - Both checks need `production` on `main` only: remove its `v*` tag policy, or every deploy stops at the `release` job.
 - A tag ruleset on `refs/tags/v*` that lets only the owner and GitHub Actions (release-please) create, update or delete release tags.
 
+### The production-journeys environment
+
+The prod journey tests ([the plan](journey-tests-plan.md), "Credentials and secrets"; bead `supply-checkout-o60.4`) run in a GitHub environment of their own, `production-journeys`. The journeys role ([Journey tests](infrastructure.md#journey-tests)) trusts any job in it, and its secrets reach any job that names it, so it must be locked down before the role exists. GitHub creates an environment with no protection the first time a job names one that doesn't exist; nothing names it until the journeys workflow (`supply-checkout-o60.6`).
+
+**Guards in the repository.**
+
+- `scripts/check-environments.mjs --environment production-journeys` refuses unless it exists, administrators can't bypass it, and its deployment branches are custom with exactly one policy, `main` (branch). Unlike `production` and `production-stateful` it needs no required reviewer (owner decision 5 in the plan): the owner already approved the deploy it follows, and it deploys nothing.
+- `npm run deploy:journeys` (in `infra/`, `scripts/deploy-journeys.mjs`) runs that check first and deploys nothing unless it passes, with the same repository-context and ID checks as `deploy:github-deploy`.
+- CI's lint job runs `scripts/check-workflow-environments.mjs`, which parses every workflow as YAML (one that doesn't parse fails): only `.github/workflows/journeys.yml` may name `production-journeys` (in any letter case, after YAML's escapes are decoded, and anywhere in the raw text, comments included); a workflow that names it, or calls one that does, may only be started by `workflow_call`, `workflow_dispatch`, `push` or `schedule`, never by `pull_request`, `pull_request_target` or any other event someone without write access can cause; no job sets its environment from an expression; a job calls a reusable workflow only as `./.github/workflows/<file>.yml` (a called workflow runs with the caller's OIDC subject and secrets, so never one from another repository or ref); no step calls into this repository by a remote reference; and no workflow uses a YAML merge key (`<<`). A change to this check or to `check-environments.mjs` gets the security review, since a PR runs its own copy.
+- `deploy:journeys` and `deploy:github-deploy` refuse `--app`, `-a`, `--output`, `-o`, `--all`, grouped short options (`-ra`) and stack names, so they deploy only their own app's stack. The environment's `main`-only rule doesn't stop a `pull_request_target`, `issue_comment` or `workflow_run` run, which is on `main` too.
+
+**Setting it up (the owner, once), in this order.**
+
+1. **Create the environment.** Settings, Environments, **New environment**, name `production-journeys`, then on its page:
+   - **Required reviewers**: off. **Wait timer**: off.
+   - **Allow administrators to bypass configured protection rules**: unchecked.
+   - **Deployment branches and tags**: **Selected branches and tags**, then **Add deployment branch or tag rule**: ref type **Branch**, name pattern `main`. No other rule, and no tag rule.
+   - No secrets or variables yet.
+
+   Or with `gh` (the same settings):
+
+   ```bash
+   gh api -X PUT repos/davetashner/supply-checkout/environments/production-journeys \
+     -F can_admins_bypass=false \
+     -F 'deployment_branch_policy[protected_branches]=false' \
+     -F 'deployment_branch_policy[custom_branch_policies]=true'
+   gh api -X POST repos/davetashner/supply-checkout/environments/production-journeys/deployment-branch-policies \
+     -f name=main -f type=branch
+   ```
+
+2. **Check it**, with your `gh` login:
+
+   ```bash
+   node scripts/check-environments.mjs --environment production-journeys
+   ```
+
+   It prints `check-environments: production-journeys: each exists, main only, no admin bypass`. Anything else lists what to fix.
+3. **Deploy the journeys stack** with `npm run deploy:journeys -- --profile supply-prod`, following [Journey tests](infrastructure.md#journey-tests), "Deploying it", steps 1 to 5 (the data stack first, then the checks that no receipt rule set is active and nothing exists at `e2e.`).
+4. **Activate the SES receipt rule set and check the mailbox end to end**: the same section's steps 6 and 7.
+5. **Add the environment secret `JOURNEYS_AWS_ROLE_ARN`**: the stack's `JourneysRoleArn` output (step 8 there).
+6. **Make the long-lived accounts and teams** (the plan's "Long-lived test accounts"):
+   - Sign up three accounts, `owner`, `crew` and `viewer`, each at the test subdomain (`e2e.` the app's domain), each with its own password of 32 random characters stored nowhere but the secrets below. The sign-up code arrives in the mail bucket under `inbox/`: `aws s3 ls` it and `aws s3 cp "s3://<bucket>/inbox/<key>" -` to read it (the bucket name is in SSM, `/supply-checkout/prod/journeys/mail-bucket-name`).
+   - As `owner`, turn on two-step sign-in and keep its secret key (base32) for `JOURNEYS_OWNER_TOTP`.
+   - As `owner`, make two teams, **Journeys desktop** and **Journeys phone**, and invite `crew` as a contributor and `viewer` as a viewer to both.
+   - Comp each team for 12 months as an operator: `npm run ops -- comp <teamId> --months 12 --reason "Journey tests"`.
+   - Sign in as each account and check that `/me` lists exactly the two journey teams, and that `npm run ops -- teams` shows both with the **Test** badge.
+7. **Add the other environment secrets**: `JOURNEYS_OWNER_PASSWORD`, `JOURNEYS_CREW_PASSWORD`, `JOURNEYS_VIEWER_PASSWORD`, `JOURNEYS_OWNER_TOTP`, and `JOURNEYS_STRIPE_SANDBOX_KEY` (a restricted **sandbox** key: Subscriptions write, Customers read, Payment methods write; never a live key). Rotation is in the plan's secrets table. Environment secrets, never repository secrets or variables, so only a job on `main` in this environment can read them.
+8. **Check it again** (step 2) after any change to the environment's settings.
+
 **What runs with AWS credentials.** Only `plan` (the lookup role after its sign-in steps, whose deploy-role session lasts 15 minutes), `apply-stateful` and `apply` (the publisher role for publishing), each only after the owner's approval, only in `production` or `production-stateful` (both `main` only), only in a run on `main`, and only code from a release commit on `main` that passed CI. No dependency cache is restored in them, no pull request event starts the workflow, and every third-party action is pinned by commit SHA.
 
 ## Real-device check

@@ -20,6 +20,7 @@
     "synth:github-deploy": "cdk synth --quiet --app \"npx tsx bin/github-deploy.ts\" -o cdk.out/github-deploy",
     "deploy:github-deploy": "node ../scripts/deploy-github-deploy.mjs",
     "synth:journeys": "cdk synth --quiet --app \"npx tsx bin/journeys.ts\" -o cdk.out/journeys",
+    "deploy:journeys": "node ../scripts/deploy-journeys.mjs",
     "check": "npm run lint && npm test && npm run synth && npm run synth:all-regions && npm run synth:backup-account && npm run synth:github-deploy && npm run synth:journeys",
     "cdk": "cdk"
   },

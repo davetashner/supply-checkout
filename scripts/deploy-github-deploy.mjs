@@ -14,14 +14,16 @@
 //     value on the command line, since the trust could then be for another repository than
 //     the one checked;
 //   - GitHub doesn't give that repository those owner and repository IDs;
-//   - the repository's production and production-stateful environments aren't locked down.
-// Every argument is passed on to `cdk deploy`.
+//   - the repository's production and production-stateful environments aren't locked down;
+//   - an argument picks another app, output directory or stack (`--app`, `-a`, `--output`, `-o`,
+//     `--all`, or a stack name), so what's deployed is always this script's app.
+// Every other argument is passed on to `cdk deploy`.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_REPO, checkEnvironments, ghApi } from "./check-environments.mjs";
+import { DEFAULT_REPO, ENVIRONMENTS, checkEnvironments, ghApi } from "./check-environments.mjs";
 
 /** DEFAULT_GITHUB_REPOSITORY's IDs in infra/lib/config.ts (deploy-github-deploy.test.mjs checks). */
 export const DEFAULT_OWNER_ID = "5702882";
@@ -43,6 +45,29 @@ export function cliContext(args) {
 
 /** The repository named by the command line's context, else DEFAULT_REPO. */
 export const repositoryFrom = (args) => cliContext(args).githubRepository ?? DEFAULT_REPO;
+
+/** `cdk deploy` options that take a value, so the argument after one isn't a stack selector. */
+export const VALUE_OPTIONS = [
+  "-c", "--context", "--profile", "--require-approval", "-r", "--role-arn", "-O", "--outputs-file", "--parameters",
+  "--tags", "-t", "--toolkit-stack-name", "--change-set-name", "-m", "--method", "--concurrency", "--progress",
+  "--notification-arns",
+];
+
+/** Problems with arguments that would pick another app, output directory or stack. */
+export function argProblems(args) {
+  const problems = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (/^-[A-Za-z]{2,}/.test(arg)) problems.push(`${arg}: no grouped short options; give each on its own`);
+    else if (/^--(app|output|all)(=|$)/.test(arg) || /^-[ao]/.test(arg)) problems.push(`${arg}: this deploys its own app, output directory and stack only; leave it out`);
+    else if (arg === "--") problems.push("--: not allowed; pass options only");
+    else if (!arg.startsWith("-")) {
+      if (VALUE_OPTIONS.includes(args[i - 1])) continue;
+      problems.push(`${arg}: no stack names; this deploys its own stack only`);
+    }
+  }
+  return problems;
+}
 
 /** The other places CDK reads context from, as { source, context } (a missing file is skipped). */
 export function contextSources({ infraDir, home = homedir(), env = process.env, read = (f) => readFileSync(f, "utf8"), exists = existsSync }) {
@@ -84,23 +109,34 @@ export function idProblems(repo, ownerId, repositoryId, api) {
 /** The `cdk deploy` arguments for the stack (bin/github-deploy.ts), with the caller's after them. */
 export const cdkArgs = (args) => ["deploy", "--app", "npx tsx bin/github-deploy.ts", "-o", "cdk.out/github-deploy", ...args];
 
-export function main(args, deps = {}) {
+/** What `npm run deploy:github-deploy` deploys, and the environments its trust names. */
+export const GITHUB_DEPLOY = { what: "the deploy role stack", cdkArgs, environments: ENVIRONMENTS };
+
+/**
+ * Deploys `target` ({ what, cdkArgs, environments }) with `args` passed on to `cdk deploy`, once
+ * the repository context is the command line's, its IDs are GitHub's, and target.environments are
+ * locked down. Returns the exit code; 1, deploying nothing, when anything is wrong.
+ */
+export function guardedDeploy(target, args, deps = {}) {
   const { api = ghApi, run = spawnSync, log = console.log, error = console.error, infraDir = process.cwd(), ...sourceDeps } = deps;
   const cli = cliContext(args);
   const repo = cli.githubRepository ?? DEFAULT_REPO;
   const problems = [
+    ...argProblems(args),
     ...contextProblems(cli, contextSources({ infraDir, ...sourceDeps })),
     ...idProblems(repo, cli.githubOwnerId ?? DEFAULT_OWNER_ID, cli.githubRepositoryId ?? DEFAULT_REPOSITORY_ID, api),
   ];
-  if (!problems.length) problems.push(...checkEnvironments(repo, api));
+  if (!problems.length) problems.push(...checkEnvironments(repo, api, target.environments));
   if (problems.length) {
-    error(`Not deploying the deploy role for ${repo}:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
+    error(`Not deploying ${target.what} for ${repo}:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
     return 1;
   }
-  log(`${repo}: the IDs match, and production and production-stateful are locked down. Deploying the deploy role stack.`);
-  const result = run("./node_modules/.bin/cdk", cdkArgs(args), { stdio: "inherit" });
+  log(`${repo}: the IDs match, and ${target.environments.join(" and ")} ${target.environments.length === 1 ? "is" : "are"} locked down. Deploying ${target.what}.`);
+  const result = run("./node_modules/.bin/cdk", target.cdkArgs(args), { stdio: "inherit" });
   return result.status ?? 1;
 }
+
+export const main = (args, deps = {}) => guardedDeploy(GITHUB_DEPLOY, args, deps);
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   try {
