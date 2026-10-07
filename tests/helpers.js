@@ -29,6 +29,32 @@ export function allowConsoleError(page, pattern) {
 }
 const isAllowed = (page, text) => (allowed.get(page) ?? []).some((pattern) => pattern.test(text));
 
+// Notes a page crash, a page closed before the test ended, and a lost browser
+// as a "lifecycle" annotation on the test and a line on stderr. stop() at the
+// end of the test, before the fixtures close the page themselves.
+function lifecycleLog(page, testInfo) {
+  const started = Date.now();
+  const note = (what) => {
+    const description = `${what} ${((Date.now() - started) / 1000).toFixed(1)} s into the test`;
+    testInfo.annotations.push({ type: "lifecycle", description });
+    process.stderr.write(`[${testInfo.project.name}] ${testInfo.titlePath.slice(1).join(" › ")}: ${description}\n`);
+  };
+  const onCrash = () => note("page crashed");
+  const onClose = () => note("page closed");
+  const onDisconnect = () => note("browser disconnected");
+  const browser = page.context().browser();
+  page.on("crash", onCrash);
+  page.on("close", onClose);
+  browser?.on("disconnected", onDisconnect);
+  return {
+    stop() {
+      page.off("crash", onCrash);
+      page.off("close", onClose);
+      browser?.off("disconnected", onDisconnect);
+    },
+  };
+}
+
 // The build under test (BUILD=web), built by tests/global-setup.js
 const files = builtFiles(currentBuild());
 
@@ -46,7 +72,12 @@ export const test = base.extend({
     if (measure) await page.coverage.startJSCoverage({ resetOnNavigation: false });
     // Only while recording journey videos (JOURNEY_VIDEO=1, npm run journeys:video)
     const video = journeyVideo.enabled ? await journeyVideo.start(page, testInfo) : null;
+    // A page or browser that goes away under a test fails it with only "Target
+    // page, context or browser has been closed". Say which, and when, in the
+    // report and the log (see "Browsers that go away mid-test" in docs/testing.md).
+    const lost = lifecycleLog(page, testInfo);
     await use(page);
+    lost.stop();
     if (video) await journeyVideo.finish(video, testInfo, errors);
     if (measure) await coverage.report().add(await page.coverage.stopJSCoverage());
     expect(errors, "page errors").toEqual([]);
