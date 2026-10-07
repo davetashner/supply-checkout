@@ -147,6 +147,34 @@ describe("quick take", () => {
     expect(await call("POST", "/teams/team-a/adhoc/checkout", { ...body, quantity: 3 })).toMatchObject({ status: 400 });
   });
 
+  it("dates the project today (UTC) when the device's clock is before 2000, keeps the date as sent in the fingerprint, and still refuses a day that doesn't exist", async () => {
+    seed();
+    const operationId = op();
+    const body = { operationId, productKey: "0123", quantity: 1, date: "1970-01-01" };
+    const first = await call("POST", "/teams/team-a/adhoc/checkout", body);
+    expect(first).toMatchObject({ status: 200, body: { replayed: false, result: { projectId: "adhoc-1", projectCreated: true } } });
+    expect(doc("adhoc-1")).toMatchObject({ date: "2026-10-01", GSI1SK: "2026-10-01#adhoc-1" });
+    // The fingerprint is the request as sent: 1970-01-01, not the day the server used
+    expect(JSON.parse(String(table.get(TEAM, `OP#${operationId}`)?.request))).toMatchObject({ command: "quickTake", date: "1970-01-01" });
+    const again = await call("POST", "/teams/team-a/adhoc/checkout", body);
+    expect(again).toMatchObject({ status: 200, body: { replayed: true, result: { projectId: "adhoc-1" } } });
+    expect(items("adhoc-1")["0123"]).toMatchObject({ out: 1 });
+    // The same ID without the date (or with today's) is another request
+    expect((await call("POST", "/teams/team-a/adhoc/checkout", { ...body, date: undefined })).status).toBe(400);
+    expect((await call("POST", "/teams/team-a/adhoc/checkout", { ...body, date: "2026-10-01" })).status).toBe(400);
+
+    // An operation accepted before this rule, with the date it sent, still replays
+    const old = op();
+    table.put({ PK: TEAM, SK: `OP#${old}`, type: "operation", operationId: old, command: "quickTake", request: JSON.stringify({ command: "quickTake", userId: CONTRIBUTOR, key: "0123", qty: 2, date: "0001-01-01" }), result: { operationId: old, command: "quickTake", reason: "checkout", productKey: "0123", projectId: "adhoc-1", quantity: 2, stockDelta: -2, userId: CONTRIBUTOR, at: "2026-09-30T12:00:00.000Z" }, userId: CONTRIBUTOR });
+    expect(await call("POST", "/teams/team-a/adhoc/checkout", { operationId: old, productKey: "0123", quantity: 2, date: "0001-01-01" })).toMatchObject({ status: 200, body: { replayed: true, result: { projectId: "adhoc-1", quantity: 2 } } });
+    expect(items("adhoc-1")["0123"]).toMatchObject({ out: 1 });
+
+    // Days that don't exist stay refused, whatever the year
+    for (const date of ["2026-02-30", "1970-02-30", "2026-13-01"]) {
+      expect(await take({ productKey: "0123", quantity: 1, date }), date).toMatchObject({ status: 400, body: { error: { message: "date must be YYYY-MM-DD" } } });
+    }
+  });
+
   it("refuses a bad date, a bought key, unknown fields and a viewer", async () => {
     seed();
     expect(await take({ productKey: "0123", quantity: 1, date: "2026-13-01" })).toMatchObject({ status: 400, body: { error: { message: "date must be YYYY-MM-DD" } } });

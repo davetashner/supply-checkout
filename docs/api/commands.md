@@ -149,6 +149,10 @@ section 4): `POST /teams/{teamId}/adhoc/checkout`
 - A checkout without choosing a project. The body is a checkout's without
   `projectId`, plus an optional `date` (`YYYY-MM-DD`, the person's local
   date; default today in UTC), used only when this take starts a project.
+  A day that doesn't exist (2026-02-30) is 400. A real day before 2000 is a
+  device clock that's wrong (reset to 1970), so the project gets today in
+  UTC instead; the operation's fingerprint keeps the `date` as sent, so a
+  retry with the same body replays, before or after this rule.
 - It goes on the team's open General Use project. When there's none, it starts the
   next one, `adhoc-<n>`: `kind: "adhoc"`, `client: ""`, the `date`,
   `status: "open"`, `createdBy` (the caller) and `createdAt`. A team has at
