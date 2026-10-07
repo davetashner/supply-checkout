@@ -8,11 +8,11 @@ import { AwsSolutionsChecks } from "cdk-nag";
 import type { Construct } from "constructs";
 import { describe, expect, it } from "vitest";
 import { BusinessMetric } from "../../backend/src/observability/names.js";
-import { APPROVED_REGIONS, configFromContext, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
+import { APPROVED_REGIONS, configFromContext, type DeploymentConfig, GLOBAL_SERVICES_REGION, RECEIPT_MODEL_ID } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
-import { costAlertsFromContext, DEFAULT_COST_ANOMALY_USD, DEFAULT_MONTHLY_BUDGET_USD } from "../lib/observability/cost-alerts.js";
-import { journeyAlarmSpecs, SET_ASIDE_INCIDENT_AT, WELCOME_REFUSALS_ALARM_PER_HOUR } from "../lib/observability/journey-alarms.js";
+import { BEDROCK_BUDGET_SERVICES, costAlertsFromContext, DEFAULT_BEDROCK_BUDGET_USD, DEFAULT_COST_ANOMALY_USD, DEFAULT_MONTHLY_BUDGET_USD } from "../lib/observability/cost-alerts.js";
+import { BEDROCK_SPEND_ALARM_USD_PER_DAY, journeyAlarmSpecs, SET_ASIDE_INCIDENT_AT, WELCOME_REFUSALS_ALARM_PER_HOUR } from "../lib/observability/journey-alarms.js";
 import { ROUTER_FAILING_ABOVE, RUM_EVENTS_FLOOD_PER_HOUR, RUM_EVENTS_SURGE_PER_HOUR, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
 import { rumAppMonitorName } from "../lib/web/rum.js";
 import { webOutputParameters } from "../lib/stacks/web-stack.js";
@@ -139,6 +139,8 @@ const ALARM_IDS = [
   "receipt-reading-failing",
   "receipt-volume-high",
   "receipt-trials-near-limit",
+  "receipt-trials-paused",
+  "bedrock-spend-high",
   "checkout-broken",
   "billing-portal-broken",
   "webhook-signature-failures",
@@ -367,7 +369,7 @@ describe("cost alerts (supply-checkout-jxq)", () => {
   it("are in the global services region's observability stack only: Budgets and Cost Explorer are account-wide", () => {
     expect(GLOBAL_SERVICES_REGION).toBe(EAST);
     const east = observability(EAST);
-    east.resourceCountIs("AWS::Budgets::Budget", 1);
+    east.resourceCountIs("AWS::Budgets::Budget", 2);
     east.resourceCountIs("AWS::CE::AnomalyMonitor", 1);
     east.resourceCountIs("AWS::CE::AnomalySubscription", 1);
     const west = observability(WEST);
@@ -386,8 +388,8 @@ describe("cost alerts (supply-checkout-jxq)", () => {
     const p2 = topicRef(t, "P2");
     const sns = [{ SubscriptionType: "SNS", Address: { Ref: p2 } }];
     const budgets = Object.values(t.findResources("AWS::Budgets::Budget"));
-    expect(budgets).toHaveLength(1);
-    const [budget] = budgets as [{ Properties: Record<string, unknown>; DependsOn: string[] }];
+    expect(budgets).toHaveLength(2);
+    const budget = budgets.find((b) => b.Properties.Budget.BudgetName === "supply-checkout-prod-monthly") as { Properties: Record<string, unknown>; DependsOn: string[] };
     expect(budget.Properties).toEqual({
       Budget: {
         BudgetName: "supply-checkout-prod-monthly",
@@ -403,6 +405,31 @@ describe("cost alerts (supply-checkout-jxq)", () => {
     });
     // Created after the topic's policy lets Budgets publish
     expect(budget.DependsOn).toEqual(expect.arrayContaining([p2, expect.stringMatching(/^AlarmTopicsP2Policy/)]));
+  });
+
+  it("budget Bedrock's gross cost apart, by service, alerting P2 at the same thresholds (supply-checkout-i1d.3)", () => {
+    const t = observability();
+    const p2 = topicRef(t, "P2");
+    const sns = [{ SubscriptionType: "SNS", Address: { Ref: p2 } }];
+    const budget = Object.values(t.findResources("AWS::Budgets::Budget")).find((b) => b.Properties.Budget.BudgetName === "supply-checkout-prod-bedrock") as { Properties: Record<string, unknown>; DependsOn: string[] };
+    expect(budget.Properties).toEqual({
+      Budget: {
+        BudgetName: "supply-checkout-prod-bedrock",
+        BudgetType: "COST",
+        TimeUnit: "MONTHLY",
+        BudgetLimit: { Amount: DEFAULT_BEDROCK_BUDGET_USD, Unit: "USD" },
+        CostTypes: { IncludeCredit: false, IncludeRefund: false },
+        FilterExpression: { Dimensions: { Key: "SERVICE", Values: [...BEDROCK_BUDGET_SERVICES], MatchOptions: ["EQUALS"] } },
+      },
+      NotificationsWithSubscribers: [
+        ...[50, 80, 100].map((Threshold) => ({ Notification: { NotificationType: "ACTUAL", ComparisonOperator: "GREATER_THAN", Threshold, ThresholdType: "PERCENTAGE" }, Subscribers: sns })),
+        { Notification: { NotificationType: "FORECASTED", ComparisonOperator: "GREATER_THAN", Threshold: 100, ThresholdType: "PERCENTAGE" }, Subscribers: sns },
+      ],
+    });
+    expect(BEDROCK_BUDGET_SERVICES).toContain("Amazon Bedrock");
+    expect(budget.DependsOn).toEqual(expect.arrayContaining([p2, expect.stringMatching(/^AlarmTopicsP2Policy/)]));
+    // From context too
+    observability(EAST, { bedrockBudgetUsd: "75" }).hasResourceProperties("AWS::Budgets::Budget", { Budget: Match.objectLike({ BudgetName: "supply-checkout-prod-bedrock", BudgetLimit: { Amount: 75, Unit: "USD" } }) });
   });
 
   it("watch every AWS service's cost for anomalies, alerting P2 at once on one of $20 or more", () => {
@@ -460,7 +487,7 @@ describe("cost alerts (supply-checkout-jxq)", () => {
 
   it("take the budget and the anomaly threshold from context, as numbers or strings", () => {
     const t = observability(EAST, { monthlyBudgetUsd: "250", costAnomalyUsd: 7.5 });
-    t.hasResourceProperties("AWS::Budgets::Budget", { Budget: Match.objectLike({ BudgetLimit: { Amount: 250, Unit: "USD" } }) });
+    t.hasResourceProperties("AWS::Budgets::Budget", { Budget: Match.objectLike({ BudgetName: "supply-checkout-prod-monthly", BudgetLimit: { Amount: 250, Unit: "USD" } }) });
     t.hasResourceProperties("AWS::CE::AnomalySubscription", { ThresholdExpression: Match.stringLikeRegexp('"Values":\\["7.5"\\]') });
   });
 
@@ -473,9 +500,10 @@ describe("cost alerts (supply-checkout-jxq)", () => {
 
   it("reject settings that aren't a sensible number of dollars or a monitor ARN", () => {
     const ctx = (values: Record<string, unknown>) => ({ tryGetContext: (k: string) => values[k] });
-    expect(costAlertsFromContext(ctx({}))).toEqual({ monthlyBudgetUsd: DEFAULT_MONTHLY_BUDGET_USD, anomalyUsd: DEFAULT_COST_ANOMALY_USD });
+    expect(costAlertsFromContext(ctx({}))).toEqual({ monthlyBudgetUsd: DEFAULT_MONTHLY_BUDGET_USD, bedrockBudgetUsd: DEFAULT_BEDROCK_BUDGET_USD, anomalyUsd: DEFAULT_COST_ANOMALY_USD });
     for (const bad of [0, -5, "abc", "", 10_001, Number.NaN, true, null]) {
       expect(() => costAlertsFromContext(ctx({ monthlyBudgetUsd: bad })), String(bad)).toThrow(/monthlyBudgetUsd/);
+      expect(() => costAlertsFromContext(ctx({ bedrockBudgetUsd: bad })), String(bad)).toThrow(/bedrockBudgetUsd/);
       expect(() => costAlertsFromContext(ctx({ costAnomalyUsd: bad })), String(bad)).toThrow(/costAnomalyUsd/);
     }
     for (const bad of ["arn:aws:ce::123:anomalymonitor/x", `arn:aws:ce::${"1".repeat(12)}:anomalysubscription/abc`, 42, "*"]) {
@@ -544,6 +572,29 @@ describe("journey alarms (docs/journeys.md)", () => {
           },
         }),
       ],
+    });
+  });
+
+  it("estimates the receipt model's spend in a day from Bedrock's token counts for its inference profile (supply-checkout-i1d.3)", () => {
+    const t = observability();
+    const tokens = (Id: string, MetricName: string) =>
+      Match.objectLike({ Id, MetricStat: Match.objectLike({ Metric: { Namespace: "AWS/Bedrock", MetricName, Dimensions: [{ Name: "ModelId", Value: RECEIPT_MODEL_ID }] }, Stat: "Sum", Period: 86_400 }) });
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-bedrock-spend-high",
+      Threshold: BEDROCK_SPEND_ALARM_USD_PER_DAY,
+      ComparisonOperator: "GreaterThanThreshold",
+      Metrics: Match.arrayWith([
+        Match.objectLike({ Expression: "(FILL(i_us_east_1, 0) * 1 + FILL(o_us_east_1, 0) * 5 + FILL(cr_us_east_1, 0) * 0.1 + FILL(cw_us_east_1, 0) * 1.25) / 1000000" }),
+        tokens("i_us_east_1", "InputTokenCount"),
+        tokens("o_us_east_1", "OutputTokenCount"),
+        tokens("cr_us_east_1", "CacheReadInputTokenCount"),
+        tokens("cw_us_east_1", "CacheWriteInputTokenCount"),
+      ]),
+    });
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-receipt-trials-paused",
+      Threshold: 0,
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ReceiptTrialCapReached }), Period: 3600 }) })],
     });
   });
 

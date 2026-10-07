@@ -70,6 +70,7 @@ import {
   recordAudit,
   takeReceipt,
   takeReceiptRate,
+  TRIAL_CAP_REACHED,
   refundReceipt,
   getReceiptQuota,
   RateLimitedError,
@@ -1003,6 +1004,28 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect((await takeReceipt(db, contributor, trial, new Date("2026-10-02T00:00:00Z"))).used).toBe(3);
       await refundReceipt(db, contributor, { period: "month", limit: 200, month: "2026-11", used: 1, remaining: 199 });
       expect(await getReceiptUsage(db, viewer, "2026-11")).toBe(0);
+    });
+
+    it("caps every trial team's reads together each UTC day, atomically, and gives refused and refunded reads back", async () => {
+      const a = await team();
+      const b = await team();
+      const trial = { period: "trial", limit: 25 } as const;
+      // A day no other test counts in
+      const at = new Date("2031-01-15T12:00:00Z");
+      const results = await Promise.all([a.contributor, b.contributor, a.contributor, b.contributor, a.contributor, b.contributor].map((ctx) => takeReceipt(db, ctx, trial, at, 4).then(() => "ok", (e: Error) => e)));
+      expect(results.filter((r) => r === "ok")).toHaveLength(4);
+      const refused = results.filter((r) => r !== "ok") as RateLimitedError[];
+      expect(refused.map((e) => [e.name, e.message, e.retryAfterSeconds])).toEqual([0, 1].map(() => ["RateLimitedError", TRIAL_CAP_REACHED, 12 * 3600]));
+      expect(await rawItem(db, "RECEIPTTRIALS", "DAY#2031-01-15")).toEqual({ PK: "RECEIPTTRIALS", SK: "DAY#2031-01-15", count: 4, expiresAt: Date.parse("2031-01-16T00:00:00Z") / 1000 + 7 * 86_400 });
+      // The refused reads were given back to their teams
+      const used = async (ctx: typeof a.viewer) => (await getReceiptQuota(db, ctx, at)).used;
+      expect((await used(a.viewer)) + (await used(b.viewer))).toBe(4);
+      // A refund gives the day's read back too
+      await refundReceipt(db, a.contributor, { ...trial, month: "2031-01", used: 1, remaining: 24 }, at);
+      expect((await rawItem(db, "RECEIPTTRIALS", "DAY#2031-01-15"))?.count).toBe(3);
+      // A paying team's read isn't counted in it
+      await takeReceipt(db, a.contributor, { period: "month", limit: 200 }, at, 4);
+      expect((await rawItem(db, "RECEIPTTRIALS", "DAY#2031-01-15"))?.count).toBe(3);
     });
 
     it("reads a team's allowance from its status and comp", async () => {

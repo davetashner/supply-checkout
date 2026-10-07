@@ -15,6 +15,8 @@ import {
   MEMBER_SEAT_ATTRIBUTES,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
   RECEIPT_RATE_ATTRIBUTES,
+  RECEIPT_TRIAL_CAP_ATTRIBUTES,
+  RECEIPT_TRIAL_READS_PER_DAY,
   RECEIPT_USAGE_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
@@ -463,7 +465,11 @@ describe("receipts function and receipt-access role (ADR 0008)", () => {
       TABLE_NAME: "supply-checkout-prod-app",
       RECEIPT_MODEL_ID: RECEIPT_MODEL_ID,
       RECEIPT_ROLE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^ReceiptAccessRole/), "Arn"] },
+      // The account-wide trial cap: the backend's default unless the context sets it
+      RECEIPT_TRIAL_READS_PER_DAY: String(RECEIPT_TRIAL_READS_PER_DAY),
     });
+    const capped = resources(api(EAST, { receiptTrialReadsPerDay: "0" }).template, "AWS::Lambda::Function").find(([id]) => id.startsWith("ReceiptsFunction")) as [string, Resource];
+    expect((capped[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables.RECEIPT_TRIAL_READS_PER_DAY).toBe("0");
     expect(RECEIPT_MODEL_ID).toMatch(/^us\.anthropic\./);
   });
 
@@ -483,7 +489,7 @@ describe("receipts function and receipt-access role (ADR 0008)", () => {
   it("reads only the session team's partition, and updates only its receipt counters' attributes and the session user's rate counters: no puts, no deletes, no index, no scan", () => {
     const [policy, ...others] = role().Policies;
     expect(others).toEqual([]);
-    const [read, count, rate, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [read, count, rate, trials, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
     expect(rest).toEqual([]);
     expect(read).toEqual({
       Sid: "TeamItemsReadOnly",
@@ -513,10 +519,22 @@ describe("receipts function and receipt-access role (ADR 0008)", () => {
         StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
       },
     });
-    // The only place this role may set a TTL; never in the team's partition
+    // The account-wide trial cap (supply-checkout-i1d.3): one fixed partition, no tag in it, nothing returned
+    expect(trials).toEqual({
+      Sid: "TrialReceiptCapOnly",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["RECEIPTTRIALS"], "dynamodb:Attributes": [...RECEIPT_TRIAL_CAP_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    // The only places this role may set a TTL; never in the team's partition
     expect(RECEIPT_RATE_ATTRIBUTES).toEqual(["PK", "SK", "count", "expiresAt"]);
+    expect(RECEIPT_TRIAL_CAP_ATTRIBUTES).toEqual(["PK", "SK", "count", "expiresAt"]);
     expect(RECEIPT_USAGE_ATTRIBUTES).not.toContain("expiresAt");
-    for (const s of [read, count, rate]) {
+    for (const s of [read, count, rate, trials]) {
       const json = JSON.stringify(s?.Resource);
       expect(json).toContain(":table/supply-checkout-prod-app");
       expect(json).not.toMatch(/index|\*/);

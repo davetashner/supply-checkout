@@ -402,6 +402,8 @@ export const API_ENV = {
   receiptRoleArn: "RECEIPT_ROLE_ARN",
   /** The Bedrock model (a US cross-region inference profile) receipts are read with: RECEIPT_MODEL_ID in infra/lib/config.ts. */
   receiptModelId: "RECEIPT_MODEL_ID",
+  /** Receipts every trial team in the account together may read each UTC day (RECEIPT_TRIAL_READS_PER_DAY in data/usage.ts; `-c receiptTrialReadsPerDay`). */
+  receiptTrialReadsPerDay: "RECEIPT_TRIAL_READS_PER_DAY",
 } as const;
 
 /** The refresh-token cookie, scoped to the auth endpoints. */

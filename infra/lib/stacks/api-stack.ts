@@ -63,6 +63,8 @@ import {
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
   RECEIPT_RATE_ATTRIBUTES,
   RECEIPT_RATE_PREFIX,
+  RECEIPT_TRIAL_CAP_ATTRIBUTES,
+  RECEIPT_TRIAL_CAP_PARTITION,
   RECEIPT_USAGE_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
@@ -76,7 +78,7 @@ import {
 } from "../../../backend/src/data/schema.js";
 import { BILLING_ENV, BILLING_MAX_RECEIVES, billingResourceNames, OPS_STRIPE_ENV, SEAT_SYNC_MAX_CONCURRENCY, STRIPE_ENV, stripeOpsKeySecretName, stripeSecretName, stripeWebhookSecretName } from "../../../backend/src/billing/names.js";
 import { BILLING_WORKER_TAGS } from "../../../backend/src/billing/worker-db.js";
-import { type DeploymentConfig, foundationModelOf, RECEIPT_MODEL_ID, RECEIPT_MODEL_REGIONS, receiptsReservedConcurrencyFromContext, stripeModeOf, stripeOpsKeySecretArn, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
+import { type DeploymentConfig, foundationModelOf, RECEIPT_MODEL_ID, RECEIPT_MODEL_REGIONS, receiptsReservedConcurrencyFromContext, receiptTrialReadsPerDayFromContext, stripeModeOf, stripeOpsKeySecretArn, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { grantPutDeletionRecords } from "../deletions.js";
 import { grantSendEmail } from "../email.js";
@@ -1124,7 +1126,10 @@ export class ApiStack extends SupplyCheckoutStack {
    *   receipt counters' attributes there (RECEIPT_USAGE_ATTRIBUTES), and
    *   update only the rate counters' attributes in the caller's own
    *   `RECEIPTRATE#<userId>` partition (RECEIPT_RATE_ATTRIBUTES), returning
-   *   nothing. No puts, no deletes: reading a receipt saves nothing.
+   *   nothing, and update only the day's count's attributes in the shared
+   *   `RECEIPTTRIALS` partition (RECEIPT_TRIAL_CAP_ATTRIBUTES, the account-wide
+   *   trial cap), returning nothing. No puts, no deletes: reading a receipt
+   *   saves nothing.
    * - Bedrock: InvokeModel on the receipt model's US inference profile in this
    *   region, and on its foundation model in each region the profile routes
    *   to (RECEIPT_MODEL_REGIONS), only when the call came through that profile
@@ -1141,7 +1146,11 @@ export class ApiStack extends SupplyCheckoutStack {
       memorySize: 512,
       description: "Reads receipt photos with Claude on Bedrock for the review screen (ADR 0008); saves nothing",
       timeout: Duration.seconds(29),
-      environment: { [API_ENV.tableName]: table, [API_ENV.receiptModelId]: RECEIPT_MODEL_ID },
+      environment: {
+        [API_ENV.tableName]: table,
+        [API_ENV.receiptModelId]: RECEIPT_MODEL_ID,
+        [API_ENV.receiptTrialReadsPerDay]: String(receiptTrialReadsPerDayFromContext(this.node)),
+      },
       reservedConcurrentExecutions: receiptsReservedConcurrencyFromContext(this.node),
     });
     const fnRole = fn.role;
@@ -1190,6 +1199,20 @@ export class ApiStack extends SupplyCheckoutStack {
               resources: [tableArn],
               conditions: {
                 "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`${RECEIPT_RATE_PREFIX}${userTag}`], "dynamodb:Attributes": [...RECEIPT_RATE_ATTRIBUTES] },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            // The account's trial reads for the day (supply-checkout-i1d.3): one fixed
+            // partition shared by every trial team, only UpdateItem, only the count's
+            // attributes, nothing returned. A session can move the count (as every
+            // trial read does) but read nothing from it and write nothing else
+            new PolicyStatement({
+              sid: "TrialReceiptCapOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [RECEIPT_TRIAL_CAP_PARTITION], "dynamodb:Attributes": [...RECEIPT_TRIAL_CAP_ATTRIBUTES] },
                 StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
               },
             }),

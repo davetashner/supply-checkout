@@ -737,7 +737,11 @@ paths:
         month while it pays or has a live comp
         (`RECEIPTS_PER_TEAM_PER_MONTH`), and 25 in all for a trial
         (`RECEIPTS_PER_TRIAL`), which doesn't reset each month; past it, 429
-        `receipt_limit`. Both are counted before the model is called, so a
+        `receipt_limit`. A trial team's read then counts against every trial
+        team's reads together, at most 500 a UTC day by default
+        (`RECEIPT_TRIAL_READS_PER_DAY`); past it, 429 `rate_limited` with
+        Retry-After to the next UTC day, and the team's read is given back.
+        Paying teams aren't counted in it. All are counted before the model is called, so a
         read that then fails still counts, unless the model service refused
         it with a throttle (`model_busy`) or a 503, which gives the team's
         read back. A trial team's reads also count in its month, so a team
@@ -803,7 +807,7 @@ paths:
           description: "`quota_exceeded`: the photo is over 1,500,000 bytes (`reason: \"image_rejected\"`), or the body is too large."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
-          description: "`quota_exceeded`: with `reason: \"receipt_limit\"`, the team has read all its receipts (this month's, or its trial's); with `reason: \"rate_limited\"`, the caller has read too many receipts in a short time (Retry-After says how many seconds until they can again); with `reason: \"model_busy\"`, the model service is throttling (try again in a minute)."
+          description: "`quota_exceeded`: with `reason: \"receipt_limit\"`, the team has read all its receipts (this month's, or its trial's); with `reason: \"rate_limited\"`, the caller has read too many receipts in a short time, or every trial team together has used the day's trial reads (Retry-After says how many seconds until they can again); with `reason: \"model_busy\"`, the model service is throttling (try again in a minute)."
           headers:
             Retry-After:
               description: "With `rate_limited`: the seconds until the caller's full rate window ends."
@@ -3208,7 +3212,8 @@ components:
                 Reading a receipt: `image_rejected` (the photo can't be used),
                 `receipt_limit` (the team's receipts are used up: this month's,
                 or its trial's), `rate_limited` (the caller read too many in a
-                short time; see Retry-After), `model_busy` (the model service is throttling),
+                short time, or the day's trial reads across every trial team are
+                used up; see Retry-After), `model_busy` (the model service is throttling),
                 `model_timeout` (no answer in time) and `invalid_output` (the
                 model's reply couldn't be used).
   responses:

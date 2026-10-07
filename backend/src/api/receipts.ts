@@ -8,6 +8,7 @@
 // (infra/lib/stacks/api-stack.ts). The model ID names that profile
 // (RECEIPT_MODEL_ID in infra/lib/config.ts).
 
+import { trialReadsPerDayFrom } from "../data/index.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { receiptModelClient } from "../receipts/client.js";
 import { createReceiptsHandler } from "./receipts-handler.js";
@@ -19,8 +20,10 @@ const modelId = process.env[API_ENV.receiptModelId];
 // Fail closed: without the scoped role there is no second layer of isolation
 if (!roleArn) throw new Error(`${API_ENV.receiptRoleArn} is not set`);
 if (!modelId) throw new Error(`${API_ENV.receiptModelId} is not set`);
+// The account-wide trial cap: the default when unset, and a bad value fails the start rather than lift it
+const trialReadsPerDay = trialReadsPerDayFrom(process.env[API_ENV.receiptTrialReadsPerDay]);
 
 const obs = createObservability({ service: "receipts" });
 // The region and credentials are the function's (AWS_REGION and its role); see receipts/client.ts
 const model = receiptModelClient();
-export const handler = withObservability(obs, createReceiptsHandler({ dbFor: receiptScopedDbs({ roleArn }), obs, model, modelId }));
+export const handler = withObservability(obs, createReceiptsHandler({ dbFor: receiptScopedDbs({ roleArn }), obs, model, modelId, trialReadsPerDay }));
