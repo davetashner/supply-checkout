@@ -104,6 +104,8 @@ test("the API client: routes, paging, and errors without IDs or messages", async
     [`GET ${base}/teams/t1/products?limit=1000`]: [200, {}],
     [`DELETE ${base}/teams/t1/projects/p1?expectedVersion=3`]: [204],
     [`DELETE ${base}/teams/t1/products/k%201?expectedVersion=2`]: [204],
+    [`GET ${base}/teams/t1/settings`]: [200, { version: 4, settings: { equipmentMarkup: 12.34 } }],
+    [`PUT ${base}/teams/t1/settings`]: [200, { version: 5, settings: { equipmentMarkup: 0 } }],
     [`POST ${base}/teams/t1/close`]: [409, { error: { code: "aborted", reason: "last_owner", message: "Team secret-name" } }],
     [`DELETE ${base}/me`]: [500, undefined],
   });
@@ -114,6 +116,9 @@ test("the API client: routes, paging, and errors without IDs or messages", async
   assert.deepEqual(await api.listProducts("t1"), []);
   assert.equal(await api.deleteProject("t1", "p1", 3), null);
   assert.equal(await api.deleteProduct("t1", "k 1", 2), null);
+  assert.deepEqual(await api.getSettings("t1"), { version: 4, settings: { equipmentMarkup: 12.34 } });
+  assert.deepEqual((await api.putSettings("t1", 0, 4)).version, 5);
+  assert.deepEqual(calls.at(-1).body, { equipmentMarkup: 0, expectedVersion: 4 });
   await assert.rejects(api.closeTeam("t1", "Team"), (e) => e instanceof ApiError && e.message === "POST /teams/{teamId}/close answered 409 aborted last_owner" && e.status === 409);
   assert.deepEqual(calls.at(-1).body, { name: "Team" });
   await assert.rejects(api.deleteMe(), (e) => e.message === "DELETE /me answered 500");

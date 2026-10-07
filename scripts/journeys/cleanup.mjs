@@ -11,6 +11,8 @@
 // 2. In both long-lived teams, deletes every project and item named for this run, and anything
 //    named for another run that's more than a day old (a crashed run's leftovers); projects first,
 //    including a General Use (no job) project whose every line is such an item, then the items.
+//    Then puts back the team's equipment markup if J2.5's test left it on its sentinel value
+//    (lib/settings.mjs): a run that died mid-test leaves the team's settings as they were.
 // 3. Deletes each throwaway account a run recorded under runs/ in the mail bucket and didn't
 //    finish deleting (this run's, and a crashed run's): signs in as it by email code (read from
 //    the mailbox, checked like every test mail), closes the teams that run created and it owns,
@@ -31,6 +33,7 @@ import { assertDestructiveAllowed, checkMe, isRunScoped } from "./lib/guards.mjs
 import { waitForMail } from "./lib/mailbox.mjs";
 import { MASKED_VALUES_FILE, createMasker } from "./lib/mask.mjs";
 import { readRecords, writeRecord } from "./lib/runs.mjs";
+import { resetMarkup } from "./lib/settings.mjs";
 import { createS3 } from "./lib/s3.mjs";
 import { freshTotp } from "./lib/totp.mjs";
 
@@ -92,6 +95,11 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
           for (const l of r.left) left.push(`Journeys ${which}: couldn't delete ${l}`);
         } catch (err) {
           left.push(`Journeys ${which}: couldn't list the team: ${message(err)}`);
+        }
+        try {
+          if (await resetMarkup(owner, teamId)) done.push(`Journeys ${which}: put the equipment markup back`);
+        } catch (err) {
+          left.push(`Journeys ${which}: couldn't check or put back the equipment markup: ${message(err)}`);
         }
       }
     }
