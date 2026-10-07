@@ -321,6 +321,34 @@
           "tests": ["backend/test/adhoc-api.test.ts", "backend/test/adhoc.test.ts"]
         }
       ]
+    },
+    {
+      "id": "J15",
+      "name": "Reorder before running out",
+      "persona": "Owner, crew member",
+      "critical": false,
+      "steps": [
+        {
+          "id": "J15.1",
+          "text": "In **Inventory**, tap an item and set **Reorder at** (the count that means it's running low) and, if you like, **Usual order**.",
+          "status": "built",
+          "beads": ["supply-checkout-005.8"],
+          "tests": ["backend/test/reorder.test.ts"]
+        },
+        {
+          "id": "J15.2",
+          "text": "Items at or below their reorder level show **Low** in Inventory, and the **Inventory** tab and **Running low** say how many nobody has acknowledged yet.",
+          "status": "built",
+          "beads": ["supply-checkout-005.8"]
+        },
+        {
+          "id": "J15.3",
+          "text": "Open **Running low** to copy or download the reorder list, and tap **Acknowledge** once an item is ordered. It's flagged again if stock falls further, or once it's restocked above the level and runs low again.",
+          "status": "built",
+          "beads": ["supply-checkout-005.8"],
+          "tests": ["backend/test/reorder.test.ts", "backend/test/commands.test.ts"]
+        }
+      ]
     }
   ],
   "alarms": [

@@ -81,6 +81,13 @@ function merge(target, patch) {
   }
 }
 
+// A stock change that raises an acknowledged item above its reorder level ends the team's
+// acknowledgment of its low-stock alert, as backend/src/data/reorder.ts does (a count, whichever
+// way it goes, counts as raising)
+const endAck = (data, delta) => {
+  if (delta > 0 && Object.hasOwn(data, "ackedAtStock") && !(typeof data.reorderAt === "number" && data.stock <= data.reorderAt)) delete data.ackedAtStock;
+};
+
 export class FakeBackend {
   // docs: { "<teamId>/<collection>/<id>": data }
   // members: { "<teamId>": [{ userId, email, role, joinedAt }] }, for the members screen
@@ -580,7 +587,7 @@ export class FakeBackend {
     }
     project.version++;
     const tracked = !!product && typeof product.data.stock === "number";
-    if (tracked && delta) { product.data.stock += delta; product.version++; }
+    if (tracked && delta) { product.data.stock += delta; product.version++; endAck(product.data, delta); }
     const result = { operationId, command: name, reason: name, productKey: key, projectId, quantity: qty, stockDelta: tracked ? delta : 0, userId: this.user.id, at: new Date().toISOString() };
     this.operations.set(`${team}/${operationId}`, { request, result });
     return answer(result, false);
@@ -738,7 +745,7 @@ export class FakeBackend {
     }
     const delta = reason === "receipt" ? quantity : reason === "count" ? count - before : -before;
     if (reason === "uncount") delete product.data.stock;
-    else product.data.stock = before + delta;
+    else { product.data.stock = before + delta; endAck(product.data, reason === "count" ? 1 : delta); }
     if (tracked || reason !== "uncount") product.version++;
     const result = { operationId, command: "stockAdjust", reason, productKey: key, ...(reason === "receipt" ? { quantity, unitCost } : reason === "count" ? { count } : {}), stockDelta: delta, userId: this.user.id, at: new Date().toISOString() };
     this.operations.set(`${team}/${operationId}`, { request, result });

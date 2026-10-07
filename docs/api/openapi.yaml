@@ -2989,6 +2989,18 @@ components:
         cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "What the business paid per each; for company equipment, its value each." }
         kind: { type: string, enum: [supply, equipment], description: "A supply (used up and charged; the default when absent) or company equipment (reused, and not charged), ADR 0017." }
         stock: { type: number, description: "The count in storage; absent if not counted. Read-only here: only the stock commands and the CSV import change it, and a write may only repeat the stored value." }
+        reorderAt: { type: integer, minimum: 0, maximum: 1000000, description: "The reorder level, in eaches: the item is running low when it's counted and `stock <= reorderAt` (supply-checkout-005.8). Absent: no alert." }
+        reorderQty: { type: integer, minimum: 1, maximum: 1000000, description: "How many the team usually orders, in eaches. Only shown on the reorder list." }
+        ackedAtStock:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+          description: >-
+            The team's acknowledgment of the item's low-stock alert: the stock when someone
+            acknowledged it (a PATCH of `{ ackedAtStock: <stock> }`). The app keeps the alert quiet
+            while `stock` is at or above it. A return, a receipt or a count through the stock
+            command, or a CSV import, that leaves `stock` above `reorderAt` removes it. Writes never
+            compare it with `stock`, so an old one never blocks an edit.
         updatedAt: { type: string, format: date-time }
     Project:
       type: object

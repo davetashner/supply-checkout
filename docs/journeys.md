@@ -51,6 +51,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 | [J12](#j12-choose-a-plan-in-the-mobile-app) | Choose a plan in the mobile app | Owner | No | Planned (phase 2) |
 | [J13](#j13-take-company-equipment-to-a-job-and-bring-it-back) | Take company equipment to a job and bring it back | Crew member | Yes | Tested |
 | [J14](#j14-take-supplies-without-a-job) | Take supplies without a job | Crew member | Yes | Tested |
+| [J15](#j15-reorder-before-running-out) | Reorder before running out | Owner, crew member | No | Tested |
 <!-- /journeys:table -->
 
 ---
@@ -288,6 +289,22 @@ The project list has a search box that matches a project's client ("General Use"
 **Status:** tested (`supply-checkout-mdae`). The web build sends the quick take and the move as commands (`POST /teams/{teamId}/adhoc/checkout`, `POST /teams/{teamId}/projects/{projectId}/move`, [docs/api/commands.md](api/commands.md)); the claude.ai artifact build writes them as ADR 0017's section 6 describes.
 
 **Tests:** `adhoc.spec.js` (all tests), and the server's in `backend/test/adhoc-api.test.ts` and `backend/test/adhoc.test.ts`.
+
+### J15. Reorder before running out
+
+**Persona:** owner, crew member.
+
+<!-- journeys:steps J15 -->
+- **J15.1** In **Inventory**, tap an item and set **Reorder at** (the count that means it's running low) and, if you like, **Usual order**.
+- **J15.2** Items at or below their reorder level show **Low** in Inventory, and the **Inventory** tab and **Running low** say how many nobody has acknowledged yet.
+- **J15.3** Open **Running low** to copy or download the reorder list, and tap **Acknowledge** once an item is ordered. It's flagged again if stock falls further, or once it's restocked above the level and runs low again.
+<!-- /journeys:steps J15 -->
+
+**Expected:** an item is **Low** when it's counted and its storage count is at or below its reorder level (whole single items, [ADR 0014](adr/0014-units-cost-and-rounding.md)). Owners and contributors set the level and acknowledge; viewers see what's low and the list but can't acknowledge. An acknowledgment is the team's, kept on the item (`ackedAtStock`, the count when it was acknowledged): the alert stays quiet while the count is at or above that, comes back when it falls below it, and ends when a return, a receipt, a count or an import takes the count above the reorder level, so the next fall to the level alerts again. Saving a new reorder level also starts afresh. The reorder list (copy as text, or download as CSV) has the item's name, its brand if it has one, barcode, count, reorder level, usual order and whether it's acknowledged. Alerts are in the app only for now; an email digest is a later bead.
+
+**Status:** tested (`supply-checkout-005.8`).
+
+**Tests:** `reorder.spec.js` (all tests, including accessibility in light and dark mode and a phone-width layout), `aws-data.spec.js` ("low-stock alerts", the web build's PATCH and the server ending an acknowledgment on a restock), and the server's in `backend/test/reorder.test.ts` and `backend/test/commands.test.ts` (DynamoDB Local).
 
 ---
 

@@ -6,9 +6,9 @@ const day = (n) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
 export function demoState() {
   return {
     seed: {
-      "products/012345678905": { code: "012345678905", name: "Nitrile gloves, box of 100", brand: "Shieldwell", price: 12.5, cost: 9.75, packSize: 10, stock: 8 },
+      "products/012345678905": { code: "012345678905", name: "Nitrile gloves, box of 100", brand: "Shieldwell", price: 12.5, cost: 9.75, packSize: 10, stock: 8, reorderAt: 5, reorderQty: 10 },
       "products/SKU-TOWEL": { code: "SKU-TOWEL", name: "Paper towels, 6 roll", brand: "Brightleaf", price: 8.5, cost: 6.4, stock: 14 },
-      "products/nb-bins": { code: "", name: "Storage bins, 12 qt", price: 5, stock: 4 },
+      "products/nb-bins": { code: "", name: "Storage bins, 12 qt", price: 5, stock: 4, reorderAt: 5, reorderQty: 12 },
       "products/nb-cloth": { code: "", name: "Microfiber cloths, 24 pack", brand: "Clearwave", price: 18 },
       "projects/demo-open": {
         client: "Acme Offices", date: day(0), createdBy: "u_test", createdAt: new Date().toISOString(), status: "open",
