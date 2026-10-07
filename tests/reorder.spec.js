@@ -1,7 +1,8 @@
 // Low-stock alerts (supply-checkout-005.8, src/reorder.js): a reorder level per item, the Low
 // badge, Running low with its count, the team's acknowledgment, and the reorder list.
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect, openApp, modal, inventoryRow, enterBarcode } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, waitUntilConnected, goToInventory, openProject, enterBarcode, startReturn, saveReturn, inventoryRow, addItem } from "./ui/index.js";
 import { usedState, fakeImage } from "./fixtures.js";
 
 const seed = {
@@ -18,8 +19,8 @@ const doc = (page, path) => page.evaluate((p) => window.__mock.docs.get(p), path
 
 async function openInventory(page, opts = {}) {
   await openApp(page, { seed, ...opts });
-  await page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await waitUntilConnected(page);
+  await goToInventory(page);
 }
 const lowChip = (page) => page.getByRole("button", { name: /^Running low/ });
 
@@ -178,11 +179,11 @@ test.describe("a restock in the app's own storage (src/moves.js)", { tag: ["@J15
         "projects/s1": { ...project, items: { SKU1: project.items.SKU1, GLV: { code: "GLV", name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 } } },
       },
     });
-    await page.getByRole("button", { name: /Echo Studio/ }).click();
+    await openProject(page, "Echo Studio");
     for (const code of ["SKU1", "GLV"]) {
-      await page.getByRole("button", { name: "Return", exact: true }).click();
+      await startReturn(page);
       await enterBarcode(page, code);
-      await modal(page).getByRole("button", { name: "Save return" }).click();
+      await saveReturn(page);
       await expect(page.locator("#overlay")).toBeHidden();
     }
     await expect.poll(async () => (await doc(page, "products/GLV")).stock).toBe(3);
@@ -334,13 +335,7 @@ test.describe("orders (supply-checkout-005.14)", { tag: ["@J15.4"] }, () => {
 test.describe("the reorder level in the item editor", { tag: ["@J15.1"] }, () => {
   test("sets a new item's reorder level and usual order", async ({ page }) => {
     await openInventory(page, { seed: {} });
-    await page.getByRole("button", { name: "+ Add item" }).click();
-    await modal(page).getByPlaceholder("Type, scan, or leave blank").fill("SPR");
-    await modal(page).getByLabel("Item name").fill("Spray bottles");
-    await modal(page).getByLabel("Reorder at (optional)").fill("3");
-    await modal(page).getByLabel("Usual order (optional)").fill("24");
-    await modal(page).getByLabel("Single items in storage now").fill("3");
-    await modal(page).getByRole("button", { name: "Save" }).click();
+    await addItem(page, { barcode: "SPR", name: "Spray bottles", reorderAt: "3", usualOrder: "24", stock: "3" });
     await expect(inventoryRow(page, "Spray bottles").locator(".low-badge")).toHaveText("Low");
     expect(await doc(page, "products/SPR")).toMatchObject({ reorderAt: 3, reorderQty: 24, stock: 3 });
   });

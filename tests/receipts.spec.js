@@ -1,4 +1,5 @@
-import { test, expect, openApp, lineRow, inventoryRow } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { goToInventory, lineRow, inventoryRow, uploadReceipt, continueReview, addReceiptLine } from "./ui/index.js";
 import { usedState, fakeImage } from "./fixtures.js";
 
 // usedState.receipt: line 0 is 4 × storage bins (suggested match for the
@@ -8,8 +9,7 @@ import { usedState, fakeImage } from "./fixtures.js";
 const receipt = { ...usedState.receipt, items: usedState.receipt.items.map((it, i) => (i === 0 ? { ...it, match: "i2" } : it)) };
 const scanReceipt = async (page, opts = {}) => {
   await openApp(page, { ...usedState, receipt, ...opts });
-  await page.setInputFiles("#receiptFile", fakeImage);
-  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+  await uploadReceipt(page, fakeImage);
 };
 const line = (page, i) => page.locator(".rline").nth(i);
 // A browser without a camera: a line's Scan opens the photo picker (the live scanner is in live-scan.spec.js)
@@ -32,7 +32,7 @@ const seedDraft = async (page, draft, opts = {}) => {
     savePrices: true, by: "", dests: [{ id: "d1", projectId: "", client: "" }], lines: [], ...draft,
   });
   await openApp(page, { ...usedState, ...opts });
-  await page.getByRole("button", { name: "Continue review" }).click();
+  await continueReview(page);
 };
 const draftLine = (o) => ({ id: "l" + Math.random().toString(36).slice(2, 7), name: "", raw: "", qty: 1, price: 0, dest: "d1", code: "", match: "", suggested: false, useName: "inv", usePrice: "receipt", ...o });
 
@@ -80,7 +80,7 @@ test("reading can be stopped", { tag: ["@J5.1"] }, async ({ page }) => {
 test("leaving the review keeps it, and discarding takes two taps", { tag: ["@J5.2"] }, async ({ page }) => {
   await scanReceipt(page);
   await page.locator("#rBack").click();
-  await page.getByRole("button", { name: "Continue review" }).click();
+  await continueReview(page);
   await expect(page.locator(".rline")).toHaveCount(2);
   await page.getByRole("button", { name: "Discard" }).click();
   await page.getByRole("button", { name: "Tap again to discard" }).click();
@@ -266,7 +266,7 @@ test("splits, removes and adds lines", { tag: ["@J5.2"] }, async ({ page }) => {
 
   await line(page, 3).getByRole("button", { name: "Remove" }).click();
   await expect(page.locator(".rline")).toHaveCount(3);
-  await page.getByRole("button", { name: "+ Add item" }).click();
+  await addReceiptLine(page);
   await expect(page.locator(".rline")).toHaveCount(4);
   await expect(line(page, 3).locator('[data-f="name"]')).toBeFocused();
   await expect(page.locator(".rhead")).toHaveText("Items (4)");
@@ -290,7 +290,7 @@ test("review choices survive a reload", { tag: ["@J5.2"] }, async ({ page }) => 
   await page.locator("#rDate").fill("2026-09-21");
   await page.locator("#rSavePrices").uncheck();
   await page.reload();
-  await page.getByRole("button", { name: "Continue review" }).click();
+  await continueReview(page);
   await expect(page.locator("#rDate")).toHaveValue("2026-09-21");
   await expect(page.locator("#rSavePrices")).not.toBeChecked();
   await expect(line(page, 1).locator('[data-f="name"]')).toHaveValue("Blue tape");
@@ -411,7 +411,7 @@ test("barcodes and names that are built-in object keys save as ordinary items", 
   expect(await page.evaluate(() => [Object.prototype.out, Object.out, Object.prototype.toString.out, Object.prototype.hasOwnProperty.out, Function.prototype.out, Object.getPrototypeOf({}) === Object.prototype])).toEqual([undefined, undefined, undefined, undefined, undefined, true]);
 
   // They show like any other item, and the old "__proto__" product stays hidden
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   for (const name of ["Widget A", "Widget B", "Widget C", "Widget D"]) await expect(inventoryRow(page, name)).toBeVisible();
   await expect(page.getByRole("row", { name: /^constructor No barcode/ })).toBeVisible();
   // The two seeded items, five new ones, and not the old "__proto__" product
@@ -714,8 +714,7 @@ const sentImage = (page, points = []) => page.evaluate(async (pts) => {
   return { type: f.type, name: f.name, size: f.size, width: bmp.width, height: bmp.height, colours, orientation };
 }, points);
 const upload = async (page, buffer) => {
-  await page.setInputFiles("#receiptFile", { name: "IMG_0001.jpg", mimeType: "image/jpeg", buffer });
-  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+  await uploadReceipt(page, { name: "IMG_0001.jpg", mimeType: "image/jpeg", buffer });
 };
 
 test("a 12 MP phone photo is sent as a JPEG under 600 KB, at most 1568 px on its long edge", { tag: ["@J5.1"] }, async ({ page }) => {

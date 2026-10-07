@@ -1,4 +1,5 @@
-import { test, expect, openApp, modal } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, openProject, backToProjects, uploadReceipt } from "./ui/index.js";
 import { usedState, fakeImage } from "./fixtures.js";
 
 const connected = (page) => page.waitForFunction(() => {
@@ -13,9 +14,9 @@ test("explains when the page has no runtime at all", async ({ page }) => {
 
 test("a capability the user declines is treated as unavailable", async ({ page }) => {
   await openApp(page, { ...usedState, rejects: ["sample", "downloads"] });
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await expect(page.getByRole("button", { name: "Download CSV" })).toHaveCount(0);
-  await page.getByRole("button", { name: "← All projects" }).first().click();
+  await backToProjects(page);
   await expect(page.getByText("Scan receipt")).toHaveCount(0);
 });
 
@@ -56,7 +57,7 @@ test("CSV export quotes commas and quotes, and names untitled projects", { tag: 
     },
   });
   await page.getByRole("button", { name: "Returned" }).click();
-  await page.getByRole("button", { name: /Untitled/ }).click();
+  await openProject(page, "Untitled");
   await page.getByRole("button", { name: "Download CSV" }).click();
   const save = await page.evaluate(() => window.__mock.saves[0]);
   expect(save.filename).toBe("project 2026-09-01.csv");
@@ -67,14 +68,14 @@ test("CSV export quotes commas and quotes, and names untitled projects", { tag: 
 
 test("a declined download is silent", { tag: ["@J6.2"] }, async ({ page }) => {
   await openApp(page, { ...usedState, downloadError: "declined" });
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await page.getByRole("button", { name: "Download CSV" }).click();
   await expect(page.locator("#toast")).toBeHidden();
 });
 
 test("a failed download explains", { tag: ["@J6.2"] }, async ({ page }) => {
   await openApp(page, { ...usedState, downloadError: "unavailable" });
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await page.getByRole("button", { name: "Download CSV" }).click();
   await expect(page.locator("#toast")).toHaveText("Couldn't prepare the download here.");
 });
@@ -89,7 +90,6 @@ test("a corrupt saved receipt draft is ignored", { tag: ["@J5"] }, async ({ page
 test("receipt review still works when the browser won't save drafts", { tag: ["@J5"] }, async ({ page }) => {
   await page.addInitScript(() => { Storage.prototype.setItem = () => { throw new Error("QuotaExceededError"); }; });
   await openApp(page, usedState);
-  await page.setInputFiles("#receiptFile", fakeImage);
-  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+  await uploadReceipt(page, fakeImage);
   await expect(page.locator(".rline")).toHaveCount(2);
 });

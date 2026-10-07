@@ -1,7 +1,8 @@
 // The web build's session across tabs and after it ends (src/aws/session.js, account.js):
 // a tab open as one user when someone else signs in (or the user signs out) in another tab,
 // an invite saved in a tab whose session ended, and saves refused once signed out.
-import { test, expect, modal } from "./helpers.js";
+import { test, expect } from "./helpers.js";
+import { modal, continueReview } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, TEAM, USER, openAws, connected, sockets, setVisible } from "./fake-aws.js";
 
@@ -173,7 +174,7 @@ test.describe("another tab", { tag: ["@J0"] }, () => {
     const backend = new FakeBackend({ docs: seeded() });
     await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.receiptDraft.t1": JSON.stringify(draft) } } });
     await connected(page);
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     const release = backend.hold("PUT", "/teams/t1/products/SKU1");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => backend.requests("PUT", "/teams/t1/products/SKU1").length).toBe(1);
@@ -285,7 +286,7 @@ test.describe("a receipt draft", { tag: ["@J0"] }, () => {
     const backend = new FakeBackend({ docs: seeded() });
     await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.receiptDraft.t1": draft } } });
     await connected(page);
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     const saved = () => page.evaluate(() => JSON.parse(localStorage.getItem("supplyCheckout.receiptDraft.t1")).savePrices);
     // Kept while the mark is Pat's
     await page.locator("#rSavePrices").uncheck();

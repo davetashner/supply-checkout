@@ -1,7 +1,8 @@
 // The web build's runtime (src/aws/), part 2: the app's db calls on the data API
 // (docs/api/openapi.yaml) and live updates (docs/api/realtime.md), against the fake
 // backend in tests/fake-aws.js.
-import { test, expect, createProject, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
+import { test, expect } from "./helpers.js";
+import { modal, goToInventory, goToProjects, createProject, enterBarcode, addToProject, startReturn, saveReturn, finishReturn, lineRow, startAddItem, inventoryRow, continueReview, addItem } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, TEAM, USER, openAws, connected, sockets, emit, receive, dropSocket, setVisible } from "./fake-aws.js";
 
@@ -31,7 +32,7 @@ test.describe("data", () => {
 
     // Checkout: one command that adds the line and takes it off stock (docs/api/commands.md)
     await enterBarcode(page, "SKU1");
-    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+    await addToProject(page);
     await expect(lineRow(page, "Paper towels")).toBeVisible();
     await expect(page.locator("#toast")).toHaveText("Checked out 1 × Paper towels, 6 roll");
     const [checkout] = backend.requests("POST", `/teams/t1/projects/${id}/checkout`);
@@ -40,9 +41,9 @@ test.describe("data", () => {
     expect(backend.doc("t1", "products", "SKU1")).toMatchObject({ version: 2, data: { stock: 9 } });
 
     // Return, as another command with its own operation ID
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await enterBarcode(page, "SKU1");
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(page.locator("#toast")).toHaveText("1 returned · 1 of 1 back");
     const [ret] = backend.requests("POST", `/teams/t1/projects/${id}/return`);
     expect(ret.body).toEqual({ operationId: expect.stringMatching(/^[0-9a-f-]{36}$/), productKey: "SKU1", quantity: 1 });
@@ -52,17 +53,14 @@ test.describe("data", () => {
     expect(backend.requests("PATCH", /^\/teams\/t1\//)).toEqual([]);
 
     // A key with characters that need encoding in a path
-    await page.getByRole("button", { name: "Inventory" }).click();
-    await page.getByRole("button", { name: "+ Add item" }).click();
-    await modal(page).getByPlaceholder("Type, scan, or leave blank").fill("x:y@z+1");
-    await modal(page).getByLabel("Item name").fill("Odd code");
-    await modal(page).getByRole("button", { name: "Save" }).click();
+    await goToInventory(page);
+    await addItem(page, { barcode: "x:y@z+1", name: "Odd code" });
     await expect(inventoryRow(page, "Odd code")).toBeVisible();
     expect(backend.requests("PUT", "/teams/t1/products/x%3Ay%40z%2B1")).toHaveLength(1);
     expect(backend.doc("t1", "products", "x:y@z+1").data.name).toBe("Odd code");
 
     // Delete
-    await page.getByRole("button", { name: "Projects" }).click();
+    await goToProjects(page);
     await card(page, "Foxtrot Dental").click();
     await page.getByRole("button", { name: "Delete project" }).click();
     await page.getByRole("button", { name: "Tap again to delete" }).click();
@@ -77,7 +75,7 @@ test.describe("data", () => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();
     const release = backend.hold("PATCH", "/teams/t1/projects/s1");
-    await page.getByRole("button", { name: "Finished Return" }).click();
+    await finishReturn(page);
     await expect.poll(() => backend.requests("PATCH", "/teams/t1/projects/s1").length).toBe(1);
     await page.getByRole("button", { name: "Edit details" }).click();
     await page.getByLabel("Client", { exact: true }).fill("Echo Studio West");
@@ -100,7 +98,7 @@ test.describe("data", () => {
     const backend = new FakeBackend({ docs });
     backend.pageSize = 2;
     await open(page, backend);
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await expect(page.locator("#main tbody tr")).toHaveCount(7);
     // Twice: the first load, and the re-list after subscribing
     expect(backend.requests("GET", "/teams/t1/products").map((c) => c.query.cursor)).toEqual([undefined, "2", "4", "6", undefined, "2", "4", "6"]);
@@ -352,10 +350,10 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
     await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("4");
 
     // A request changed after a failure is a new operation
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     backend.on("POST", RETURN, { status: 503, body: { error: { code: "unavailable", message: "try again" } } });
     await enterBarcode(page, "SKU1");
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
     await modal(page).getByRole("button", { name: "More" }).click();
     await modal(page).getByRole("button", { name: "Try again" }).click();
@@ -370,12 +368,12 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
   test("a retried return is the same request even after a live update changed the line", { tag: ["@J4.3"] }, async ({ page }) => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     // 3 out, 1 back: return the other 2, and the answer is lost
     backend.on("POST", RETURN, { lost: true });
     await enterBarcode(page, "SKU1");
     await modal(page).getByRole("button", { name: "More" }).click();
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
     // The saved return's live update arrives while the form is still open
     await emit(page, { v: 1, eventId: "e1", collection: "projects", id: "s1", op: "put", version: backend.doc("t1", "projects", "s1").version });
@@ -397,7 +395,7 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
     backend.on("POST", CHECKOUT, { lost: true });
     await enterBarcode(page, "NEW1");
     await modal(page).getByLabel("Item name").fill("Wax");
-    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+    await addToProject(page);
     await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
     // Someone else edits the new item meanwhile: saving it again would conflict
     backend.write("t1", "products", "NEW1", { code: "NEW1", name: "Floor wax", price: 0 });
@@ -427,10 +425,10 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
   test("a return on a project deleted as it saves still says what came back", async ({ page }) => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await enterBarcode(page, "SKU1");
     backend.on("POST", RETURN, { status: 200, body: { operationId: "x", replayed: false, result: { quantity: 1 }, project: null, product: null } });
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(toast(page)).toHaveText("1 returned · 0 of 0 back");
     await expect(card(page, "Echo Studio")).toHaveCount(0);
   });
@@ -453,10 +451,10 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
   test("a return refused as a conflict twice shows the conflict message", async ({ page }) => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await enterBarcode(page, "SKU1");
     backend.on("POST", RETURN, { status: 409, body: { error: { code: "aborted", message: "busy" } } }, 2);
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(toast(page)).toContainText("Someone else changed this just now");
     await expect(modal(page)).toBeEmpty();
     const [first, again] = backend.requests("POST", RETURN).map((r) => r.body);
@@ -471,7 +469,7 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
     // Someone else finishes the return and recounts storage, and this page hasn't heard yet
     backend.write("t1", "projects", "s1", { ...usedState.seed["projects/s1"], status: "closed" });
     backend.write("t1", "products", "SKU1", { ...usedState.seed["products/SKU1"], stock: 4 });
-    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+    await addToProject(page);
     await expect(toast(page)).toContainText("Someone else changed this just now");
     await expect(modal(page)).toBeEmpty();
     await expect(page.locator("#projectHead .pill")).toHaveText("Returned");
@@ -485,14 +483,14 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
   test("a return of more than are left now shows the API's reason and the latest line, not a connection problem", async ({ page }) => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     // 3 out, 1 back: the form offers the other 2
     await enterBarcode(page, "SKU1");
     await modal(page).getByRole("button", { name: "More" }).click();
     // Someone else returns 1 of them, and this page hasn't heard yet
     const seed = usedState.seed["projects/s1"];
     backend.write("t1", "projects", "s1", { ...seed, items: { ...seed.items, SKU1: { ...seed.items.SKU1, returned: 2 } } });
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(toast(page)).toHaveText("Only 1 of this item is left to return. The latest is showing.");
     await expect(modal(page)).toBeEmpty();
     expect(backend.requests("GET", "/teams/t1/projects/s1")).toHaveLength(1);
@@ -500,18 +498,18 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
     // Returning again offers the 1 that's left
     await enterBarcode(page, "SKU1");
     await expect(modal(page)).toContainText("3 taken · 2 back");
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(toast(page)).toHaveText("1 returned · 3 of 3 back");
   });
 
   test("a return of a line removed meanwhile says it isn't on the project", async ({ page }) => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await enterBarcode(page, "SKU1");
     const rest = Object.fromEntries(Object.entries(usedState.seed["projects/s1"].items).filter(([k]) => k !== "SKU1"));
     backend.write("t1", "projects", "s1", { ...usedState.seed["projects/s1"], items: rest });
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(toast(page)).toHaveText("This item isn't on this project. The latest is showing.");
     await expect(modal(page)).toBeEmpty();
     await expect(lineRow(page, "Paper towels")).toHaveCount(0);
@@ -522,7 +520,7 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
     await card(page, "Echo Studio").click();
     await enterBarcode(page, "SKU1");
     backend.docs.delete("t1/projects/s1");
-    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+    await addToProject(page);
     await expect(toast(page)).toHaveText("No such project. The latest is showing.");
     await expect(modal(page)).toBeEmpty();
     await expect(card(page, "Echo Studio")).toHaveCount(0);
@@ -587,10 +585,10 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
     test(`a saved return whose answer has ${what} still says what came back`, async ({ page }) => {
       const backend = await open(page);
       await card(page, "Echo Studio").click();
-      await page.getByRole("button", { name: "Return", exact: true }).click();
+      await startReturn(page);
       await enterBarcode(page, "SKU1");
       backend.on("POST", RETURN, { status: 200, body: { operationId: "x", replayed: false, result: { quantity: 1 }, project: { id: "s1", version: 9, data: { ...usedState.seed["projects/s1"], items: undefined, ...data } }, product: null } });
-      await modal(page).getByRole("button", { name: "Save return" }).click();
+      await saveReturn(page);
       await expect(toast(page)).toHaveText("1 returned · 0 of 0 back");
       await expect(modal(page)).toBeEmpty();
     });
@@ -604,7 +602,7 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
     await modal(page).getByLabel("Item name").fill("Ladder rental");
     await modal(page).getByLabel("Price each ($)").fill("12.35");
     await modal(page).getByLabel("Save to inventory for next time").uncheck();
-    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+    await addToProject(page);
     await expect(lineRow(page, "Ladder rental")).toBeVisible();
     const [{ body }] = backend.requests("POST", CHECKOUT);
     expect(body).toEqual({ operationId: expect.any(String), productKey: expect.stringMatching(/^nb-/), quantity: 1, name: "Ladder rental", price: 12.35, code: "" });
@@ -628,9 +626,9 @@ test.describe("live updates", { tag: ["@J4"] }, () => {
     // A product's stock changes without a new version, so the same version is fetched
     backend.doc("t1", "products", "SKU1").data.stock = 4;
     await emit(page, { v: 1, eventId: "e2", collection: "products", id: "SKU1", op: "put", version: 1 });
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await expect(page.locator("#main tbody tr", { hasText: "Paper towels" })).toContainText("4");
-    await page.getByRole("button", { name: "Projects" }).click();
+    await goToProjects(page);
     expect(gets("s2")).toBe(1);
     expect(backend.requests("GET", "/teams/t1/products/SKU1")).toHaveLength(1);
 
@@ -695,7 +693,7 @@ test.describe("live updates", { tag: ["@J4"] }, () => {
     await expect.poll(() => lists(backend).products).toBe(3);
     // The first few are fetched before it's clear this is a burst; the rest come with the re-list
     expect(productGets()).toBe(10);
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await expect(page.locator("#main tbody tr", { hasText: "Imported 199" })).toBeVisible();
     await expect(page.locator("#main tbody tr", { hasText: "Imported 150" })).toBeVisible();
     expect(lists(backend)).toEqual({ products: 3, projects: 2 });
@@ -742,7 +740,7 @@ test.describe("live updates", { tag: ["@J4"] }, () => {
     for (let i = 0; i < 12; i++) backend.write("t1", "products", `IMP${i}`, { name: `Imported ${i}`, price: 1, stock: i });
     await emit(page, { v: 2, eventId: "i1~i12", collection: "products", op: "list", changes: 12, at: Date.now() });
     await expect.poll(() => lists(backend).products).toBe(3);
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await expect(page.locator("#main tbody tr", { hasText: "Imported 11" })).toBeVisible();
     expect(productGets()).toBe(0);
     // The re-list used up the second's fetches, so more events are held for a re-list when they go quiet.
@@ -967,7 +965,7 @@ test.describe("inventory edits", { tag: ["@J2.3"] }, () => {
     const docs = seeded();
     docs["t1/products/SKU1"] = { ...docs["t1/products/SKU1"], cost: 6.25, packSize: 12, note: "keep me" };
     const backend = await open(page, new FakeBackend({ docs }));
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
     await modal(page).getByLabel("Price each ($)").fill("9");
     await modal(page).getByRole("button", { name: "Save" }).click();
@@ -990,7 +988,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
   const toast = (page) => page.locator("#toast");
   const hideToast = (page) => toast(page).evaluate((t) => { t.hidden = true; });
   const editStock = async (page, value) => {
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
     await modal(page).getByLabel("Single items in storage now").fill(value);
     await modal(page).getByRole("button", { name: "Save" }).click();
@@ -1011,7 +1009,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
 
   test("an edit with a new count saves the item without stock, then counts", async ({ page }) => {
     const backend = await open(page);
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
     await modal(page).getByLabel("Price each ($)").fill("9");
     await modal(page).getByLabel("Single items in storage now").fill("7");
@@ -1026,7 +1024,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
   test("saving again after a count's answer was lost counts once, without a conflict", async ({ page }) => {
     const backend = await open(page);
     backend.on("POST", STOCK, { lost: true });
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
     await modal(page).getByLabel("Price each ($)").fill("9");
     await modal(page).getByLabel("Single items in storage now").fill("7");
@@ -1048,8 +1046,8 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
 
   test("a new item counted in the form is saved without stock, then counted", async ({ page }) => {
     const backend = await open(page);
-    await page.getByRole("button", { name: "Inventory" }).click();
-    await page.getByRole("button", { name: "+ Add item" }).click();
+    await goToInventory(page);
+    await startAddItem(page);
     await modal(page).getByLabel("Barcode (optional)").fill("MOP1");
     await modal(page).getByLabel("Item name").fill("Mop heads");
     await modal(page).getByLabel("Single items in storage now").fill("5");
@@ -1082,7 +1080,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     expect([...backend.operations.values()][0].result).toMatchObject({ reason: "uncount", stockDelta: -10 });
     await expect(stockCell(page, "Paper towels")).toHaveText("—");
     // Opened again, the form shows it isn't counted
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
     await expect(modal(page).getByLabel("Single items in storage now")).toHaveValue("");
   });
@@ -1090,7 +1088,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
   test("saving again after an uncount's answer was lost stops counting once, without a conflict", async ({ page }) => {
     const backend = await open(page);
     backend.on("POST", STOCK, { lost: true });
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
     await modal(page).getByLabel("Price each ($)").fill("9");
     await modal(page).getByLabel("Single items in storage now").fill("");
@@ -1109,7 +1107,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
 
   // Someone else's checkout takes the stock from 10 to 8 while the form is open
   const checkedOutMeanwhile = async (page, backend) => {
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
     await expect(modal(page).getByLabel("Single items in storage now")).toHaveValue("10");
     const version = backend.write("t1", "products", "SKU1", { ...backend.doc("t1", "products", "SKU1").data, stock: 8 });
@@ -1187,7 +1185,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     const docs = seeded();
     docs["t1/products/SKU1"] = { ...docs["t1/products/SKU1"], stock: undefined };
     const backend = await open(page, new FakeBackend({ docs }));
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
     await expect(modal(page).getByLabel("Single items in storage now")).toHaveValue("");
     // Someone else counts it at 50, and the live update arrives while the form is open
@@ -1207,7 +1205,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
 
   test("clearing a count someone else already stopped while the form was open sends nothing", async ({ page }) => {
     const backend = await open(page);
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
     await expect(modal(page).getByLabel("Single items in storage now")).toHaveValue("10");
     const item = { ...backend.doc("t1", "products", "SKU1").data }; delete item.stock;
@@ -1270,7 +1268,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
       draftLine({ id: "l3", name: "Mop heads", qty: 4, price: 4.5 }),
     ]);
     await connected(page);
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(toast(page)).toHaveText("9 added to storage");
     // The item keeps its stock; each line adds its eaches at its price each
@@ -1292,7 +1290,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     const backend = new FakeBackend({ docs });
     await openDraft(page, backend, [draftLine({ id: "l1", name: "Paper towels", qty: 2, price: 45, match: "SKU1", usePrice: "" })]);
     await connected(page);
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     await expect(page.locator(".rline [data-note]")).toHaveText("12 each, cost $7.50 each");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(toast(page)).toHaveText("12 added to storage");
@@ -1309,7 +1307,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
       draftLine({ id: "l2", name: "Paper towels", qty: 3, price: 8, match: "SKU1" }),
     ]);
     await connected(page);
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     // The first line is saved, but its answer is lost
     backend.on("POST", STOCK, { lost: true });
     await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -1333,7 +1331,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
   const LINES = "/teams/t1/projects/s1/lines";
   const toEcho = (page, backend, lines) => openDraft(page, backend, lines, { savePrices: false, dests: [{ id: "d1", projectId: "s1", client: "" }] });
   const saveReceipt = async (page) => {
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     await page.getByRole("button", { name: "Save", exact: true }).click();
   };
 

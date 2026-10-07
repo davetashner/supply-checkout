@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
+import { continueReview, teamPicker, switchTeam } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, TEAM, USER, ORIGIN, AUTH, CONFIG, openAws, connected, lastSocket, sockets, emit, setVisible } from "./fake-aws.js";
 
@@ -614,7 +615,7 @@ test.describe("first sign-in and teams", () => {
     await connected(page);
     await expect(page.getByRole("button", { name: /Bravo job/ })).toBeVisible();
     await expect(page.getByRole("button", { name: /Echo Studio/ })).toHaveCount(0);
-    const pick = page.getByLabel("Team");
+    const pick = teamPicker(page);
     await expect(pick).toHaveValue("t2");
     await expect(pick.locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
     expect((await lastSocket(page)).sent[1].channel).toBe("/users/u-pat");
@@ -629,7 +630,7 @@ test.describe("first sign-in and teams", () => {
     const backend = new FakeBackend({ teams, docs: seeded() });
     await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "gone" } } });
     await connected(page);
-    await expect(page.getByLabel("Team")).toHaveValue("t1");
+    await expect(teamPicker(page)).toHaveValue("t1");
   });
 
   test("viewers see the view-only notice", { tag: ["@J9.1"] }, async ({ page }) => {
@@ -655,7 +656,7 @@ test.describe("first sign-in and teams", () => {
     await page.setViewportSize({ width: 320, height: 640 });
     await openAws(page, new FakeBackend({ teams: [TEAM, { ...TEAM, id: "t2", name: "A team with a rather long name, Incorporated" }], docs: seeded() }));
     await connected(page);
-    await expect(page.getByLabel("Team")).toBeVisible();
+    await expect(teamPicker(page)).toBeVisible();
     await expectNoSideways(page);
   });
 
@@ -667,7 +668,7 @@ test.describe("first sign-in and teams", () => {
     await page.clock.install();
     await openAws(page, backend);
     await connected(page);
-    const pick = page.getByLabel("Team");
+    const pick = teamPicker(page);
     await expect(pick.locator("option")).toHaveText(["Echo Cleaning", "Bravo Co", "Charlie Ltd"]);
     const meCalls = () => backend.requests("GET", "/me").length;
     expect(meCalls()).toBe(1);
@@ -691,7 +692,7 @@ test.describe("first sign-in and teams", () => {
     await page.clock.fastForward(61e3);
     await setVisible(page, true);
     await expect(page.locator(".teambar")).toContainText("Team: Echo Cleaning");
-    await expect(page.getByLabel("Team")).toHaveCount(0);
+    await expect(teamPicker(page)).toHaveCount(0);
     await expectAccessible(page);
   });
 
@@ -737,7 +738,7 @@ test.describe("first sign-in and teams", () => {
     await setVisible(page, true);
     await expect(page.getByRole("heading", { name: `You're no longer in ${TEAM.name}` })).toBeVisible();
     await expect.poll(() => backend.requests("GET", "/me").length).toBe(2);
-    await expect(page.getByLabel("Team").locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
+    await expect(teamPicker(page).locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
   });
 });
 
@@ -761,7 +762,7 @@ test.describe("saved on this device", { tag: ["@J0"] }, () => {
     const backend = new FakeBackend({ teams, docs: seeded() });
     await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2", "supplyCheckout.receiptDraft.t1": draft("Costco"), "supplyCheckout.receiptDraft.t2": draft("Home Depot") } } });
     await connected(page);
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     await expect(page.locator("#rBody .meta")).toContainText("Home Depot");
     await expect(page.locator("#rBody .meta")).not.toContainText("Costco");
     // Discarding it leaves the other team's
@@ -771,12 +772,12 @@ test.describe("saved on this device", { tag: ["@J0"] }, () => {
     expect(await saved(page)).toEqual({ "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2", "supplyCheckout.receiptDraft.t1": draft("Costco") });
 
     // Switching teams shows the other team's draft
-    await page.getByLabel("Team").selectOption("t1");
+    await switchTeam(page, "t1");
     await expect.poll(() => backend.pageLoads).toBe(2);
     const again = await reopen(page, backend);
     await connected(again);
-    await expect(again.getByLabel("Team")).toHaveValue("t1");
-    await again.getByRole("button", { name: "Continue review" }).click();
+    await expect(teamPicker(again)).toHaveValue("t1");
+    await continueReview(again);
     await expect(again.locator("#rBody .meta")).toContainText("Costco");
     await again.close();
   });
@@ -802,7 +803,7 @@ test.describe("saved on this device", { tag: ["@J0"] }, () => {
     backend.signedIn = true;
     const again = await reopen(page, backend);
     await connected(again);
-    await expect(again.getByLabel("Team")).toHaveValue("t1");
+    await expect(teamPicker(again)).toHaveValue("t1");
     await expect(resume(again)).toHaveCount(0);
     expect(await saved(again)).toEqual({ "supplyCheckout.owner": SAM.id, "supplyCheckout.team": "t1" });
     await again.close();
@@ -813,7 +814,7 @@ test.describe("saved on this device", { tag: ["@J0"] }, () => {
     const local = { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2", "supplyCheckout.receiptDraft.t2": draft("Home Depot") };
     await openAws(page, backend, { storage: { local } });
     await connected(page);
-    await expect(page.getByLabel("Team")).toHaveValue("t2");
+    await expect(teamPicker(page)).toHaveValue("t2");
     await expect(resume(page)).toBeVisible();
     expect(await saved(page)).toEqual(local);
   });
@@ -822,7 +823,7 @@ test.describe("saved on this device", { tag: ["@J0"] }, () => {
     const backend = new FakeBackend({ teams, docs: seeded() });
     await openAws(page, backend, { storage: { local: { "supplyCheckout.team": "t2", "supplyCheckout.receiptDraft": draft("Costco"), "supplyCheckout.receiptDraft.t1": draft("Home Depot") } } });
     await connected(page);
-    await expect(page.getByLabel("Team")).toHaveValue("t1");
+    await expect(teamPicker(page)).toHaveValue("t1");
     await expect(resume(page)).toHaveCount(0);
     expect(await saved(page)).toEqual({ "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t1" });
   });
@@ -835,8 +836,8 @@ test.describe("saved on this device", { tag: ["@J0"] }, () => {
     await openAws(page, backend, { path: "/?invite=i1&token=tok" });
     // The invite couldn't be kept, so it isn't offered
     await connected(page);
-    await expect(page.getByLabel("Team")).toHaveValue("t1");
-    await page.getByLabel("Team").selectOption("t2");
+    await expect(teamPicker(page)).toHaveValue("t1");
+    await switchTeam(page, "t2");
     await expect.poll(() => backend.pageLoads).toBe(2);
     await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
   });

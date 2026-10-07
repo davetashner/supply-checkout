@@ -3,7 +3,8 @@
 // returns, the line editor, the exports, Inventory's Supplies / Equipment filter and its Out view.
 // In both builds, against the claude.ai runtime's mock; the web build's checkout command is
 // against tests/fake-aws.js at the end.
-import { test, expect, openApp, enterBarcode, modal, modalViolations, lineRow, inventoryRow } from "./helpers.js";
+import { test, expect, openApp, modalViolations } from "./helpers.js";
+import { modal, waitUntilConnected, goToInventory, enterBarcode, addToProject, startReturn, saveReturn, finishReturn, lineRow, startAddItem, inventoryRow, continueReview } from "./ui/index.js";
 import { FakeBackend, openAws, connected } from "./fake-aws.js";
 import { persona } from "./journey-video.js";
 
@@ -33,7 +34,7 @@ const seed = {
   },
 };
 
-const ready = (page) => page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
+const ready = waitUntilConnected;
 async function open(page, opts = {}) {
   await openApp(page, { seed, ...opts });
   await ready(page);
@@ -47,7 +48,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
   test("an item can be company equipment: no client price, and its cost is its value", { tag: ["@J13.1"] }, async ({ page }) => {
     await open(page);
     await inventory(page);
-    await page.getByRole("button", { name: "+ Add item" }).click();
+    await startAddItem(page);
     await expect(modal(page).getByLabel("Supply (used up, charged)")).toBeChecked();
     await expect(modal(page).getByLabel("Price each ($)")).toBeVisible();
     await modal(page).getByLabel("Company equipment (reused, not charged)").check();
@@ -93,7 +94,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     // Taking another: the item says it isn't charged, and the line keeps no price
     await enterBarcode(page, "LAD-1");
     await expect(modal(page)).toContainText("Company equipment · not charged");
-    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+    await addToProject(page);
     await expect(page.locator("#toast")).toHaveText("Checked out 1 × Step ladder");
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("2");
     await expect(page.locator("#projectBody .totals .charge")).toHaveText("$17.00");
@@ -116,7 +117,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     await page.getByRole("button", { name: "Add item without a barcode" }).click();
     await expect(modal(page).locator("[data-k=vac]")).toContainText("Equipment");
     await modal(page).locator("[data-k=vac]").click();
-    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+    await addToProject(page);
     await expect(equipmentRow(page, "Shop vacuum")).toBeVisible();
     expect((await doc(page, "projects/s1")).items.vac).toEqual({ code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 0, takenBy: "u_test", takenAt: expect.any(String), ops: expect.any(Array) });
   });
@@ -127,12 +128,12 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     // Out 3, lost 1: two can come back
     await expect(equipmentRow(page, "Step ladder").locator("td")).toHaveText(["Step ladderBarcode LAD-1", "3", "0", "1", "2"]);
     await expect(page.locator("#projectBody thead").last()).toContainText("Lost or broken");
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await enterBarcode(page, "LAD-1");
     await expect(modal(page).locator("#sum")).toHaveText("Returned 1 of 3Still out 1");
     await modal(page).getByRole("button", { name: "More" }).click();
     await expect(modal(page).locator("#sum")).toHaveText("Returned 2 of 3Still out 0");
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(page.locator("#toast")).toHaveText("2 returned · 2 of 3 back");
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("0");
     expect((await doc(page, "projects/s2")).items["LAD-1"]).toMatchObject({ out: 3, returned: 2, lost: 1 });
@@ -185,10 +186,10 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     // The closed project's vacuum came back, so it isn't listed; a row opens its project
     await rows.nth(0).click();
     await expect(page.getByRole("heading", { name: "Delta Dental" })).toBeVisible();
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await page.locator("#main table.out tbody tr").last().press("Enter");
     await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await page.getByRole("button", { name: "In storage" }).click();
     await expect(inventoryRow(page, "Shop vacuum")).toBeVisible();
   });
@@ -219,7 +220,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
       await openProject(page, client);
       await page.getByRole("button", { name: "Add item without a barcode" }).click();
       await modal(page).locator("[data-k=vac]").click();
-      await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+      await addToProject(page);
       await expect(equipmentRow(page, "Shop vacuum")).toBeVisible();
       expect((await doc(page, `projects/${project}`)).items.vac.takenBy).toBe(taker);
     }
@@ -273,7 +274,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
       lines: [{ id: "l1", name: "Ladder", raw: "", qty: 1, price: 130, dest: "stock", code: "", match: "LAD-1", suggested: false, useName: "inv", usePrice: "receipt" }],
     });
     await open(page);
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.locator("#toast")).toHaveText("1 added to storage");
     const saved = await doc(page, "products/LAD-1");
@@ -293,14 +294,14 @@ test.describe("the web build's checkout command", () => {
     // A new line: the server copies the kind and value, and who took it
     await page.getByRole("button", { name: "Add item without a barcode" }).click();
     await modal(page).locator("[data-k=vac]").click();
-    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+    await addToProject(page);
     await expect(equipmentRow(page, "Shop vacuum")).toBeVisible();
     const [checkout] = backend.requests("POST", "/teams/t1/projects/s2/checkout");
     expect(checkout.body).toEqual({ operationId: expect.any(String), productKey: "vac", quantity: 1 });
     expect(backend.doc("t1", "projects", "s2").data.items.vac).toEqual({ code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 0, takenBy: "u-pat", takenAt: expect.any(String) });
     // More of a line someone else took: the latest person to take more
     await enterBarcode(page, "LAD-1");
-    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+    await addToProject(page);
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("3");
     expect(backend.doc("t1", "projects", "s2").data.items["LAD-1"]).toMatchObject({ out: 4, lost: 1, takenBy: "u-pat" });
     // Only the server wrote the project: no document write from the page
@@ -314,7 +315,7 @@ test.describe("the web build's checkout command", () => {
     await openAws(page, backend);
     await connected(page);
     await openProject(page, "Delta Dental");
-    await page.getByRole("button", { name: "Finished Return" }).click();
+    await finishReturn(page);
     await finishBox(page, 0).locator("[data-step='1']").first().click();
     await finishBox(page, 0).locator("[data-step='1']").last().click();
     await modal(page).getByLabel(/Charge the client/).fill("80");
@@ -337,7 +338,7 @@ test.describe("the web build's checkout command", () => {
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("0");
     // Another phone took one more, and this page hasn't heard yet
     backend.doc("t1", "projects", "s2").data.items["LAD-1"].out = 4;
-    await page.getByRole("button", { name: "Finished Return" }).click();
+    await finishReturn(page);
     await expect(page.locator("#toast")).toHaveText("Equipment is still out on this project, so it wasn't finished. Tap Finished Return again to say where each piece is.");
     expect(backend.doc("t1", "projects", "s2").data.status).toBe("open");
     // The latest is showing: one still out
@@ -351,7 +352,7 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
   test("pieces back go into storage, the rest stay out at the job, and the project stays open", async ({ page }) => {
     await open(page);
     await openProject(page, "Delta Dental");
-    await page.getByRole("button", { name: "Finished Return" }).click();
+    await finishReturn(page);
     await expect(modal(page).getByRole("heading", { name: "Before you finish" })).toBeVisible();
     await expect(finishBox(page, 0).locator("legend")).toHaveText("Step ladder · 2 still out");
     await expect(finishBox(page, 0).locator("[data-left]")).toHaveText("Still at the job: 2");
@@ -369,7 +370,7 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
   test("lost or broken, with a charge, goes on the project's total and the client's CSV, and then it closes", async ({ page }) => {
     await open(page);
     await openProject(page, "Delta Dental");
-    await page.getByRole("button", { name: "Finished Return" }).click();
+    await finishReturn(page);
     await finishBox(page, 0).getByLabel("It's back").fill("1");
     await finishBox(page, 0).getByLabel("Lost or broken", { exact: true }).fill("1");
     await finishBox(page, 0).getByLabel("Lost or broken", { exact: true }).dispatchEvent("input");
@@ -405,7 +406,7 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
     const s1 = seed["projects/s1"];
     await open(page, { seed: { ...seed, "projects/s1": { ...s1, items: { ...s1.items, cord: { code: "", name: "Extension cord", kind: "equipment", out: 2, returned: 0 } } } } });
     await openProject(page, "Echo Studio");
-    await page.getByRole("button", { name: "Finished Return" }).click();
+    await finishReturn(page);
     await expect(modal(page).locator("fieldset.finish")).toHaveCount(2);
     // The order of the project: the cord, then the ladder; each box's steppers move only its own count
     await expect(finishBox(page, 0).locator("legend")).toHaveText("Extension cord · 2 still out");
@@ -428,7 +429,7 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
   test("Try again after a failed save records each piece once, and a project without equipment out closes at once", async ({ page }) => {
     await open(page);
     await openProject(page, "Delta Dental");
-    await page.getByRole("button", { name: "Finished Return" }).click();
+    await finishReturn(page);
     await finishBox(page, 0).getByLabel("It's back").fill("1");
     await finishBox(page, 0).getByLabel("Lost or broken", { exact: true }).fill("1");
     // The project's writes fail for the connection, then work on Try again
@@ -448,7 +449,7 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
     await page.evaluate(() => { const s = window.__mock.docs.get("projects/s1"); s.items["LAD-1"].returned = 1; window.__mock.notify(); });
     await openProject(page, "Echo Studio");
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("0");
-    await page.getByRole("button", { name: "Finished Return" }).click();
+    await finishReturn(page);
     await expect(page.locator("#toast")).toHaveText("Return finished");
   });
   // Owner's report from an iPhone in portrait: side by side, each number box shrank to a sliver
@@ -456,7 +457,7 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
     const s2 = seed["projects/s2"];
     await open(page, { seed: { ...seed, "projects/s2": { ...s2, items: { "LAD-1": { ...s2.items["LAD-1"], out: 250, lost: 0 } } } } });
     await openProject(page, "Delta Dental");
-    await page.getByRole("button", { name: "Finished Return" }).click();
+    await finishReturn(page);
     const box = finishBox(page, 0);
     await expect(box.locator("legend")).toHaveText("Step ladder · 250 still out");
     await box.getByLabel("It's back").fill("120");

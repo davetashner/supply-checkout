@@ -1,4 +1,5 @@
-import { test, expect, openApp, modal } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, openProject, continueReview } from "./ui/index.js";
 import { usedState, fakeImage } from "./fixtures.js";
 
 test("explains when shared storage isn't available", async ({ page }) => {
@@ -15,7 +16,7 @@ test("hides receipt scanning when Claude can't be used from the page", { tag: ["
 
 test("hides CSV download when downloads aren't available", { tag: ["@J6"] }, async ({ page }) => {
   await openApp(page, { ...usedState, unavailable: ["downloads"] });
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await expect(page.locator("#projectBody tbody tr")).toHaveCount(2);
   await expect(page.getByRole("button", { name: "Download CSV" })).toHaveCount(0);
 });
@@ -42,7 +43,7 @@ test("an unfinished receipt review survives a reload", { tag: ["@J5.2"] }, async
   await page.setInputFiles("#receiptFile", fakeImage);
   await page.getByLabel("Client name").fill("Foxtrot Ltd");
   await page.reload();
-  await page.getByRole("button", { name: "Continue review" }).click();
+  await continueReview(page);
   await expect(page.getByLabel("Client name")).toHaveValue("Foxtrot Ltd");
   await expect(page.locator(".rline")).toHaveCount(2);
 });

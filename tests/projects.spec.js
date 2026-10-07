@@ -1,11 +1,12 @@
-import { test, expect, openApp, createProject, enterBarcode, modal, lineRow } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, waitUntilConnected, createProject, openProject, backToProjects, enterBarcode, addToProject, startReturn, saveReturn, finishReturn, lineRow } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 
 const openEcho = async (page, opts = {}) => {
   await openApp(page, { ...usedState, ...opts });
   // The page draws again once both collections have loaded; wait for that
-  await page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await waitUntilConnected(page);
+  await openProject(page, "Echo Studio");
 };
 
 test("edits a project's client and date", { tag: ["@J4.1"] }, async ({ page }) => {
@@ -79,7 +80,7 @@ test("shows an empty state for filters with no projects", { tag: ["@J4"] }, asyn
 
 test("reopens a finished project", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Finished Return" }).click();
+  await finishReturn(page);
   await expect(page.locator(".project-head .pill")).toHaveText("Returned");
   await page.getByRole("button", { name: "Reopen" }).click();
   await expect(page.locator(".project-head .pill")).toHaveText("Checked out");
@@ -105,7 +106,7 @@ test("deleting a project takes two taps, and the first tap wears off", { tag: ["
 
 test("the back button returns to the list", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "← All projects" }).first().click();
+  await backToProjects(page);
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
 });
 
@@ -154,7 +155,7 @@ test("a typed price on a project line or a new item is saved rounded to cents", 
   await modal(page).getByLabel("Item name").fill("Sponges");
   await anyStep(modal(page).getByLabel("Price each ($)"));
   await modal(page).getByLabel("Price each ($)").fill("1.005");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "Sponges")).toContainText("$1.01");
   const saved = await page.evaluate(() => [window.__mock.docs.get("products/NEW3").price, window.__mock.docs.get("projects/s1").items.NEW3.price]);
   expect(saved).toEqual([1.01, 1.01]);
@@ -177,12 +178,12 @@ test("a price over the API's limit on a project line or a new item says so, and 
   const price = modal(page).getByLabel("Price each ($)");
   await price.fill("1000000.5");
   expect(await message(price)).toBe("Prices and costs go up to $1,000,000.00.");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(price).toBeVisible();
   expect(await page.evaluate(() => window.__mock.docs.has("products/NEW3"))).toBe(false);
   await price.fill("999999.99");
   expect(await message(price)).toBe("");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "Sponges")).toContainText("$999,999.99");
 });
 
@@ -204,7 +205,7 @@ test("picks an inventory item without a barcode, with search", { tag: ["@J4.2"] 
       "products/7001": { code: "7001", name: "Squeegee", price: 6 },
     },
   });
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await page.getByRole("button", { name: "Add item without a barcode" }).click();
   const pick = modal(page).locator("#pick");
   await expect(pick.locator("button")).toHaveCount(4);
@@ -219,7 +220,7 @@ test("picks an inventory item without a barcode, with search", { tag: ["@J4.2"] 
   await pick.getByRole("button", { name: /Mop heads/ }).click();
   await expect(modal(page).getByRole("heading", { name: "Check out" })).toBeVisible();
   await expect(modal(page)).toContainText("No barcode");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "Mop heads")).toBeVisible();
   // A new line copies the item's cost as well as its price (ADR 0014)
   const line = await page.evaluate(() => window.__mock.docs.get("projects/s1").items["nb-mop"]);
@@ -234,7 +235,7 @@ test("a project's total is the sum of its rows rounded to cents", { tag: ["@J4"]
     c: { code: "", name: "Zip ties", price: 0.1, out: 3, returned: 0 },
   } } } });
   await expect(page.getByRole("button", { name: /Round Co/ })).toContainText("$2.33");
-  await page.getByRole("button", { name: /Round Co/ }).click();
+  await openProject(page, "Round Co");
   await expect(lineRow(page, "Wipes").locator(".charge")).toHaveText("$1.02");
   await expect(lineRow(page, "Xylene").locator(".charge")).toHaveText("$1.01");
   await expect(lineRow(page, "Zip ties").locator(".charge")).toHaveText("$0.30");
@@ -259,11 +260,11 @@ test("a new item without a barcode can skip saving to inventory", { tag: ["@J4.2
   await createProject(page, "Kilo Co");
   await page.getByRole("button", { name: "Add item without a barcode" }).click();
   await modal(page).getByRole("button", { name: "+ New item" }).click();
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(page.locator("#overlay")).toBeVisible();
   await modal(page).getByLabel("Item name").fill("One-off ladder rental");
   await modal(page).getByLabel("Save to inventory for next time").uncheck();
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "One-off ladder rental")).toContainText("$0.00");
   const saved = await page.evaluate(() => [...window.__mock.docs.keys()].filter((k) => k.startsWith("products/")));
   expect(saved).toEqual([]);
@@ -273,7 +274,7 @@ test("a new item's name can't be only spaces", { tag: ["@J4.2"] }, async ({ page
   await openEcho(page);
   await enterBarcode(page, "NEW2");
   await modal(page).getByLabel("Item name").fill("   ");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(modal(page).getByRole("heading", { name: "Check out" })).toBeVisible();
   expect(await page.evaluate(() => window.__mock.docs.has("products/NEW2"))).toBe(false);
 });
@@ -281,7 +282,7 @@ test("a new item's name can't be only spaces", { tag: ["@J4.2"] }, async ({ page
 test("a project created while updates arrive instantly appears once", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page, { instantUpdates: true });
   await createProject(page, "Oscar Two");
-  await page.getByRole("button", { name: "← All projects" }).first().click();
+  await backToProjects(page);
   await expect(page.getByRole("button", { name: /Oscar Two/ })).toHaveCount(1);
 });
 
@@ -294,7 +295,7 @@ test("the quantity stepper counts up and down and won't check out zero", { tag: 
   await expect(modal(page).getByRole("button", { name: "Add 2 to project" })).toBeVisible();
   await modal(page).getByRole("button", { name: "Fewer" }).click();
   await modal(page).getByRole("button", { name: "Fewer" }).click();
-  await modal(page).getByRole("button", { name: "Add 0 to project" }).click();
+  await addToProject(page, 0);
   await expect(page.locator("#toast")).toHaveText("Choose at least 1.");
   await modal(page).getByRole("button", { name: "Cancel" }).click();
 });
@@ -303,10 +304,10 @@ test("scanning a barcode stored under a different key finds the item", { tag: ["
   await openApp(page, {
     seed: { "products/legacy-1": { code: "0042", name: "Sponges", price: 1 }, ...usedState.seed },
   });
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await enterBarcode(page, "0042");
   await expect(modal(page)).toContainText("Sponges");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "Sponges")).toBeVisible();
   // Items without a storage count stay uncounted
   expect(await page.evaluate(() => window.__mock.docs.get("products/legacy-1").stock)).toBeUndefined();
@@ -320,20 +321,20 @@ test("typing nothing in the barcode box does nothing", { tag: ["@J4.2"] }, async
 
 test("returns an item without a barcode by picking it", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await expect(page.locator("#scanLabel")).toHaveText("Scan to return");
   await page.getByRole("button", { name: "Return item without a barcode" }).click();
   await modal(page).getByRole("button", { name: /Storage bins/ }).click();
   await expect(modal(page).getByRole("heading", { name: "Return" })).toBeVisible();
   await expect(modal(page)).toContainText("2 taken");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(lineRow(page, "Storage bins").locator("td").nth(3)).toHaveText("1");
 });
 
 test("returning from an empty project says nothing was taken", { tag: ["@J4.3"] }, async ({ page }) => {
   await openApp(page);
   await createProject(page, "Lima Ltd");
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await page.getByRole("button", { name: "Return item without a barcode" }).click();
   await expect(modal(page)).toContainText("Nothing has been checked out on this project yet.");
   await modal(page).getByRole("button", { name: "Cancel" }).click();
@@ -341,11 +342,11 @@ test("returning from an empty project says nothing was taken", { tag: ["@J4.3"] 
 
 test("a return needs at least one, and can be cancelled", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   await expect(modal(page)).toContainText("3 taken · 1 back");
   await modal(page).locator("#fRet").fill("0");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(page.locator("#toast")).toHaveText("Choose at least 1.");
   await modal(page).getByRole("button", { name: "Cancel" }).click();
   await expect(page.locator("#overlay")).toBeHidden();
@@ -353,8 +354,8 @@ test("a return needs at least one, and can be cancelled", { tag: ["@J4.3"] }, as
 
 test("returning an item that isn't on the project offers to check it out", { tag: ["@J4.3"] }, async ({ page }) => {
   await openApp(page, { seed: { ...usedState.seed, "products/SKU9": { code: "SKU9", name: "Bleach", price: 4, stock: 3 } } });
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await openProject(page, "Echo Studio");
+  await startReturn(page);
 
   await enterBarcode(page, "UNKNOWN");
   await expect(modal(page).getByRole("heading", { name: "Not on this project" })).toBeVisible();
@@ -366,7 +367,7 @@ test("returning an item that isn't on the project offers to check it out", { tag
   await modal(page).getByRole("button", { name: "Check it out instead" }).click();
   await expect(modal(page).getByRole("heading", { name: "Check out" })).toBeVisible();
   await expect(page.locator("#scanLabel")).toHaveText("Scan to check out");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "Bleach")).toBeVisible();
 });
 
@@ -391,14 +392,14 @@ test("projects from before sign-in show who prepared them, or Unknown", { tag: [
   });
   await expect(page.getByRole("button", { name: /Named/ })).toContainText("Pat");
   await expect(page.getByRole("button", { name: /Anon/ })).toContainText("Unknown");
-  await page.getByRole("button", { name: /Anon/ }).click();
+  await openProject(page, "Anon");
   await page.getByRole("button", { name: "Download CSV" }).click();
   expect(await page.evaluate(() => window.__mock.saves[0].data)).toContain("Prepared by,Unknown");
 });
 
 test("any other failed save asks the user to check their connection", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page, { writeError: "unavailable" });
-  await page.getByRole("button", { name: "Finished Return" }).click();
+  await finishReturn(page);
   await expect(page.locator("#toast")).toHaveText("That didn't save. Check your connection and try again.");
 });
 
@@ -415,7 +416,7 @@ test("keys other than Enter don't open a line; the return count can't exceed wha
   await lineRow(page, "Paper towels").press("a");
   await expect(page.locator("#overlay")).toBeHidden();
 
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   const count = modal(page).locator("#fRet");
   await count.fill("99");
@@ -426,7 +427,7 @@ test("keys other than Enter don't open a line; the return count can't exceed wha
 
 test("barcodes that are built-in object keys check out and return like any other", { tag: ["@J4.2", "@J4.3"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "constructor");
   await expect(modal(page).getByRole("heading", { name: "Not on this project" })).toBeVisible();
   await expect(modal(page)).toContainText("This item wasn't checked out");
@@ -436,13 +437,13 @@ test("barcodes that are built-in object keys check out and return like any other
   await expect(modal(page)).not.toContainText("Already on this project");
   await modal(page).getByLabel("Item name").fill("Widget A");
   await modal(page).getByLabel("Price each ($)").fill("2");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "Widget A")).toBeVisible();
 
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "constructor");
   await expect(modal(page).getByRole("heading", { name: "Return" })).toBeVisible();
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(lineRow(page, "Widget A").locator("td").nth(3)).toHaveText("1");
   const doc = await page.evaluate(() => window.__mock.docs.get("projects/s1").items.constructor);
   expect(doc).toMatchObject({ code: "constructor", name: "Widget A", price: 2, out: 1, returned: 1 });
@@ -451,7 +452,7 @@ test("barcodes that are built-in object keys check out and return like any other
 
 test("a tap on the list survives a redraw, and a snapshot with no changes leaves the list alone", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, usedState);
-  await page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
+  await waitUntilConnected(page);
   const echo = page.getByRole("button", { name: /Echo Studio/ });
   await expect(echo).toBeVisible();
   const card = await echo.elementHandle();
@@ -538,7 +539,7 @@ test("the project's buttons act on the latest copy of the project", { tag: ["@J4
 
 test("a refused write to a project that's still there switches the page to view-only", { tag: ["@J9"] }, async ({ page }) => {
   await openEcho(page, { writeError: "invalid_argument" });
-  await page.getByRole("button", { name: "Finished Return" }).click();
+  await finishReturn(page);
   await expect(page.locator("#notice")).toContainText("view-only access");
   await expect(page.locator("#scanbar")).toBeHidden();
 });

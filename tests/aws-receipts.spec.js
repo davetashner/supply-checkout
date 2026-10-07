@@ -2,7 +2,8 @@
 // POST /teams/{teamId}/receipts/read (ADR 0008), against the fake backend in
 // tests/fake-aws.js, and the app's review reads what comes back. The server's side is
 // backend/test/receipts-api.test.ts.
-import { test, expect, modal, modalViolations } from "./helpers.js";
+import { test, expect, modalViolations } from "./helpers.js";
+import { modal, goToInventory, uploadReceipt } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, TEAM, openAws, connected } from "./fake-aws.js";
 
@@ -70,7 +71,7 @@ test.describe("reading a receipt on the receipt endpoint", { tag: ["@J5", "@J5.1
     await expect(page.locator("#toast")).toHaveText("1 added to storage");
     const put = backend.requests("PUT", /^\/teams\/t1\/products\/nb-/)[0];
     expect(put.body.data.name).toBe(html);
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await expect(page.locator("#main")).toContainText(html);
     expect(await page.locator("#main img").count()).toBe(0);
     expect(await page.evaluate(() => window.__pwned)).toBeUndefined();
@@ -203,8 +204,7 @@ test.describe("receipt scans left, and the limits", { tag: ["@J5", "@J5.1"] }, (
     // On a phone too, it fits the width
     const box = await left(page).boundingBox();
     expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize().width);
-    await page.setInputFiles("#receiptFile", photo);
-    await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+    await uploadReceipt(page, photo);
     await page.getByRole("button", { name: "← All projects" }).click();
     // From the read's own answer: no second request
     await expect(left(page)).toHaveText("199 of 200 receipt scans left this month");
@@ -216,8 +216,7 @@ test.describe("receipt scans left, and the limits", { tag: ["@J5", "@J5.1"] }, (
     await openAws(page, backend);
     await connected(page);
     await expect(left(page)).toHaveText("1 of 1 free trial receipt scans left");
-    await page.setInputFiles("#receiptFile", photo);
-    await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+    await uploadReceipt(page, photo);
     await page.getByRole("button", { name: "← All projects" }).click();
     await expect(left(page)).toHaveText("No free trial receipt scans left. An owner can subscribe to scan more.");
     await page.setInputFiles("#receiptFile", photo);

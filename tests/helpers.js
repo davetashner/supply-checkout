@@ -4,6 +4,7 @@ import { builtFiles, currentBuild } from "../scripts/builds.mjs";
 import { installMockClaude } from "./mock-claude.js";
 import * as coverage from "./coverage.js";
 import * as journeyVideo from "./journey-video.js";
+import { modal } from "./ui/app.js";
 
 const ORIGIN = "https://supply-checkout.test/";
 // Fonts and CDN scripts, which openApp aborts to keep tests hermetic
@@ -101,20 +102,6 @@ export async function openApp(page, opts = {}) {
   await page.goto(ORIGIN);
 }
 
-export async function createProject(page, client) {
-  await page.getByRole("button", { name: "+ New project" }).click();
-  await page.getByLabel("Client", { exact: true }).fill(client);
-  await page.getByRole("button", { name: "Create project" }).click();
-  await expect(page.getByRole("heading", { name: client })).toBeVisible();
-}
-
-export async function enterBarcode(page, code) {
-  await page.getByPlaceholder("Or type the barcode").fill(code);
-  await page.getByPlaceholder("Or type the barcode").press("Enter");
-}
-
-export const modal = (page) => page.locator("#modal");
-
 /**
  * The open modal's accessibility violations (WCAG 2.1 A and AA), by rule ID.
  * A modal rises into place from 0.6 opacity (`.modal`'s "rise" animation in
@@ -126,5 +113,3 @@ export async function modalViolations(page) {
   const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   return violations.map((v) => v.id);
 }
-export const lineRow = (page, name) => page.locator("#projectBody tbody tr", { hasText: name });
-export const inventoryRow = (page, name) => page.locator("#main tbody tr", { hasText: name });

@@ -2,7 +2,8 @@
 // in-memory runtime and demo data, and a banner saying so. It's built and tested
 // with the web build (BUILD=web), in every browser.
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect, modal, lineRow } from "./helpers.js";
+import { test, expect } from "./helpers.js";
+import { modal, openProject, addToProject, lineRow, enterBarcode } from "./ui/index.js";
 import { DEMO, builtFiles } from "../scripts/builds.mjs";
 import { fakeImage } from "./fixtures.js";
 
@@ -49,13 +50,12 @@ test("says it's a demo, checks out, reads a receipt and downloads, without leavi
   await expect(banner).toHaveText("Demo: nothing you enter is saved. Data resets when you reload.");
 
   // Check out two more boxes of gloves on the open project
-  await page.getByRole("button", { name: /Acme Offices/ }).click();
+  await openProject(page, "Acme Offices");
   await expect(page.getByRole("heading", { name: "Acme Offices" })).toBeVisible();
   await expect(page.getByText("Prepared by Demo user")).toBeVisible();
-  await page.getByPlaceholder("Or type the barcode").fill("012345678905");
-  await page.getByPlaceholder("Or type the barcode").press("Enter");
+  await enterBarcode(page, "012345678905");
   await modal(page).locator("#fQty").fill("2");
-  await modal(page).getByRole("button", { name: "Add 2 to project" }).click();
+  await addToProject(page, 2);
   await expect(lineRow(page, "Nitrile gloves")).toContainText("4");
   await expect(page.locator(".totals .charge")).toHaveText("$67.00");
 
@@ -76,7 +76,7 @@ test("says it's a demo, checks out, reads a receipt and downloads, without leavi
 
 test("a reload starts over with the demo data", async ({ page }) => {
   await openDemo(page);
-  await page.getByRole("button", { name: /Acme Offices/ }).click();
+  await openProject(page, "Acme Offices");
   await page.getByRole("button", { name: "Delete project" }).click();
   await page.getByRole("button", { name: "Tap again to delete" }).click();
   await expect(page.getByRole("button", { name: /Acme Offices/ })).toHaveCount(0);

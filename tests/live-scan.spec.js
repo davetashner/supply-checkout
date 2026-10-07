@@ -1,6 +1,7 @@
 // Live barcode scanning (src/live-scan.js, supply-checkout-005.7.1): the camera opens in a
 // scanner, frames are read, and a code is taken once separate frames agree on it.
-import { test, expect, openApp, modal, lineRow } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, goToInventory, addToProject, lineRow, startAddItem, uploadReceipt } from "./ui/index.js";
 import AxeBuilder from "@axe-core/playwright";
 import { usedState, fakeImage } from "./fixtures.js";
 import { installCamera, upcA } from "./camera.js";
@@ -290,8 +291,8 @@ test("a flashlight that won't turn on stays off", { tag: ["@J4.2"] }, async ({ p
 test("an item's barcode can be scanned live into the item form", { tag: ["@J2.2"] }, async ({ page }) => {
   await page.addInitScript(installCamera, { detector: [[code("5550001")]] });
   await openApp(page);
-  await page.getByRole("button", { name: "Inventory" }).click();
-  await page.getByRole("button", { name: "+ Add item" }).click();
+  await goToInventory(page);
+  await startAddItem(page);
   await modal(page).getByText("Scan", { exact: true }).click();
   await expect(modal(page).getByPlaceholder("Type, scan, or leave blank")).toHaveValue("5550001");
 });
@@ -300,8 +301,7 @@ async function openReceipt(page, camera) {
   await page.addInitScript(installCamera, camera);
   await openApp(page, usedState);
   await expect(page.getByText("Connecting…")).toBeHidden();
-  await page.setInputFiles("#receiptFile", fakeImage);
-  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+  await uploadReceipt(page, fakeImage);
 }
 const lineCode = (page) => page.locator(".rline").nth(1).locator('[data-f="code"]');
 
@@ -342,7 +342,7 @@ test("an input that's gone with nothing in its place still gets the code", { tag
 test("a code scanned live is checked out like a photo's", { tag: ["@J4.2"] }, async ({ page }) => {
   await openProject(page, { detector: [[code("SKU1")]] });
   await scan(page);
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "Paper towels")).toContainText("4");
 });
 
