@@ -90,6 +90,10 @@ jobs:
       # docs/journeys.md matches journeys/registry.json. It lists the Playwright tests,
       # which load the build the lint step just made.
       - run: npm run journeys:trace
+      # The prod journey specs (tests/prod/, supply-checkout-o60.5) load: a broken import or
+      # fixture fails the PR before the suite first runs against prod. Listing runs no test,
+      # no global setup and nothing against prod, and needs no secret.
+      - run: npm run journeys:prod:list
 
   workflows:
     name: Lint GitHub workflows
