@@ -210,8 +210,8 @@ jobs:
       # Browsers and their OS packages come from caches when they can (see "Browsers
       # in CI" in docs/testing.md). On 2026-10-01 the Ubuntu mirror served WebKit's
       # OS packages so slowly that 'playwright install --with-deps webkit' ran into
-      # the job's timeout. The keys name the Playwright version, so a version bump
-      # starts fresh. These jobs hold no credentials, and a pull request's run can
+      # the job's timeout. The browsers' key names the Playwright version, so a
+      # version bump starts fresh. These jobs hold no credentials, and a pull request's run can
       # only save caches into its own branch's scope, never into main's.
       - name: Playwright version
         id: pw
@@ -224,56 +224,82 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-browsers-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ steps.pw.outputs.version }}
-      # The .deb files apt downloaded for the browser's OS packages. The runner image
-      # changes weekly, so the key names it, and an older image's files are restored
-      # first: apt downloads only what's newer.
+      # The .deb files apt downloaded for the browser's OS packages, keyed by the
+      # files' names (so by package versions). This restores the newest set for
+      # the browser and Ubuntu release; apt downloads only what isn't in it.
       - name: Restore the browser's OS packages
         id: debs
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/playwright-debs
-          key: playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ steps.pw.outputs.version }}-${{ env.ImageOS }}-${{ env.ImageVersion }}
-          restore-keys: |
-            playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ steps.pw.outputs.version }}-${{ env.ImageOS }}-
-            playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-
+          # Never an exact hit: a key that names this run, so the prefix decides
+          key: playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ env.ImageOS }}-run-${{ github.run_id }}
+          restore-keys: playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ env.ImageOS }}-
       # Bounded, so a slow mirror or download can't eat the tests' time: each try
       # gets 3 minutes (a normal install takes under one), then it tries again
+      # without the runner's first mirror, the one that was slow
       - name: Install the browser and its OS packages
+        id: install
         timeout-minutes: 10
         env:
           BROWSER: ${{ matrix.browser }}
+          KEY_PREFIX: playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ env.ImageOS }}-
         run: |
           debs="$HOME/.cache/playwright-debs"
           mkdir -p "$debs"
           if compgen -G "$debs/*.deb" > /dev/null; then sudo cp "$debs"/*.deb /var/cache/apt/archives/; fi
+          echo "$(find "$debs" -name '*.deb' | wc -l) cached .deb files"
           printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries > /dev/null
+          mirrors=/etc/apt/apt-mirrors.txt
           cli="node_modules/playwright-core/cli.js"
           node="$(command -v node)"
+          status=1
           for try in 1 2 3; do
+            if [[ "$try" -gt 1 && -f "$mirrors" ]] && grep -v azure "$mirrors" | grep -q .; then
+              sudo sed -i '/azure\.archive\.ubuntu\.com/d' "$mirrors"
+              echo "Mirrors now:"; cat "$mirrors"
+            fi
             # As root, so the timeout also stops apt-get. A stopped try can leave dpkg
             # half-configured, which the next try finishes first.
             sudo dpkg --configure -a
             if sudo timeout -k 15s 3m "$node" "$cli" install-deps "$BROWSER" &&
               timeout -k 15s 3m "$node" "$cli" install "$BROWSER"; then
-              cp /var/cache/apt/archives/*.deb "$debs"/ 2> /dev/null || true
               echo "Installed $BROWSER on try $try"
-              exit 0
+              status=0
+              break
             fi
             echo "::warning::Installing $BROWSER failed or took over 3 minutes (try $try of 3)"
           done
-          exit 1
+          # Keep every file apt finished downloading, even after a failed install, so
+          # the next run starts from there
+          cp /var/cache/apt/archives/*.deb "$debs"/ 2> /dev/null || true
+          if [[ "$status" -eq 0 ]]; then
+            # Then drop the files for versions that aren't installed (superseded ones)
+            for f in "$debs"/*.deb; do
+              [[ -e "$f" ]] || continue
+              pkg="$(dpkg-deb -f "$f" Package)"
+              if [[ "$(dpkg-query -W -f='${Version}' "$pkg" 2> /dev/null)" != "$(dpkg-deb -f "$f" Version)" ]]; then rm -f "$f"; fi
+            done
+          fi
+          count="$(find "$debs" -name '*.deb' | wc -l)"
+          echo "$count .deb files to cache"
+          if [[ "$count" -gt 0 ]]; then
+            echo "debs-key=${KEY_PREFIX}$(find "$debs" -name '*.deb' -printf '%f\n' | sort | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$status"
       - name: Save the Playwright browsers
         if: steps.browsers.outcome == 'success' && steps.browsers.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ${{ steps.browsers.outputs.cache-primary-key }}
+      # Also after a failed install, when the set of files changed
       - name: Save the browser's OS packages
-        if: steps.debs.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && steps.install.outputs.debs-key != '' && steps.install.outputs.debs-key != steps.debs.outputs.cache-matched-key }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/playwright-debs
-          key: ${{ steps.debs.outputs.cache-primary-key }}
+          key: ${{ steps.install.outputs.debs-key }}
       # Builds the app first (tests/global-setup.js)
       - run: npx playwright test --project=${{ matrix.project }}
         env:
