@@ -267,6 +267,44 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     expect((await history(ctx)).map((m) => m.reason)).toEqual(["count", "checkout"]);
   });
 
+  it("ends a low-stock acknowledgment when a return, receipt or count takes stock above the reorder level, and not on a checkout (reorder.ts)", async () => {
+    const ctx = await team();
+    const product = async () => (await getDocument(db, ctx, "products", "0123"))?.data;
+    await counted(ctx, "0123", { code: "0123", name: "Nitrile gloves", price: 12.5, stock: 10, reorderAt: 5, reorderQty: 24 });
+    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 7 });
+    await updateDocument(db, ctx, "products", "0123", { ackedAtStock: 3 });
+    // A checkout never ends it, and a return that stays at the level keeps it
+    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 1 });
+    await returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 3 });
+    expect(await product()).toMatchObject({ stock: 5, ackedAtStock: 3 });
+    await returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 1 });
+    expect(await product()).toMatchObject({ stock: 6, reorderAt: 5, reorderQty: 24 });
+    expect(await product()).not.toHaveProperty("ackedAtStock");
+
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 2, expectedStock: 6 });
+    await updateDocument(db, ctx, "products", "0123", { ackedAtStock: 2 });
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "receipt", quantity: 1, unitCost: 9 });
+    expect(await product()).toMatchObject({ stock: 3, ackedAtStock: 2 });
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "receipt", quantity: 24, unitCost: 9 });
+    expect(await product()).toMatchObject({ stock: 27 });
+    expect(await product()).not.toHaveProperty("ackedAtStock");
+
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 1, expectedStock: 27 });
+    await updateDocument(db, ctx, "products", "0123", { ackedAtStock: 1 });
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 9, expectedStock: 1 });
+    expect(await product()).toMatchObject({ stock: 9 });
+    expect(await product()).not.toHaveProperty("ackedAtStock");
+    // Concurrent returns of an acknowledged item: each decides on the stock it adds to, so none is lost
+    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 9 });
+    await updateDocument(db, ctx, "products", "0123", { ackedAtStock: 0 });
+    const outcomes = await Promise.allSettled(Array.from({ length: 4 }, () => returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 2 })));
+    for (const o of outcomes) if (o.status === "rejected") expect(o.reason).toBeInstanceOf(ConflictError);
+    const back = outcomes.filter((o) => o.status === "fulfilled").length * 2;
+    expect(await stock(ctx)).toBe(back);
+    if (back > 5) expect(await product()).not.toHaveProperty("ackedAtStock");
+    else expect(await product()).toHaveProperty("ackedAtStock", 0);
+  });
+
   it("refuses viewers", async () => {
     const ctx = await team();
     const { invite, token } = await createInvite(db, ctx, { email: "viewer@example.com", role: "viewer" });
