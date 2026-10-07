@@ -355,6 +355,27 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     expect(await productData(ctx)).not.toHaveProperty("ackedAtStock");
   });
 
+  it("ends an order committed between a return's read and its commit, when the return crosses the level (supply-checkout-005.14)", async () => {
+    const ctx = await team();
+    await reorderItem(ctx, { stock: 4, reorderAt: 5 });
+    // The return reads no marks; someone marks it ordered before it commits
+    const race = racing(1, () => updateDocument(db, ctx, "products", "0123", { orderedQty: 24, orderedOn: "2026-10-07" }));
+    await returnItems(race.db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 3 });
+    expect(race.attempts()).toBe(2);
+    expect(await productData(ctx)).toMatchObject({ stock: 7, reorderAt: 5 });
+    expect(await productData(ctx)).not.toHaveProperty("orderedQty");
+    expect(await productData(ctx)).not.toHaveProperty("orderedOn");
+    // And one that doesn't cross keeps an order made meanwhile
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 1, expectedStock: 7 });
+    const keeping = racing(1, () => updateDocument(db, ctx, "products", "0123", { orderedQty: 24, orderedOn: "2026-10-07" }));
+    await returnItems(keeping.db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 1 });
+    expect(keeping.attempts()).toBe(2);
+    expect(await productData(ctx)).toMatchObject({ stock: 2, orderedQty: 24, orderedOn: "2026-10-07" });
+    // Uncounting removes it with the stock
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "uncount", expectedStock: 2 });
+    expect(await productData(ctx)).toEqual({ code: "0123", name: "Nitrile gloves", price: 12.5, reorderAt: 5 });
+  });
+
   it("decides on the reorder level the return commits against, when it changed after the read", async () => {
     const ctx = await team();
     await reorderItem(ctx, { stock: 5, reorderAt: 5, ackedAtStock: 3 });

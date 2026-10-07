@@ -44,7 +44,7 @@ import { count as checkCount, MAX_MONEY, MAX_QUANTITY, money, quantity as checkQ
 import { type Page, queryPage } from "./query.js";
 import { legacy } from "./legacy-sheets.js";
 import { projectKeyFor, readProjectItem } from "./project-items.js";
-import { ackOnCount, ackOnRaise, ackRemoval } from "./reorder.js";
+import { MARKS_REMOVED, marksOnCount, marksOnRaise, marksRemoval } from "./reorder.js";
 import { PK } from "./schema.js";
 import { storedMarkup } from "./settings.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -454,15 +454,15 @@ function productWrite(
   const names = { "#stock": "stock", ...extra.names };
   if (tracked) {
     checkVersion(product);
-    // A return that takes stock above the reorder level ends the low-stock acknowledgment
+    // A return that takes stock above the reorder level ends the low-stock marks (acknowledgment, order)
     // (reorder.ts); a checkout (delta < 0) gets nothing from this, and its update is unchanged
-    const ack = ackOnRaise(product, delta);
+    const ack = marksOnRaise(product, delta);
     return {
       item: {
         Update: {
           TableName: db.tableName,
           Key,
-          UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :delta${ackRemoval(ack)}`,
+          UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :delta${marksRemoval(ack)}`,
           ConditionExpression: ["attribute_exists(#stock)", ...extra.clauses, ...(ack?.clauses ?? [])].join(" AND "),
           ExpressionAttributeNames: { ...names, "#version": "version", ...ack?.names },
           ExpressionAttributeValues: { ":delta": delta, ":one": 1, ...extra.values, ...ack?.values },
@@ -1407,8 +1407,8 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
     if (product.stock !== undefined && typeof product.stock !== "number") throw new InvalidInputError("This item's stock isn't a number");
     if (parsed.reason === "receipt") {
       const { qty, unitCost } = parsed;
-      // A restock above the reorder level ends the low-stock acknowledgment (reorder.ts)
-      const ack = ackOnRaise(product, qty);
+      // A restock above the reorder level ends the low-stock marks (acknowledgment, order) (reorder.ts)
+      const ack = marksOnRaise(product, qty);
       return {
         result: { ...base, reason: "receipt", quantity: qty, stockDelta: qty, unitCost },
         writes: [
@@ -1416,7 +1416,7 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
             Update: {
               TableName: db.tableName,
               Key,
-              UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :qty${ackRemoval(ack)}`,
+              UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :qty${marksRemoval(ack)}`,
               ConditionExpression: ["attribute_exists(PK)", ...(ack?.clauses ?? [])].join(" AND "),
               ExpressionAttributeNames: { "#stock": "stock", "#version": "version", ...ack?.names },
               ExpressionAttributeValues: { ":qty": qty, ":one": 1, ...ack?.values },
@@ -1452,11 +1452,11 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
             Update: {
               TableName: db.tableName,
               Key,
-              // An uncounted item is never low, so its low-stock acknowledgment goes too (reorder.ts)
-              UpdateExpression: `SET ${BUMP_VERSION} REMOVE #stock, #ackedAtStock`,
+              // An uncounted item is never low, so its low-stock marks go too (reorder.ts)
+              UpdateExpression: `SET ${BUMP_VERSION} REMOVE #stock, ${MARKS_REMOVED}`,
               // Removed from the level just read, so the movement's delta is exact
               ConditionExpression: "attribute_exists(PK) AND #stock = :current",
-              ExpressionAttributeNames: { "#stock": "stock", "#version": "version", "#ackedAtStock": "ackedAtStock" },
+              ExpressionAttributeNames: { "#stock": "stock", "#version": "version", "#ackedAtStock": "ackedAtStock", "#orderedQty": "orderedQty", "#orderedOn": "orderedOn" },
               ExpressionAttributeValues: { ":current": current, ":one": 1 },
             },
           },
@@ -1465,9 +1465,9 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
       };
     }
     const delta = parsed.counted - (current ?? 0);
-    // A count above the reorder level ends the low-stock acknowledgment (reorder.ts). The write is
+    // A count above the reorder level ends the low-stock marks (acknowledgment, order) (reorder.ts). The write is
     // conditional on the stock just read, and on the acknowledgment and level as read.
-    const ack = ackOnCount(product, parsed.counted);
+    const ack = marksOnCount(product, parsed.counted);
     return {
       result: { ...base, reason: "count", count: parsed.counted, stockDelta: delta },
       writes: [
@@ -1475,7 +1475,7 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
           Update: {
             TableName: db.tableName,
             Key,
-            UpdateExpression: `SET #stock = :count, ${BUMP_VERSION}${ackRemoval(ack)}`,
+            UpdateExpression: `SET #stock = :count, ${BUMP_VERSION}${marksRemoval(ack)}`,
             // Set from the level just read, so the movement's delta is exact
             ConditionExpression: [current === undefined ? "attribute_exists(PK) AND attribute_not_exists(#stock)" : "attribute_exists(PK) AND #stock = :current", ...ack.clauses].join(" AND "),
             ExpressionAttributeNames: { "#stock": "stock", "#version": "version", ...ack.names },

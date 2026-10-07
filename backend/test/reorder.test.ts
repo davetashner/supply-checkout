@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
 import { InvalidInputError } from "../src/data/index.js";
-import { ackEnds, ackOnCount, ackOnRaise, ackRemoval, checkReorderFields } from "../src/data/reorder.js";
+import { checkReorderFields, dropMarks, hasMarks, marksEnd, marksOnCount, marksOnRaise, marksRemoval } from "../src/data/reorder.js";
 import type { Observability } from "../src/observability/index.js";
 import { MemoryTable } from "./memory-table.js";
 
@@ -83,6 +83,9 @@ function seed(product: Record<string, unknown> = gloves, project: Record<string,
 const stored = () => table.get("TEAM#team-a", "PRODUCT#0123") as Record<string, unknown>;
 const op = () => randomUUID();
 
+const MARKS = { "#ackedAtStock": "ackedAtStock", "#orderedQty": "orderedQty", "#orderedOn": "orderedOn" };
+const NONE = ["attribute_not_exists(#ackedAtStock)", "attribute_not_exists(#orderedQty)", "attribute_not_exists(#orderedOn)"];
+
 describe("the rules (reorder.ts)", () => {
   it("checks each reorder field as a whole number in its range, and lets an unchanged stored value through", () => {
     expect(() => checkReorderFields({ reorderAt: 0, reorderQty: 1, ackedAtStock: 0 })).not.toThrow();
@@ -100,45 +103,77 @@ describe("the rules (reorder.ts)", () => {
   });
 
   it("ends an acknowledgment only when stock goes above the reorder level, or the item has no level", () => {
-    expect(ackEnds(undefined, 10)).toBe(false);
-    expect(ackEnds({ reorderAt: 5 }, 10)).toBe(false);
-    expect(ackEnds({ reorderAt: 5, ackedAtStock: 3 }, 5)).toBe(false);
-    expect(ackEnds({ reorderAt: 5, ackedAtStock: 3 }, 6)).toBe(true);
-    expect(ackEnds({ ackedAtStock: 3 }, 0)).toBe(true);
-    expect(ackEnds({ reorderAt: "5", ackedAtStock: 3 }, 0)).toBe(true);
+    expect(marksEnd(undefined, 10)).toBe(false);
+    expect(marksEnd({ reorderAt: 5 }, 10)).toBe(false);
+    expect(marksEnd({ reorderAt: 5, ackedAtStock: 3 }, 5)).toBe(false);
+    expect(marksEnd({ reorderAt: 5, ackedAtStock: 3 }, 6)).toBe(true);
+    expect(marksEnd({ ackedAtStock: 3 }, 0)).toBe(true);
+    expect(marksEnd({ reorderAt: "5", ackedAtStock: 3 }, 0)).toBe(true);
+  });
+
+  it("ends an order like an acknowledgment, and treats either as the item's marks", () => {
+    expect(hasMarks({ reorderAt: 5 })).toBe(false);
+    expect(hasMarks({ orderedQty: 24, orderedOn: "2026-10-07" })).toBe(true);
+    expect(marksEnd({ reorderAt: 5, orderedQty: 24, orderedOn: "2026-10-07" }, 5)).toBe(false);
+    expect(marksEnd({ reorderAt: 5, orderedQty: 24, orderedOn: "2026-10-07" }, 6)).toBe(true);
+    const data = { name: "x", ackedAtStock: 1, orderedQty: 2, orderedOn: "2026-10-07" };
+    dropMarks(data);
+    expect(data).toEqual({ name: "x" });
+    // An order alone is read as marks: a raise is conditioned on the level, and removes every mark
+    expect(marksOnRaise({ stock: 1, reorderAt: 5, orderedQty: 24, orderedOn: "2026-10-07" }, 24)).toMatchObject({ remove: true, names: MARKS, clauses: ["#reorderAt = :readLevel", "#stock > :threshold"] });
+  });
+
+  it("checks an order: a whole quantity from 1 and a date, together", () => {
+    const order = { orderedQty: 24, orderedOn: "2026-10-07" };
+    expect(() => checkReorderFields({ ...order })).not.toThrow();
+    for (const orderedQty of [0, -1, 2.5, "24", null, 1_000_001]) expect(() => checkReorderFields({ ...order, orderedQty }), String(orderedQty)).toThrow(/orderedQty must be a whole number from 1/);
+    for (const orderedOn of ["2026-13-01", "2026-10-7", "Oct 7", "", 20261007, null, "2026-10-07T00:00:00Z"]) {
+      expect(() => checkReorderFields({ ...order, orderedOn }), String(orderedOn)).toThrow("orderedOn must be a date, YYYY-MM-DD");
+    }
+    expect(() => checkReorderFields({ orderedQty: 24 })).toThrow("orderedQty and orderedOn go together");
+    expect(() => checkReorderFields({ orderedOn: "2026-10-07" })).toThrow("orderedQty and orderedOn go together");
+    // Dropping half of a stored order is refused; a stray half already stored, carried over, isn't
+    expect(() => checkReorderFields({ orderedQty: 24 }, order)).toThrow("orderedQty and orderedOn go together");
+    expect(() => checkReorderFields({ orderedQty: 24 }, { orderedQty: 24 })).not.toThrow();
+    expect(() => checkReorderFields({ orderedQty: 25 }, { orderedQty: 24 })).toThrow("orderedQty and orderedOn go together");
+    expect(() => checkReorderFields({ orderedOn: "bad" }, { orderedOn: "bad" })).not.toThrow();
+    // A changed level keeps an order: it's still on its way
+    const kept = { reorderAt: 8, ...order };
+    checkReorderFields(kept, { reorderAt: 5, ...order });
+    expect(kept).toEqual({ reorderAt: 8, ...order });
   });
 
   it("conditions a raising stock change on what its decision was made on, and leaves checkouts alone", () => {
     const level = { names: { "#reorderAt": "reorderAt" }, values: { ":readLevel": 5 }, clauses: ["#reorderAt = :readLevel"] };
-    expect(ackOnRaise(undefined, 5)).toBeUndefined();
+    expect(marksOnRaise(undefined, 5)).toBeUndefined();
     // A checkout (or nothing) adds nothing, acknowledged or not
-    expect(ackOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, -1)).toBeUndefined();
-    expect(ackOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 0)).toBeUndefined();
+    expect(marksOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, -1)).toBeUndefined();
+    expect(marksOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 0)).toBeUndefined();
     // None read: still none when it commits
-    expect(ackOnRaise({ stock: 3, reorderAt: 5 }, 5)).toEqual({ remove: false, names: { "#ackedAtStock": "ackedAtStock" }, values: {}, clauses: ["attribute_not_exists(#ackedAtStock)"] });
+    expect(marksOnRaise({ stock: 3, reorderAt: 5 }, 5)).toEqual({ remove: false, names: MARKS, values: {}, clauses: NONE });
     // One read: the level as read, and the side of it the new stock lands on (3 + 2 = 5 stays; 3 + 3 = 6 crosses)
-    expect(ackOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 2)).toEqual({ remove: false, names: level.names, values: { ...level.values, ":threshold": 3 }, clauses: [...level.clauses, "#stock <= :threshold"] });
-    expect(ackOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 3)).toEqual({
+    expect(marksOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 2)).toEqual({ remove: false, names: level.names, values: { ...level.values, ":threshold": 3 }, clauses: [...level.clauses, "#stock <= :threshold"] });
+    expect(marksOnRaise({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 3)).toEqual({
       remove: true,
-      names: { ...level.names, "#ackedAtStock": "ackedAtStock" },
+      names: { ...level.names, ...MARKS },
       values: { ...level.values, ":threshold": 2 },
       clauses: [...level.clauses, "#stock > :threshold"],
     });
     // Not counted yet: a receipt starts the count at delta, if it's still not counted
-    expect(ackOnRaise({ reorderAt: 5, ackedAtStock: 0 }, 6)).toEqual({ remove: true, names: { ...level.names, "#ackedAtStock": "ackedAtStock" }, values: level.values, clauses: [...level.clauses, "attribute_not_exists(#stock)"] });
-    expect(ackOnRaise({ reorderAt: 5, ackedAtStock: 0 }, 5)).toEqual({ remove: false, names: level.names, values: level.values, clauses: [...level.clauses, "attribute_not_exists(#stock)"] });
+    expect(marksOnRaise({ reorderAt: 5, ackedAtStock: 0 }, 6)).toEqual({ remove: true, names: { ...level.names, ...MARKS }, values: level.values, clauses: [...level.clauses, "attribute_not_exists(#stock)"] });
+    expect(marksOnRaise({ reorderAt: 5, ackedAtStock: 0 }, 5)).toEqual({ remove: false, names: level.names, values: level.values, clauses: [...level.clauses, "attribute_not_exists(#stock)"] });
     // No level, or a stray one: always removed, while the level is still as read
-    expect(ackOnRaise({ stock: 3, ackedAtStock: 3 }, 1)).toEqual({ remove: true, names: { "#reorderAt": "reorderAt", "#ackedAtStock": "ackedAtStock" }, values: {}, clauses: ["attribute_not_exists(#reorderAt)"] });
-    expect(ackOnRaise({ stock: 3, reorderAt: "5", ackedAtStock: 3 }, 1)).toEqual({ remove: true, names: { "#reorderAt": "reorderAt", "#ackedAtStock": "ackedAtStock" }, values: { ":readLevel": "5" }, clauses: ["#reorderAt = :readLevel"] });
-    expect(ackRemoval(undefined)).toBe("");
-    expect(ackRemoval({ remove: false })).toBe("");
-    expect(ackRemoval({ remove: true })).toBe(" REMOVE #ackedAtStock");
+    expect(marksOnRaise({ stock: 3, ackedAtStock: 3 }, 1)).toEqual({ remove: true, names: { "#reorderAt": "reorderAt", ...MARKS }, values: {}, clauses: ["attribute_not_exists(#reorderAt)"] });
+    expect(marksOnRaise({ stock: 3, reorderAt: "5", ackedAtStock: 3 }, 1)).toEqual({ remove: true, names: { "#reorderAt": "reorderAt", ...MARKS }, values: { ":readLevel": "5" }, clauses: ["#reorderAt = :readLevel"] });
+    expect(marksRemoval(undefined)).toBe("");
+    expect(marksRemoval({ remove: false })).toBe("");
+    expect(marksRemoval({ remove: true })).toBe(" REMOVE #ackedAtStock, #orderedQty, #orderedOn");
   });
 
   it("conditions a count on the acknowledgment and level as read", () => {
-    expect(ackOnCount({ stock: 3, reorderAt: 5 }, 9)).toEqual({ remove: false, names: { "#ackedAtStock": "ackedAtStock" }, values: {}, clauses: ["attribute_not_exists(#ackedAtStock)"] });
-    expect(ackOnCount({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 5)).toEqual({ remove: false, names: { "#reorderAt": "reorderAt" }, values: { ":readLevel": 5 }, clauses: ["#reorderAt = :readLevel"] });
-    expect(ackOnCount({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 6)).toMatchObject({ remove: true, names: { "#ackedAtStock": "ackedAtStock" } });
+    expect(marksOnCount({ stock: 3, reorderAt: 5 }, 9)).toEqual({ remove: false, names: MARKS, values: {}, clauses: NONE });
+    expect(marksOnCount({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 5)).toEqual({ remove: false, names: { "#reorderAt": "reorderAt" }, values: { ":readLevel": 5 }, clauses: ["#reorderAt = :readLevel"] });
+    expect(marksOnCount({ stock: 3, reorderAt: 5, ackedAtStock: 3 }, 6)).toMatchObject({ remove: true, names: { ...MARKS } });
   });
 
   it("drops an acknowledgment carried over unchanged when the level changes, and keeps one the write sets", () => {
@@ -204,6 +239,60 @@ describe("the product routes", () => {
     expect((await call("PATCH", PRODUCT, { data: { reorderAt: 4 }, expectedVersion: 3 }, CONTRIBUTOR)).status).toBe(200);
     expect((await call("PATCH", PRODUCT, { data: { ackedAtStock: 3 }, expectedVersion: 4 }, OWNER)).status).toBe(200);
     expect(stored()).toMatchObject({ reorderAt: 4, ackedAtStock: 3, version: 5 });
+  });
+});
+
+describe("orders (supply-checkout-005.14)", () => {
+  const PROJECT = "/teams/team-a/projects/s1";
+  const order = { orderedQty: 24, orderedOn: "2026-10-07" };
+  const orderedGloves = { code: "0123", name: "Nitrile gloves", price: 12.5, stock: 3, reorderAt: 5, reorderQty: 24, ...order };
+
+  it("are marked and cancelled by contributors and owners with a document write, and refused for viewers, other teams and bad values", async () => {
+    seed({ ...gloves });
+    expect((await call("PATCH", PRODUCT, { data: order, expectedVersion: 3 }, VIEWER)).status).toBe(403);
+    expect((await call("PATCH", PRODUCT, { data: order, expectedVersion: 3 }, OUTSIDER)).status).toBe(403);
+    for (const data of [{ orderedQty: 24 }, { ...order, orderedQty: 0 }, { ...order, orderedOn: "next week" }, { ...order, orderedOn: null }]) {
+      expect(await call("PATCH", PRODUCT, { data, expectedVersion: 3 }), JSON.stringify(data)).toMatchObject({ status: 400, body: { error: { code: "bad_request" } } });
+    }
+    // The app marks an item ordered with a PUT of the item without its acknowledgment
+    const marked = await call("PUT", PRODUCT, { data: { ...orderedGloves }, expectedVersion: 3 }, CONTRIBUTOR);
+    expect(marked).toMatchObject({ status: 200, body: { version: 4, data: { ...orderedGloves } } });
+    expect(marked.body.data).not.toHaveProperty("ackedAtStock");
+    // Cancelling is a PUT without the order; dropping only half of it is refused
+    const half: Record<string, unknown> = { ...orderedGloves };
+    delete half.orderedOn;
+    expect((await call("PUT", PRODUCT, { data: half, expectedVersion: 4 }, OWNER)).status).toBe(400);
+    const cancelled = { ...half };
+    delete cancelled.orderedQty;
+    expect(await call("PUT", PRODUCT, { data: cancelled, expectedVersion: 4 }, OWNER)).toMatchObject({ status: 200, body: { version: 5 } });
+    expect(stored()).not.toHaveProperty("orderedQty");
+    expect(stored()).not.toHaveProperty("orderedOn");
+  });
+
+  it("a checkout keeps one, and a return, receipt, count or import above the level ends it, as do uncounting", async () => {
+    seed({ ...orderedGloves }, { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 10, returned: 0 } } });
+    await call("POST", `${PROJECT}/checkout`, { operationId: op(), productKey: "0123", quantity: 2 });
+    await call("POST", `${PROJECT}/return`, { operationId: op(), productKey: "0123", quantity: 4 });
+    expect(stored()).toMatchObject({ stock: 5, ...order });
+    await call("POST", `${PROJECT}/return`, { operationId: op(), productKey: "0123", quantity: 1 });
+    expect(stored().stock).toBe(6);
+    expect(stored()).not.toHaveProperty("orderedQty");
+    expect(stored()).not.toHaveProperty("orderedOn");
+
+    seed({ ...orderedGloves });
+    await call("POST", `${PRODUCT}/stock`, { operationId: op(), reason: "receipt", quantity: 24, unitCost: 9 });
+    expect(stored()).not.toHaveProperty("orderedQty");
+    seed({ ...orderedGloves });
+    await call("POST", `${PRODUCT}/stock`, { operationId: op(), reason: "count", count: 30, expectedStock: 3 });
+    expect(stored()).not.toHaveProperty("orderedQty");
+    seed({ ...orderedGloves, ackedAtStock: 3 });
+    await call("POST", `${PRODUCT}/stock`, { operationId: op(), reason: "uncount", expectedStock: 3 });
+    expect(stored()).toMatchObject({ reorderAt: 5, reorderQty: 24 });
+    for (const f of ["stock", "ackedAtStock", "orderedQty", "orderedOn"]) expect(stored()).not.toHaveProperty(f);
+    seed({ ...orderedGloves });
+    expect((await call("POST", "/teams/team-a/imports", { importId: randomUUID(), csv: "name,barcode,price,stock\nNitrile gloves,0123,12.50,30\n" }, OWNER)).status).toBe(200);
+    expect(stored()).toMatchObject({ stock: 30, reorderAt: 5 });
+    expect(stored()).not.toHaveProperty("orderedOn");
   });
 });
 

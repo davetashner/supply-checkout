@@ -347,6 +347,13 @@
           "status": "built",
           "beads": ["supply-checkout-005.8"],
           "tests": ["backend/test/reorder.test.ts", "backend/test/commands.test.ts"]
+        },
+        {
+          "id": "J15.4",
+          "text": "Or tap **Mark ordered**, with how many and when (the usual order and today to start). It shows **On order** and isn't flagged until it's restocked above the level and runs low again, or you tap **Cancel order**.",
+          "status": "built",
+          "beads": ["supply-checkout-005.14"],
+          "tests": ["backend/test/reorder.test.ts", "backend/test/commands.test.ts"]
         }
       ]
     }
