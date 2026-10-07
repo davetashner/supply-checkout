@@ -16,6 +16,19 @@ const ABORTED = /^https:\/\/fonts\.(googleapis|gstatic)\.com\//;
 const isAbortedRequest = (text) =>
   /Failed to load resource/.test(text) ||
   (/Cross-Origin Request Blocked/.test(text) && (text.match(/https:\/\/[^\s"]+/g) || []).some((url) => ABORTED.test(url)));
+// Console errors a test expects, by page (see allowConsoleError)
+const allowed = new WeakMap();
+
+/**
+ * Lets one test's page log a console error it causes on purpose, matched by
+ * `pattern`. Keep the pattern as narrow as the error: every other console error
+ * still fails the test.
+ */
+export function allowConsoleError(page, pattern) {
+  allowed.set(page, [...(allowed.get(page) ?? []), pattern]);
+}
+const isAllowed = (page, text) => (allowed.get(page) ?? []).some((pattern) => pattern.test(text));
+
 // The build under test (BUILD=web), built by tests/global-setup.js
 const files = builtFiles(currentBuild());
 
@@ -26,7 +39,7 @@ export const test = base.extend({
     page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
     page.on("console", (m) => {
       // Aborted font/CDN requests are expected in tests
-      if (m.type() === "error" && !isAbortedRequest(m.text())) errors.push(`console: ${m.text()}`);
+      if (m.type() === "error" && !isAbortedRequest(m.text()) && !isAllowed(page, m.text())) errors.push(`console: ${m.text()}`);
     });
     // Only Chromium reports JS coverage
     const measure = coverage.enabled && browserName === "chromium";

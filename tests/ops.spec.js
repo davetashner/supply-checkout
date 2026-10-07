@@ -5,7 +5,7 @@
 // for the /ops routes. The page's logic has its own unit tests (ops/test/, npm run test:ops).
 import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect } from "./helpers.js";
+import { test, expect, allowConsoleError } from "./helpers.js";
 import { OPS, builtFiles } from "../scripts/builds.mjs";
 import { opsContentSecurityPolicy } from "../infra/lib/web/ops-content-security-policy.ts";
 
@@ -316,6 +316,11 @@ test("a write that gets no answer can be sent again with the same Idempotency-Ke
   const { api } = await signIn(page);
   await page.getByRole("link", { name: "Acme Cleaning" }).click();
   await page.getByLabel(/^Reason/).first().fill("Two months on us");
+  // A cross-origin request that fails on the network (here a reset connection) is one Firefox
+  // logs as a console error, "Cross-Origin Request Blocked … (Reason: CORS request did not
+  // succeed)", as it would for a real dropped connection. The page handles it (the alert below),
+  // so that one error, for this URL, is expected; Chromium and WebKit log nothing for it.
+  allowConsoleError(page, /Cross-Origin Request Blocked: .* at https:\/\/api\.supply-checkout\.test\/ops\/teams\/team_acme\/comp\. \(Reason: CORS request did not succeed\)/);
   let dropped;
   await page.route(`${API}/ops/teams/team_acme/comp`, async (route) => {
     if (route.request().method() === "PUT" && !dropped) {
