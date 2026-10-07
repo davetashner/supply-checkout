@@ -3273,7 +3273,8 @@
                         "subscriptionEndedAt",
                         "role",
                         "email",
-                        "userId"
+                        "userId",
+                        "test"
                       ]
                     },
                     "StringEqualsIfExists": {

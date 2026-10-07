@@ -55,6 +55,15 @@ export const CLOSED_TEAMS_PARTITION = "TEAMS#CLOSED";
 export const TEAM_PURGE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "purgeAfter", "purging", "stripeCustomerId", "stripeSubscriptionId", "stripeCancelledFor", "stripeSetAsideFor", "stripeSetAsideReason", "teamId"] as const;
 
 /**
+ * What the team purge may name when it reads a team's META item with
+ * GetItem (closedTeamToEnd, purgeTeam): TEAM_PURGE_ATTRIBUTES and the test
+ * mark (`test`, supply-checkout-o60.12), which only tags its metrics. Its own
+ * IAM statement, GetItem in `TEAM#` partitions only: the purge's index
+ * queries, key listings and deletes still name TEAM_PURGE_ATTRIBUTES alone.
+ */
+export const TEAM_PURGE_READ_ATTRIBUTES = [...TEAM_PURGE_ATTRIBUTES, "test"] as const;
+
+/**
  * The only attributes the team purge's updates may name: the META item's
  * key, `purgeAfter` (their condition: a team has it exactly while it's
  * closed, since closeTeam sets it with `closedAt` and reopenTeam removes both
@@ -364,7 +373,8 @@ export const LAPSE_LIST_ATTRIBUTES = [PK, SK, GSI3PK, GSI3SK, "status", "trialEn
 /**
  * What the lapsed-team job may read of a team's META item (GetItem,
  * consistent): what billingAccess reads, the team's name for the owner
- * emails, its closure, Stripe IDs and version (the closure's condition).
+ * emails, its closure, Stripe IDs and version (the closure's condition), and
+ * the test mark (`test`, supply-checkout-o60.12), which only tags its metrics.
  * Never documents, projects or members.
  */
 export const LAPSE_READ_ATTRIBUTES = [
@@ -383,6 +393,7 @@ export const LAPSE_READ_ATTRIBUTES = [
   "compPlan",
   "compUntil",
   "version",
+  "test",
 ] as const;
 
 /**
@@ -556,7 +567,8 @@ export const STRIPE_LINK_READ_ATTRIBUTES = [PK, SK, "teamId"] as const;
  * it), and `stripeResyncFor`, `stripeReopenedAt` and `stripeCancelledFor` (a
  * reopen's pending resync and what decides it, billing/reopening.ts), and
  * what the access rules read (billingAccess: the trial's end and the team's
- * creation, and when it went past due or ended).
+ * creation, and when it went past due or ended), and the test mark (`test`,
+ * supply-checkout-o60.12), which only tags its metrics.
  * Never documents, projects or anything else.
  */
 export const BILLING_READ_ATTRIBUTES = [
@@ -585,6 +597,7 @@ export const BILLING_READ_ATTRIBUTES = [
   "role",
   "email",
   "userId",
+  "test",
 ] as const;
 
 /**

@@ -13,7 +13,7 @@ import { createBillingWorker, type QueueMessage, type SubscriptionLike, type Wor
 import { createWorkerHandler } from "../src/billing/worker-handler.js";
 import type { WorkerScope } from "../src/billing/worker-db.js";
 import { BILLED_ROLES, isBilledRole, MEMBERS_PER_TEAM } from "../src/data/index.js";
-import { BusinessMetric, type Observability } from "../src/observability/index.js";
+import { BusinessMetric, type BusinessMetricName, type Metadata, type Observability, skippedForTest } from "../src/observability/index.js";
 import { workerPolicy } from "./billing-policy.js";
 import { fakeMailer, REGION } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -650,5 +650,39 @@ describe("seat sync messages", () => {
     await fresh(CUSTOMER, "membership");
     expect(ids[0]).toMatch(/^seats-[0-9a-f-]{36}$/);
     expect(ids[0]).not.toBe(ids[1]);
+  });
+});
+
+describe("a test team (supply-checkout-o60.12)", () => {
+  // The mark changes no seat quantity or entitlement, only the metrics' metadata: count() then
+  // skips SeatQuantityUpdates (activity) and still sends the drift that alarms
+  it("is reconciled exactly like a customer's team, its metrics tagged test", async () => {
+    patchTeam({ test: true });
+    expect(await worker(seats("reconcile", "reconcile-2026-09-28-cus_test_1"))).toBe("updated");
+    expect(quantity()).toBe(3);
+    expect(counts).toEqual([
+      [BusinessMetric.SeatQuantityDrift, 1, { teamId: TEAM, test: true }],
+      [BusinessMetric.SeatQuantityUpdates, 1, { teamId: TEAM, reason: "reconcile", test: true }],
+    ]);
+    expect(counts.map(([m, , metadata]) => skippedForTest(m as BusinessMetricName, metadata as Metadata))).toEqual([false, true]);
+    expect(denied).toEqual([]);
+  });
+
+  it("tags entitlement drift, which is still sent, and fixes it the same", async () => {
+    subs.set(SUB, subscription(3, { status: "past_due" }));
+    patchTeam({ seats: 3, test: true });
+    expect(await worker(seats("reconcile", "reconcile-2026-09-28-cus_test_1"))).toBe("in_sync");
+    expect((table.get(`TEAM#${TEAM}`, "META") as Record<string, unknown>).status).toBe("past_due");
+    expect(counts).toEqual([[BusinessMetric.EntitlementDrift, 1, { teamId: TEAM, test: true }]]);
+    expect(skippedForTest(BusinessMetric.EntitlementDrift, { test: true })).toBe(false);
+  });
+
+  it("is untagged unless the mark is exactly true", async () => {
+    patchTeam({ test: "true" });
+    expect(await worker(seats("reconcile", "reconcile-2026-09-28-cus_test_1"))).toBe("updated");
+    expect(counts).toEqual([
+      [BusinessMetric.SeatQuantityDrift, 1, { teamId: TEAM }],
+      [BusinessMetric.SeatQuantityUpdates, 1, { teamId: TEAM, reason: "reconcile" }],
+    ]);
   });
 });

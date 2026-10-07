@@ -13,12 +13,12 @@ import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey } from "../src/api/routes.js";
 import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, REOPEN_CUTOFF_MINUTES, hashEmail, listTeamsToPurge, liveUpdateRecipients, purgeTeam, startAccountDeletion, takeReceipt, takeReceiptRate, TeamClosedError, updateTeam } from "../src/data/index.js";
-import { BusinessMetric, type Observability } from "../src/observability/index.js";
+import { BusinessMetric, type BusinessMetricName, type Metadata, type Observability, skippedForTest } from "../src/observability/index.js";
 import { CLOSED_TEAMS_TO_END_PER_RUN, HELD_PURGE_GRACE_DAYS, MAX_LOGGED_SET_ASIDE, PURGE_BUDGET_MS, STRIPE_FAILURES_BEFORE_QUEUEING } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
 import { CLOSED_AT_METADATA, closingKey, type PurgeStripe, resumeKey } from "../src/billing/closing.js";
 import type { SubscriptionLike } from "../src/billing/worker.js";
-import { STRIPE_DELETION_ATTRIBUTES, STRIPE_DELETIONS_PARTITION, TEAM_PURGE_ATTRIBUTES, TEAM_PURGE_MARK_ATTRIBUTES } from "../src/data/schema.js";
+import { STRIPE_DELETION_ATTRIBUTES, STRIPE_DELETIONS_PARTITION, TEAM_PURGE_ATTRIBUTES, TEAM_PURGE_MARK_ATTRIBUTES, TEAM_PURGE_READ_ATTRIBUTES } from "../src/data/schema.js";
 import { REGION, accountPartitions, stripeSubscriptionUpdate, fakeDb, fakeMailer, memoryDeletionLog, namedAttributes, unusedEmailCodes, unusedTotp } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 import { connection } from "../src/data/client.js";
@@ -47,6 +47,8 @@ let table: MemoryTable;
 let now: number;
 let scopes: AccountScope[];
 let counts: Record<string, number>;
+/** Every count() call, with its metadata. */
+let lines: [BusinessMetricName, number, Metadata][];
 let gauges: Record<string, number>;
 let logs: [string, string, unknown][];
 let deleted: string[];
@@ -69,8 +71,9 @@ function observability(): Observability {
   return {
     region: REGION,
     logger: { info: log("info"), warn: log("warn"), error: log("error"), addContext: () => {} } as unknown as Observability["logger"],
-    count: (metric, value = 1) => {
+    count: (metric, value = 1, metadata = {}) => {
       counts[metric] = (counts[metric] ?? 0) + value;
+      lines.push([metric, value, metadata]);
     },
     gauge: (metric, value) => {
       gauges[metric] = value;
@@ -114,6 +117,7 @@ beforeEach(() => {
   now = NOW;
   scopes = [];
   counts = {};
+  lines = [];
   logs = [];
   gauges = {};
   deleted = [];
@@ -886,7 +890,9 @@ describe("purging closed teams", () => {
       // The updates (the purging mark, and the record that the subscription was ended) have their own narrower list (their own IAM statement),
       // and so does the queue of Stripe customer deletions, its one partition with its own statement (supply-checkout-8jc.42)
       const queue = isQueueRequest(input);
-      const allowed: readonly string[] = queue ? STRIPE_DELETION_ATTRIBUTES : command === "UpdateCommand" ? TEAM_PURGE_MARK_ATTRIBUTES : TEAM_PURGE_ATTRIBUTES;
+      // A GetItem of a team's META item may also name its test mark (TEAM_PURGE_READ_ATTRIBUTES, its own statement, supply-checkout-o60.12)
+      const teamGet = command === "GetCommand" && String((input.Key as { PK?: unknown } | undefined)?.PK).startsWith("TEAM#");
+      const allowed: readonly string[] = queue ? STRIPE_DELETION_ATTRIBUTES : command === "UpdateCommand" ? TEAM_PURGE_MARK_ATTRIBUTES : teamGet ? TEAM_PURGE_READ_ATTRIBUTES : TEAM_PURGE_ATTRIBUTES;
       for (const a of [...names, ...bare, ...Object.keys((input.Key ?? {}) as object)]) expect(allowed, `${command} ${a}`).toContain(a);
       if (command === "QueryCommand" && input.Select !== "COUNT") expect(input).toMatchObject({ Select: "SPECIFIC_ATTRIBUTES", ProjectionExpression: expect.any(String) });
       if (command === "QueryCommand" && input.Select === "COUNT") expect(input).toMatchObject({ IndexName: "GSI1", ExpressionAttributeValues: expect.objectContaining({ ":pk": "TEAMS#CLOSED" }) });
@@ -904,6 +910,12 @@ describe("purging closed teams", () => {
       expect(["QueryCommand", "GetCommand", "DeleteCommand", "UpdateCommand"]).toContain(command);
     }
     expect([...seen].sort()).toEqual(["DeleteCommand", "GetCommand", "QueryCommand COUNT", "QueryCommand SPECIFIC_ATTRIBUTES", "UpdateCommand"]);
+    // The test mark is read only by a GetItem of the META item (closedTeamToEnd and purgeTeam), never listed, queried or deleted by
+    const markReads = table.requests.filter(({ input }) => Object.values((input.ExpressionAttributeNames ?? {}) as Record<string, string>).includes("test"));
+    expect(markReads.map(({ command, input }) => [command, input.Key])).toEqual([
+      ["GetCommand", { PK: "TEAM#team-a", SK: "META" }],
+      ["GetCommand", { PK: "TEAM#team-a", SK: "META" }],
+    ]);
     // The purge clears any stale queue entry once Stripe has the customer deleted, and every run reads the queue,
     // keys and its own fields only
     expect(table.requests.filter(({ input }) => isQueueRequest(input)).map(({ command, input }) => [command, input.Select, input.ProjectionExpression])).toEqual([
@@ -1903,6 +1915,106 @@ describe("purging closed teams", () => {
     expect(await purgeTeam(table.db(undefined), "team-a", new Date(NOW + 31 * DAY))).toEqual({ deleted: 0, skipped: true });
     expect(partition("TEAM#team-a")).toHaveLength(before);
     expect(meta("team-a")?.purging).toBeUndefined();
+  });
+
+  describe("a test team (supply-checkout-o60.12)", () => {
+    /** team-a, a customer's, and team-b, a test team (its META item's `test`), each subscribed and closed. */
+    async function bothSubscribedAndClosed(mark: unknown = true) {
+      table.put({ ...(meta("team-a") as Record<string, unknown>), stripeCustomerId: "cus_123", stripeSubscriptionId: "sub_123", status: "active", plan: "starter" });
+      table.put({ PK: "STRIPE#cus_123", SK: "TEAM", type: "stripeLink", customerId: "cus_123", teamId: "team-a" });
+      table.put({ ...(meta("team-b") as Record<string, unknown>), stripeCustomerId: "cus_456", stripeSubscriptionId: "sub_456", status: "active", plan: "starter", test: mark });
+      table.put({ PK: "STRIPE#cus_456", SK: "TEAM", type: "stripeLink", customerId: "cus_456", teamId: "team-b" });
+      stripe.state.subs.set("sub_123", liveSubscription());
+      stripe.state.subs.set("sub_456", liveSubscription({ id: "sub_456", customer: "cus_456" }));
+      stripe.state.customers.add("cus_123");
+      stripe.state.customers.add("cus_456");
+      expect((await close("team-a")).status).toBe(200);
+      expect((await close("team-b")).status).toBe(200);
+      // The closures' own metrics (the account function's) aren't the purge's
+      lines = [];
+    }
+    const of = (teamId: string) => lines.filter(([, , metadata]) => metadata.teamId === teamId);
+    const sent = (metric: BusinessMetricName) => lines.filter(([m, , metadata]) => m === metric && !skippedForTest(m, metadata)).reduce((n, [, v]) => n + v, 0);
+
+    it("ends its subscription and purges it exactly as a customer's team, its metrics tagged test", async () => {
+      await bothSubscribedAndClosed();
+      expect(meta("team-b")?.test).toBe(true);
+      await purge(NOW + 3_600_000);
+      // The same Stripe change for both
+      expect(stripe.state.updates.map((u) => [u.id, u.params.cancel_at_period_end])).toEqual([
+        ["sub_123", true],
+        ["sub_456", true],
+      ]);
+      expect(await purge(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000)).toEqual({ purged: 2, failed: 0, due: 2, overdue: 0 });
+      expect(partition("TEAM#team-b")).toEqual([]);
+      expect(stripe.state.deletes.sort()).toEqual(["cus_123", "cus_456"]);
+      expect(deletions.records.map((r) => r.id).sort()).toEqual(["team-a", "team-b"]);
+      // The deletion record carries no mark
+      for (const record of deletions.records) expect(record).not.toHaveProperty("test");
+      // The same metrics per team, the test team's tagged
+      const metrics = (teamId: string) => of(teamId).map(([metric, value]) => [metric, value]);
+      expect(metrics("team-b")).toEqual(metrics("team-a"));
+      expect(metrics("team-b")).toEqual([
+        [BusinessMetric.ClosedTeamSubscriptionsEnded, 1],
+        [BusinessMetric.StripeCustomersDeleted, 1],
+      ]);
+      for (const [, , metadata] of of("team-b")) expect(metadata.test).toBe(true);
+      for (const [, , metadata] of of("team-a")) expect(metadata).not.toHaveProperty("test");
+      // TeamsPurged counts the two apart: the customer's sent, the test team's only logged
+      expect(lines.filter(([m]) => m === BusinessMetric.TeamsPurged).map(([, value, metadata]) => [value, metadata])).toEqual([
+        [1, {}],
+        [1, { test: true }],
+      ]);
+      for (const metric of [BusinessMetric.TeamsPurged, BusinessMetric.StripeCustomersDeleted, BusinessMetric.ClosedTeamSubscriptionsEnded]) expect(sent(metric), metric).toBe(1);
+    });
+
+    it("leaves a mark that isn't exactly true untagged", async () => {
+      await bothSubscribedAndClosed("true");
+      await purge(NOW + 3_600_000);
+      await purge(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000);
+      expect(of("team-b").length).toBeGreaterThan(0);
+      for (const [, , metadata] of of("team-b")) expect(metadata).not.toHaveProperty("test");
+      expect(lines.filter(([m]) => m === BusinessMetric.TeamsPurged).map(([, value, metadata]) => [value, metadata])).toEqual([[2, {}]]);
+    });
+
+    it("sends its failures and alarms' metrics, tagged", async () => {
+      await bothSubscribedAndClosed();
+      // Charged for a period that began after it closed
+      stripe.state.subs.set("sub_456", liveSubscription({ id: "sub_456", customer: "cus_456", items: { data: [{ quantity: 3, current_period_start: NOW / 1000 + 60, current_period_end: NOW / 1000 + 30 * 86400, price: { lookup_key: "supply_checkout_starter_monthly", recurring: { interval: "month" } } }] } }));
+      await purge(NOW + 3_600_000);
+      // Closed again with its subscription gone from Stripe: set aside, held, then purged unresolved
+      now = NOW + 90 * 60_000;
+      expect((await reopen("team-b")).status).toBe(200);
+      expect((await close("team-b")).status).toBe(200);
+      stripe.state.subs.delete("sub_456");
+      await purge(NOW + 2 * 3_600_000);
+      await purge(now + (CLOSED_TEAM_RETENTION_DAYS + HELD_PURGE_GRACE_DAYS) * DAY + 1000);
+      const purgeMetrics: string[] = [BusinessMetric.ClosedTeamRenewalsCharged, BusinessMetric.ClosedTeamSubscriptionsSetAside, BusinessMetric.ClosedTeamSubscriptionsNotFound, BusinessMetric.HeldTeamsPurged];
+      const failures = of("team-b").filter(([metric]) => purgeMetrics.includes(metric));
+      expect(failures.map(([metric]) => metric)).toEqual(purgeMetrics);
+      for (const [metric, , metadata] of failures) {
+        expect(metadata.test).toBe(true);
+        expect(skippedForTest(metric, metadata), metric).toBe(false);
+      }
+      expect(partition("TEAM#team-b")).toEqual([]);
+    });
+
+    it("tags a queued Stripe customer deletion, which is still sent", async () => {
+      await bothSubscribedAndClosed();
+      await purge(NOW + 3_600_000);
+      stripe.state.customersDown = true;
+      expect(await purge(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000)).toMatchObject({ purged: 2, failed: 0 });
+      expect(lines.filter(([m]) => m === BusinessMetric.StripeCustomerDeletionsQueued).map(([, , metadata]) => metadata)).toEqual([{ teamId: "team-a" }, { teamId: "team-b", test: true }]);
+      expect(sent(BusinessMetric.StripeCustomerDeletionsQueued)).toBe(2);
+      // A retry's team is gone, mark and all: its deletion counts untagged
+      stripe.state.customersDown = false;
+      lines = [];
+      await purge(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 3_600_000);
+      expect(lines.filter(([m]) => m === BusinessMetric.StripeCustomersDeleted).map(([, , metadata]) => metadata)).toEqual([
+        { teamId: "team-a", source: "retry" },
+        { teamId: "team-b", source: "retry" },
+      ]);
+    });
   });
 });
 

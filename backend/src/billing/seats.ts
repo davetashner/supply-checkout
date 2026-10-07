@@ -73,7 +73,7 @@
 
 import { createHash } from "node:crypto";
 import { type BillingTeam, countBilledMembers, type Db, getBillingTeam, hasEnded, MEMBERS_PER_TEAM, stripeCustomerTeam, type TeamContext, teamContextForStripeCustomer } from "../data/index.js";
-import { BusinessMetric, type Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import { planForLookupKey } from "./catalog.js";
 import type { SeatSyncMessage } from "./seat-queue.js";
 import type { DbForWorker } from "./worker-db.js";
@@ -183,7 +183,7 @@ export function createSeatSync(deps: SeatSyncDeps) {
     const billed = await countBilledMembers(db, ctx);
     if (billed > MEMBERS_PER_TEAM) {
       // More than a team can have: not a number to bill without a person looking
-      obs.count(BusinessMetric.SeatQuantityDrift, 1, { teamId });
+      obs.count(BusinessMetric.SeatQuantityDrift, 1, { teamId, ...testMark(team.test) });
       obs.logger.warn("Seat sync skipped: more billed members than a team can have", { teamId, billedMembers: billed, cap: MEMBERS_PER_TEAM });
       return "over_cap";
     }
@@ -206,11 +206,11 @@ export function createSeatSync(deps: SeatSyncDeps) {
     if (current === quantity) return "in_sync";
     if (message.reason === "reconcile") {
       // The event-driven path missed this one: alarm, then fix it
-      obs.count(BusinessMetric.SeatQuantityDrift, 1, { teamId });
+      obs.count(BusinessMetric.SeatQuantityDrift, 1, { teamId, ...testMark(team.test) });
       obs.logger.warn("Seat quantity drift", { teamId, subscriptionId: sub.id, stripeQuantity: current, billedMembers: billed });
     }
     await stripe.subscriptionItems.update(item.id, { quantity, proration_behavior: "create_prorations" }, { idempotencyKey: seatUpdateKey(teamId, id, item.id, current, quantity, delivery) });
-    obs.count(BusinessMetric.SeatQuantityUpdates, 1, { teamId, reason: message.reason });
+    obs.count(BusinessMetric.SeatQuantityUpdates, 1, { teamId, reason: message.reason, ...testMark(team.test) });
     obs.logger.info("Seat quantity updated", { teamId, subscriptionId: sub.id, from: current, to: quantity, reason: message.reason });
     return "updated";
   }

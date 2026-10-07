@@ -53,7 +53,7 @@
 // Never a name, an email or the Stripe key.
 
 import { type BillingAsRead, type BillingTeam, applySubscription, getBillingTeam, hasEnded, hasStopped, stripeCustomerTeam, type SubscriptionState, teamContextForStripeCustomer } from "../data/index.js";
-import { BusinessMetric, type Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import { customerOf } from "./closing.js";
 import type { SeatSyncMessage } from "./seats.js";
 import { type SubscriptionLike, subscriptionState } from "./subscription.js";
@@ -160,7 +160,7 @@ export function createEntitlementCheck(deps: EntitlementCheckDeps) {
         sub = await stripe.subscriptions.retrieve(team.stripeSubscriptionId);
       } catch (error) {
         if (!isMissing(error)) throw error;
-        obs.count(BusinessMetric.EntitlementDrift, 1, { teamId });
+        obs.count(BusinessMetric.EntitlementDrift, 1, { teamId, ...testMark(team.test) });
         obs.logger.warn("Entitlement drift: subscription missing in Stripe", { teamId, subscriptionId: team.stripeSubscriptionId, status: team.status });
         return "missing";
       }
@@ -174,7 +174,7 @@ export function createEntitlementCheck(deps: EntitlementCheckDeps) {
       const newer = await unrecorded(stripe, customer, team.stripeSubscriptionId);
       if (newer === "customer_missing") {
         // Deleted in Stripe (by hand, or the wrong mode's): nothing here can fix it, and retrying won't help
-        obs.count(BusinessMetric.EntitlementDrift, 1, { teamId });
+        obs.count(BusinessMetric.EntitlementDrift, 1, { teamId, ...testMark(team.test) });
         obs.logger.warn("Entitlement drift: customer missing in Stripe", { teamId, status: team.status });
         return "missing";
       }
@@ -191,7 +191,7 @@ export function createEntitlementCheck(deps: EntitlementCheckDeps) {
     const asRead: BillingAsRead = { status: team.status, plan: team.plan, seats: team.seats, cancelAtPeriodEnd: team.cancelAtPeriodEnd, ...(team.stripeSubscriptionId ? { subscriptionId: team.stripeSubscriptionId } : {}) };
     // Counted once the fix is written: a team an event changed meanwhile throws here, and the retry finds it in sync
     if ((await applySubscription(db, ctx, state, now, asRead)) === "ignored") return "team_closed";
-    obs.count(BusinessMetric.EntitlementDrift, 1, { teamId });
+    obs.count(BusinessMetric.EntitlementDrift, 1, { teamId, ...testMark(team.test) });
     obs.logger.warn("Entitlement drift", {
       teamId,
       fields: fields.join(","),

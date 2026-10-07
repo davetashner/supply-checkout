@@ -128,6 +128,8 @@ export interface ClosedTeamToEnd {
   readonly purgeAfter: string;
   readonly stripeCustomerId: string;
   readonly stripeSubscriptionId: string;
+  /** A test team (its META item's `test`, test-accounts.ts), as closedTeamToEnd read it: only tags the purge's metrics. Never decides anything. */
+  readonly test?: true;
 }
 
 const TO_END = "closedAt, purgeAfter, purging, stripeCustomerId, stripeSubscriptionId, stripeCancelledFor, stripeSetAsideFor";
@@ -146,7 +148,7 @@ function toEnd(teamId: string, item: Record<string, unknown> | undefined): Close
   const { closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId, stripeCancelledFor, stripeSetAsideFor } = item;
   if (typeof closedAt !== "string" || typeof purgeAfter !== "string" || typeof stripeCustomerId !== "string" || typeof stripeSubscriptionId !== "string") return undefined;
   if (stripeCancelledFor === closedAt || stripeSetAsideFor === closedAt) return undefined;
-  return { teamId, closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId };
+  return { teamId, closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId, ...(item.test === true ? { test: true as const } : {}) };
 }
 
 /**
@@ -195,7 +197,10 @@ export async function listClosedTeamsToEnd(db: Db, limit = 100): Promise<ClosedT
 
 /** The team as it is now (a consistent read), if its subscription still needs ending for this closure. */
 export async function closedTeamToEnd(db: Db, teamId: string): Promise<ClosedTeamToEnd | undefined> {
-  const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.team(id(teamId, "team ID")), ConsistentRead: true, ProjectionExpression: TO_END }));
+  // With the test mark (TEAM_PURGE_READ_ATTRIBUTES), which the index listing doesn't name
+  const { Item } = await connection(db).doc.send(
+    new GetCommand({ TableName: db.tableName, Key: keys.team(id(teamId, "team ID")), ConsistentRead: true, ProjectionExpression: `${TO_END}, #test`, ExpressionAttributeNames: { "#test": "test" } }),
+  );
   return toEnd(teamId, Item);
 }
 
@@ -338,6 +343,8 @@ export interface PurgeResult {
   readonly skipped: boolean;
   readonly held?: true;
   readonly forced?: PurgedStripeIds & { readonly reason?: string };
+  /** A test team (its META item's `test`, test-accounts.ts): only tags the purge's metrics. Never decides anything. */
+  readonly test?: true;
 }
 
 /** Runs `fn` over `items`, `concurrency` at a time. */
@@ -390,7 +397,8 @@ export async function purgeTeam(
   now: Date,
   options: {
     readonly beforeDelete?: (stripe: PurgedStripeIds) => Promise<void>;
-    readonly deleteStripeCustomer?: (customerId: string) => Promise<void>;
+    /** `mark` is the team's test mark (testMark), for the metrics only. */
+    readonly deleteStripeCustomer?: (customerId: string, mark: { readonly test?: true }) => Promise<void>;
     /** Purge a team set aside for its closure anyway if its `purgeAfter` is at or before this. */
     readonly heldDueBefore?: Date;
   } = {},
@@ -402,7 +410,9 @@ export async function purgeTeam(
       TableName: db.tableName,
       Key: keys.team(teamId),
       ConsistentRead: true,
-      ProjectionExpression: "closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId, stripeSetAsideFor, stripeSetAsideReason",
+      // With the test mark (TEAM_PURGE_READ_ATTRIBUTES), for the metrics only
+      ProjectionExpression: "closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId, stripeSetAsideFor, stripeSetAsideReason, #test",
+      ExpressionAttributeNames: { "#test": "test" },
     }),
   );
   const heldBefore = options.heldDueBefore?.toISOString();
@@ -444,7 +454,8 @@ export async function purgeTeam(
   if (typeof meta.stripeCustomerId === "string") stripeIds.stripeCustomerId = meta.stripeCustomerId;
   if (typeof meta.stripeSubscriptionId === "string") stripeIds.stripeSubscriptionId = meta.stripeSubscriptionId;
   await options.beforeDelete?.(stripeIds);
-  if (typeof meta.stripeCustomerId === "string") await options.deleteStripeCustomer?.(meta.stripeCustomerId);
+  const mark = meta.test === true ? { test: true as const } : {};
+  if (typeof meta.stripeCustomerId === "string") await options.deleteStripeCustomer?.(meta.stripeCustomerId, mark);
 
   const items: { PK: string; SK: string }[] = [];
   let ExclusiveStartKey: Record<string, unknown> | undefined;
@@ -491,6 +502,6 @@ export async function purgeTeam(
   await doc.send(new DeleteCommand({ TableName: db.tableName, Key: keys.team(teamId), ConditionExpression: "attribute_exists(closedAt)" })).catch((error: unknown) => {
     if ((error as { name?: string } | null)?.name !== "ConditionalCheckFailedException") throw error;
   });
-  if (!forced) return { deleted: deleted + 1, skipped: false };
-  return { deleted: deleted + 1, skipped: false, forced: { ...stripeIds, ...(typeof meta.stripeSetAsideReason === "string" ? { reason: meta.stripeSetAsideReason } : {}) } };
+  if (!forced) return { deleted: deleted + 1, skipped: false, ...mark };
+  return { deleted: deleted + 1, skipped: false, ...mark, forced: { ...stripeIds, ...(typeof meta.stripeSetAsideReason === "string" ? { reason: meta.stripeSetAsideReason } : {}) } };
 }

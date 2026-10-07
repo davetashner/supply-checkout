@@ -86,7 +86,7 @@ import {
 } from "../data/index.js";
 import { EmailNotSentError, type Mailer, sendTeamNotice } from "../email/mailer.js";
 import type { TeamNoticeInput } from "../email/templates.js";
-import { BusinessMetric, type Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import { LAPSE_BUDGET_MS, LAPSE_LEASE_MS, LAPSE_MAX_CLOSURES_PER_RUN } from "./names.js";
 
 /** What the job needs from the Stripe client. */
@@ -168,9 +168,9 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
         failures.push(error instanceof EmailNotSentError ? error.code : errorName(error));
       }
     }
-    if (sent) obs.count(BusinessMetric.LapseNotices, sent, { teamId: team.teamId, kind: input.kind });
+    if (sent) obs.count(BusinessMetric.LapseNotices, sent, { teamId: team.teamId, kind: input.kind, ...testMark(team.test) });
     if (failures.length) {
-      obs.count(BusinessMetric.LapseNoticeFailures, failures.length, { teamId: team.teamId, kind: input.kind });
+      obs.count(BusinessMetric.LapseNoticeFailures, failures.length, { teamId: team.teamId, kind: input.kind, ...testMark(team.test) });
       obs.logger.warn("Lapse emails not sent", { teamId: team.teamId, kind: input.kind, failed: failures.length, codes: [...new Set(failures)].join(",") });
     }
     return { owners: owners.length, claimed, sent };
@@ -209,8 +209,10 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
   }
 
   /** One team (see the top). Throws on a failure, for the caller to count. */
-  async function handle(teamId: string, now: Date, tally: { readOnly: number; closed: number }): Promise<LapseOutcome> {
+  async function handle(teamId: string, now: Date, tally: { readOnly: number; closed: number }, read: { team?: LapseTeam }): Promise<LapseOutcome> {
     const team = await readLapseTeam(db, teamId);
+    // For the caller's failure count, if a later step throws
+    read.team = team;
     if (!team || team.closedAt !== undefined || team.purging !== undefined) return "gone";
     const access = billingAccess(team, now);
     const at = now.getTime();
@@ -233,7 +235,7 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       deletesAt = closesAt(deleteAfter, warned ? Date.parse(warned) : at);
       // A warning time that doesn't parse (a record this job didn't write) never lets a team close, or reach an email: a person looks
       if (!Number.isFinite(deletesAt)) {
-        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "badDate" });
+        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "badDate", ...testMark(team.test) });
         obs.logger.warn("Lapsed team's deletion time isn't a date, so it can't be closed safely", { teamId, deleteAfter: access.deleteAfter });
         return "failed";
       }
@@ -249,7 +251,7 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       // A canceled or expired subscription with no date it ended is never deleted: the nightly entitlement check should
       // have recorded it, so a person looks, rather than its data being kept past the Terms' 30 days with nothing said
       if (access.reason === "subscription_ended") {
-        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "undated" });
+        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "undated", ...testMark(team.test) });
         obs.logger.warn("Lapsed team has no date its subscription ended", { teamId, status: team.status ?? "", subscriptionId: team.stripeSubscriptionId ?? "" });
         return "failed";
       }
@@ -262,14 +264,14 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       const { owners, claimed, sent } = await notify(team, `deletionWarning-${now.toISOString().slice(0, 10).replaceAll("-", "")}`, access.deleteAfter, { kind: "deletionWarning", teamName: team.name, deletesAt: iso(deletesAt) }, now);
       // Nobody to warn: never closed unwarned, so a person looks (an index entry missing, or a team without owners)
       if (!owners) {
-        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "noOwners" });
+        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "noOwners", ...testMark(team.test) });
         obs.logger.warn("Lapsed team has no owners to warn", { teamId, deleteAfter: access.deleteAfter });
         return "failed";
       }
       // Every owner already claimed today, by a run that counted its failures or stopped before recording: tomorrow's tries again
       if (!claimed) return "waiting";
       if (!sent) {
-        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "warning" });
+        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "warning", ...testMark(team.test) });
         obs.logger.warn("Lapsed team's deletion warning not delivered", { teamId, deleteAfter: access.deleteAfter });
         return "failed";
       }
@@ -280,7 +282,7 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
     if (at < deletesAt) return "waiting";
     // 5: no more than the cap a run (a bug or bad data can't delete teams en masse), then Stripe again, then the closure
     if (tally.closed >= LAPSE_MAX_CLOSURES_PER_RUN) {
-      obs.count(BusinessMetric.LapseClosuresHeld, 1, { teamId });
+      obs.count(BusinessMetric.LapseClosuresHeld, 1, { teamId, ...testMark(team.test) });
       return "held";
     }
     const agrees = await stripeAgrees(team);
@@ -290,7 +292,7 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       return "waiting";
     }
     if (agrees !== true) {
-      obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "stripe", why: agrees.why });
+      obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "stripe", why: agrees.why, ...testMark(team.test) });
       obs.logger.warn("Lapsed team not closed: Stripe disagrees", {
         teamId,
         why: agrees.why,
@@ -303,7 +305,7 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       return "failed";
     }
     if (team.version < 0) {
-      obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "noVersion" });
+      obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "noVersion", ...testMark(team.test) });
       obs.logger.warn("Lapsed team has no version, so it can't be closed safely", { teamId });
       return "failed";
     }
@@ -312,7 +314,7 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       return "waiting";
     }
     tally.closed++;
-    obs.count(BusinessMetric.LapsedTeamsClosed, 1, { teamId, reason: access.reason ?? "" });
+    obs.count(BusinessMetric.LapsedTeamsClosed, 1, { teamId, reason: access.reason ?? "", ...testMark(team.test) });
     obs.logger.info("Lapsed team closed for deletion", { teamId, reason: access.reason ?? "", deleteAfter: access.deleteAfter, warnedAt: warned, subscriptionId: team.stripeSubscriptionId ?? "" });
     return "closed";
   }
@@ -332,13 +334,14 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
         unstarted++;
         continue;
       }
+      const read: { team?: LapseTeam } = {};
       try {
-        const outcome = await handle(teamId, now, tally);
+        const outcome = await handle(teamId, now, tally, read);
         if (outcome === "failed") failed++;
         if (outcome === "held") held++;
       } catch (error) {
         failed++;
-        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "error" });
+        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "error", ...testMark(read.team?.test) });
         obs.logger.error("Lapsed team check failed", { teamId, error: errorName(error), ...stripeErrorFields(error) });
       }
     }

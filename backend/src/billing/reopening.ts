@@ -50,7 +50,7 @@
 // name, an email or the Stripe key.
 
 import { applySubscription, finishReopenResync } from "../data/index.js";
-import { BusinessMetric, type Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import { type ClosingStripe, customerOf, removeStamp, resumeAction, resumeSubscription, staleStamp } from "./closing.js";
 import type { SeatSyncMessage } from "./seat-queue.js";
 import type { SeatTeam, SeatTeamMissing } from "./seats.js";
@@ -93,7 +93,7 @@ export function createReopenResync(deps: ReopenResyncDeps) {
       return "not_ours";
     }
     if (message.reason === "reconcile") {
-      obs.count(BusinessMetric.ReopenResyncsLate, 1, { teamId });
+      obs.count(BusinessMetric.ReopenResyncsLate, 1, { teamId, ...testMark(team.test) });
       obs.logger.warn("Reopened team's subscription not yet resynced", { teamId, closedAt, subscriptionId: team.stripeSubscriptionId ?? "" });
     }
     if (!team.stripeSubscriptionId) {
@@ -116,7 +116,7 @@ export function createReopenResync(deps: ReopenResyncDeps) {
     const action = resumeAction(sub, { closedAt, ...(team.reopenedAt ? { reopenedAt: team.reopenedAt } : {}), ...(team.cancelledFor ? { cancelledFor: team.cancelledFor } : {}) });
     if (action === "undecided") {
       // Maybe the closure's, maybe the owner's: a person decides (docs/journeys.md)
-      obs.count(BusinessMetric.ReopenedTeamSubscriptionsUndecided, 1, { teamId });
+      obs.count(BusinessMetric.ReopenedTeamSubscriptionsUndecided, 1, { teamId, ...testMark(team.test) });
       obs.logger.warn("Reopened team's subscription left set to cancel", { teamId, subscriptionId: sub.id, closedAt });
     } else if (staleStamp(sub, action === "resume")) {
       // Done with this resync: any stamp left (the owner's cancellation or renewal after the reopen) means nothing now
@@ -124,7 +124,7 @@ export function createReopenResync(deps: ReopenResyncDeps) {
     }
     if (action === "resume") {
       await resumeSubscription(stripe, sub.id, { teamId, closedAt }, "resync");
-      obs.count(BusinessMetric.ReopenedTeamSubscriptionsResumed, 1, { teamId, source: "resync" });
+      obs.count(BusinessMetric.ReopenedTeamSubscriptionsResumed, 1, { teamId, source: "resync", ...testMark(team.test) });
       // Stripe's state after the change, as an event would have it
       sub = await stripe.subscriptions.retrieve(sub.id);
     }

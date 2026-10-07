@@ -18,7 +18,7 @@ import { teamBody } from "../src/api/account-handler.js";
 import { errorFor } from "../src/api/data-handler.js";
 import { connection } from "../src/data/client.js";
 import { authorizeTeam, createInvite, createProduct, deletionTime, linkStripeCustomer, setOwnMemberEmail, SubscriptionEndedError } from "../src/data/index.js";
-import { BusinessMetric, type Observability } from "../src/observability/index.js";
+import { BusinessMetric, type BusinessMetricName, type Metadata, type Observability, skippedForTest } from "../src/observability/index.js";
 import { workerPolicy } from "./billing-policy.js";
 import { fakeMailer, REGION, stripeSubscriptionUpdate } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -53,6 +53,8 @@ let readsFail: boolean;
 let denied: { command: string; input: Record<string, unknown> }[];
 let scopes: WorkerScope[];
 let counts: Record<string, number>;
+/** Every count() call, with its metadata. */
+let lines: [BusinessMetricName, number, Metadata][];
 let logs: unknown[][];
 let mails: ReturnType<typeof fakeMailer>;
 let worker: ReturnType<typeof createBillingWorker>;
@@ -61,8 +63,9 @@ function obs(): Observability {
   return {
     region: REGION,
     logger: { info: (...a: unknown[]) => logs.push(a), warn: (...a: unknown[]) => logs.push(a), error: (...a: unknown[]) => logs.push(a), addContext: () => {} } as unknown as Observability["logger"],
-    count: (m, v = 1) => {
+    count: (m, v = 1, metadata = {}) => {
       counts[m] = (counts[m] ?? 0) + v;
+      lines.push([m, v, metadata]);
     },
     gauge: () => {},
     flush: () => {},
@@ -109,6 +112,7 @@ beforeEach(() => {
   denied = [];
   scopes = [];
   counts = {};
+  lines = [];
   logs = [];
   mails = fakeMailer();
   build();
@@ -1312,5 +1316,68 @@ describe("workerScopedDbs", () => {
     expect(() => dbFor({ eventId: "evt_1", stripeCustomer: "" })).toThrow("Invalid Stripe customer ID");
     expect(() => dbFor({ eventId: "evt_1", stripeCustomer: CUSTOMER, teamId: "TEAM#x" })).toThrow("Invalid team ID");
     expect(workerScopedDbs({ roleArn: "role", env: { AWS_REGION: REGION, TABLE_NAME: "app" } })({ eventId: "e", stripeCustomer: "c" }).tableName).toBe("app");
+  });
+});
+
+describe("a test team (supply-checkout-o60.12)", () => {
+  // The mark (the META item's `test`, exactly true) changes nothing the worker does, only its metrics'
+  // metadata: count() then skips the activity ones (TEST_SKIPPED_METRICS) and still sends the rest
+  const tags = () => lines.map(([metric, , metadata]) => [metric, metadata.test]);
+  const sent = () => lines.filter(([metric, , metadata]) => !skippedForTest(metric, metadata)).map(([metric]) => metric);
+
+  it.each([
+    ["a customer's team", undefined, undefined],
+    ["a test team", true, true],
+    ["a mark that isn't exactly true", "true", undefined],
+  ])("applies events and emails owners the same for %s", async (_, mark, tagged) => {
+    patchTeam({ test: mark });
+    // An owner with no address on file: a notice failure
+    table.put({ ...(table.get(`TEAM#${TEAM}`, `MEMBER#${OWNER2}`) as Record<string, unknown>), email: undefined });
+    expect(await worker(message("checkout.session.completed"))).toBe("applied");
+    expect(await worker(message("invoice.payment_failed", { eventId: "evt_test_2", nextAttempt: NOW / 1000 + DAY_S }))).toBe("applied");
+    expect(meta()).toMatchObject({ plan: "starter", seats: 3, status: "trialing", stripeSubscriptionId: "sub_test_1" });
+    expect(meta().test).toBe(mark);
+    expect(mails.sent.map((m) => [m.to, m.input.kind])).toEqual([["owner@example.com", "paymentFailed"]]);
+    expect(tags()).toEqual([
+      [BusinessMetric.BillingEventsApplied, tagged],
+      [BusinessMetric.BillingEventsApplied, tagged],
+      [BusinessMetric.BillingNotices, tagged],
+      [BusinessMetric.BillingNoticeFailures, tagged],
+    ]);
+    expect(sent()).toEqual(tagged ? [BusinessMetric.BillingNoticeFailures] : lines.map(([metric]) => metric));
+    expect(denied).toEqual([]);
+  });
+
+  it("ends a closed test team's subscription the same, tagged", async () => {
+    const closedAt = new Date(NOW - DAY_S * 1000).toISOString();
+    patchTeam({ closedAt, test: true });
+    expect(await worker(message("checkout.session.completed"))).toBe("team_closed");
+    expect(updates).toEqual([{ id: "sub_test_1", params: { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: closedAt } }, key: closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1", "evt_test_1") }]);
+    expect(lines).toEqual([[BusinessMetric.ClosedTeamSubscriptionsEnded, 1, { teamId: TEAM, action: "cancel_at_period_end", test: true }]]);
+    expect(sent()).toEqual([]);
+  });
+
+  it("tags a reopened subscription ended while it was being ended, which is still sent", async () => {
+    const closedAt = new Date(NOW - DAY_S * 1000).toISOString();
+    patchTeam({ closedAt, test: true });
+    // Reopened and closed again while Stripe was asked
+    onUpdate = () => patchTeam({ closedAt: new Date(NOW).toISOString() });
+    await expect(worker(message("checkout.session.completed"))).rejects.toThrow();
+    expect(lines).toEqual([[BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId: TEAM, action: "cancel_at_period_end", test: true }]]);
+    expect(sent()).toEqual([BusinessMetric.ReopenedTeamSubscriptionsEnded]);
+  });
+
+  it("tags the nightly resync of a reopened test team, late and resumed, both still sent", async () => {
+    const closed = new Date(NOW - 3 * DAY_S * 1000).toISOString();
+    patchTeam({ plan: "starter", seats: 3, status: "trialing", stripeSubscriptionId: "sub_test_1", cancelAtPeriodEnd: false, stripeResyncFor: closed, stripeReopenedAt: new Date(NOW - DAY_S * 1000).toISOString(), test: true });
+    subs.set("sub_test_1", subscription({ status: "active", trial_end: null, cancel_at_period_end: true, canceled_at: NOW / 1000 - 2 * DAY_S, metadata: { [CLOSED_AT_METADATA]: closed } }));
+    expect(await worker({ kind: "seats", id: "reconcile-2026-09-27-cus_test_1", customer: CUSTOMER, reason: "reconcile", created: NOW / 1000 })).toBe("in_sync");
+    expect(meta().stripeResyncFor).toBeUndefined();
+    expect(lines).toEqual([
+      [BusinessMetric.ReopenResyncsLate, 1, { teamId: TEAM, test: true }],
+      [BusinessMetric.ReopenedTeamSubscriptionsResumed, 1, { teamId: TEAM, source: "resync", test: true }],
+    ]);
+    expect(sent()).toEqual([BusinessMetric.ReopenResyncsLate, BusinessMetric.ReopenedTeamSubscriptionsResumed]);
+    expect(denied).toEqual([]);
   });
 });

@@ -116,6 +116,8 @@ export interface LapseTeam {
   readonly compPlan?: string;
   readonly compUntil?: string;
   readonly version: number;
+  /** A test team (its META item's `test`, test-accounts.ts): read only to tag the job's metrics (testMark). Never decides anything. */
+  readonly test?: true;
 }
 
 /** The team's META item now (a consistent read), or undefined if it's gone. */
@@ -127,6 +129,7 @@ export async function readLapseTeam(db: Db, teamId: string): Promise<LapseTeam |
   for (const field of ["status", "trialEndsAt", "createdAt", "closedAt", "purging", "stripeCustomerId", "stripeSubscriptionId", "pastDueSince", "subscriptionEndedAt", "compPlan", "compUntil"] as const) {
     if (typeof Item[field] === "string") team[field] = Item[field];
   }
+  if (Item.test === true) team.test = true;
   return team as unknown as LapseTeam;
 }
 
