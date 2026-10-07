@@ -236,12 +236,47 @@ test("an item's barcode can be scanned live into the item form", { tag: ["@J2.2"
   await expect(modal(page).getByPlaceholder("Type, scan, or leave blank")).toHaveValue("5550001");
 });
 
-test("a receipt line's barcode can be scanned live", { tag: ["@J5.2"] }, async ({ page }) => {
-  await page.addInitScript(installCamera, { detector: [[code("SKU1")]] });
+async function openReceipt(page, camera) {
+  await page.addInitScript(installCamera, camera);
   await openApp(page, usedState);
+  await expect(page.getByText("Connecting…")).toBeHidden();
   await page.setInputFiles("#receiptFile", fakeImage);
+  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+}
+const lineCode = (page) => page.locator(".rline").nth(1).locator('[data-f="code"]');
+
+test("a receipt line's barcode can be scanned live", { tag: ["@J5.2"] }, async ({ page }) => {
+  await openReceipt(page, { detector: [[code("SKU1")]] });
   await page.locator(".rline").nth(1).getByRole("button", { name: "Scan" }).click();
-  await expect(page.locator(".rline").nth(1).locator('[data-f="code"]')).toHaveValue("SKU1");
+  await expect(lineCode(page)).toHaveValue("SKU1");
+});
+
+// The review can be drawn again while the scanner is open (new data arriving), with a new input
+test("a code scanned while the page under the scanner is drawn again still arrives", { tag: ["@J5.2"] }, async ({ page }) => {
+  await openReceipt(page, { camera: "held", detector: [[code("SKU1")]] });
+  await page.locator(".rline").nth(1).getByRole("button", { name: "Scan" }).click();
+  await page.evaluate(() => { const input = document.getElementById("rScanFile"); input.replaceWith(input.cloneNode()); });
+  await page.evaluate(() => window.__answerCamera(true));
+  await expect(lineCode(page)).toHaveValue("SKU1");
+});
+
+test("so does the photo picker", { tag: ["@J5.2"] }, async ({ page }) => {
+  await openReceipt(page, { camera: "held" });
+  await page.locator(".rline").nth(1).getByRole("button", { name: "Scan" }).click();
+  await page.evaluate(() => { const input = document.getElementById("rScanFile"); input.replaceWith(input.cloneNode()); });
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Take a photo instead" }).click();
+  expect(await (await chooser).element().evaluate((input) => input.isConnected)).toBe(true);
+});
+
+// Gone with nothing in its place, the input still gets the code (here its own listener opens the checkout)
+test("an input that's gone with nothing in its place still gets the code", { tag: ["@J4.2"] }, async ({ page }) => {
+  await openProject(page, { camera: "held", detector: [[code("SKU1")]] });
+  await scan(page);
+  await page.evaluate(() => document.getElementById("scanFile").remove());
+  await page.evaluate(() => window.__answerCamera(true));
+  await expect(scanner(page)).toBeHidden();
+  await expect(modal(page)).toContainText("Paper towels, 6 roll");
 });
 
 test("a code scanned live is checked out like a photo's", { tag: ["@J4.2"] }, async ({ page }) => {

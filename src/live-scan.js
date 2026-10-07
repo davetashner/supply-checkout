@@ -77,11 +77,14 @@ function scanner() {
   el.querySelector("#scanCancel").addEventListener("click", close);
   el.querySelector("#scanAgain").addEventListener("click", () => start(s));
   // Opened in the tap, which the photo picker needs
-  el.querySelector("#scanPhoto").addEventListener("click", () => { const input = s.input; close(); input.click(); });
+  el.querySelector("#scanPhoto").addEventListener("click", () => { const input = current(s.input); close(); input.click(); });
   el.querySelector("#scanLight").addEventListener("click", light);
   return el;
 }
 const $s = (id) => el.querySelector(id);
+// The input to hand the code to: the page under the scanner may have been drawn again while it
+// was open (the receipt review, when new data arrives), replacing the input with a new one
+const current = (input) => (input.isConnected ? input : document.getElementById(input.id) || input);
 function show(state) {
   $s("#scanStatus").textContent = MESSAGES[state];
   $s("#scanAgain").hidden = !(state === "limit" || state === "paused");
@@ -163,7 +166,7 @@ async function frame(session) {
   if (began > session.until) { stop(session); show("limit"); return; }
   const code = await read(session);
   if (s !== session || !session.stream) return; // closed, paused or stopped meanwhile
-  if (code) { const { input } = session; close(); deliver(input, code); return; }
+  if (code) { const input = current(session.input); close(); deliver(input, code); return; }
   session.timer = setTimeout(() => frame(session), Math.max(0, FRAME_MS - (performance.now() - began)));
 }
 
