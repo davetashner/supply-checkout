@@ -19,9 +19,8 @@
 #   6. releases the land lock, and if .beads/issues.jsonl is stale (and this
 #      isn't the export's own PR), runs npm run beads:pr, which opens the export
 #      PR and lands it with a land of its own
-#   7. rebuilds the backlog page (dist/backlog/index.html), and if it differs
-#      from the page last published, ends with one line asking the lead to
-#      republish it and run npm run backlog:published
+#   7. rebuilds the backlog page (the main checkout's dist/backlog/index.html,
+#      which people open locally)
 #   LAND_SKIP_BACKLOG=1 skips steps 6 and 7.
 #
 # Only one land runs at a time across every worktree and session: without a
@@ -495,20 +494,9 @@ elif [ "$export_rc" -ne 0 ]; then
 fi
 
 say "Rebuilding the backlog page"
-page_built=""
-if node scripts/backlog-page.mjs; then page_built=1
-else echo "Couldn't rebuild the backlog page (see above). Rebuild it with npm run backlog:page, then republish it."; fi
+node scripts/backlog-page.mjs ||
+  echo "Couldn't rebuild the backlog page (see above). Rebuild it with npm run backlog:page."
 if [ -n "$export_failed" ]; then
   echo
   echo "#$pr merged, but the beads export PR didn't land (see above). Once it can merge, land it, or run npm run beads:pr again."
-fi
-# The page can only be published with Claude's Artifact tool, so that one
-# step is left to the lead, in the last line
-if [ -n "$page_built" ]; then
-  echo
-  if cmp -s "$main/dist/backlog/.hash" "$main/dist/backlog/.published"; then
-    echo "The backlog page is unchanged since it was last published."
-  else
-    echo "Republish $main/dist/backlog/index.html to the backlog artifact, then run: npm run backlog:published"
-  fi
 fi

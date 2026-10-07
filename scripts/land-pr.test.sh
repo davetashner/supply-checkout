@@ -31,7 +31,6 @@
 #   export_stale     if present, `node scripts/export-beads.mjs --check` exits 1
 #   export_error     if present, it exits 2 (bd failed)
 #   page_fails       if present, `node scripts/backlog-page.mjs` fails
-#   page_hash        the data hash the page build writes (default h1)
 #   beads_pr_rc      exit code of `npm run -s beads:pr` (default 0)
 #   hold             while present, `gh pr checks --watch` blocks (it touches
 #                    `holding` first), to keep a land running
@@ -164,7 +163,7 @@ case "$1" in
     [ ! -e "$FAKE/page_fails" ] || { echo "bd: database not found" >&2; exit 1; }
     mkdir -p dist/backlog
     echo "<html>" > dist/backlog/index.html
-    cat "$FAKE/page_hash" 2>/dev/null > dist/backlog/.hash || echo h1 > dist/backlog/.hash
+    echo h1 > dist/backlog/.hash
     echo "Wrote the backlog page (1 beads): $PWD/dist/backlog/index.html" ;;
   *) echo "fake node: unexpected: node $*" >&2; exit 2 ;;
 esac
@@ -338,35 +337,16 @@ check "says it wasn't merged" says "PR #42 was not merged."
 check "releases the lock" unlocked
 done_case
 
-republish="then run: npm run backlog:published"
-last_line() { [ "$(tail -1 <<< "$out")" = "$1" ]; }
 last_says() { grep -qF -- "$1" <<< "$(tail -1 <<< "$out")"; }
 
-echo "backlog page: rebuilt, and never published"
-scenario page-new
+echo "backlog page: rebuilt"
+scenario page-built
 land
 check "exits 0" exits 0
 check "rebuilds the page" called "node scripts/backlog-page.mjs"
-check "ends asking to republish it" last_says "/dist/backlog/index.html to the backlog artifact, $republish"
+check "ends with where it wrote the page" last_says "Wrote the backlog page (1 beads): "
+check "doesn't ask to publish it" not_says "publish"
 check "doesn't run beads:pr for a current export" not_called "beads:pr"
-done_case
-
-echo "backlog page: rebuilt, and unchanged since it was published"
-scenario page-published
-mkdir -p "$repo/dist/backlog" && echo h1 > "$repo/dist/backlog/.published"
-land
-check "exits 0" exits 0
-check "rebuilds the page" called "node scripts/backlog-page.mjs"
-check "says it's unchanged" last_line "The backlog page is unchanged since it was last published."
-check "doesn't ask to republish it" not_says "$republish"
-done_case
-
-echo "backlog page: rebuilt, and changed since it was published"
-scenario page-changed
-mkdir -p "$repo/dist/backlog" && echo h0 > "$repo/dist/backlog/.published"
-land
-check "exits 0" exits 0
-check "ends asking to republish it" last_says "$republish"
 done_case
 
 echo "backlog page: the build fails"
@@ -377,7 +357,8 @@ land
 check "exits 0" exits 0
 check "says it couldn't rebuild it" says "Couldn't rebuild the backlog page"
 check "prints the error" says "bd: database not found"
-check "doesn't ask to republish the old page" not_says "$republish"
+check "says how to rebuild it" says "Rebuild it with npm run backlog:page."
+check "doesn't ask to publish it" not_says "publish"
 done_case
 
 echo "beads export is stale"
@@ -390,7 +371,7 @@ check "runs beads:pr after releasing the land lock" called "npm run -s beads:pr 
 check "tells the export's land to skip the backlog" called "npm run -s beads:pr (lock free, skip=1)"
 check "runs it once" [ "$(count "beads:pr")" -eq 1 ]
 check "rebuilds the page after" [ "$(grep -n -e beads:pr -e backlog-page "$FAKE/calls" | tail -1 | grep -c backlog-page)" -eq 1 ]
-check "ends asking to republish the page" last_says "$republish"
+check "ends with where it wrote the page" last_says "Wrote the backlog page"
 check "releases the lock" unlocked
 done_case
 
@@ -403,7 +384,7 @@ check "exits 0: #42 is merged" exits 0
 check "says the export PR didn't land" says "#42 merged, but the beads export PR didn't land (see above)."
 check "doesn't say #42 wasn't merged" not_says "was not merged"
 check "still rebuilds the page" called "node scripts/backlog-page.mjs"
-check "still ends asking to republish the page" last_says "$republish"
+check "ends saying the export PR didn't land" last_says "the beads export PR didn't land"
 done_case
 
 echo "beads export is stale after landing the export's own PR"
