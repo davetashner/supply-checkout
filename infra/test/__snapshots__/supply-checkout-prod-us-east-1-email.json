@@ -731,18 +731,6 @@
                       {
                         "Ref": "AWS::AccountId"
                       },
-                      ":identity/*"
-                    ]
-                  ]
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:aws:ses:us-east-1:",
-                      {
-                        "Ref": "AWS::AccountId"
-                      },
                       ":identity/supplycheckout.com"
                     ]
                   ]
@@ -1337,18 +1325,6 @@
                         "Ref": "AWS::AccountId"
                       },
                       ":configuration-set/supply-checkout-prod-transactional"
-                    ]
-                  ]
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:aws:ses:us-east-1:",
-                      {
-                        "Ref": "AWS::AccountId"
-                      },
-                      ":identity/*"
                     ]
                   ]
                 },

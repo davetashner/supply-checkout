@@ -134,7 +134,7 @@ export const BusinessMetric = {
   WelcomeEmails: "WelcomeEmails",
   /** Welcome emails not handed to the welcome email function, or not sent for a reason other than SES refusing them, each try; the reason in metadata. Sign-up goes ahead either way (J1). */
   WelcomeEmailFailures: "WelcomeEmailFailures",
-  /** Welcome emails SES refused (sending paused, a suppressed address, or SES's sandbox refusing an unverified address until production access, supply-checkout-3sv.18); `via` in metadata (J1). */
+  /** Welcome emails SES refused (sending paused, a suppressed address); `via` in metadata (J1). */
   WelcomeEmailsRefused: "WelcomeEmailsRefused",
   /** Accounts their users deleted: the Cognito user and every row that named them. */
   AccountsDeleted: "AccountsDeleted",

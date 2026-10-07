@@ -28,10 +28,9 @@
 //
 // Failures never touch sign-up, which finished before this ran:
 // - SES refusing the message (EmailNotSentError: sending paused, an address
-//   SES won't send to, SES's sandbox) is counted in its own metric,
-//   WelcomeEmailsRefused ("Welcome emails refused", a rate alarm), not in
-//   WelcomeEmailFailures: until SES production access its sandbox refuses
-//   every unverified address, and that mustn't hide the failures below. The
+//   SES won't send to) is counted in its own metric, WelcomeEmailsRefused
+//   ("Welcome emails refused"), not in WelcomeEmailFailures, so the two
+//   alarms say which side failed (supply-checkout-3sv.21). The
 //   claim is given up, so a replay can send it; it isn't retried, since trying
 //   again won't change SES's mind. Anything else the send throws is counted
 //   (`error`) and thrown, so Lambda tries again.

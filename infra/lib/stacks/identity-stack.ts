@@ -172,8 +172,8 @@ export class IdentityStack extends SupplyCheckoutStack {
         tempPasswordValidity: Duration.days(3),
       },
       // Email codes need SES; the domain stack verified the domain in this region.
-      // Until the account has SES production access, SES only delivers to
-      // verified addresses, so sign-up email reaches only those.
+      // The account needs SES production access (prod has it since 2026-10-07,
+      // supply-checkout-3sv.18): in the sandbox SES delivers only to verified addresses.
       email: UserPoolEmail.withSES({
         fromEmail: `noreply@${names.apex}`,
         fromName: "Supply Checkout",
