@@ -14,8 +14,10 @@
 //     value on the command line, since the trust could then be for another repository than
 //     the one checked;
 //   - GitHub doesn't give that repository those owner and repository IDs;
-//   - the repository's production and production-stateful environments aren't locked down.
-// Every argument is passed on to `cdk deploy`.
+//   - the repository's production and production-stateful environments aren't locked down;
+//   - an argument picks another app, output directory or stack (`--app`, `-a`, `--output`, `-o`,
+//     `--all`, or a stack name), so what's deployed is always this script's app.
+// Every other argument is passed on to `cdk deploy`.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -43,6 +45,28 @@ export function cliContext(args) {
 
 /** The repository named by the command line's context, else DEFAULT_REPO. */
 export const repositoryFrom = (args) => cliContext(args).githubRepository ?? DEFAULT_REPO;
+
+/** `cdk deploy` options that take a value, so the argument after one isn't a stack selector. */
+export const VALUE_OPTIONS = [
+  "-c", "--context", "--profile", "--require-approval", "-r", "--role-arn", "-O", "--outputs-file", "--parameters",
+  "--tags", "-t", "--toolkit-stack-name", "--change-set-name", "-m", "--method", "--concurrency", "--progress",
+  "--notification-arns",
+];
+
+/** Problems with arguments that would pick another app, output directory or stack. */
+export function argProblems(args) {
+  const problems = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (/^--(app|output|all)(=|$)/.test(arg) || /^-[ao]/.test(arg)) problems.push(`${arg}: this deploys its own app, output directory and stack only; leave it out`);
+    else if (arg === "--") problems.push("--: not allowed; pass options only");
+    else if (!arg.startsWith("-")) {
+      if (VALUE_OPTIONS.includes(args[i - 1])) continue;
+      problems.push(`${arg}: no stack names; this deploys its own stack only`);
+    }
+  }
+  return problems;
+}
 
 /** The other places CDK reads context from, as { source, context } (a missing file is skipped). */
 export function contextSources({ infraDir, home = homedir(), env = process.env, read = (f) => readFileSync(f, "utf8"), exists = existsSync }) {
@@ -97,6 +121,7 @@ export function guardedDeploy(target, args, deps = {}) {
   const cli = cliContext(args);
   const repo = cli.githubRepository ?? DEFAULT_REPO;
   const problems = [
+    ...argProblems(args),
     ...contextProblems(cli, contextSources({ infraDir, ...sourceDeps })),
     ...idProblems(repo, cli.githubOwnerId ?? DEFAULT_OWNER_ID, cli.githubRepositoryId ?? DEFAULT_REPOSITORY_ID, api),
   ];

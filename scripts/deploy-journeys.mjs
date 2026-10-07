@@ -10,7 +10,8 @@
 //
 // The same refusals as `npm run deploy:github-deploy` (scripts/deploy-github-deploy.mjs): context
 // for the repository set outside the command line, IDs GitHub doesn't give that repository, or
-// the environment not locked down. Every argument is passed on to `cdk deploy`.
+// the environment not locked down, or an argument picking another app, output directory or stack.
+// Every other argument is passed on to `cdk deploy`.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { JOURNEYS_ENVIRONMENT } from "./check-environments.mjs";

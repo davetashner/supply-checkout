@@ -80,6 +80,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      # Only journeys.yml may name the journey tests' environment, and nothing a pull request starts
+      # may reach it (supply-checkout-o60.4). It parses the workflows with the yaml package.
+      - run: node scripts/check-workflow-environments.mjs
       # The operator page's logic (ops/lib/), with a 100% coverage gate; its UI runs in the
       # Playwright suites (tests/ops.spec.js, with BUILD=web)
       - run: npm run test:ops
@@ -100,9 +103,6 @@ jobs:
         run: |
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
           ./actionlint -color
-      # Only journeys.yml may name the journey tests' environment, and nothing a pull request starts
-      # may reach it (supply-checkout-o60.4)
-      - run: node scripts/check-workflow-environments.mjs
 
   secrets:
     name: Secret scan
@@ -160,6 +160,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      # check-workflow-environments' tests need the yaml package
+      - run: npm ci
       # shellcheck and jq come with the runner image
       - run: npm run test:scripts
 

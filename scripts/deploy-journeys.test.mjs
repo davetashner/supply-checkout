@@ -64,3 +64,21 @@ test("in step with infra: the package script and the app it deploys", () => {
   assert.equal(pkg.scripts["deploy:journeys"], "node ../scripts/deploy-journeys.mjs");
   assert.ok(pkg.scripts["synth:journeys"].includes('--app "npx tsx bin/journeys.ts" -o cdk.out/journeys'));
 });
+
+test("refuses arguments that pick another app, output directory or stack, deploying nothing", () => {
+  for (const args of [
+    ["--app", "npx tsx bin/app.ts"], ["--app=x"], ["-a", "x"], ["-ax"], ["--output", "elsewhere"], ["--output=elsewhere"], ["-o", "x"],
+    ["--all"], ["supply-checkout-prod-us-east-1-data"], ["--profile", "p", "some-stack"], ["--", "--profile", "p"],
+  ]) {
+    const runs = [];
+    const errors = [];
+    assert.equal(main(args, { ...noFiles, api: github()(), run: () => runs.push(1), log: () => {}, error: (e) => errors.push(e) }), 1, args.join(" "));
+    assert.deepEqual(runs, []);
+    assert.match(errors[0], /this deploys its own|not allowed/);
+  }
+  // Values of options that take one are fine
+  const runs = [];
+  const args = ["--profile", "p", "--require-approval", "never", "-c", "envName=prod", "--outputs-file", "out.json", "-O", "o.json", "-r", "arn", "--method", "direct"];
+  assert.equal(main(args, { ...noFiles, api: github()(), run: (cmd, a) => { runs.push(a); return { status: 0 }; }, log: () => {} }), 0);
+  assert.deepEqual(runs[0], cdkArgs(args));
+});

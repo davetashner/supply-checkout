@@ -6,6 +6,7 @@ import { DEFAULT_REPO } from "./check-environments.mjs";
 import {
   DEFAULT_OWNER_ID,
   DEFAULT_REPOSITORY_ID,
+  argProblems,
   cdkArgs,
   cliContext,
   contextProblems,
@@ -99,4 +100,16 @@ test("in step with infra: the package script and DEFAULT_GITHUB_REPOSITORY's IDs
   const config = readFileSync(new URL("../infra/lib/config.ts", import.meta.url), "utf8");
   assert.ok(config.includes(`ownerId: ${DEFAULT_OWNER_ID},`));
   assert.ok(config.includes(`repositoryId: ${DEFAULT_REPOSITORY_ID},`));
+});
+
+test("refuses arguments that pick another app, output directory or stack", () => {
+  assert.deepEqual(argProblems(["--profile", "p", "-c", "a=b", "--context=x=y", "--require-approval", "never"]), []);
+  for (const args of [["--app", "x"], ["-a", "x"], ["--output", "x"], ["-o", "x"], ["-o=x"], ["--all"], ["stack"], ["--"]]) {
+    assert.equal(argProblems(args).length >= 1, true, args.join(" "));
+  }
+  const runs = [];
+  const errors = [];
+  assert.equal(main(["--app", "npx tsx bin/journeys.ts"], { ...noFiles, api: github()(), run: () => runs.push(1), log: () => {}, error: (e) => errors.push(e) }), 1);
+  assert.deepEqual(runs, []);
+  assert.match(errors[0], /^Not deploying the deploy role stack for .*\n {2}- --app: this deploys its own app/);
 });
