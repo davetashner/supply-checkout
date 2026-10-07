@@ -1089,12 +1089,12 @@ Then measure the 2-second p95 and the reconnect behavior in staging as described
 
 Neither bucket is versioned, unlike every other bucket that holds data here: they hold throwaway test mail and traces, and a deleted sign-in code should be gone, not kept as an old version.
 
-**A separate CDK app**, `bin/journeys.ts`, like the GitHub deploy role: the release pipeline never deploys it. GitHub creates an environment with no protection the first time a job names one that doesn't exist, so a role trusting `production-journeys` must not exist before that environment is set up (`main` only, no admin bypass; bead `supply-checkout-o60.4`, which also adds it to `scripts/check-environments.mjs`). The data stack, which the pipeline does deploy, grants the two buckets' access logs in prod (`JourneyMailBucketAccessLogs`, `JourneyResultsBucketAccessLogs`). `npm run synth:journeys` synthesizes it with cdk-nag (CI runs it).
+**A separate CDK app**, `bin/journeys.ts`, like the GitHub deploy role: the release pipeline never deploys it. GitHub creates an environment with no protection the first time a job names one that doesn't exist, so a role trusting `production-journeys` must not exist before that environment is set up (`main` only, no admin bypass): `npm run deploy:journeys` (`scripts/deploy-journeys.mjs`) runs `scripts/check-environments.mjs --environment production-journeys` first and deploys nothing unless it passes, and CI refuses any workflow but `journeys.yml` that names the environment, and any that a pull request can start ([The production-journeys environment](releases.md#the-production-journeys-environment)). The data stack, which the pipeline does deploy, grants the two buckets' access logs in prod (`JourneyMailBucketAccessLogs`, `JourneyResultsBucketAccessLogs`). `npm run synth:journeys` synthesizes it with cdk-nag (CI runs it).
 
 **Deploying it (the owner, once), in this order:**
 
 1. **The data stack**, with the access-log grants: the next release's stateful stacks (approval 2) include it, or deploy it by hand as in [Deploying](#deploying).
-2. **The `production-journeys` environment** on GitHub, set up and checked (bead `supply-checkout-o60.4`). Don't deploy the stack before it is.
+2. **The `production-journeys` environment** on GitHub, set up and checked: [The production-journeys environment](releases.md#the-production-journeys-environment), steps 1 and 2. Don't deploy the stack before it is (`npm run deploy:journeys` refuses).
 3. **Check no receipt rule set is active** in the primary region. Activating this one deactivates any other, and inbound mail to that set's domains would stop:
 
    ```bash
@@ -1109,14 +1109,14 @@ Neither bucket is versioned, unlike every other bucket that holds data here: the
      --query "ResourceRecordSets[?contains(Name, 'e2e.')]" --profile supply-prod
    ```
 
-5. **Deploy the stack.** CDK asks to confirm the IAM changes.
+5. **Deploy the stack** with `npm run deploy:journeys`, never a bare `cdk deploy` of `bin/journeys.ts`: it checks `production-journeys` with your `gh` login (and the repository context and IDs, as `deploy:github-deploy` does), refuses unless it's locked down, then runs `cdk deploy` with your arguments. CDK asks to confirm the IAM changes.
 
    ```bash
    aws sso login --profile supply-prod
    cd infra
    npm run synth:journeys
    npx cdk diff --app "npx tsx bin/journeys.ts" -o cdk.out/journeys --profile supply-prod
-   npx cdk deploy --app "npx tsx bin/journeys.ts" -o cdk.out/journeys --profile supply-prod
+   npm run deploy:journeys -- --profile supply-prod
    ```
 
 6. **Activate the rule set** (the manual step CloudFormation can't do):
@@ -1133,7 +1133,7 @@ Neither bucket is versioned, unlike every other bucket that holds data here: the
    ```
 
    Besides `AMAZON_SES_SETUP_NOTIFICATION` (SES's test write when the rule was made), there's one object per message.
-8. **Hand the role to the workflow**: the `JourneysRoleArn` output becomes the `production-journeys` environment's secret `JOURNEYS_AWS_ROLE_ARN` (bead `supply-checkout-o60.4`; a secret, so the account ID in it is masked in the public logs).
+8. **Hand the role to the workflow**: the `JourneysRoleArn` output becomes the `production-journeys` environment's secret `JOURNEYS_AWS_ROLE_ARN` (a secret, so the account ID in it is masked in the public logs). The long-lived accounts, teams and other secrets follow: [The production-journeys environment](releases.md#the-production-journeys-environment), steps 6 to 8.
 
 **Revoking access.** Like the deploy role, delete the role by hand or replace its trust with one that allows nothing (`aws iam update-assume-role-policy --role-name supply-checkout-prod-journeys`). To stop receiving test mail, deactivate the rule set (`aws ses set-active-receipt-rule-set` with no name). Deleting the stack leaves the buckets (`RETAIN`); empty and delete them by hand.
 

@@ -21,7 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_REPO, checkEnvironments, ghApi } from "./check-environments.mjs";
+import { DEFAULT_REPO, ENVIRONMENTS, checkEnvironments, ghApi } from "./check-environments.mjs";
 
 /** DEFAULT_GITHUB_REPOSITORY's IDs in infra/lib/config.ts (deploy-github-deploy.test.mjs checks). */
 export const DEFAULT_OWNER_ID = "5702882";
@@ -84,7 +84,15 @@ export function idProblems(repo, ownerId, repositoryId, api) {
 /** The `cdk deploy` arguments for the stack (bin/github-deploy.ts), with the caller's after them. */
 export const cdkArgs = (args) => ["deploy", "--app", "npx tsx bin/github-deploy.ts", "-o", "cdk.out/github-deploy", ...args];
 
-export function main(args, deps = {}) {
+/** What `npm run deploy:github-deploy` deploys, and the environments its trust names. */
+export const GITHUB_DEPLOY = { what: "the deploy role stack", cdkArgs, environments: ENVIRONMENTS };
+
+/**
+ * Deploys `target` ({ what, cdkArgs, environments }) with `args` passed on to `cdk deploy`, once
+ * the repository context is the command line's, its IDs are GitHub's, and target.environments are
+ * locked down. Returns the exit code; 1, deploying nothing, when anything is wrong.
+ */
+export function guardedDeploy(target, args, deps = {}) {
   const { api = ghApi, run = spawnSync, log = console.log, error = console.error, infraDir = process.cwd(), ...sourceDeps } = deps;
   const cli = cliContext(args);
   const repo = cli.githubRepository ?? DEFAULT_REPO;
@@ -92,15 +100,17 @@ export function main(args, deps = {}) {
     ...contextProblems(cli, contextSources({ infraDir, ...sourceDeps })),
     ...idProblems(repo, cli.githubOwnerId ?? DEFAULT_OWNER_ID, cli.githubRepositoryId ?? DEFAULT_REPOSITORY_ID, api),
   ];
-  if (!problems.length) problems.push(...checkEnvironments(repo, api));
+  if (!problems.length) problems.push(...checkEnvironments(repo, api, target.environments));
   if (problems.length) {
-    error(`Not deploying the deploy role for ${repo}:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
+    error(`Not deploying ${target.what} for ${repo}:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
     return 1;
   }
-  log(`${repo}: the IDs match, and production and production-stateful are locked down. Deploying the deploy role stack.`);
-  const result = run("./node_modules/.bin/cdk", cdkArgs(args), { stdio: "inherit" });
+  log(`${repo}: the IDs match, and ${target.environments.join(" and ")} ${target.environments.length === 1 ? "is" : "are"} locked down. Deploying ${target.what}.`);
+  const result = run("./node_modules/.bin/cdk", target.cdkArgs(args), { stdio: "inherit" });
   return result.status ?? 1;
 }
+
+export const main = (args, deps = {}) => guardedDeploy(GITHUB_DEPLOY, args, deps);
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   try {

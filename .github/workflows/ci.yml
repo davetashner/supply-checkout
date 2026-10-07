@@ -100,6 +100,9 @@ jobs:
         run: |
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
           ./actionlint -color
+      # Only journeys.yml may name the journey tests' environment, and nothing a pull request starts
+      # may reach it (supply-checkout-o60.4)
+      - run: node scripts/check-workflow-environments.mjs
 
   secrets:
     name: Secret scan
