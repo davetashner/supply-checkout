@@ -215,7 +215,10 @@ jobs:
       # only save caches into its own branch's scope, never into main's.
       - name: Playwright version
         id: pw
-        run: echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+          # The runner sets ImageOS (ubuntu24) in the shell, not in the env context
+          echo "image-os=$ImageOS" >> "$GITHUB_OUTPUT"
       # Edge is a system package installed under /opt, so it has nothing to cache here
       - name: Restore the Playwright browsers
         id: browsers
@@ -233,17 +236,18 @@ jobs:
         with:
           path: ~/.cache/playwright-debs
           # Never an exact hit: a key that names this run, so the prefix decides
-          key: playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ env.ImageOS }}-run-${{ github.run_id }}
-          restore-keys: playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ env.ImageOS }}-
-      # Bounded, so a slow mirror or download can't eat the tests' time: each try
-      # gets 3 minutes (a normal install takes under one), then it tries again
-      # without the runner's first mirror, the one that was slow
+          key: playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ steps.pw.outputs.image-os }}-run-${{ github.run_id }}
+          restore-keys: playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ steps.pw.outputs.image-os }}-
+      # Bounded, so a slow mirror or download can't eat the tests' time. The first
+      # try gets 90 seconds (a normal install takes under one minute, and about 20
+      # seconds from the cache); the second and third get 3 minutes each, without
+      # the runner's first mirror (azure.archive.ubuntu.com), the one that was slow
       - name: Install the browser and its OS packages
         id: install
         timeout-minutes: 10
         env:
           BROWSER: ${{ matrix.browser }}
-          KEY_PREFIX: playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ env.ImageOS }}-
+          KEY_PREFIX: playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ steps.pw.outputs.image-os }}-
         run: |
           debs="$HOME/.cache/playwright-debs"
           mkdir -p "$debs"
@@ -262,13 +266,15 @@ jobs:
             # As root, so the timeout also stops apt-get. A stopped try can leave dpkg
             # half-configured, which the next try finishes first.
             sudo dpkg --configure -a
-            if sudo timeout -k 15s 3m "$node" "$cli" install-deps "$BROWSER" &&
+            limit=3m
+            if [[ "$try" -eq 1 ]]; then limit=90s; fi
+            if sudo timeout -k 15s "$limit" "$node" "$cli" install-deps "$BROWSER" &&
               timeout -k 15s 3m "$node" "$cli" install "$BROWSER"; then
               echo "Installed $BROWSER on try $try"
               status=0
               break
             fi
-            echo "::warning::Installing $BROWSER failed or took over 3 minutes (try $try of 3)"
+            echo "::warning::Installing $BROWSER failed or took over $limit (try $try of 3)"
           done
           # Keep every file apt finished downloading, even after a failed install, so
           # the next run starts from there
