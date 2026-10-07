@@ -710,6 +710,36 @@ describe("the account-wide trial cap (supply-checkout-i1d.3)", () => {
     expect(JSON.stringify(logs)).toContain('"refunded":1');
   });
 
+  it("gives a refund back to the day the read was counted in, across UTC midnight", async () => {
+    table.put({ PK: "RECEIPTTRIALS", SK: "DAY#2026-09-27", count: 2, expiresAt: 1 });
+    clock = Date.parse("2026-09-26T23:59:59.900Z");
+    answer = async () => {
+      clock = Date.parse("2026-09-27T00:00:01Z");
+      throw new RateLimitError(429, { message: "busy" }, "busy", new Headers());
+    };
+    expect((await read()).body.error.reason).toBe("model_busy");
+    expect(trialDay("2026-09-26")).toBe(0);
+    expect(trialDay("2026-09-27")).toBe(2);
+  });
+
+  it("gives the day's read back even when the month's give-back fails", async () => {
+    const guardedTable = (teamId: string, userId: string) => {
+      dbFor(teamId, userId);
+      return table.guarded((command, input) => {
+        const wire = JSON.stringify(input);
+        return !(command === "UpdateCommand" && wire.includes('"USAGE#2026-09"') && wire.includes('":n":-1'));
+      });
+    };
+    h = createReceiptsHandler({ dbFor: guardedTable, obs: fakeObservability(), model: fakeModel, modelId: MODEL_ID, now: () => clock, trialReadsPerDay: 3 });
+    answer = async () => Promise.reject(new RateLimitError(429, { message: "busy" }, "busy", new Headers()));
+    expect((await read()).body.error.reason).toBe("model_busy");
+    // The refund failed as a whole, but the day's count and the trial's were still given back
+    expect(JSON.stringify(logs)).toContain('"refunded":0');
+    expect(trialDay()).toBe(0);
+    expect(table.get("TEAM#team-a", "USAGE#TRIAL")?.receipts).toBe(0);
+    expect(usageCount()).toBe(1);
+  });
+
   it("refuses every trial read at a cap of 0, writing nothing to the day's count", async () => {
     h = createReceiptsHandler({ dbFor, obs: fakeObservability(), model: fakeModel, modelId: MODEL_ID, now: () => clock, trialReadsPerDay: 0 });
     const res = await read();

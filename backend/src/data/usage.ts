@@ -185,7 +185,9 @@ export async function takeReceipt(db: Db, ctx: TeamContext, allowance: ReceiptAl
     throw error;
   }
   if (period === "trial") {
-    // The team's own trial first, so a team with none left (the usual refusal) never touches the account's count
+    // The team's own trial first, so a team with none left (the usual refusal) never touches the account's count.
+    // Between that update and the give-back below, a refused read holds one of the team's trial reads, so another
+    // read for the same team at that moment can briefly see receipt_limit instead of the account's trial_cap
     try {
       await takeTrialDay(db, trialReadsPerDay, now);
     } catch (error) {
@@ -309,9 +311,13 @@ export async function refundReceipt(db: Db, ctx: TeamContext, taken: ReceiptQuot
     )
     .catch(keep);
   if (taken.period === "trial") {
-    await addToMonth(db, ctx, taken.month, -1).catch(keep);
-    // The account's trial count for the day the read was counted in, given back too
-    if (takenAt) await giveBackTrialDay(db, takenAt.toISOString().slice(0, 10)).catch(keep);
+    // The month's and the account's day's (the day the read was counted in) each on its own: one failing doesn't skip the other
+    const results = await Promise.allSettled([
+      addToMonth(db, ctx, taken.month, -1).catch(keep),
+      takenAt ? giveBackTrialDay(db, takenAt.toISOString().slice(0, 10)).catch(keep) : Promise.resolve(),
+    ]);
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failed) throw failed.reason;
   }
 }
 

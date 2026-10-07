@@ -52,7 +52,9 @@ export const RECEIPT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
  * What the receipt model costs, in US dollars per million tokens, by kind:
  * Claude Haiku 4.5 on Bedrock in the US. "Bedrock spend high" turns Bedrock's
  * token counts into dollars with these (journey-alarms.ts). Update them with
- * RECEIPT_MODEL_ID, or when AWS's prices change.
+ * RECEIPT_MODEL_ID, or when AWS's prices change. OWNER: these are the base
+ * list prices; confirm whether calls through the `us.` cross-region inference
+ * profile are priced above them, and raise these if so.
  */
 export const RECEIPT_MODEL_PRICES_PER_MILLION_TOKENS = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } as const;
 

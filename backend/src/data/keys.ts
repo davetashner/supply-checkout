@@ -176,7 +176,7 @@ export const keys = {
   /**
    * Trial receipt reads in one UTC day (YYYY-MM-DD) across every trial team in
    * the account: the account-wide trial cap (supply-checkout-i1d.3). Expires
-   * (TTL) a couple of days after its day.
+   * (TTL) 7 days after its day (TRIAL_DAY_GRACE_SECONDS in usage.ts).
    */
   receiptTrialDay: (day: string) => {
     if (!RATE_STAMP.DAY.test(day)) throw new InvalidInputError("Invalid day");
