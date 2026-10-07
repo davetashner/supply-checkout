@@ -58,7 +58,7 @@ const GUIDE = [
   ["cost", "What you paid for one each, before tax. It isn't shown on client projects. For equipment, what one is worth."],
   ["stock", "How many eaches you have, as a whole number (not cases)."],
   ["pack_size", "How many eaches come in one case or pack you buy. Blank means 1."],
-  ["reorder_at", "Optional. Flag the item as running low when storage is down to this many eaches. Blank keeps an item's level."],
+  ["reorder_at", "Optional. Flag the item as running low when storage is down to this many eaches. A blank cell keeps the level; clear it in the item editor."],
   ["reorder_qty", "Optional. How many eaches you usually order. Blank keeps an item's."],
 ];
 

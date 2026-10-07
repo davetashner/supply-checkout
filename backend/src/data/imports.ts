@@ -407,8 +407,8 @@ function applyRow(current: Item | undefined, row: ImportRow): { data: Item; chan
   if (row.reorderAt !== undefined) data.reorderAt = row.reorderAt;
   if (row.reorderQty !== undefined) data.reorderQty = row.reorderQty;
   if (row.stock !== undefined) data.stock = row.stock;
-  // Restocked above the reorder level: the low-stock marks (acknowledgment, order) end (reorder.ts). An
-  // item's reorder level and usual order are kept, as every field the file doesn't have is.
+  // Restocked above the reorder level (the file's, if it sets one): the low-stock marks
+  // (acknowledgment, order) end (reorder.ts). A blank reorder cell keeps the item's level.
   if (row.stock !== undefined && marksEnd(data, row.stock)) dropMarks(data);
   const changes = IMPORTED.filter((f) => (current ? before[f] !== data[f] : data[f] !== undefined && data[f] !== ""));
   return { data, changes };

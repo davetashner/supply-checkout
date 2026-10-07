@@ -353,6 +353,19 @@ describe("importing again", () => {
     expect(product("0123")).not.toHaveProperty("ackedAtStock");
     expect(product("0456")).toMatchObject({ reorderAt: 4, reorderQty: 10, ackedAtStock: 2 });
     expect(Object.values(Object.fromEntries([...table.items].filter(([, i]) => i.name === "Rags")))[0]).toMatchObject({ reorderAt: 2, reorderQty: 6 });
+    // With an order on it: a restock above the level ends the order (and an acknowledgment); a
+    // level change with no restock keeps the order and drops the acknowledgment
+    seedProduct("0789", { code: "0789", name: "Mops", price: 9, stock: 1, reorderAt: 3, ackedAtStock: 1, orderedQty: 6, orderedOn: "2026-10-01" }, 1);
+    seedProduct("0790", { code: "0790", name: "Pails", price: 9, stock: 1, reorderAt: 3, ackedAtStock: 1, orderedQty: 6, orderedOn: "2026-10-01" }, 1);
+    await post({ importId: randomUUID(), csv: "name,barcode,price,stock,reorder_at\nMops,0789,9,10,\nPails,0790,9,,2\n" });
+    expect(product("0789")).toMatchObject({ stock: 10, reorderAt: 3 });
+    for (const f of ["ackedAtStock", "orderedQty", "orderedOn"]) expect(product("0789")).not.toHaveProperty(f);
+    expect(product("0790")).toMatchObject({ stock: 1, reorderAt: 2, orderedQty: 6, orderedOn: "2026-10-01" });
+    expect(product("0790")).not.toHaveProperty("ackedAtStock");
+    // Both at once: the file's new level is what the restock is measured against (7 is at or below 8, so the order stays)
+    seedProduct("0791", { code: "0791", name: "Brooms", price: 9, stock: 1, reorderAt: 3, orderedQty: 6, orderedOn: "2026-10-01" }, 1);
+    await post({ importId: randomUUID(), csv: "name,barcode,price,stock,reorder_at\nBrooms,0791,9,7,8\n" });
+    expect(product("0791")).toMatchObject({ stock: 7, reorderAt: 8, orderedQty: 6 });
     // Out of range or not whole: every problem, and nothing imported
     const bad = await post({ dryRun: true, csv: "name,price,reorder_at,reorder_qty\nA,1,-1,1\nB,1,2.5,1\nC,1,1,0\nD,1,1000001,1\nE,1,x,1\n" });
     expect(bad.body.errors).toEqual([
