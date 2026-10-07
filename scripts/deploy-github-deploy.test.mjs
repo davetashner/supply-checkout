@@ -103,8 +103,9 @@ test("in step with infra: the package script and DEFAULT_GITHUB_REPOSITORY's IDs
 });
 
 test("refuses arguments that pick another app, output directory or stack", () => {
-  assert.deepEqual(argProblems(["--profile", "p", "-c", "a=b", "--context=x=y", "--require-approval", "never"]), []);
-  for (const args of [["--app", "x"], ["-a", "x"], ["--output", "x"], ["-o", "x"], ["-o=x"], ["--all"], ["stack"], ["--"]]) {
+  assert.deepEqual(argProblems(["--profile", "p", "-c", "a=b", "--context=x=y", "--require-approval", "never", "-O", "o.json"]), []);
+  assert.deepEqual(argProblems(["-ra", "npx tsx bin/app.ts"]), ["-ra: no grouped short options; give each on its own", "npx tsx bin/app.ts: no stack names; this deploys its own stack only"]);
+  for (const args of [["--app", "x"], ["-a", "x"], ["-ra", "x"], ["-Oa", "x"], ["--output", "x"], ["-o", "x"], ["-o=x"], ["--all"], ["stack"], ["--"]]) {
     assert.equal(argProblems(args).length >= 1, true, args.join(" "));
   }
   const runs = [];

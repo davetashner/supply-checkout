@@ -16,9 +16,12 @@
 //      can cause. Its `on:` may be a name, a list or a map; anything else fails.
 //   3. No job sets its `environment` (or `environment.name`) from an expression (`${{ … }}`),
 //      since then nothing here can tell which environment it names.
-//   4. Nothing calls into this repository by a remote reference (`<owner>/<repo>/…@<ref>`, any
-//      letter case), which rule 2 couldn't follow and which could run another branch's code:
-//      a workflow in this repository is called as `./.github/workflows/<file>`.
+//   4. A job calls a reusable workflow only as `./.github/workflows/<file>.yml` (no other
+//      repository, no `@ref`, no `..` or `//`). A called workflow runs in the caller's context, so
+//      one from another repository, or this one at another ref, could name the environment with
+//      this repository's OIDC subject and secrets, and rule 2 couldn't follow it. Steps don't call
+//      into this repository by a remote reference (`<owner>/<repo>/…@<ref>`, any letter case).
+//   5. No YAML merge key (`<<`) anywhere, which could hide keys.
 //
 // journeys.yml doesn't have to exist (it comes with supply-checkout-o60.6).
 //
@@ -37,7 +40,8 @@ export const JOURNEYS_WORKFLOW = "journeys.yml";
 export const ALLOWED_TRIGGERS = ["workflow_call", "workflow_dispatch", "push", "schedule"];
 
 const NAMES = new RegExp(ENVIRONMENT.replace("-", "\\-"), "i");
-const LOCAL_CALL = /^\.\/\.github\/workflows\/([^@\s]+)(@.*)?$/;
+/** The only job-level `uses:` allowed: a workflow file in this repository, by its local path. */
+export const LOCAL_CALL = /^\.\/\.github\/workflows\/([A-Za-z0-9._-]+\.ya?ml)$/;
 const isMap = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
 /** The workflow parsed, or { error } when it isn't one YAML document with a map at the top. */
@@ -71,12 +75,18 @@ export function triggers(workflow) {
   return null;
 }
 
+/** Every job-level `uses:` (a called reusable workflow), as [job id, uses]. */
+export function jobUses(workflow) {
+  return Object.entries(isMap(workflow.jobs) ? workflow.jobs : {})
+    .filter(([, job]) => isMap(job) && job.uses !== undefined)
+    .map(([id, job]) => [id, String(job.uses)]);
+}
+
 /** Every `uses:` in a parsed workflow's jobs and their steps. */
 export function uses(workflow) {
-  const found = [];
+  const found = jobUses(workflow).map(([, u]) => u);
   for (const job of Object.values(isMap(workflow.jobs) ? workflow.jobs : {})) {
     if (!isMap(job)) continue;
-    if (job.uses !== undefined) found.push(String(job.uses));
     for (const step of Array.isArray(job.steps) ? job.steps : []) if (isMap(step) && step.uses !== undefined) found.push(String(step.uses));
   }
   return found;
@@ -84,7 +94,14 @@ export function uses(workflow) {
 
 /** The local workflows a parsed workflow's jobs call, by file name. */
 export function calls(workflow) {
-  return uses(workflow).map((u) => LOCAL_CALL.exec(u.trim())?.[1]).filter(Boolean);
+  return jobUses(workflow).map(([, u]) => LOCAL_CALL.exec(u)?.[1]).filter(Boolean);
+}
+
+/** Whether any map in a parsed value has a YAML merge key (`<<`). */
+export function hasMergeKey(value) {
+  if (Array.isArray(value)) return value.some(hasMergeKey);
+  if (isMap(value)) return Object.entries(value).some(([k, v]) => k === "<<" || hasMergeKey(v));
+  return false;
 }
 
 /** The `uses:` that reach into this repository by a remote reference. */
@@ -120,7 +137,11 @@ export function workflowProblems(workflows, repo = DEFAULT_REPO) {
     if (NAMES.test(text) || (value && strings(value).some((s) => NAMES.test(s)))) names.add(file);
     if (names.has(file) && file !== JOURNEYS_WORKFLOW) problems.push(`${file}: names ${ENVIRONMENT}; only .github/workflows/${JOURNEYS_WORKFLOW} may`);
     if (!value) continue;
+    if (hasMergeKey(value)) problems.push(`${file}: uses a YAML merge key (<<); write the keys out`);
     for (const p of environmentProblems(value)) problems.push(`${file}: ${p}`);
+    for (const [id, u] of jobUses(value)) {
+      if (!LOCAL_CALL.test(u)) problems.push(`${file}: job ${id} calls ${u}; a job may only call a workflow in this repository as ./.github/workflows/<file>.yml (no other repository, no @ref, no ..)`);
+    }
     for (const u of remoteCalls(value, repo)) problems.push(`${file}: calls ${u} by a remote reference; call this repository's workflows as ./.github/workflows/<file>`);
   }
   // The workflows that name the environment, and every workflow that calls one of them.

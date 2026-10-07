@@ -58,7 +58,8 @@ export function argProblems(args) {
   const problems = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (/^--(app|output|all)(=|$)/.test(arg) || /^-[ao]/.test(arg)) problems.push(`${arg}: this deploys its own app, output directory and stack only; leave it out`);
+    if (/^-[A-Za-z]{2,}/.test(arg)) problems.push(`${arg}: no grouped short options; give each on its own`);
+    else if (/^--(app|output|all)(=|$)/.test(arg) || /^-[ao]/.test(arg)) problems.push(`${arg}: this deploys its own app, output directory and stack only; leave it out`);
     else if (arg === "--") problems.push("--: not allowed; pass options only");
     else if (!arg.startsWith("-")) {
       if (VALUE_OPTIONS.includes(args[i - 1])) continue;

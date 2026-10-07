@@ -52,7 +52,7 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 
 The lead session plans the work, hands beads to worker agents, and lands their PRs.
 
-**Security review.** A PR that touches `backend/`, IAM roles or policies in `infra/`, or identity and auth (Cognito, tokens, sign-in, invites, team membership) needs an adversarial security review before it merges. The review is done by a separate reviewer agent, not the author, and must end with a verdict: approve, or block with findings. Fix the findings, then run the review again. It covers:
+**Security review.** A PR that touches `backend/`, IAM roles or policies in `infra/`, or identity and auth (Cognito, tokens, sign-in, invites, team membership) needs an adversarial security review before it merges. The review is done by a separate reviewer agent, not the author, and must end with a verdict: approve, or block with findings. Fix the findings, then run the review again. A change to `scripts/check-workflow-environments.mjs` or `scripts/check-environments.mjs` needs it too, because a PR runs its own copy of the check. It covers:
 - Cross-team isolation: every read and write is scoped to the caller's team, and IDs from the request can't reach another team's data.
 - IAM scope: least privilege, no `*` actions or resources without a reason, and cdk-nag suppressions that are justified.
 - Auth and tokens: token validation (issuer, audience, expiry, `token_use`), where claims come from, and invite and membership checks.

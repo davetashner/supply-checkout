@@ -68,13 +68,13 @@ test("in step with infra: the package script and the app it deploys", () => {
 test("refuses arguments that pick another app, output directory or stack, deploying nothing", () => {
   for (const args of [
     ["--app", "npx tsx bin/app.ts"], ["--app=x"], ["-a", "x"], ["-ax"], ["--output", "elsewhere"], ["--output=elsewhere"], ["-o", "x"],
-    ["--all"], ["supply-checkout-prod-us-east-1-data"], ["--profile", "p", "some-stack"], ["--", "--profile", "p"],
+    ["--all"], ["-ra", "npx tsx bin/app.ts"], ["-ck=v"], ["supply-checkout-prod-us-east-1-data"], ["--profile", "p", "some-stack"], ["--", "--profile", "p"],
   ]) {
     const runs = [];
     const errors = [];
     assert.equal(main(args, { ...noFiles, api: github()(), run: () => runs.push(1), log: () => {}, error: (e) => errors.push(e) }), 1, args.join(" "));
     assert.deepEqual(runs, []);
-    assert.match(errors[0], /this deploys its own|not allowed/);
+    assert.match(errors[0], /this deploys its own|not allowed|grouped short options/);
   }
   // Values of options that take one are fine
   const runs = [];

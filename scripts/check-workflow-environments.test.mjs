@@ -87,7 +87,7 @@ test("rule 2: nor in any workflow that calls it, however indirectly", () => {
     "pr.yml: calls journeys.yml, which names production-journeys, so it must have no pull request trigger (has pull_request_target)",
   ]);
   const middle = `on:\n  workflow_call:\njobs:\n  j:\n    uses: "./.github/workflows/journeys.yml"\n`;
-  const top = `on:\n  - pull_request\n  - workflow_dispatch\njobs:\n  j:\n    uses: ./.github/workflows/middle.yml@main\n`;
+  const top = `on:\n  - pull_request\n  - workflow_dispatch\njobs:\n  j:\n    uses: ./.github/workflows/middle.yml\n`;
   assert.deepEqual(workflowProblems({ "journeys.yml": journeys(), "middle.yml": middle, "top.yml": top }), [
     "top.yml: calls middle.yml, which calls journeys.yml, which names production-journeys, so it must have no pull request trigger (has pull_request)",
   ]);
@@ -128,22 +128,44 @@ test("rule 3: no environment from an expression, in any form", () => {
   assert.deepEqual(workflowProblems({ "x.yml": "on: push\njobs:\n  x:\n    environment: production # not ${{ x }}\n" }), []);
 });
 
-test("rule 4: no remote-reference calls into this repository", () => {
+test("rule 4: a job calls only ./.github/workflows/<file>.yml", () => {
+  const job = (ref) => `on: pull_request_target\njobs:\n  a:\n    uses: ${JSON.stringify(ref)}\n`;
   for (const ref of [
+    "evil/x/.github/workflows/a.yml@main",
     "davetashner/supply-checkout/.github/workflows/journeys.yml@main",
-    "DaveTashner/Supply-Checkout/.github/workflows/journeys.yml@some-branch",
-    "davetashner/supply-checkout/.github/actions/x@v1",
+    "./.github/workflows/../workflows/journeys.yml",
+    "./.github//workflows/journeys.yml",
+    "./.github/workflows/journeys.yml@main",
+    "./.github/workflows/sub/journeys.yml",
+    " ./.github/workflows/journeys.yml",
+    "./.github/workflows/journeys.json",
   ]) {
-    const text = `on: pull_request_target\njobs:\n  j:\n    uses: ${ref}\n  k:\n    runs-on: x\n    steps:\n      - uses: ${ref}\n`;
-    const problems = workflowProblems({ "pr.yml": text });
-    assert.deepEqual(problems, [
-      `pr.yml: calls ${ref} by a remote reference; call this repository's workflows as ./.github/workflows/<file>`,
-      `pr.yml: calls ${ref} by a remote reference; call this repository's workflows as ./.github/workflows/<file>`,
-    ], ref);
+    const problems = workflowProblems({ "pr.yml": job(ref) });
+    assert.ok(problems.includes(`pr.yml: job a calls ${ref}; a job may only call a workflow in this repository as ./.github/workflows/<file>.yml (no other repository, no @ref, no ..)`), ref);
   }
-  // Other repositories' actions and workflows are fine; so is another repository through --repo
-  assert.deepEqual(workflowProblems({ "x.yml": "on: push\njobs:\n  j:\n    uses: other/repo/.github/workflows/w.yml@v1\n  k:\n    runs-on: x\n    steps:\n      - uses: actions/checkout@abc\n" }), []);
-  assert.deepEqual(remoteCalls(parsed("jobs:\n  j:\n    uses: o/r/.github/workflows/w.yml@x\n"), "o/r"), ["o/r/.github/workflows/w.yml@x"]);
+  assert.deepEqual(workflowProblems({ "pr.yml": job("./.github/workflows/build.yml"), "build.yml": "on: workflow_call\n" }), []);
+  assert.deepEqual(workflowProblems({ "pr.yml": job("./.github/workflows/build.yaml") }), []);
+});
+
+test("rule 4: steps don't call into this repository by a remote reference", () => {
+  for (const ref of ["davetashner/supply-checkout/.github/actions/x@v1", "DaveTashner/Supply-Checkout/.github/actions/x@some-branch"]) {
+    const text = `on: pull_request_target\njobs:\n  k:\n    runs-on: x\n    steps:\n      - uses: ${ref}\n`;
+    assert.deepEqual(workflowProblems({ "pr.yml": text }), [`pr.yml: calls ${ref} by a remote reference; call this repository's workflows as ./.github/workflows/<file>`], ref);
+  }
+  // Other repositories' actions are fine; so is another repository through the repo argument
+  assert.deepEqual(workflowProblems({ "x.yml": "on: push\njobs:\n  k:\n    runs-on: x\n    steps:\n      - uses: actions/checkout@abc\n" }), []);
+  assert.deepEqual(remoteCalls(parsed("jobs:\n  j:\n    runs-on: x\n    steps:\n      - uses: o/r/.github/actions/w@x\n"), "o/r"), ["o/r/.github/actions/w@x"]);
+});
+
+test("rule 5: no YAML merge keys", () => {
+  for (const text of [
+    "on: push\nx: &b\n  environment: production\njobs:\n  a:\n    runs-on: y\n    <<: *b\n",
+    "on: push\njobs:\n  a:\n    steps:\n      - <<: {run: x}\n",
+    'on: push\n"<<": 1\n',
+  ]) {
+    assert.deepEqual(workflowProblems({ "x.yml": text }), ["x.yml: uses a YAML merge key (<<); write the keys out"], text);
+  }
+  assert.deepEqual(workflowProblems({ "x.yml": "on: push\nname: \"<<\"\n" }), []);
 });
 
 test("unparseable YAML fails", () => {
@@ -161,7 +183,7 @@ test("reading triggers and calls", () => {
   assert.equal(triggers(parsed("on:\njobs:\n")), null);
   const w = parsed("jobs:\n  a:\n    uses: ./.github/workflows/a.yml\n  b:\n    uses: ' ./.github/workflows/c.yaml@v1'\n  c:\n    steps:\n      - uses: ./.github/actions/x\n      - run: y\n  d: 3\n");
   assert.deepEqual(uses(w), ["./.github/workflows/a.yml", " ./.github/workflows/c.yaml@v1", "./.github/actions/x"]);
-  assert.deepEqual(calls(w), ["a.yml", "c.yaml"]);
+  assert.deepEqual(calls(w), ["a.yml"]);
   assert.deepEqual(uses(parsed("on: push\n")), []);
 });
 
