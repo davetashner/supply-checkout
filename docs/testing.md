@@ -70,6 +70,18 @@ While working on a change, run just the file and browser you're touching, e.g. `
 
 Every test also fails if the page throws an uncaught error or logs a console error.
 
+## Browsers in CI
+
+Each browser job in `.github/workflows/ci.yml` installs its one browser (`chromium`, `firefox`, `webkit` or `msedge`) and the Ubuntu packages it needs before the tests run. Two caches keep that quick, and a bound keeps a slow install from using up the tests' time:
+
+- **The browsers** (`~/.cache/ms-playwright`) are cached per browser and Playwright version (`playwright-browsers-…`). With the same Playwright version, `playwright install` finds them and downloads nothing. Edge is a system package under `/opt`, so it isn't cached.
+- **The OS packages.** The runner image already has most of them; the `.deb` files apt downloads for the rest (WebKit's GStreamer and media libraries, fonts, about 120 packages) are cached per browser and Ubuntu release, keyed by the files' names (`playwright-debs-…`). A job restores the newest set and puts it in apt's cache, so apt installs from those files and downloads only what's newer. When the set changes (newer package versions, or a first download), the job saves the new set, without the files for versions that are no longer installed. It saves what apt finished downloading even when the install fails, so the next run carries on from there.
+- **The bound.** The OS packages get 90 seconds on the first try (a normal install takes under a minute, and about 20 seconds from the cache) and 3 minutes on each of up to 2 more, in a 10-minute step, and apt retries a failed download 3 times. The second and third tries drop the runner's first apt mirror (`azure.archive.ubuntu.com`, in `/etc/apt/apt-mirrors.txt`) and use the next one, `archive.ubuntu.com`: when the Azure mirror is slow, even `apt-get update` against it can take minutes, with every package already cached. The job's timeout is 30 minutes: the tests' 20 plus the install's 10. If all three tries fail, the job fails in about 10 minutes with a warning for each try, and a re-run starts from the files it saved.
+
+Why: on 2026-10-01, and again on 2026-10-07, the Azure Ubuntu mirror served those packages at a crawl (about 100 KB/s). `playwright install --with-deps webkit` took 17 minutes and ran the iPhone Safari jobs into their 20-minute timeout. Playwright's own browser downloads weren't slow.
+
+A Playwright upgrade misses the browser cache once, and the first run on `main` saves it again. A pull request's run reads `main`'s caches but saves only into its own branch's scope, so it can't change what `main` or another branch restores. These jobs hold no credentials; the deploy workflow's jobs restore no cache at all ([releases](releases.md)).
+
 ## Journey tags and the traceability check
 
 Tests that prove a [customer journey](journeys.md) are tagged with it: `@J4.2` on a test (or a `test.describe`) that proves step J4.2, or `@J4` on one that belongs to J4 without proving one step. A test that walks through several steps names its `test.step` blocks by step (`"J4.2 Scan an item and choose how many"`). The journeys, their steps and their alarms are in `journeys/registry.json`, with backend tests listed by path under each step.
