@@ -23,6 +23,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `src/moves.js` | Checkout and return writes, in one place so the web build can switch to atomic commands (`supply-checkout-1dg.1`). |
 | `src/format.js`, `src/project-math.js` | Formatting helpers and project totals, with no app state. |
 | `src/dom.js` | `$`, toast, modals, two-tap confirm buttons and number steppers. |
+| `src/live-scan.js` | The live barcode scanner: a Scan button opens the camera, each frame is read (the browser's detector, then ZXing on the aiming box and on spots that look like a code), and a code is taken once separate frames agree. **Take a photo instead**, or a browser without a camera, uses the photo picker. |
 | `src/barcode.js` | Reading barcodes from photos (the browser's detector, or ZXing, loaded the first time it's needed): the whole photo, then spots that look like a 1D code, then tiles, within a time budget, rejecting retail codes whose check digit is wrong. |
 | `src/zxing.js` | The parts of ZXing (`@zxing/library`, from npm) the barcode reader uses. |
 | `src/receipt-prompt.js` | The receipt-reading prompt and its error messages. |

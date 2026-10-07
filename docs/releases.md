@@ -66,12 +66,12 @@ Each check is tried 3 times, 5 seconds apart, with a 15-second timeout per reque
 
 ## Real-device check
 
-Playwright can't open a phone's camera, so before publishing a release, check scanning on a real iPhone and a real Android phone: your own phones, or a real-device cloud such as BrowserStack Live. Scanning takes a photo through the file input (`capture="environment"`), then decodes it with the browser's `BarcodeDetector` where there is one (Chrome and Samsung Internet on Android) or ZXing otherwise (Safari on iPhone and iPad, Firefox).
+Playwright can't open a phone's camera (its tests use a stand-in camera, `tests/camera.js`), so before publishing a release, check scanning on a real iPhone and a real Android phone: your own phones, or a real-device cloud such as BrowserStack Live. A Scan button opens the camera in a scanner (`src/live-scan.js`), which reads each frame with the browser's `BarcodeDetector` where there is one (Chrome and Samsung Internet on Android) and ZXing otherwise (Safari on iPhone and iPad, Firefox), and takes a code once two frames agree. **Take a photo instead** (and a browser without a camera) takes a photo through the file input (`capture="environment"`), decoded the same way.
 
-1. **iPhone, Safari** (current iOS): open a project, tap **Scan to check out**, and photograph a real barcode with the rear camera. The checkout dialog opens with the right item. Then, on the project list, tap **Scan receipt**, photograph a paper receipt, and check the review screen lists its lines.
+1. **iPhone, Safari** (current iOS): open a project and tap **Scan to check out**. Allow the camera, and hold a real barcode in the frame: the scanner closes and the checkout dialog opens with the right item, and the camera light goes off. Scan a code turned on its side, and a small shelf or bin label too. Tap **Scan to check out** again, then **Take a photo instead**, and photograph the barcode: the same dialog opens. Then, on the project list, tap **Scan receipt**, photograph a paper receipt, and check the review screen lists its lines.
 2. **Android phone, Chrome** (current Android): repeat step 1.
 3. **Android phone, Samsung Internet** and **Firefox for Android**: open a project and scan one barcode in each.
-4. On both phones, photograph something that isn't a barcode: the app says no barcode was found and suggests typing the number.
+4. On both phones, photograph something that isn't a barcode: the app says no barcode was found and suggests typing the number. And open the scanner, then switch to another app and back: the camera light goes off and the scanner says it's paused, with **Try again**.
 5. On both phones, turn to landscape and back on the project and receipt screens: nothing scrolls sideways and no button is cut off.
 
 Note the devices and OS versions in the release PR before merging it.

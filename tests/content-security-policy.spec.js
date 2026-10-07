@@ -6,6 +6,7 @@ import { test, expect, createProject, enterBarcode, modal } from "./helpers.js";
 import { DEMO, builtFiles } from "../scripts/builds.mjs";
 import { installMockClaude } from "./mock-claude.js";
 import { fakeImage } from "./fixtures.js";
+import { installCamera, upcA } from "./camera.js";
 import { contentSecurityPolicy } from "../infra/lib/web/content-security-policy.ts";
 import { FakeBackend, FakeRum, RUM, RUM_REGION, installFakeSocket, TEAM } from "./fake-aws.js";
 
@@ -79,6 +80,19 @@ test("the web app runs under the policy", async ({ page }) => {
   const header = await page.evaluate(async () => (await fetch("/")).headers.get("content-security-policy"));
   expect(header).toBe(CSP);
   expect(await loadIcons(page)).toEqual([true, true, true]);
+  expect(await violations(page)).toEqual([]);
+});
+
+// The live scanner: the camera's stream in a <video> (srcObject, which the policy doesn't govern),
+// its frames drawn to a canvas and read by ZXing
+test("the web app scans live with the camera under the policy", async ({ page }) => {
+  await serve(page, APP, builtFiles("web"));
+  await page.addInitScript(installMockClaude, {});
+  await page.addInitScript(installCamera, { picture: { modules: upcA("036000291452"), m: 2, x: 225, y: 200, h: 80 } });
+  await page.goto(APP + "/");
+  await createProject(page, "Policy Test");
+  await page.getByText("Scan to check out").click();
+  await expect(modal(page)).toContainText("Barcode 036000291452");
   expect(await violations(page)).toEqual([]);
 });
 
