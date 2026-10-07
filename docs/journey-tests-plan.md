@@ -51,7 +51,7 @@ The pilot's data is safe by construction: the test accounts are members of test 
 
 ### The test mailbox
 
-SES receives mail for the test subdomain only (a receipt rule set with one rule, recipient the subdomain), and writes each message to a private S3 bucket, `supply-checkout-prod-journey-mail` (block public access, SSE, a 1-day lifecycle rule). The subdomain is also verified as an SES identity, so that while SES is in the sandbox (`supply-checkout-3sv.18`) Cognito's codes, invites and welcome emails can reach it; after production access that's harmless.
+SES receives mail for the test subdomain only (a receipt rule set with one rule, recipient the subdomain), and writes each message to a private S3 bucket, `supply-checkout-prod-journey-mail-<region>-<account>` (block public access, SSE, a 1-day lifecycle rule). The subdomain is also verified as an SES identity, so that while SES is in the sandbox (`supply-checkout-3sv.18`) Cognito's codes, invites and welcome emails can reach it; after production access that's harmless.
 
 The harness's mailbox reader lists the bucket under the run's prefix, waits up to 60 seconds for a message to an address, and accepts it only when SES's receipt verdicts say SPF and DKIM passed and the sender is the app's no-reply address. Anyone can send mail to the subdomain; only our own lands as a code. It extracts the code or link, `::add-mask::`s it, and never logs the body.
 
@@ -130,10 +130,10 @@ The suite reads the mode from `config.json` or `/me` (whichever exposes it by th
 
 Who can read them: the owner (repository admin), and any job on `main` that names the environment. Since `main` takes only reviewed, squash-merged PRs, a change to a workflow that names `production-journeys` goes through review, and the security review of that PR is where a leaked secret would be stopped. No pull request event can name it (`deploy.yml` and `journeys.yml` have no `pull_request` trigger), and the job checks out only the `main` commit that the deploy's `release` job approved.
 
-**The journeys role**, `supply-checkout-prod-journeys`, in a stack of its own (`infra/lib/stacks/journeys-stack.ts`, with the mail bucket, the results bucket and the SES receipt rule). Its trust: GitHub's OIDC provider, `sub` exactly `repo:<owner>/<repo>:environment:production-journeys`, audience `sts.amazonaws.com`, a one-hour session. Its permissions, and nothing else:
+**The journeys role**, `supply-checkout-prod-journeys`, in a stack of its own (`infra/lib/stacks/journeys-stack.ts`, with the mail bucket, the results bucket and the SES receipt rule). Its trust: GitHub's OIDC provider, `sub` exactly `repo:<owner>@<owner ID>/<repo>@<repository ID>:environment:production-journeys` (GitHub's immutable subject, as for the deploy role), audience `sts.amazonaws.com`, a one-hour session. Its permissions, and nothing else:
 
 - `s3:ListBucket` on the mail bucket (prefixes `inbox/` and `runs/`), `s3:GetObject` under `inbox/`, `s3:GetObject` and `s3:PutObject` under `runs/`, and `s3:DeleteObject` under `inbox/` (to delete a message once read);
-- `s3:PutObject` under `runs/` in the results bucket (`supply-checkout-prod-journey-results`: private, SSE, block public access, a 30-day lifecycle; `supply-checkout-s3c.9` links the last good recording from here);
+- `s3:PutObject` under `runs/` in the results bucket (`supply-checkout-prod-journey-results-<region>-<account>`: private, SSE, block public access, a 30-day lifecycle; `supply-checkout-s3c.9` links the last good recording from here);
 - no Cognito, no DynamoDB, no Secrets Manager, no SES send, no CloudWatch, no `iam:PassRole`, no `sts:AssumeRole`. Everything the suite does to the app, it does through the public API and UI as a user.
 
 The deploy role and the publisher role don't trust it, and it doesn't trust them. `apply`'s credentials never reach the journeys job (a different job, a different runner).
@@ -210,7 +210,7 @@ There's no staging to hold a release in, so failing means:
 
 - Each prod test carries its step tags; the JSON reporter's output is turned by `scripts/journeys/prod-summary.mjs` into the job summary: one row per step (`J4.2 Scan each item's barcode …`) with the result in each browser, the test's duration, and for a failure the masked assertion. Steps with no prod test are listed with their `prodSkip` reason, so the summary shows the whole registry, not only what ran.
 - **The registry gains a prod column.** Each built step either has a test tagged with it in `tests/prod/`, or a `prodSkip` reason in `journeys/registry.json` ("can't wait 30 days; backend tests", "phase 2", "Google sign-in, manual"). `npm run journeys:trace` lists both and fails a built, non-phase-2 step with neither; `docs/journeys.md` gets a generated **In prod** column. That makes the bead's "every journey in docs/journeys.md has a passing test" checkable: every built step has a passing prod test or an owner-approved reason it can't.
-- Traces and a video of each failed test go to `s3://supply-checkout-prod-journey-results/runs/<runId>/`; the summary names the object keys, not presigned links (a presigned link in a public log is a public link). `supply-checkout-s3c.9` adds "the last good recording" from the same bucket.
+- Traces and a video of each failed test go to `s3://supply-checkout-prod-journey-results-<region>-<account>/runs/<runId>/`; the summary names the object keys, not presigned links (a presigned link in a public log is a public link). `supply-checkout-s3c.9` adds "the last good recording" from the same bucket.
 
 ## The beads
 

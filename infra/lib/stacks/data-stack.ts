@@ -17,6 +17,7 @@ import { DELETION_RECORD_RETENTION_DAYS, deletionsBucketName } from "../../../ba
 import { backupCopyFromContext, backupParameters } from "../backup.js";
 import type { DeploymentConfig } from "../config.js";
 import { backupAccountFromCopyVaultArn, replicateDeletionRecords } from "../deletions.js";
+import { hasJourneys, JOURNEY_ACCESS_LOG_PREFIXES, journeyMailBucketName, journeyResultsBucketName } from "../journeys.js";
 import { trailBucketName } from "./audit-stack.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
@@ -165,6 +166,27 @@ export class DataStack extends SupplyCheckoutStack {
         conditions: { StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID }, ArnLike: { "aws:SourceArn": trailBucketArn } },
       }),
     );
+
+    // The journeys stack's mail and results buckets (supply-checkout-o60.3)
+    // log here too, each under its own prefix. Prod only, like that stack.
+    if (hasJourneys(config)) {
+      const journeyBuckets = [
+        { sid: "JourneyMailBucketAccessLogs", name: journeyMailBucketName(config.envName, region), prefix: JOURNEY_ACCESS_LOG_PREFIXES.mail },
+        { sid: "JourneyResultsBucketAccessLogs", name: journeyResultsBucketName(config.envName, region), prefix: JOURNEY_ACCESS_LOG_PREFIXES.results },
+      ];
+      for (const { sid, name, prefix } of journeyBuckets) {
+        this.logsBucket.addToResourcePolicy(
+          new PolicyStatement({
+            sid,
+            effect: Effect.ALLOW,
+            principals: [new ServicePrincipal("logging.s3.amazonaws.com")],
+            actions: ["s3:PutObject"],
+            resources: [this.logsBucket.arnForObjects(`${prefix}*`)],
+            conditions: { StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID }, ArnLike: { "aws:SourceArn": `arn:${Aws.PARTITION}:s3:::${name}` } },
+          }),
+        );
+      }
+    }
 
     // Releases are immutable prefixes, rewritten into by the CloudFront Function
     // (web/router.js). Readable only by CloudFront distributions in this

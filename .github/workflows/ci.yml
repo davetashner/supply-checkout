@@ -487,6 +487,8 @@ jobs:
       - run: npm run synth:backup-account
       # GitHub Actions' OIDC deploy role is a separate CDK app too (bin/github-deploy.ts)
       - run: npm run synth:github-deploy
+      # And the journey tests' mailbox, buckets and role (bin/journeys.ts)
+      - run: npm run synth:journeys
 
   backend:
     name: Backend (lint, DynamoDB Local tests, audit)

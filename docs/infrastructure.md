@@ -1066,6 +1066,78 @@ npx cdk deploy supply-checkout-staging-us-east-1-realtime supply-checkout-stagin
 
 Then measure the 2-second p95 and the reconnect behavior in staging as described in [docs/api/realtime.md](api/realtime.md#measuring-after-a-deploy).
 
+## Journey tests
+
+`infra/lib/stacks/journeys-stack.ts`, bead `supply-checkout-o60.3`: what the prod journey tests need in AWS ([the plan](journey-tests-plan.md), "The test mailbox" and "Credentials and secrets"). One stack, `supply-checkout-<env>-<primary region>-journeys` (stateful: termination protection, buckets `RETAIN`), prod only, holds:
+
+- **The test mail subdomain**, `e2e.<domain>` (`JOURNEY_MAIL_LABEL` in `lib/journeys.ts`): an MX record to `inbound-smtp.<primary region>.amazonaws.com`, and an SES domain identity for it with Easy DKIM (three CNAMEs in the zone), so Cognito's codes and the app's invites can reach it while SES is in the sandbox (`supply-checkout-3sv.18`). It sends nothing. Every test account's address is at this subdomain, and only we can read its mail.
+- **An SES receipt rule set**, `supply-checkout-<env>-journeys`, with one rule, `test-mail`: recipient the subdomain exactly (not other domains, not its subdomains), TLS required, spam and virus scanning on (the verdicts, with SPF and DKIM, are in the stored message's headers, for the harness's reader), and one action: write the raw message to the mail bucket under `inbox/`. CloudFormation can't make a rule set active, and **only one receipt rule set can be active per account and region**, so it's activated by hand (below).
+- **The mail bucket**, `supply-checkout-<env>-journey-mail-<region>-<account>`: SSE-S3, public access blocked, ACLs off, TLS only, server access logs to the data stack's logs bucket under `s3/journey-mail/`. `inbox/` expires after a day; everything else (`runs/<runId>/accounts`, the harness's records of each run's throwaway accounts, so the next run's cleanup can find a crashed run's) after 30. Only SES may write it, under `inbox/`, and only for this account's `test-mail` rule (`aws:SourceAccount` and `aws:SourceArn`; CDK's own S3 action checks only the account, so the stack writes the grant itself).
+- **The results bucket**, `supply-checkout-<env>-journey-results-<region>-<account>`: the same protections, logs under `s3/journey-results/`, everything expires after 30 days. Playwright traces and videos go here under `runs/<runId>/`, never to Actions artifacts, which are public in this repository.
+- **The journeys role**, `supply-checkout-<env>-journeys`. Its trust has one statement: `sts:AssumeRoleWithWebIdentity` from GitHub's OIDC provider (the [GitHub deploy stack](#github-actions-deploy-role)'s; its ARN is fixed by the URL), with `StringEquals` on `aud` = `sts.amazonaws.com` and `sub` = `repo:<owner>@<owner ID>/<name>@<repository ID>:environment:production-journeys` (`GITHUB_JOURNEYS_ENVIRONMENT`): GitHub's immutable subject, as for the deploy role. A session lasts an hour at most. The subject carries no branch: that the job runs on `main` comes from the environment's deployment branch rule, as for `production`. Its one inline policy, and nothing else:
+
+  | Sid | Actions | Resource | Why |
+  | --- | --- | --- | --- |
+  | `ListTestMailAndRunRecords` | `s3:ListBucket` | the mail bucket, only with `s3:prefix` like `inbox/*` or `runs/*` | Find a run's message, and a crashed run's account records |
+  | `ReadAndDeleteTestMail` | `s3:GetObject`, `s3:DeleteObject` | mail bucket `inbox/*` | Read a code or link, then delete the message |
+  | `ReadAndWriteRunRecords` | `s3:GetObject`, `s3:PutObject` | mail bucket `runs/*` | Record and read each run's throwaway accounts |
+  | `UploadTraces` | `s3:PutObject` | results bucket `runs/*` | Upload a run's traces |
+
+  No KMS (both buckets use SSE-S3), Cognito, DynamoDB, Secrets Manager, SES, CloudWatch, `iam:PassRole` or `sts:AssumeRole`. The deploy role doesn't trust it, and it trusts neither the deploy role nor the publisher role. cdk-nag's `AwsSolutions-IAM5` is acknowledged for the three object-prefix resources only (object keys are run and message IDs).
+- SSM parameters under `/supply-checkout/<env>/journeys/` (`mail-domain`, `mail-bucket-name`, `results-bucket-name`, `role-arn`), and the outputs `JourneysRoleArn`, `MailBucketName`, `ResultsBucketName` and `ReceiptRuleSetName`.
+
+Neither bucket is versioned, unlike every other bucket that holds data here: they hold throwaway test mail and traces, and a deleted sign-in code should be gone, not kept as an old version.
+
+**A separate CDK app**, `bin/journeys.ts`, like the GitHub deploy role: the release pipeline never deploys it. GitHub creates an environment with no protection the first time a job names one that doesn't exist, so a role trusting `production-journeys` must not exist before that environment is set up (`main` only, no admin bypass; bead `supply-checkout-o60.4`, which also adds it to `scripts/check-environments.mjs`). The data stack, which the pipeline does deploy, grants the two buckets' access logs in prod (`JourneyMailBucketAccessLogs`, `JourneyResultsBucketAccessLogs`). `npm run synth:journeys` synthesizes it with cdk-nag (CI runs it).
+
+**Deploying it (the owner, once), in this order:**
+
+1. **The data stack**, with the access-log grants: the next release's stateful stacks (approval 2) include it, or deploy it by hand as in [Deploying](#deploying).
+2. **The `production-journeys` environment** on GitHub, set up and checked (bead `supply-checkout-o60.4`). Don't deploy the stack before it is.
+3. **Check no receipt rule set is active** in the primary region. Activating this one deactivates any other, and inbound mail to that set's domains would stop:
+
+   ```bash
+   aws ses describe-active-receipt-rule-set --region us-east-1 --profile supply-prod
+   ```
+
+   It must print nothing (or `{}`): no active rule set. Support mail doesn't use one (it arrives through the forwarder's MX at the apex, [Support email](#support-email)), and no stack here makes one but this. If one is active, stop: its rules would have to move into this stack first.
+4. **Check nothing exists at `e2e.`** in the zone (an MX, CNAME or TXT there makes the deploy fail):
+
+   ```bash
+   aws route53 list-resource-record-sets --hosted-zone-id "$(aws ssm get-parameter --name /supply-checkout/prod/dns/hosted-zone-id --query Parameter.Value --output text --profile supply-prod)" \
+     --query "ResourceRecordSets[?contains(Name, 'e2e.')]" --profile supply-prod
+   ```
+
+5. **Deploy the stack.** CDK asks to confirm the IAM changes.
+
+   ```bash
+   aws sso login --profile supply-prod
+   cd infra
+   npm run synth:journeys
+   npx cdk diff --app "npx tsx bin/journeys.ts" -o cdk.out/journeys --profile supply-prod
+   npx cdk deploy --app "npx tsx bin/journeys.ts" -o cdk.out/journeys --profile supply-prod
+   ```
+
+6. **Activate the rule set** (the manual step CloudFormation can't do):
+
+   ```bash
+   aws ses set-active-receipt-rule-set --rule-set-name supply-checkout-prod-journeys --region us-east-1 --profile supply-prod
+   aws ses describe-active-receipt-rule-set --region us-east-1 --profile supply-prod   # shows the test-mail rule
+   ```
+
+7. **Check it end to end.** `aws sesv2 get-email-identity --email-identity e2e.supplycheckout.com --region us-east-1 --profile supply-prod` shows `"VerifiedForSendingStatus": true` once DKIM verifies (usually minutes, up to 72 hours). Then send a message to any address at `e2e.supplycheckout.com` (from your own mail, or `aws sesv2 send-email` from `noreply@supplycheckout.com`), and within a minute it's in the bucket:
+
+   ```bash
+   aws s3 ls "s3://$(aws ssm get-parameter --name /supply-checkout/prod/journeys/mail-bucket-name --query Parameter.Value --output text --profile supply-prod)/inbox/" --profile supply-prod
+   ```
+
+   Besides `AMAZON_SES_SETUP_NOTIFICATION` (SES's test write when the rule was made), there's one object per message.
+8. **Hand the role to the workflow**: the `JourneysRoleArn` output becomes the `production-journeys` environment's secret `JOURNEYS_AWS_ROLE_ARN` (bead `supply-checkout-o60.4`; a secret, so the account ID in it is masked in the public logs).
+
+**Revoking access.** Like the deploy role, delete the role by hand or replace its trust with one that allows nothing (`aws iam update-assume-role-policy --role-name supply-checkout-prod-journeys`). To stop receiving test mail, deactivate the rule set (`aws ses set-active-receipt-rule-set` with no name). Deleting the stack leaves the buckets (`RETAIN`); empty and delete them by hand.
+
+**Cost.** SES inbound is $0.10 per 1,000 messages plus a fraction of a cent per KB; a few messages a run. The buckets hold kilobytes of mail and a few MB of traces for 30 days. Under a dollar a month.
+
 ## Template snapshots
 
 `test/stacks.test.ts` snapshots every stack's synthesized template, one file per stack in `test/__snapshots__/<stack name>.json` (for example `supply-checkout-prod-us-east-1-api.json`), so a change to one stack only touches that stack's file. Every test builds its App with `testApp()` from `test/cdk-app.ts`, which carries `cdk.json`'s context, feature flags included, just as `cdk synth` does for `bin/app.ts`, so the snapshots are the templates CloudFormation gets (apart from CDK's path metadata); `test/cdk-app.test.ts` fails if the flags drift apart. A test that needs other context passes it to `testApp()` rather than building an `App` of its own. Lambda asset hashes and the function version IDs made from them are masked, because they depend on the checkout's path. When a change to a stack is intended, review the test's diff, then accept it and commit the changed files:

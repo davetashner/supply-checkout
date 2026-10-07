@@ -12,6 +12,7 @@ import { DomainStack } from "./stacks/domain-stack.js";
 import { EmailStack } from "./stacks/email-stack.js";
 import { GithubDeployStack } from "./stacks/github-deploy-stack.js";
 import { IdentityStack } from "./stacks/identity-stack.js";
+import { JourneysStack } from "./stacks/journeys-stack.js";
 import { ObservabilityStack } from "./stacks/observability-stack.js";
 import { RealtimeStack } from "./stacks/realtime-stack.js";
 import { WebStack } from "./stacks/web-stack.js";
@@ -163,4 +164,17 @@ export function addGithubDeploy(app: App, config: DeploymentConfig, repository: 
   Tags.of(app).add("managed-by", "cdk");
   Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
   return new GithubDeployStack(app, config, config.primaryRegion, repository);
+}
+
+/**
+ * The prod journey tests' mailbox, results bucket and role (supply-checkout-o60.3),
+ * in the primary region. Only bin/journeys.ts calls this, with the workload
+ * account's profile; the main app never includes it, so the role's trust can't
+ * go live before the owner has set up its GitHub environment (see JourneysStack).
+ */
+export function addJourneys(app: App, config: DeploymentConfig, repository: GithubRepository): JourneysStack {
+  Tags.of(app).add("app", "supply-checkout");
+  Tags.of(app).add("managed-by", "cdk");
+  Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
+  return new JourneysStack(app, config, config.primaryRegion, repository);
 }
