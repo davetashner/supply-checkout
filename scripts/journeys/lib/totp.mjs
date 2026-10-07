@@ -2,10 +2,11 @@
 // software token MFA and every authenticator app use. No dependency: node:crypto does it.
 //
 // Cognito won't take the same code twice, and the suite signs in as `owner` from more than one
-// process (global setup, the browser tests, cleanup), so freshTotp() remembers the last step it
-// used in a file in the run's temporary directory and waits for the next step when needed.
+// process (global setup, the browser tests, cleanup), so freshTotp() claims each step with an
+// exclusive create of a marker file in the run's temporary directory, and waits for the next step
+// when the current one is taken.
 import { createHmac } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { closeSync, openSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
 export const STEP_SECONDS = 30;
@@ -47,18 +48,25 @@ export const stepAt = (nowMs) => Math.floor(nowMs / 1000 / STEP_SECONDS);
 export const totp = (secret, nowMs = Date.now(), digits = 6) => hotp(base32Decode(secret), stepAt(nowMs), digits);
 
 /**
- * A code no process of this run has used yet: if the current step was used (recorded in
- * `stateFile`), waits for the next one. Records the step it returns.
+ * A code no process of this run has used yet. Each process claims a step by creating
+ * `<stateFile>.<step>` exclusively (O_EXCL, so two processes can't both claim one); if the
+ * current step is taken, it waits for the next one and claims that. Without `stateFile`, just
+ * the current code.
  */
 export async function freshTotp(secret, { stateFile, now = Date.now, sleep = delay } = {}) {
-  let last = -1;
-  try { last = Number(readFileSync(stateFile, "utf8")) || -1; } catch {}
-  let t = now();
-  if (stepAt(t) <= last) {
-    await sleep((last + 1) * STEP_SECONDS * 1000 - t + 250);
-    t = now();
+  const key = base32Decode(secret);
+  if (!stateFile) return hotp(key, stepAt(now()));
+  let step = stepAt(now());
+  for (;;) {
+    try {
+      closeSync(openSync(`${stateFile}.${step}`, "wx", 0o600));
+      break;
+    } catch (err) {
+      if (err?.code !== "EEXIST") throw err;
+      step += 1;
+    }
   }
-  const step = stepAt(t);
-  if (stateFile) writeFileSync(stateFile, String(step), { mode: 0o600 });
-  return hotp(base32Decode(secret), step);
+  const startsAt = step * STEP_SECONDS * 1000;
+  if (now() < startsAt) await sleep(startsAt - now() + 250);
+  return hotp(key, step);
 }

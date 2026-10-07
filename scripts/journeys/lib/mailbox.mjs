@@ -38,7 +38,7 @@ export async function waitForMail({ s3, to, since, want = "code", linkMatch = ()
       seen.add(o.key);
       const raw = await s3.get(o.key);
       if (!addressedTo(raw, to)) continue;
-      const verdict = verifyMessage(raw, { to, sender: expect.sender, senderDomain: expect.senderDomain, region: expect.region });
+      const verdict = verifyMessage(raw, { to, sender: expect.sender, senderDomain: expect.senderDomain, region: expect.region, notBefore: since - SKEW_MS });
       if (!verdict.ok) {
         rejected.push(verdict.reason);
         log(`Mailbox: refused a message to a run address (${verdict.reason})`);

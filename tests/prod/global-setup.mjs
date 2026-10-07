@@ -5,7 +5,7 @@ import path from "node:path";
 import { appConfig, createApi } from "../../scripts/journeys/lib/api.mjs";
 import { createCognito } from "../../scripts/journeys/lib/cognito.mjs";
 import { PROD, readConfig, runDir, runId } from "../../scripts/journeys/lib/config.mjs";
-import { createMasker } from "../../scripts/journeys/lib/mask.mjs";
+import { MASKED_VALUES_FILE, createMasker } from "../../scripts/journeys/lib/mask.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
 import { setup } from "../../scripts/journeys/lib/setup.mjs";
 import { freshTotp } from "../../scripts/journeys/lib/totp.mjs";
@@ -17,6 +17,7 @@ export default async function globalSetup(config) {
   const masker = createMasker();
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    masker.persistTo(path.join(dir, MASKED_VALUES_FILE));
     const result = await setup({
       env,
       baseUrls: config.projects.map((p) => p.use.baseURL),

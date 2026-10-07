@@ -57,6 +57,8 @@ export function sesMessage({
   senderHeaders = [],
   extraTop = [],
   headers: extra = [],
+  date = "Wed, 07 Oct 2026 12:00:05 +0000",
+  tos = [to],
   contentType = "text/plain; charset=UTF-8",
   encoding = "7bit",
 } = {}) {
@@ -75,7 +77,8 @@ export function sesMessage({
     "X-SES-RECEIPT: AEFBQUFBQUFBQUFF",
     ...senderHeaders,
     `From: ${from}`,
-    `To: ${to}`,
+    ...tos.map((t) => `To: ${t}`),
+    ...(date ? [`Date: ${date}`] : []),
     "Subject: Your Supply Checkout verification code",
     "MIME-Version: 1.0",
     `Content-Type: ${contentType}`,

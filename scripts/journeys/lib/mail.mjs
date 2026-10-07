@@ -9,10 +9,11 @@
 //
 // - SES's headers are the leading block; the topmost Received is SES inbound's, and the topmost
 //   Authentication-Results (SES prepends, so a sender's own copies sit below it) is SES's;
-// - SPF passed, a DKIM signature for the app's domain passed, DMARC (when SES reports it) passed,
+// - SPF passed, a DKIM signature for the app's domain passed, DMARC passed for the app's domain,
 //   and the spam and virus verdicts are PASS;
 // - there's exactly one From, and it's the app's no-reply address;
-// - it was delivered to the address the harness is waiting on.
+// - its one To header (DKIM-signed) is the address the harness is waiting on, SES delivered it
+//   there, and its Date is from this wait (a replayed genuine message fails one of these).
 //
 // Anything else is refused with a reason that names no address or content.
 
@@ -62,10 +63,16 @@ export function authResults(value) {
 }
 
 /**
- * Whether a raw message is genuinely the app's mail to `to`. Returns `{ ok: true, parsed }`, or
- * `{ ok: false, reason }`.
+ * Whether a raw message is genuinely the app's mail to `to`, sent no earlier than `notBefore`
+ * (ms, when given). Returns `{ ok: true, parsed }`, or `{ ok: false, reason }`.
+ *
+ * The recipient is checked on the message's own To header (exactly one, which the app's DKIM
+ * signature covers), not only SES's envelope recipient, which the sending server chooses: a
+ * genuine message replayed to another test address keeps its original To and is refused. Its
+ * Date (also signed) must be from this wait, so an old genuine message replayed to the same
+ * address is refused too.
  */
-export function verifyMessage(raw, { to, sender, senderDomain, region }) {
+export function verifyMessage(raw, { to, sender, senderDomain, region, notBefore }) {
   const parsed = parseMessage(raw);
   const { headers } = parsed;
   // SES's trace block: the leading run of trace headers
@@ -87,7 +94,8 @@ export function verifyMessage(raw, { to, sender, senderDomain, region }) {
   const domain = senderDomain.toLowerCase();
   const signedByUs = (r) => r.result === "pass" && (r.props["header.d"] === domain || r.props["header.i"] === `@${domain}`);
   if (!results("dkim").some(signedByUs)) return fail("no passing DKIM signature from the app's domain");
-  if (results("dmarc").some((r) => r.result !== "pass")) return fail("DMARC didn't pass");
+  const dmarc = results("dmarc");
+  if (!dmarc.length || dmarc.some((r) => r.result !== "pass" || r.props["header.from"] !== domain)) return fail("DMARC didn't pass for the app's domain");
   if (first(block, "x-ses-spam-verdict")?.toUpperCase() !== "PASS") return fail("SES spam verdict isn't PASS");
   if (first(block, "x-ses-virus-verdict")?.toUpperCase() !== "PASS") return fail("SES virus verdict isn't PASS");
   if (!/^pass\b/i.test(first(block, "received-spf") ?? "")) return fail("Received-SPF isn't pass");
@@ -98,9 +106,16 @@ export function verifyMessage(raw, { to, sender, senderDomain, region }) {
   if (fromAddresses.length !== 1 || fromAddresses[0] !== sender.toLowerCase()) return fail("not from the app's no-reply address");
 
   const want = String(to).toLowerCase();
+  const tos = all(headers, "to");
+  if (tos.length !== 1) return fail("not exactly one To header");
+  const toList = addresses(tos[0]);
+  if (toList.length !== 1 || toList[0] !== want) return fail("not addressed to the address waited on");
   const rcpt = /\bfor <?([^\s<>;]+@[^\s<>;]+?)>?;/i.exec(received)?.[1]?.toLowerCase();
-  const toList = all(headers, "to").flatMap(addresses);
-  if (rcpt !== want && !(rcpt === undefined && toList.includes(want))) return fail("not delivered to the address waited on");
+  if (rcpt !== undefined && rcpt !== want) return fail("not delivered to the address waited on");
+  if (notBefore !== undefined) {
+    const date = Date.parse(first(headers, "date") ?? "");
+    if (!Number.isFinite(date) || date < notBefore) return fail("sent before this wait began, or undated");
+  }
   return { ok: true, parsed };
 }
 

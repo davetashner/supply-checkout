@@ -1,11 +1,14 @@
 // node --test scripts/journeys/test/ (part of npm run test:scripts): configuration, run IDs,
 // addresses, masking and the guards.
 import assert from "node:assert/strict";
+import { mkdtempSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { parseThrowaway, runBarcode, runName, runOf, throwawayAddress } from "../lib/addresses.mjs";
 import { ConfigError, OPT_IN_PHRASE, PROD, assertRunAllowed, checkBaseUrl, isAtTestDomain, readConfig, runDir, runId, secretValues } from "../lib/config.mjs";
 import { GuardError, assertDestructiveAllowed, checkMe, isRunScoped } from "../lib/guards.mjs";
-import { createMasker, maskAddress } from "../lib/mask.mjs";
+import { MASKED_VALUES_FILE, createMasker, maskAddress, readMaskedValues } from "../lib/mask.mjs";
 import { at, fakeEnv } from "./helpers.mjs";
 
 test("the base URL guard takes only the prod app", () => {
@@ -198,4 +201,26 @@ test("the masker hides remembered values and token, address, account and secret-
   assert.equal(local.redact("x a-secret-value"), "x ***");
   assert.ok(local.has("a-secret-value"));
   assert.equal(local.size, 1);
+});
+
+test("remember() only redacts: a value that's already a GitHub secret is never printed or persisted", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "mask-"));
+  const file = path.join(dir, MASKED_VALUES_FILE);
+  const written = [];
+  const masker = createMasker({ github: true, write: (s) => written.push(s), persist: file });
+  masker.remember("a-password-from-secrets");
+  assert.deepEqual(written, []);
+  assert.deepEqual(readMaskedValues(file), []);
+  assert.equal(masker.redact("x a-password-from-secrets"), "x ***");
+  masker.add("runtime-code-value");
+  masker.add("a-password-from-secrets");
+  assert.deepEqual(written, ["\n::add-mask::runtime-code-value\n"]);
+  assert.deepEqual(readMaskedValues(file), ["runtime-code-value"]);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  // persistTo starts recording once the run's directory exists
+  const later = createMasker({ github: false });
+  later.add("before-the-directory");
+  later.persistTo(path.join(dir, "later"));
+  later.add("after-the-directory");
+  assert.deepEqual(readMaskedValues(path.join(dir, "later")), ["after-the-directory"]);
 });

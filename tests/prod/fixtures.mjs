@@ -16,7 +16,7 @@ import { createCognito } from "../../scripts/journeys/lib/cognito.mjs";
 import { PROD, TEAM_FOR_PROJECT, readConfig, runDir, runId, secretValues } from "../../scripts/journeys/lib/config.mjs";
 import { GuardError, assertDestructiveAllowed, checkMe } from "../../scripts/journeys/lib/guards.mjs";
 import { waitForMail } from "../../scripts/journeys/lib/mailbox.mjs";
-import { createMasker } from "../../scripts/journeys/lib/mask.mjs";
+import { MASKED_VALUES_FILE, createMasker } from "../../scripts/journeys/lib/mask.mjs";
 import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
 import { freshTotp } from "../../scripts/journeys/lib/totp.mjs";
@@ -38,10 +38,10 @@ export const test = base.extend({
   harness: [async ({}, use) => {
     const env = process.env;
     const config = readConfig(env);
-    const masker = createMasker();
-    for (const v of secretValues(config)) masker.add(v);
     const id = runId(env);
     const dir = runDir(env, id);
+    const masker = createMasker({ persist: path.join(dir, MASKED_VALUES_FILE) });
+    for (const v of secretValues(config)) masker.remember(v);
     const throwaways = { owner: env.JOURNEYS_THROWAWAY_OWNER, crew: env.JOURNEYS_THROWAWAY_CREW };
     for (const a of Object.values(throwaways)) masker.add(a);
     const mailS3 = createS3(config.buckets.mail);
@@ -136,23 +136,41 @@ export const test = base.extend({
 });
 
 /**
+ * Types a secret into an input without it reaching any report: Playwright names a fill() step
+ * `Fill "<value>"`, and step titles and call logs can end up in the JSON report and the list
+ * reporter's output. This sets the value in the page instead (the setter a framework watches,
+ * then input and change events); an evaluate step's title and errors never carry its argument.
+ * Tracing isn't on yet during sign-in either.
+ */
+export async function secretFill(locator, value) {
+  await locator.focus();
+  await locator.evaluate((el, v) => {
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")?.set;
+    if (setter) setter.call(el, v);
+    else el.value = v;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }, value);
+}
+
+/**
  * Managed Login's pages: the email, then the password (choosing it if the page offers other
- * ways first), then the two-step code when asked.
+ * ways first), then the two-step code when asked. Every value goes in through secretFill.
  */
 export async function managedLogin(page, account, totpCode) {
   const submit = () => page.getByRole("button", { name: /^(next|continue|sign in)$/i }).first().click();
-  await page.getByLabel(/email/i).first().fill(account.email);
+  await secretFill(page.getByLabel(/email/i).first(), account.email);
   await submit();
   const password = page.getByLabel(/^password$/i).first();
   const choosePassword = page.getByRole("button", { name: /password/i }).first();
   await expect(password.or(choosePassword)).toBeVisible({ timeout: 20_000 });
   if (!(await password.isVisible())) await choosePassword.click();
-  await password.fill(account.password);
+  await secretFill(password, account.password);
   await submit();
   if (totpCode) {
     const code = page.getByLabel(/code/i).first();
     await expect(code).toBeVisible({ timeout: 20_000 });
-    await code.fill(await totpCode());
+    await secretFill(code, await totpCode());
     await submit();
   }
 }

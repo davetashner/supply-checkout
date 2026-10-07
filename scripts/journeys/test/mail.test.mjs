@@ -18,8 +18,8 @@ test("a genuine message from the app passes", () => {
   assert.equal(extractCode(messageText(v.parsed)), "123456");
   // Letter case in addresses and verdicts doesn't matter
   assert.equal(verifyMessage(sesMessage({ to: to.toUpperCase(), rcpt: to.toUpperCase(), spam: "pass" }), expect).ok, true);
-  // DKIM by header.d works as well as header.i; DMARC may be absent
-  assert.equal(verifyMessage(sesMessage({ to, dkim: [`pass header.d=${PROD.senderDomain}`], dmarc: null }), expect).ok, true);
+  // DKIM by header.d works as well as header.i
+  assert.equal(verifyMessage(sesMessage({ to, dkim: [`pass header.d=${PROD.senderDomain}`] }), expect).ok, true);
 });
 
 test("each failed verdict refuses the message, with a reason that names nothing", () => {
@@ -31,6 +31,12 @@ test("each failed verdict refuses the message, with a reason that names nothing"
     [{ dkim: ["pass header.i=@evil.example"] }, /DKIM/],
     [{ dkim: [`pass header.i=@${PROD.senderDomain}.evil.example`] }, /DKIM/],
     [{ dmarc: `fail header.from=${PROD.senderDomain}` }, /DMARC/],
+    [{ dmarc: null }, /DMARC/],
+    [{ dmarc: "pass header.from=evil.example" }, /DMARC/],
+    [{ dmarc: "pass" }, /DMARC/],
+    [{ tos: [] }, /exactly one To/],
+    [{ tos: [to, to] }, /exactly one To/],
+    [{ tos: [`${to}, other@example.com`] }, /not addressed to/],
     [{ spam: "FAIL" }, /spam/],
     [{ virus: "GRAY" }, /virus/],
     [{ by: "mx.evil.example" }, /SES inbound/],
@@ -63,6 +69,21 @@ test("a sender's own Authentication-Results can't stand in for SES's", () => {
   assert.equal(verifyMessage(otherServ, expect).reason, "authentication results aren't SES's");
   const noReceivedSpf = sesMessage({ to }).replace(/Received-SPF: pass/, "Received-SPF: neutral");
   assert.equal(verifyMessage(noReceivedSpf, expect).reason, "Received-SPF isn't pass");
+});
+
+test("a genuine message replayed to another test address, or replayed late, is refused", () => {
+  // An attacker resends a genuine, DKIM-signed invite (To: the throwaway it was sent to) to a
+  // long-lived account's address: SES's envelope says the long-lived address, the signed To doesn't
+  const longLived = `owner-lived@${PROD.mailDomain}`;
+  const replayed = sesMessage({ to, rcpt: longLived, body: "Join: https://app.supplycheckout.com/?invite=i1&token=t1" });
+  const v = verifyMessage(replayed, { ...expect, to: longLived });
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, "not addressed to the address waited on");
+  // The same genuine message replayed later to its own address is older than the wait
+  const since = Date.parse("2026-10-07T13:00:00Z");
+  assert.equal(verifyMessage(sesMessage({ to }), { ...expect, notBefore: since }).reason, "sent before this wait began, or undated");
+  assert.equal(verifyMessage(sesMessage({ to, date: null }), { ...expect, notBefore: since }).reason, "sent before this wait began, or undated");
+  assert.equal(verifyMessage(sesMessage({ to, date: "Wed, 07 Oct 2026 13:00:01 +0000" }), { ...expect, notBefore: since }).ok, true);
 });
 
 test("without a Received recipient, the To header decides", () => {
@@ -139,6 +160,20 @@ test("the reader skips a forged code raced to a run address and takes the genuin
   assert.match(logs[0], /refused a message to a run address \(no passing DKIM/);
   assert.ok(!logs.join("").includes("@") && !logs.join("").includes("999999"));
   assert.ok(!s3.calls.some(([op, k]) => op === "get" && k === "inbox/old"), "messages from before the run aren't read");
+});
+
+test("the reader refuses a genuine message replayed to the address it waits on", async () => {
+  const longLived = `owner-lived@${PROD.mailDomain}`;
+  const s3 = fakeS3({
+    "inbox/replay": { body: sesMessage({ to, rcpt: longLived, body: "Your code is 999999" }), lastModified: T0 + 1000 },
+    "inbox/old-replay": { body: sesMessage({ to: longLived, date: "Wed, 07 Oct 2026 08:00:00 +0000", body: "Your code is 888888" }), lastModified: T0 + 1500 },
+  });
+  const logs = [];
+  const c = clock();
+  await assert.rejects(waitForMail({ s3, to: longLived, since: T0, masker: createMasker({ github: false }), now: c.now, sleep: c.sleep, timeoutMs: 3000, log: (l) => logs.push(l) }), MailTimeout);
+  assert.equal(logs.length, 2);
+  assert.match(logs[0], /not addressed to/);
+  assert.match(logs[1], /sent before this wait began/);
 });
 
 test("the reader waits for the genuine message, and times out with only refusals", async () => {

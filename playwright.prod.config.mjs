@@ -7,8 +7,8 @@
 // Running it for real needs the production-journeys environment's secrets and either a GitHub
 // Actions run or JOURNEYS_PROD_OPT_IN=run-against-prod; tests/prod/global-setup.mjs refuses
 // otherwise, before anything signs in. The journeys workflow (supply-checkout-o60.6) runs it,
-// then scripts/journeys/cleanup.mjs, then scripts/journeys/upload-results.mjs, then
-// scripts/journeys/prod-summary.mjs.
+// then scripts/journeys/cleanup.mjs, then scripts/journeys/prod-summary.mjs, then
+// scripts/journeys/upload-results.mjs (which scrubs the report and refuses any file with a secret).
 //
 // - Only the prod app's URL: tests/prod/global-setup.mjs checks every project's baseURL.
 // - Desktop Chrome and iPhone Safari only (owner decision 11), one worker each.

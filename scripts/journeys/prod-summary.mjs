@@ -4,6 +4,7 @@
 //
 //   node scripts/journeys/prod-summary.mjs --report <playwright JSON report>
 //        [--registry journeys/registry.json] [--warnings <file>] [--json <verdict file>]
+//        [--masked <file>]   (default: masked-values next to the report)
 //
 // One row per step of every journey in the registry, with the result in each browser project,
 // the time taken, and for a failure its first line, masked. A step is matched by a test's tag
@@ -16,9 +17,10 @@
 // token, address or account ID shape. Nothing else from the report is printed: no stdout, no
 // attachments, no source.
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENV } from "./lib/config.mjs";
-import { createMasker } from "./lib/mask.mjs";
+import { MASKED_VALUES_FILE, createMasker, readMaskedValues } from "./lib/mask.mjs";
 
 export const PROJECTS = ["desktop-chrome", "iphone-safari"];
 const STEP = /^@?(J\d+\.\d+)$/;
@@ -129,7 +131,7 @@ export function parseArgs(argv) {
   const out = { registry: "journeys/registry.json" };
   for (let i = 0; i < argv.length; i++) {
     const [flag, value] = [argv[i], argv[i + 1]];
-    if (!["--report", "--registry", "--warnings", "--json"].includes(flag) || !value) throw new Error(`Unknown or incomplete argument ${flag}`);
+    if (!["--report", "--registry", "--warnings", "--json", "--masked"].includes(flag) || !value) throw new Error(`Unknown or incomplete argument ${flag}`);
     out[flag.slice(2)] = value;
     i++;
   }
@@ -137,17 +139,22 @@ export function parseArgs(argv) {
   return out;
 }
 
-/** A masker that knows every secret in the environment (whichever are set). */
-export function envMasker(env) {
+/**
+ * A masker that knows every secret in the environment (whichever are set) and the values the
+ * run masked as it went (the masked-values file, when given).
+ */
+export function envMasker(env, maskedFile) {
   const masker = createMasker({ github: false });
   const names = [...Object.values(ENV.accounts).flatMap((a) => Object.values(a)), ...Object.values(ENV.teams), ...Object.values(ENV.buckets)];
-  for (const n of names) if (env[n]) masker.add(env[n]);
+  for (const n of names) if (env[n]) masker.remember(env[n]);
+  if (maskedFile) for (const v of readMaskedValues(maskedFile)) masker.remember(v);
   return masker;
 }
 
 export function main(argv = process.argv.slice(2), env = process.env) {
   const args = parseArgs(argv);
-  const masker = envMasker(env);
+  // The run's masked values: --masked, else the masked-values file next to the report
+  const masker = envMasker(env, args.masked ?? path.join(path.dirname(args.report), MASKED_VALUES_FILE));
   const report = JSON.parse(readFileSync(args.report, "utf8"));
   const registry = JSON.parse(readFileSync(args.registry, "utf8"));
   let warnings = [];

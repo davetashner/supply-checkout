@@ -107,8 +107,13 @@ test("the CLI writes the job summary and the verdict file", () => {
   writeFileSync(files.report, JSON.stringify(report));
   writeFileSync(files.registry, JSON.stringify(registry));
   writeFileSync(files.warnings, JSON.stringify(["from setup"]));
+  // A runtime value the run masked (in masked-values next to the report) is redacted too
+  writeFileSync(path.join(dir, "masked-values"), "run-runtime-secret-value\n");
+  report.suites[0].suites[0].specs[0].tests[0].results[1].error.message += " run-runtime-secret-value";
+  writeFileSync(files.report, JSON.stringify(report));
   assert.equal(main(["--report", files.report, "--registry", files.registry, "--warnings", files.warnings, "--json", files.json], { ...env, GITHUB_STEP_SUMMARY: files.summary }), 0);
   assert.match(readFileSync(files.summary, "utf8"), /from setup/);
+  assert.ok(!readFileSync(files.summary, "utf8").includes("run-runtime-secret-value"));
   assert.deepEqual(JSON.parse(readFileSync(files.json, "utf8")), { ok: false, failed: ["J9.1 (desktop-chrome)"], flaky: ["J0.2 (iphone-safari)"], critical: [] });
   // A missing warnings file is no warnings
   assert.equal(main(["--report", files.report, "--registry", files.registry, "--warnings", path.join(dir, "none.json")], { GITHUB_STEP_SUMMARY: files.summary }), 0);

@@ -22,7 +22,7 @@ export async function setup({ env, baseUrls, runId, appConfig, createCognito, ap
   assertRunAllowed(env);
   for (const url of baseUrls) checkBaseUrl(url);
   const config = readConfig(env);
-  for (const v of secretValues(config)) masker.add(v);
+  for (const v of secretValues(config)) masker.remember(v);
   const { clientId } = await appConfig();
   const cognito = createCognito(clientId);
   const warnings = [];

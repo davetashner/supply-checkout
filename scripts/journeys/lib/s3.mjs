@@ -19,7 +19,7 @@ const run = (args, input) =>
 
 /**
  * An S3 client for one bucket: list(prefix) → [{ key, lastModified }], get(key) → Buffer,
- * put(key, body), remove(key), upload(dir, prefix). `exec` is injectable for the unit tests.
+ * put(key, body), remove(key), upload(dir, prefix, exclude). `exec` is injectable for the unit tests.
  */
 export function createS3(bucket, { exec = run } = {}) {
   const fail = (operation, err) => {
@@ -39,6 +39,6 @@ export function createS3(bucket, { exec = run } = {}) {
     get: wrap("get", (key) => exec(["s3", "cp", `s3://${bucket}/${key}`, "-", "--quiet"])),
     put: wrap("put", (key, body) => exec(["s3", "cp", "-", `s3://${bucket}/${key}`, "--quiet", "--content-type", "application/json"], body)),
     remove: wrap("delete", (key) => exec(["s3api", "delete-object", "--bucket", bucket, "--key", key])),
-    upload: wrap("upload", (dir, prefix) => exec(["s3", "cp", dir, `s3://${bucket}/${prefix}`, "--recursive", "--quiet", "--only-show-errors"])),
+    upload: wrap("upload", (dir, prefix, exclude = []) => exec(["s3", "cp", dir, `s3://${bucket}/${prefix}`, "--recursive", "--quiet", "--only-show-errors", ...exclude.flatMap((e) => ["--exclude", e])])),
   };
 }

@@ -1,7 +1,7 @@
 // node --test scripts/journeys/test/ (part of npm run test:scripts): TOTP, the Cognito, API and
 // S3 clients, the run records, global setup and the results upload, against fakes.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -14,7 +14,7 @@ import { checkRecord, readRecords, recordKey, writeRecord } from "../lib/runs.mj
 import { createS3 } from "../lib/s3.mjs";
 import { setup } from "../lib/setup.mjs";
 import { base32Decode, freshTotp, hotp, stepAt, totp } from "../lib/totp.mjs";
-import { upload } from "../upload-results.mjs";
+import { NOT_UPLOADED, filesToUpload, findLeaks, scrubReport, upload } from "../upload-results.mjs";
 import { at, fakeEnv, fakeFetch, fakeS3 } from "./helpers.mjs";
 
 // RFC 6238's published test vector, "12345678901234567890" in base32: not a credential
@@ -31,19 +31,27 @@ test("TOTP matches RFC 6238's SHA-1 test vectors", () => {
   assert.throws(() => base32Decode("not base32!"), /base32/);
 });
 
-test("freshTotp never hands out a step twice, across processes", async () => {
+test("freshTotp claims each step once, atomically, across processes", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "totp-"));
-  const stateFile = path.join(dir, "step");
+  const stateFile = path.join(dir, "totp-step");
   let t = 30_000 * 1000 + 5_000;
   const slept = [];
   const opts = { stateFile, now: () => t, sleep: async (ms) => { slept.push(ms); t += ms; } };
   const secret = RFC_VECTOR;
+  const step = stepAt(t);
   const a = await freshTotp(secret, opts);
-  assert.equal(readFileSync(stateFile, "utf8"), String(stepAt(30_000 * 1000)));
+  assert.ok(existsSync(`${stateFile}.${step}`));
+  assert.deepEqual(slept, []);
+  // Another process (same file, same moment) gets the next step, after waiting for it
   const b = await freshTotp(secret, opts);
   assert.notEqual(a, b);
-  assert.equal(slept.length, 1);
-  assert.equal(slept[0], 25_250);
+  assert.ok(existsSync(`${stateFile}.${step + 1}`));
+  assert.deepEqual(slept, [25_250]);
+  // Two at once never share a step
+  const codes = await Promise.all([freshTotp(secret, opts), freshTotp(secret, opts)]);
+  assert.notEqual(codes[0], codes[1]);
+  // Anything but "already claimed" is an error, not a skipped step
+  await assert.rejects(freshTotp(secret, { ...opts, stateFile: path.join(dir, "missing", "x") }), /ENOENT/);
   // Without a state file it just answers
   assert.equal(await freshTotp(secret, { now: () => 59_000 }), "287082");
 });
@@ -136,7 +144,8 @@ test("the S3 client passes the bucket only as an argument and redacts it from er
   assert.equal((await s3.get("inbox/a")).toString(), "body");
   await s3.put("runs/1/accounts/owner.json", "{}");
   assert.equal(runs.at(-1).input, "{}");
-  await s3.upload("/tmp/x", "runs/1/");
+  await s3.upload("/tmp/x", "runs/1/", ["masked-values", "totp-step*"]);
+  assert.deepEqual(runs.at(-1).args.slice(-4), ["--exclude", "masked-values", "--exclude", "totp-step*"]);
   await assert.rejects(s3.remove("inbox/a"), (e) => e.message === "S3 delete failed: AccessDenied" && !e.message.includes(bucket) && !e.message.includes("123456789012"));
   const empty = createS3(bucket, { exec: async () => Buffer.alloc(0) });
   assert.deepEqual(await empty.list("runs/"), []);
@@ -208,15 +217,64 @@ test("global setup: guards first, then /me for every long-lived account, then pl
   assert.equal(s3b.store.size, 0);
 });
 
-test("upload-results puts the run's directory under runs/<runId>/ in the results bucket, then deletes it", async () => {
-  const env = fakeEnv({ GITHUB_ACTIONS: "true", CI: "true", GITHUB_RUN_ID: "77", GITHUB_RUN_ATTEMPT: "1", RUNNER_TEMP: "/runner" });
+function runDirWith(files) {
+  const temp = mkdtempSync(path.join(tmpdir(), "upload-"));
+  const dir = path.join(temp, "journeys-77-1");
+  for (const [rel, body] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    writeFileSync(path.join(dir, rel), body);
+  }
+  return { temp, dir };
+}
+const uploadEnv = (temp) => fakeEnv({ GITHUB_ACTIONS: "true", CI: "true", GITHUB_RUN_ID: "77", GITHUB_RUN_ATTEMPT: "1", RUNNER_TEMP: temp });
+
+test("upload-results scrubs the report, then puts the run's directory under runs/<runId>/", async () => {
+  const env = fakeEnv();
+  const report = {
+    suites: [{ specs: [{ tests: [{ results: [{
+      stdout: [{ text: `\n::add-mask::${env.JOURNEYS_OWNER_PASSWORD}\n` }, { text: "::add-mask::run-throwaway-address-value\n" }],
+      stderr: [{ text: "noise" }],
+      error: { message: `expected run-throwaway-address-value for ${env.JOURNEYS_CREW_EMAIL}\n::add-mask::leftover-value` },
+      steps: [{ title: `Fill "${env.JOURNEYS_VIEWER_PASSWORD}"` }],
+    }] }] }] }],
+  };
+  const { temp, dir } = runDirWith({
+    "report.json": JSON.stringify(report),
+    "masked-values": "run-throwaway-address-value\n",
+    "totp-step.1000": "",
+    "test-results/x/trace.zip": "PK binary",
+  });
   const s3 = fakeS3();
-  const removed = [];
-  const message = await upload({ env, s3For: (b) => { assert.equal(b, env.JOURNEYS_RESULTS_BUCKET); return s3; }, exists: () => true, remove: (d) => removed.push(d) });
-  assert.deepEqual(s3.calls, [["upload", "/runner/journeys-77-1", "runs/77-1/"]]);
-  assert.deepEqual(removed, ["/runner/journeys-77-1"]);
+  const message = await upload({ env: uploadEnv(temp), s3For: (b) => { assert.equal(b, env.JOURNEYS_RESULTS_BUCKET); return s3; } });
+  assert.deepEqual(s3.calls, [["upload", dir, "runs/77-1/"]]);
+  assert.match(message, /\(2 files\)/);
   assert.ok(!message.includes(env.JOURNEYS_RESULTS_BUCKET));
-  assert.match(await upload({ env, run: "5-1", s3For: () => s3, exists: () => false }), /nothing to upload for run 5-1/);
-  await assert.rejects(upload({ env: fakeEnv(), s3For: () => s3 }), /runs only in GitHub Actions/);
-  await assert.rejects(upload({ env: { ...env, JOURNEYS_RESULTS_BUCKET: "" }, s3For: () => s3 }), /JOURNEYS_RESULTS_BUCKET is not set/);
+  const scrubbed = readFileSync(path.join(dir, "report.json"), "utf8");
+  for (const v of ["::add-mask::", "stdout", "stderr", env.JOURNEYS_OWNER_PASSWORD, env.JOURNEYS_VIEWER_PASSWORD, env.JOURNEYS_CREW_EMAIL, "run-throwaway-address-value"]) assert.ok(!scrubbed.includes(v), v);
+  assert.match(scrubbed, /Fill \\"\*\*\*\\"/);
+  assert.deepEqual(filesToUpload(dir), ["report.json", "test-results/x/trace.zip"]);
+  assert.deepEqual(NOT_UPLOADED, ["masked-values", "totp-step*"]);
+  // An unreadable report is replaced, not uploaded as is
+  const bad = runDirWith({ "report.json": `{ broken ${env.JOURNEYS_OWNER_PASSWORD}` });
+  await upload({ env: uploadEnv(bad.temp), s3For: () => fakeS3() });
+  assert.ok(!readFileSync(path.join(bad.dir, "report.json"), "utf8").includes(env.JOURNEYS_OWNER_PASSWORD));
+});
+
+test("upload-results refuses when any file still holds a secret or a mask command", async () => {
+  const env = fakeEnv();
+  for (const leak of [`log line ${env.JOURNEYS_OWNER_TOTP}`, "::add-mask::x-value", `${env.JOURNEYS_MAIL_BUCKET}`]) {
+    const { temp, dir } = runDirWith({ "report.json": "{}", "test-results/a/error-context.md": leak, "test-results/a/ok.txt": "fine" });
+    const s3 = fakeS3();
+    await assert.rejects(upload({ env: uploadEnv(temp), s3For: () => s3 }), (e) => e.message === "Refusing to upload: a secret or an ::add-mask:: command is in test-results/a/error-context.md" && !e.message.includes(env.JOURNEYS_OWNER_TOTP));
+    assert.deepEqual(s3.calls, []);
+    assert.deepEqual(findLeaks(dir, ["test-results/a/ok.txt"], [env.JOURNEYS_OWNER_TOTP]), []);
+  }
+  assert.deepEqual(scrubReport({ a: ["x\n::add-mask::y", 1, null], stdout: [] }, (s) => s), { a: ["x", 1, null] });
+});
+
+test("upload-results needs a run, the opt-in or Actions, and the secrets", async () => {
+  const { temp } = runDirWith({});
+  assert.match(await upload({ env: { ...uploadEnv(temp), GITHUB_RUN_ID: "5" }, s3For: () => fakeS3() }), /nothing to upload for run 5-1/);
+  await assert.rejects(upload({ env: fakeEnv(), s3For: () => fakeS3() }), /runs only in GitHub Actions/);
+  await assert.rejects(upload({ env: { ...uploadEnv(temp), JOURNEYS_RESULTS_BUCKET: "" }, s3For: () => fakeS3() }), /JOURNEYS_RESULTS_BUCKET is not set/);
 });
