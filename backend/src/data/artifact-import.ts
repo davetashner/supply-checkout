@@ -241,10 +241,20 @@ function product(raw: unknown, ignored: (field: string) => void): ArtifactProduc
 
 /** An item's name (a product's, or a line's copy of it): text with no control or invisible characters (src/text/hidden-characters.ts). */
 function itemName(value: unknown): string {
-  const name = text(value, "name", MAX_NAME_LENGTH, "");
-  const problem = hiddenCharacterProblem("name", name);
+  return visibleText(value, "name", "");
+}
+
+/**
+ * Text people read on one line (a name, a project's client, who made it, the
+ * receipt's store): at most MAX_NAME_LENGTH, with no control or invisible
+ * characters (src/text/hidden-characters.ts, supply-checkout-1dg.13), as the
+ * document routes check them.
+ */
+function visibleText(value: unknown, field: string, fallback?: string): string {
+  const checked = text(value, field, MAX_NAME_LENGTH, fallback);
+  const problem = hiddenCharacterProblem(field, checked);
   if (problem) throw new FieldError(problem);
-  return name;
+  return checked;
 }
 
 /** A brand by the document routes' rules (brand.ts), as a FieldError. */
@@ -315,12 +325,12 @@ function project(raw: unknown, ignored: (field: string) => void, lineErrors: Imp
   let source: ArtifactProject["source"];
   if (raw.source !== undefined && raw.source !== null) {
     if (!isMap(raw.source)) throw new FieldError("source isn't an object");
-    source = { store: text(raw.source.store, "source.store", MAX_NAME_LENGTH, ""), receiptDate: text(raw.source.receiptDate, "source.receiptDate", MAX_NAME_LENGTH, "") };
+    source = { store: visibleText(raw.source.store, "source.store", ""), receiptDate: text(raw.source.receiptDate, "source.receiptDate", MAX_NAME_LENGTH, "") };
   }
   // The name the artifact showed, which the export resolved (preparedBy: the claude.ai
   // profile's name, or the project's own createdByName), else the project's createdByName
   const nameField = raw.preparedBy !== undefined && raw.preparedBy !== null ? "preparedBy" : "createdByName";
-  const createdByName = raw[nameField] === undefined || raw[nameField] === null ? undefined : text(raw[nameField], nameField, MAX_NAME_LENGTH);
+  const createdByName = raw[nameField] === undefined || raw[nameField] === null ? undefined : visibleText(raw[nameField], nameField);
   const createdAt = timestamp(raw.createdAt, "createdAt");
   const closedAt = timestamp(raw.closedAt, "closedAt");
   if (raw.items !== undefined && raw.items !== null && !isMap(raw.items)) throw new FieldError("items isn't an object");
@@ -339,7 +349,7 @@ function project(raw: unknown, ignored: (field: string) => void, lineErrors: Imp
   const out: ArtifactProject = {
     id: raw.id,
     ...(adhoc ? { kind: "adhoc" as const } : {}),
-    client: text(raw.client, "client", MAX_NAME_LENGTH, ""),
+    client: visibleText(raw.client, "client", ""),
     date,
     status,
     ...(createdAt === undefined ? {} : { createdAt }),
