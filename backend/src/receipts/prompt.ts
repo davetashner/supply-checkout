@@ -15,7 +15,7 @@ export const RECEIPT_RULES = [
   "- If the same item appears on several lines, list it once with the combined quantity.",
   "- Use null for store, date, subtotal, tax or total when you can't read them. Date must be YYYY-MM-DD.",
   '- "raw" is the item text exactly as printed on the receipt.',
-  '- "match": the id of the inventory item below that is the same product, even if it\'s described differently. Use null if none is clearly the same. Don\'t match items that differ in size, count, color or type.',
+  '- "match": the id of the inventory item below that is the same product, even if it\'s described differently. Use null if none is clearly the same. Don\'t match items that differ in size, count, color or type. An item\'s brand, when it has one, helps tell similar items apart.',
 ] as const;
 
 /** The fixed instructions: the same for every team, first in the prompt so they're part of the cached prefix. */
@@ -31,25 +31,41 @@ export const RECEIPT_INSTRUCTIONS = [
 export const MAX_INVENTORY_LINES = 500;
 /** The longest inventory name the prompt quotes, as the app does. */
 const MAX_NAME = 120;
+/** The longest brand the prompt quotes, as the app does: MAX_BRAND_LENGTH (backend/src/data/brand.ts). */
+const MAX_BRAND = 100;
 
 export interface InventoryItem {
   /** The product's key (its document ID). Never shown to the model. */
   readonly key: string;
   readonly name: unknown;
+  /** The product's optional brand (supply-checkout-005.9): text a team member typed, like the name. */
+  readonly brand?: unknown;
   readonly price: unknown;
 }
 
-/** The inventory as the model sees it ("i1 | name | price") and the map from those ids back to product keys. */
+/**
+ * Text a team member typed, quoted on one line of the list: no newlines or
+ * other control characters, and the "|" separators can't be faked from it.
+ */
+function cellText(value: unknown, max: number): string {
+  // eslint-disable-next-line no-control-regex -- removing control characters is the point
+  return String(value ?? "").replace(/[\s|\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, max);
+}
+
+/**
+ * The inventory as the model sees it ("i1 | name | brand | price", the brand
+ * blank when there's none) and the map from those ids back to product keys.
+ * The name and brand are team members' text, quoted the same way, after the
+ * fixed instructions, which say the inventory list is data, not instructions.
+ */
 export function inventoryList(items: readonly InventoryItem[]): { text: string; ids: Map<string, string> } {
   const ids = new Map<string, string>();
   const lines = items.slice(0, MAX_INVENTORY_LINES).map((item, i) => {
     const id = `i${i + 1}`;
     ids.set(id, item.key);
-    // One line each: no newlines, and the "|" separators can't be faked from a name
-    const name = String(item.name ?? "").replace(/[\s|]+/g, " ").trim().slice(0, MAX_NAME);
-    return `${id} | ${name} | ${moneyText(item.price)}`;
+    return `${id} | ${cellText(item.name, MAX_NAME)} | ${cellText(item.brand, MAX_BRAND)} | ${moneyText(item.price)}`;
   });
-  return { text: "Current inventory (id | name | price):\n" + (lines.join("\n") || "(empty)"), ids };
+  return { text: "Current inventory (id | name | brand | price):\n" + (lines.join("\n") || "(empty)"), ids };
 }
 
 function moneyText(value: unknown): string {

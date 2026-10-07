@@ -9,7 +9,7 @@ Rules:
 - If the same item appears on several lines, list it once with the combined quantity.
 - Use null for store, date, subtotal, tax or total when you can't read them. Date must be YYYY-MM-DD.
 - "raw" is the item text exactly as printed on the receipt.
-- "match": the id of the inventory item below that is the same product, even if it's described differently. Use null if none is clearly the same. Don't match items that differ in size, count, color or type.
+- "match": the id of the inventory item below that is the same product, even if it's described differently. Use null if none is clearly the same. Don't match items that differ in size, count, color or type. An item's brand, when it has one, helps tell similar items apart.
 - If the image is not a readable receipt, reply {"items": []}.`;
 
 // `message`: the server's own words, used for `receipt_rate` (the web build's per-user rate

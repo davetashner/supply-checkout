@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
+import { brandOf } from "./brand.js";
 import { AdhocOpenError, ConflictError, EquipmentOutError, InvalidInputError, NotFoundError, TooLargeError, isCancelledAsTooLarge, isItemTooLarge } from "./errors.js";
 import { BOUGHT_SUFFIX, adhocNumber, barcode, id as checkId, isAdhocId, keys, prefixes, productKey, teamPartition } from "./keys.js";
 import { legacy } from "./legacy-sheets.js";
@@ -181,6 +182,12 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
   if (collection === "products") {
     if ("stock" in data && typeof data.stock !== "number") throw new InvalidInputError("Invalid stock");
     if ("code" in data) barcode(data.code);
+    // An optional brand (brand.ts): stored trimmed, and blank or null removes it
+    if (Object.hasOwn(data, "brand")) {
+      const brand = brandOf(data.brand);
+      if (brand === undefined) delete data.brand;
+      else data.brand = brand;
+    }
     // A product's price and cost follow the money rule like a project line's (ADR 0014)
     for (const field of ["price", "cost"] as const) if (Object.hasOwn(data, field)) data[field] = writtenMoney(data[field], before?.data, field);
   }

@@ -170,6 +170,19 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p2")).toBeUndefined();
   });
 
+  it("stores a product's brand trimmed, removes a blank one, and refuses a bad one (supply-checkout-005.9)", async () => {
+    const ctx = await team();
+    await setDocument(db, ctx, "products", "p1", { code: "", name: "Gloves", price: 1, brand: " Ansell " });
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p1")).toMatchObject({ name: "Gloves", brand: "Ansell", version: 1 });
+    await updateDocument(db, ctx, "products", "p1", { price: 2 });
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p1")).toMatchObject({ brand: "Ansell", price: 2, version: 2 });
+    await updateDocument(db, ctx, "products", "p1", { brand: "" });
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p1")).not.toHaveProperty("brand");
+    await expect(updateDocument(db, ctx, "products", "p1", { brand: "a\nb" })).rejects.toBeInstanceOf(InvalidInputError);
+    await expect(setDocument(db, ctx, "products", "p1", { code: "", name: "Gloves", brand: "x".repeat(101) })).rejects.toBeInstanceOf(InvalidInputError);
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p1")).toMatchObject({ version: 3 });
+  });
+
   it("maps DynamoDB's own item-size refusal to TooLargeError", async () => {
     const ctx = await team();
     // Under the document limit as JSON, but over 400 KB as DynamoDB counts it (each number in a list takes more than its 2 bytes of JSON)

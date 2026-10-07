@@ -217,6 +217,35 @@ describe("parseArtifactExport", () => {
     expect(p.projectsWithoutTotals).toBe(2);
   });
 
+  it("keeps a product's brand by the document routes' rules, from the web app's export (supply-checkout-005.9)", () => {
+    const p = parseArtifactExport(
+      JSON.stringify({
+        app: "Supply Checkout",
+        inventory: [
+          { key: "a", price: 1, brand: " Glad " },
+          { key: "b", price: 1, brand: "" },
+          { key: "c", price: 1, brand: null },
+          { key: "d", price: 1, brand: "x".repeat(101) },
+          { key: "e", price: 1, brand: "Glad\u001b[2J" },
+          { key: "f", price: 1, brand: 7 },
+        ],
+        sheets: [],
+      }),
+    );
+    expect(p.products).toEqual([
+      { key: "a", code: "", name: "", brand: "Glad", price: 1 },
+      { key: "b", code: "", name: "", price: 1 },
+      { key: "c", code: "", name: "", price: 1 },
+    ]);
+    // Problems say where and what, never the brand itself
+    expect(p.errors).toEqual([
+      { at: 'inventory[3] key "d"', message: "brand is longer than 100 characters" },
+      { at: 'inventory[4] key "e"', message: "brand has a control character in it" },
+      { at: 'inventory[5] key "f"', message: "brand must be text" },
+    ]);
+    expect(p.ignoredFields).toEqual({});
+  });
+
   it("refuses two items with one barcode, as the CSV import does", () => {
     const p = parseArtifactExport(
       JSON.stringify({

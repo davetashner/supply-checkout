@@ -51,6 +51,7 @@ export type { Page } from "./query.js";
 export * from "./teams.js";
 export * from "./invites.js";
 export * from "./products.js";
+export { MAX_BRAND_LENGTH, brandOf } from "./brand.js";
 export * from "./project-items.js";
 export * from "./projects.js";
 export * from "./usage.js";

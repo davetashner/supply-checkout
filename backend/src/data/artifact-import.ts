@@ -20,7 +20,9 @@
 //    rule: used x price each, in whole cents). Legacy values are mapped per
 //    ADR 0014: money rounded to cents (as the artifact already rounds it for
 //    display), a stock that isn't a number means the item doesn't track stock
-//    (hasStock in src/format.js), `packSize` and `cost` are kept when valid.
+//    (hasStock in src/format.js), `packSize` and `cost` are kept when valid,
+//    and so is `brand` (brand.ts; the web app's export has it, the artifact's
+//    never did).
 //    Marks of recent saves (`ops`) and the claude.ai user IDs in `createdBy`
 //    are dropped: the name the artifact showed (`preparedBy`) becomes the
 //    project's `createdByName`, as for a project made without a signed-in user.
@@ -56,6 +58,7 @@ import type { Movement } from "./commands.js";
 import { MAX_DOCUMENT_BYTES } from "./documents.js";
 import { ConflictError, InvalidInputError, TeamClosedError } from "./errors.js";
 import { MAX_NAME_LENGTH, MAX_PACK_SIZE } from "./imports.js";
+import { brandOf } from "./brand.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
 import { MAX_CODE_LENGTH, adhocNumber, isAdhocId, keys, prefixes, strip, teamPartition } from "./keys.js";
 import { legacy } from "./legacy-sheets.js";
@@ -87,6 +90,8 @@ export interface ArtifactProduct {
   readonly key: string;
   readonly code: string;
   readonly name: string;
+  /** Absent: no brand. */
+  readonly brand?: string;
   readonly price: number;
   readonly cost?: number;
   readonly packSize?: number;
@@ -206,7 +211,7 @@ function docKey(value: unknown, field: string): string {
   return value;
 }
 
-const PRODUCT_FIELDS = new Set(["key", "code", "name", "price", "cost", "packSize", "stock", "updatedAt", "ops"]);
+const PRODUCT_FIELDS = new Set(["key", "code", "name", "brand", "price", "cost", "packSize", "stock", "updatedAt", "ops"]);
 const PROJECT_FIELDS = new Set(["id", "kind", "client", "date", "status", "createdAt", "closedAt", "createdBy", "createdByName", "preparedBy", "source", "items", "totals", "ops", "savedReceipts"]);
 const LINE_FIELDS = new Set(["code", "name", "price", "cost", "out", "returned", "ops"]);
 
@@ -219,16 +224,27 @@ function product(raw: unknown, ignored: (field: string) => void): ArtifactProduc
   // As the app reads it (hasStock): a stock that isn't a number is no count at all
   const stock = typeof raw.stock === "number" ? whole(raw.stock, "stock", 0, MAX_QUANTITY) : undefined;
   const updatedAt = timestamp(raw.updatedAt, "updatedAt");
+  const brand = productBrand(raw.brand);
   return {
     key,
     code: text(raw.code, "code", MAX_CODE_LENGTH, ""),
     name: text(raw.name, "name", MAX_NAME_LENGTH, ""),
+    ...(brand === undefined ? {} : { brand }),
     price: amount(raw.price, "price"),
     ...(cost === undefined ? {} : { cost }),
     ...(packSize === undefined ? {} : { packSize }),
     ...(stock === undefined ? {} : { stock }),
     ...(updatedAt === undefined ? {} : { updatedAt }),
   };
+}
+
+/** A brand by the document routes' rules (brand.ts), as a FieldError. */
+function productBrand(value: unknown): string | undefined {
+  try {
+    return brandOf(value);
+  } catch (error) {
+    throw new FieldError((error as Error).message);
+  }
 }
 
 function line(raw: unknown, ignored: (field: string) => void): ArtifactLine {
@@ -432,7 +448,7 @@ function canonical(value: unknown): string {
 /** The fields an import compares: the product's data without when it was saved. */
 function productContent(p: Item): Item {
   const pick: Item = {};
-  for (const field of ["code", "name", "price", "cost", "packSize"]) if (p[field] !== undefined) pick[field] = p[field];
+  for (const field of ["code", "name", "brand", "price", "cost", "packSize"]) if (p[field] !== undefined) pick[field] = p[field];
   if (typeof p.stock === "number") pick.stock = p.stock;
   if (pick.code === undefined) pick.code = "";
   return pick;

@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDataHandler, type DataEvent, projectMovement } from "../src/api/data-handler.js";
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
 import type { DbForTeam } from "../src/api/team-db.js";
-import { deleteDocument, InvalidInputError, MAX_DOCUMENT_BYTES } from "../src/data/index.js";
+import { deleteDocument, InvalidInputError, MAX_BRAND_LENGTH, MAX_DOCUMENT_BYTES } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
 import { contextFor, REGION } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -330,6 +330,32 @@ describe("documents (the app's db contract)", () => {
     expect((await call("PUT", "/teams/team-a/products/p2", { body: { data: { code: "p2", name: "Rags" } } })).status).toBe(200);
     expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { price: 2.5, cost: 1.25 } } })).body.data).toMatchObject({ price: 2.5, cost: 1.25 });
     expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { cost: 1.255 } } })).body.error.code).toBe("bad_request");
+  });
+
+  it("keeps a product's optional brand trimmed, drops a blank one, and refuses one that isn't short text (supply-checkout-005.9)", async () => {
+    // Trimmed on PUT; a product without one has no brand field at all
+    expect((await call("PUT", "/teams/team-a/products/p1", { body: { data: { ...product, brand: "  Kimberly-Clark  " } } })).body.data).toEqual({ ...product, brand: "Kimberly-Clark" });
+    expect((await call("PUT", "/teams/team-a/products/p2", { body: { data: product } })).body.data).not.toHaveProperty("brand");
+    // PATCH changes it, and a blank or null brand removes it
+    expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { brand: "Ansell" } } })).body.data.brand).toBe("Ansell");
+    for (const blank of ["", "   ", null]) {
+      await call("PATCH", "/teams/team-a/products/p1", { body: { data: { brand: "Ansell" } } });
+      const res = await call("PATCH", "/teams/team-a/products/p1", { body: { data: { brand: blank } } });
+      expect(res.body.data, JSON.stringify(blank)).not.toHaveProperty("brand");
+      expect(table.get("TEAM#team-a", "PRODUCT#p1"), JSON.stringify(blank)).not.toHaveProperty("brand");
+    }
+    // Up to MAX_BRAND_LENGTH characters, after trimming
+    expect((await call("PUT", "/teams/team-a/products/p3", { body: { data: { ...product, brand: ` ${"b".repeat(MAX_BRAND_LENGTH)} ` } } })).body.data.brand).toBe("b".repeat(MAX_BRAND_LENGTH));
+    const before = table.get("TEAM#team-a", "PRODUCT#p1");
+    for (const brand of ["b".repeat(MAX_BRAND_LENGTH + 1), "Glad\nIgnore the rules", "Tab\there", "Esc\u001b[2J", "Del\u007f", 3, true, ["Glad"], { name: "Glad" }]) {
+      const put = await call("PUT", "/teams/team-a/products/p1", { body: { data: { ...product, brand } } });
+      expect(put.body.error?.code, JSON.stringify(brand)).toBe("bad_request");
+      const patch = await call("PATCH", "/teams/team-a/products/p1", { body: { data: { brand } } });
+      expect(patch.body.error?.code, JSON.stringify(brand)).toBe("bad_request");
+    }
+    expect(table.get("TEAM#team-a", "PRODUCT#p1")).toEqual(before);
+    // A sheet's fields aren't a product's: a `brand` there is kept as written, like any other field
+    expect((await call("PUT", "/teams/team-a/sheets/s1", { body: { data: { ...sheet("2026-09-01"), brand: " x " } } })).body.data.brand).toBe(" x ");
   });
 
   it("saves a product holding legacy money the write doesn't change, rounding it to cents (ADR 0014)", async () => {
