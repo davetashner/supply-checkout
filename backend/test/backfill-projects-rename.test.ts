@@ -12,7 +12,7 @@ import { PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@
 import { afterAll, describe, expect, it } from "vitest";
 import { type Db } from "../src/data/index.js";
 import { connection, dbFromConnection, storable } from "../src/data/client.js";
-import { sheetItem } from "../src/data/documents.js";
+import { projectAttributes } from "../src/data/project-items.js";
 import { itemBytes, projectTotals, renamedItem, renameHash, renameProjects, PROJECTS, SHEETS, type ProjectsRenameOptions } from "../src/data/projects-rename.js";
 import { exportPath, formatRenameReport, main } from "../scripts/backfill.js";
 import { endpoint, rawItem, REGION, useTable } from "./helpers.js";
@@ -21,7 +21,16 @@ const fast: Partial<ProjectsRenameOptions> = { writesPerSecond: Infinity, indexW
 const newTeamId = () => `team-${randomUUID()}`;
 const put = (db: Db, Item: Record<string, unknown>) => connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: storable(Item) }));
 
-/** A sheet as documents.ts stores it today: SHEET#, GSI1PK built by hand, type "sheet". */
+/**
+ * A sheet as stored before the rename (pre-migration data): SHEET#, GSI1PK
+ * TEAM#<t>#SHEETS, type "sheet". (documents.ts writes new projects as PROJECT#
+ * now, so the seed builds the old layout itself.)
+ */
+function sheetItem(teamId: string, id: string, data: Record<string, unknown>, version: number): Record<string, unknown> {
+  return { ...data, ...projectAttributes(teamId, id, data.date, "sheet"), id, version };
+}
+
+/** A sheet's data, as the app writes it. */
 function sheetData(n: number) {
   return {
     client: `Client ${n} Ltd`,
