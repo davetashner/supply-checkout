@@ -159,6 +159,17 @@ const DATA_CASES: Record<string, Omit<Case, "minRole">> = {
   "POST /teams/{teamId}/sheets/{sheetId}/lines": { method: "POST", path: "/teams/team-a/sheets/s1/lines", body: { operationId: randomUUID(), lines: [{ productKey: "k-1", quantity: 1, name: "Rags", price: 1.5 }] } },
   "POST /teams/{teamId}/sheets/{sheetId}/return": { method: "POST", path: "/teams/team-a/sheets/s1/return", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
   "POST /teams/{teamId}/sheets/{sheetId}/lost": { method: "POST", path: "/teams/team-a/sheets/s1/lost", body: { operationId: randomUUID(), productKey: "ladder", quantity: 1, charge: 50 } },
+  // The same routes under the projects name (supply-checkout-005.6), with the new field names
+  "GET /teams/{teamId}/projects": { method: "GET", path: "/teams/team-a/projects" },
+  "GET /teams/{teamId}/projects/{projectId}": { method: "GET", path: "/teams/team-a/projects/s1" },
+  "PUT /teams/{teamId}/projects/{projectId}": { method: "PUT", path: "/teams/team-a/projects/s2", body: { data: { client: "Delta", date: "2026-09-27", items: {} }, expectedVersion: 0 } },
+  "PATCH /teams/{teamId}/projects/{projectId}": { method: "PATCH", path: "/teams/team-a/projects/s1", body: { data: { client: "Echo 2" }, expectedVersion: 1 } },
+  "DELETE /teams/{teamId}/projects/{projectId}": { method: "DELETE", path: "/teams/team-a/projects/s1", query: { expectedVersion: "1" } },
+  "POST /teams/{teamId}/projects/{projectId}/checkout": { method: "POST", path: "/teams/team-a/projects/s1/checkout", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
+  "POST /teams/{teamId}/projects/{projectId}/move": { method: "POST", path: "/teams/team-a/projects/adhoc-1/move", body: { operationId: randomUUID(), productKey: "rags", toProjectId: "s1" } },
+  "POST /teams/{teamId}/projects/{projectId}/lines": { method: "POST", path: "/teams/team-a/projects/s1/lines", body: { operationId: randomUUID(), lines: [{ productKey: "k-1", quantity: 1, name: "Rags", price: 1.5 }] } },
+  "POST /teams/{teamId}/projects/{projectId}/return": { method: "POST", path: "/teams/team-a/projects/s1/return", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
+  "POST /teams/{teamId}/projects/{projectId}/lost": { method: "POST", path: "/teams/team-a/projects/s1/lost", body: { operationId: randomUUID(), productKey: "ladder", quantity: 1, charge: 50 } },
   "GET /teams/{teamId}/settings": { method: "GET", path: "/teams/team-a/settings" },
   "PUT /teams/{teamId}/settings": { method: "PUT", path: "/teams/team-a/settings", body: { equipmentMarkup: 25, expectedVersion: 0 } },
   "POST /teams/{teamId}/products/{key}/stock": { method: "POST", path: "/teams/team-a/products/0123/stock", body: { operationId: randomUUID(), reason: "count", count: 4 } },
@@ -219,6 +230,17 @@ describe("the role matrix", () => {
     expect(DATA_ROUTES.find((r) => r.operation === "importProducts")?.minRole).toBe("owner");
     expect(DATA_ROUTES.find((r) => r.operation === "supportActions")?.minRole).toBe("owner");
     expect(DATA_ROUTES.find((r) => r.operation === "setSettings")?.minRole).toBe("owner");
+  });
+
+  it("gives every old /sheets route exactly its /projects twin's role, and nothing else differs (supply-checkout-005.6)", () => {
+    const legacy = DATA_ROUTES.filter((r) => r.legacy);
+    expect(legacy.map(routeKey).sort()).toEqual(DATA_ROUTES.filter((r) => r.path.includes("/sheets")).map(routeKey).sort());
+    expect(legacy).toHaveLength(10);
+    for (const route of legacy) {
+      const twin = DATA_ROUTES.find((r) => !r.legacy && r.method === route.method && r.path === route.path.replace("/sheets/{sheetId}", "/projects/{projectId}").replace(/\/sheets$/, "/projects"));
+      expect(twin, routeKey(route)).toBeDefined();
+      expect({ ...route, path: twin?.path, legacy: undefined }, routeKey(route)).toEqual({ ...twin, legacy: undefined });
+    }
   });
 
   for (const [key, c, fn] of cases) {

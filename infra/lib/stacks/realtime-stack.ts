@@ -53,7 +53,8 @@ export const realtimeOutputParameters = (envName: string) => ({
  * - Only IAM may publish, and only the consumer's role has
  *   appsync:EventPublish, on the `users` namespace. Clients can't publish.
  * - The consumer (backend/src/realtime/publisher.ts) reads the table's stream,
- *   filtered to product and sheet items (the changes) and to META and MEMBER
+ *   filtered to product and project items (the changes; `PROJECT#`, and
+ *   `SHEET#` until the projects rename's backfill has moved every item) and to META and MEMBER
  *   items (who gets them), and publishes a small change event per write to
  *   each current member of an active team. It may read only the attributes
  *   that answer that (LIVE_AUDIENCE_ATTRIBUTES), in team partitions. A removed

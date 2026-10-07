@@ -62,7 +62,7 @@ Clients can't publish. The `users` namespace takes publishes only from the strea
 Each `data` message carries one event as a JSON string:
 
 ```json
-{ "type": "data", "id": "<subscription id>", "event": "{\"v\":1,\"teamId\":\"7d3b8a52-…\",\"eventId\":\"…\",\"collection\":\"sheets\",\"id\":\"s-123\",\"op\":\"put\",\"version\":8,\"at\":1790000000000}" }
+{ "type": "data", "id": "<subscription id>", "event": "{\"v\":1,\"teamId\":\"7d3b8a52-…\",\"eventId\":\"…\",\"collection\":\"projects\",\"id\":\"s-123\",\"op\":\"put\",\"version\":8,\"at\":1790000000000}" }
 ```
 
 | Field | |
@@ -70,13 +70,19 @@ Each `data` message carries one event as a JSON string:
 | `v` | Format version: `1` for a document event, as here; `2` for a [collection event](#collection-events). Ignore events with a `v` you don't know. |
 | `teamId` | The team whose document changed. Your channel carries every team you're in: ignore events for a team you aren't showing. |
 | `eventId` | The DynamoDB stream record's ID. A retried batch publishes the same event again with the same `eventId`, and a batch that keeps failing part way can send it up to 25 times: skip one you've already applied. |
-| `collection` | `products` or `sheets` |
-| `id` | The product key or sheet ID (the last segment of the document's API path; percent-encode it in the URL) |
+| `collection` | `products` or `projects` (or `sheets`, the old name of `projects`, through the rename's window: see below) |
+| `id` | The product key or project ID (the last segment of the document's API path; percent-encode it in the URL) |
 | `op` | `put` (created, replaced, updated, or a product's stock changed) or `delete` |
 | `version` | The version after a `put`, or the deleted document's last version. Missing only for a malformed item: then just fetch. |
 | `at` | When DynamoDB recorded the change, epoch milliseconds, to the second. For measuring, not ordering. |
 
 There is nothing else in an event, and there never will be document data (a test checks every field).
+
+### Projects, formerly sheets
+
+Sheets are being renamed projects (bead `supply-checkout-005.6`). Through the rename's window, every change to a project goes out twice, one after the other, with the same `eventId`: as `collection: "projects"`, and again as `collection: "sheets"`, because a tab still running the old app ignores a collection it doesn't know and would otherwise stop updating. A collection event for projects goes out twice the same way. A new client reads `projects` and ignores `sheets`; if it skips events it has already applied, it should key them by `eventId` and `collection`. The second copy is left out of the consumer's counts (`LiveUpdates`). The server stops sending `sheets` when the window ends ([the plan](../projects-rename-plan.md), section 3).
+
+A project's item moves from its old key to its new one when the rename's backfill runs: that is a `delete` and then a `put` of the same project ID (or, for more than 10 in a batch, a collection event), so an open tab drops it for a moment and fetches it again.
 
 ### Collection events
 
@@ -113,7 +119,7 @@ Events for a team you've just been added to start within about 30 seconds of joi
 Events published while a client is disconnected are gone; AppSync doesn't replay them. So:
 
 1. Reconnect with jittered exponential backoff (1 s, 2 s, 4 s … capped at 30 s), on socket close, a missed keep-alive, or the browser's `online` event.
-2. After every `subscribe_success`, the first and each later one, **re-list both collections** (`GET /teams/{teamId}/products` and `/sheets`, following `cursor`) and deliver them as the new state. Events that arrive during the re-list are applied as above.
+2. After every `subscribe_success`, the first and each later one, **re-list both collections** (`GET /teams/{teamId}/products` and `/projects`, following `cursor`) and deliver them as the new state. Events that arrive during the re-list are applied as above.
 3. When the tab becomes visible again (`visibilitychange`), re-list too: mobile browsers freeze background tabs without closing their sockets.
 4. While connected, also re-list every 10 minutes. It's cheap, and it covers the rare batch of events the consumer gave up on (see "Live updates dropped" in [docs/journeys.md](../journeys.md)).
 5. When the access token is refreshed (hourly), reconnect with the new one. AppSync checks tokens only at connect and subscribe, so this isn't needed for the socket to keep working, but it means a signed-out user's open subscription ends within the hour on a well-behaved client. (Removal from a team doesn't depend on it: the consumer stops publishing to a removed member.)

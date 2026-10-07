@@ -1,5 +1,6 @@
 // The app's document model (ADR 0004, 0006): `products/<key>` and
-// `sheets/<id>` as free-form JSON documents with get, set (replace), update
+// `projects/<id>` (formerly `sheets/<id>`, a name still accepted through the
+// rename's window, supply-checkout-005.6) as free-form JSON documents with get, set (replace), update
 // (deep merge), delete and list, the operations the app calls through
 // `window.claude.use("db")`. The HTTP data API (src/api) serves these, and the
 // browser adapter maps the app's calls onto it.
@@ -27,17 +28,24 @@ import { AdhocOpenError, ConflictError, EquipmentOutError, InvalidInputError, No
 import { BOUGHT_SUFFIX, adhocNumber, barcode, id as checkId, isAdhocId, keys, prefixes, productKey, teamPartition } from "./keys.js";
 import { money, storedMoney } from "./money.js";
 import type { Movement } from "./commands.js";
+import { type ProjectLayout, layoutOf, projectAttributes, projectItemsByDatePage, projectItemsPage, projectKeyFor, readProjectItem } from "./project-items.js";
 import { type Page, queryPage } from "./query.js";
-import { GSI1, GSI1PK, PK } from "./schema.js";
+import { PK } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
-export type Collection = "products" | "sheets";
-export const COLLECTIONS: readonly Collection[] = ["products", "sheets"];
+export type Collection = "products" | "projects";
+/**
+ * A collection as a caller may name it: `sheets` is the old name of
+ * `projects`, accepted (and treated as `projects`) through the rename's window
+ * (supply-checkout-005.6).
+ */
+export type CollectionName = Collection | "sheets";
+export const COLLECTIONS: readonly CollectionName[] = ["products", "projects", "sheets"];
 
 export type DocumentData = Record<string, unknown>;
 
 export interface StoredDocument {
-  /** The product key or sheet ID: the last segment of the document's path. */
+  /** The product key or project ID: the last segment of the document's path. */
   readonly id: string;
   /** Starts at 1 and goes up by one with every write. */
   readonly version: number;
@@ -62,7 +70,7 @@ export interface WriteOptions {
 }
 
 export interface ListOptions {
-  /** Sheets only: date order through GSI1, which is eventually consistent. */
+  /** Projects only: date order through GSI1, which is eventually consistent. */
   readonly orderBy?: "date";
   /** With orderBy: newest first. */
   readonly descending?: boolean;
@@ -95,21 +103,17 @@ export const MAX_DOCUMENT_BYTES = 350_000;
 /** DynamoDB allows 32 levels of nesting; the app uses 3 (a sheet's items map). */
 const MAX_DEPTH = 16;
 const MAX_ATTEMPTS = 5;
-const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
 const isMap = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-function checkCollection(collection: Collection): Collection {
-  if (!COLLECTIONS.includes(collection)) throw new InvalidInputError("Unknown collection");
-  return collection;
+/** The collection a name means: `sheets` is `projects`. Throws for any other name. */
+export function canonicalCollection(name: CollectionName): Collection {
+  if (!COLLECTIONS.includes(name)) throw new InvalidInputError("Unknown collection");
+  return name === "sheets" ? "projects" : name;
 }
 
 function docId(collection: Collection, value: unknown): string {
-  return checkCollection(collection) === "products" ? productKey(value) : checkId(value, "sheet ID");
-}
-
-function itemKey(collection: Collection, teamId: string, docId: string) {
-  return collection === "products" ? keys.product(teamId, docId) : keys.sheet(teamId, docId);
+  return collection === "products" ? productKey(value) : checkId(value, "sheet ID");
 }
 
 /** Throws unless `value` is JSON that DynamoDB can store as it is. */
@@ -179,7 +183,7 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
     // A product's price and cost follow the money rule like a sheet line's (ADR 0014)
     for (const field of ["price", "cost"] as const) if (Object.hasOwn(data, field)) data[field] = writtenMoney(data[field], before?.data, field);
   }
-  if (collection === "sheets") {
+  if (collection === "projects") {
     if ("date" in data && typeof data.date !== "string") throw new InvalidInputError("Invalid date");
     if ("items" in data && !isMap(data.items)) throw new InvalidInputError("Invalid items");
     // Each line keeps its barcode (`code`), its price each and its cost each (`price`, `cost`,
@@ -299,25 +303,19 @@ function deepMerge(target: Record<string, unknown>, patch: Record<string, unknow
   return target;
 }
 
-function toItem(collection: Collection, teamId: string, docId: string, data: DocumentData, version: number): Record<string, unknown> {
+/**
+ * The item a document is stored as. A project's goes where `layout` says: the
+ * key it was read from, or, for a new one, `PROJECT#` (project-items.ts).
+ * Date order comes from GSI1.
+ */
+function toItem(collection: Collection, teamId: string, docId: string, data: DocumentData, version: number, layout: ProjectLayout = "project"): Record<string, unknown> {
   if (collection === "products") return { ...data, ...keys.product(teamId, docId), type: "product", key: docId, version };
-  // Date order comes from GSI1. A sheet without a valid date sorts before
-  // every dated one (after them, newest first) rather than dropping out.
-  const date = typeof data.date === "string" && DATE.test(data.date) ? data.date : "";
-  return {
-    ...data,
-    ...keys.sheet(teamId, docId),
-    GSI1PK: `${teamPartition(teamId)}#SHEETS`,
-    GSI1SK: `${date}#${docId}`,
-    type: "sheet",
-    id: docId,
-    version,
-  };
+  return { ...data, ...projectAttributes(teamId, docId, data.date, layout), id: docId, version };
 }
 
-/** A sheet's item as stored, with its keys and date index: for the quick take, which makes the ad hoc sheet (commands.ts). */
+/** A new project's item as stored, with its keys and date index: for the quick take, which makes the ad hoc project (commands.ts). */
 export function sheetItem(teamId: string, sheetId: string, data: DocumentData, version: number): Record<string, unknown> {
-  return toItem("sheets", teamId, sheetId, data, version);
+  return toItem("projects", teamId, sheetId, data, version);
 }
 
 function fromItem(collection: Collection, item: Record<string, unknown>): StoredDocument {
@@ -327,9 +325,11 @@ function fromItem(collection: Collection, item: Record<string, unknown>): Stored
   return { id, version: typeof item.version === "number" ? item.version : 1, data };
 }
 
+/** A document's item, keys included; a project's from either key (project-items.ts). */
 async function readItem(db: Db, collection: Collection, teamId: string, docId: string) {
+  if (collection === "projects") return readProjectItem(db, teamId, docId);
   const { Item } = await connection(db).doc.send(
-    new GetCommand({ TableName: db.tableName, Key: itemKey(collection, teamId, docId), ConsistentRead: true }),
+    new GetCommand({ TableName: db.tableName, Key: keys.product(teamId, docId), ConsistentRead: true }),
   );
   return Item;
 }
@@ -382,7 +382,7 @@ async function adhocChange(db: Db, ctx: TeamContext, id: string, before: StoredD
   const open = adhocOpen(pointer);
   if (closing) return open === id ? adhocPut(db, ctx.teamId, pointer, { open: undefined, count: adhocCount(pointer) }, at) : undefined;
   if (open !== undefined && open !== id) {
-    const other = await readItem(db, "sheets", ctx.teamId, open);
+    const other = await readItem(db, "projects", ctx.teamId, open);
     if (other && other.status !== "closed") throw new AdhocOpenError("Another ad hoc sheet is open. Finish it before reopening this one.");
   }
   return adhocPut(db, ctx.teamId, pointer, { open: id, count: adhocNumber(id) ?? 0 }, at);
@@ -395,12 +395,13 @@ async function adhocChange(db: Db, ctx: TeamContext, id: string, before: StoredD
 async function write(
   db: Db,
   ctx: TeamContext,
-  collection: Collection,
+  name: CollectionName,
   rawId: unknown,
   options: WriteOptions,
   build: (current: StoredDocument | undefined) => DocumentData,
 ): Promise<WriteResult> {
   writable(db, ctx);
+  const collection = canonicalCollection(name);
   const id = docId(collection, rawId);
   const expected = expectedVersion(options);
   for (let attempt = 1; ; attempt++) {
@@ -410,10 +411,10 @@ async function write(
     // Kept for the lines of equipment bought for a client (ADR 0017), which aren't products
     if (collection === "products" && !before && id.endsWith(BOUGHT_SUFFIX)) throw new InvalidInputError(`An item's key can't end in "${BOUGHT_SUFFIX}"`);
     // Kept for the ad hoc sheets, which only the quick take makes (ADR 0017, section 4)
-    if (collection === "sheets" && !before && isAdhocId(id)) throw new InvalidInputError('Sheet IDs starting "adhoc-" are kept for the ad hoc sheet, which Quick take makes');
+    if (collection === "projects" && !before && isAdhocId(id)) throw new InvalidInputError('Sheet IDs starting "adhoc-" are kept for the ad hoc sheet, which Quick take makes');
     const at = (options.now ?? new Date()).toISOString();
     const data = checkDocument(collection, build(before), { userId: ctx.userId, at }, before);
-    const adhoc = collection === "sheets" ? await adhocChange(db, ctx, id, before, data, at) : undefined;
+    const adhoc = collection === "projects" ? await adhocChange(db, ctx, id, before, data, at) : undefined;
     const version = (before?.version ?? 0) + 1;
     // Unchanged since the read: same version and, for products, same stock
     // (every stock change gives a new version now; checking stock as well
@@ -431,7 +432,8 @@ async function write(
       : [unchanged("version"), ...(collection === "products" ? [unchanged("stock")] : [])].join(" AND ");
     const put = {
       TableName: db.tableName,
-      Item: storable(toItem(collection, ctx.teamId, id, data, version)),
+      // Back where it was read from; a new project is PROJECT# (project-items.ts)
+      Item: storable(toItem(collection, ctx.teamId, id, data, version, layoutOf(item))),
       ConditionExpression: condition,
       ...(Object.keys(names).length ? { ExpressionAttributeNames: names } : {}),
       ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
@@ -452,8 +454,9 @@ async function write(
 }
 
 /** One document, strongly consistent, or undefined if it doesn't exist. */
-export async function getDocument(db: Db, ctx: TeamContext, collection: Collection, rawId: unknown): Promise<StoredDocument | undefined> {
+export async function getDocument(db: Db, ctx: TeamContext, name: CollectionName, rawId: unknown): Promise<StoredDocument | undefined> {
   readable(ctx);
+  const collection = canonicalCollection(name);
   const item = await readItem(db, collection, ctx.teamId, docId(collection, rawId));
   return item ? fromItem(collection, item) : undefined;
 }
@@ -475,39 +478,30 @@ function cursorInCollection(cursor: string, prefix: string): boolean {
 
 /**
  * A page of a collection. By default in ID order and strongly consistent;
- * sheets can instead come in date order from GSI1 (eventually consistent).
+ * projects can instead come in date order from GSI1 (eventually consistent).
+ * Projects come from both their keys through the rename's window
+ * (project-items.ts).
  */
-export async function listDocuments(db: Db, ctx: TeamContext, collection: Collection, options: ListOptions = {}): Promise<Page<StoredDocument>> {
+export async function listDocuments(db: Db, ctx: TeamContext, name: CollectionName, options: ListOptions = {}): Promise<Page<StoredDocument>> {
   readable(ctx);
-  checkCollection(collection);
+  const collection = canonicalCollection(name);
   const { limit, cursor } = options;
   if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 1000)) throw new InvalidInputError("Invalid limit");
-  const prefix = collection === "products" ? prefixes.product : prefixes.sheet;
-  if (cursor !== undefined && !cursorInCollection(cursor, prefix)) throw new InvalidInputError("Invalid cursor");
+  if (options.orderBy !== undefined && (options.orderBy !== "date" || collection !== "projects")) throw new InvalidInputError("Only sheets can be ordered, and only by date");
   let page: Page<Record<string, unknown>>;
   try {
-    if (options.orderBy !== undefined) {
-      if (options.orderBy !== "date" || collection !== "sheets") throw new InvalidInputError("Only sheets can be ordered, and only by date");
-      const pk = `${teamPartition(ctx.teamId)}#SHEETS`;
-      page = await queryPage(
-        db,
-        {
-          IndexName: GSI1,
-          KeyConditionExpression: "GSI1PK = :pk",
-          ExpressionAttributeValues: { ":pk": pk },
-          ScanIndexForward: !options.descending,
-          Limit: limit,
-        },
-        { attribute: GSI1PK, value: pk },
-        cursor,
-      );
+    if (collection === "projects") {
+      page = options.orderBy === "date"
+        ? await projectItemsByDatePage(db, ctx.teamId, { forward: !options.descending, limit, cursor })
+        : await projectItemsPage(db, ctx.teamId, { limit, cursor });
     } else {
+      if (cursor !== undefined && !cursorInCollection(cursor, prefixes.product)) throw new InvalidInputError("Invalid cursor");
       const pk = teamPartition(ctx.teamId);
       page = await queryPage(
         db,
         {
           KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
-          ExpressionAttributeValues: { ":pk": pk, ":prefix": prefix },
+          ExpressionAttributeValues: { ":pk": pk, ":prefix": prefixes.product },
           ConsistentRead: true,
           Limit: limit,
         },
@@ -548,10 +542,11 @@ function keepStock(collection: Collection, current: StoredDocument | undefined, 
 }
 
 /** Replaces a document, creating it if needed (the app's `set`). A product keeps its stock (keepStock). */
-export function setDocument(db: Db, ctx: TeamContext, collection: Collection, rawId: unknown, data: unknown, options: WriteOptions = {}): Promise<WriteResult> {
+export function setDocument(db: Db, ctx: TeamContext, name: CollectionName, rawId: unknown, data: unknown, options: WriteOptions = {}): Promise<WriteResult> {
   // Validate before cloning: structuredClone of a very deep value overflows the stack
   if (!isMap(data)) throw new InvalidInputError("A document is a JSON object");
   checkValue(data, 0);
+  const collection = canonicalCollection(name);
   return write(db, ctx, collection, rawId, options, (current) => keepStock(collection, current, data, structuredClone(data) as DocumentData));
 }
 
@@ -561,9 +556,10 @@ export function setDocument(db: Db, ctx: TeamContext, collection: Collection, ra
  * other value replaces what was there. Throws NotFoundError if the document
  * doesn't exist. A product keeps its stock (keepStock).
  */
-export function updateDocument(db: Db, ctx: TeamContext, collection: Collection, rawId: unknown, patch: unknown, options: WriteOptions = {}): Promise<WriteResult> {
+export function updateDocument(db: Db, ctx: TeamContext, name: CollectionName, rawId: unknown, patch: unknown, options: WriteOptions = {}): Promise<WriteResult> {
   if (!isMap(patch)) throw new InvalidInputError("An update is a JSON object");
   checkValue(patch, 0);
+  const collection = canonicalCollection(name);
   return write(db, ctx, collection, rawId, options, (current) => {
     if (!current) throw new NotFoundError("No such document");
     return keepStock(collection, current, patch, deepMerge(structuredClone(current.data), patch));
@@ -578,24 +574,37 @@ export function updateDocument(db: Db, ctx: TeamContext, collection: Collection,
  * (a product made again under it starts untracked, and a later count starts
  * from 0).
  */
-export async function deleteDocument(db: Db, ctx: TeamContext, collection: Collection, rawId: unknown, options: WriteOptions = {}): Promise<{ before?: StoredDocument }> {
+export async function deleteDocument(db: Db, ctx: TeamContext, name: CollectionName, rawId: unknown, options: WriteOptions = {}): Promise<{ before?: StoredDocument }> {
   writable(db, ctx);
+  const collection = canonicalCollection(name);
   const id = docId(collection, rawId);
   const expected = expectedVersion(options);
   if (collection === "products") return deleteProductDocument(db, ctx, id, expected);
   if (isAdhocId(id)) return deleteAdhocSheet(db, ctx, id, expected);
-  const conditional = expected !== undefined;
+  if (expected === undefined) {
+    // Last writer wins: gone from both keys, wherever it was (project-items.ts)
+    const item = await readProjectItem(db, ctx.teamId, id);
+    await connection(db).doc.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          { Delete: { TableName: db.tableName, Key: keys.project(ctx.teamId, id) } },
+          { Delete: { TableName: db.tableName, Key: keys.sheet(ctx.teamId, id) } },
+        ],
+      }),
+    );
+    return { before: item ? fromItem(collection, item) : undefined };
+  }
+  // The key it's under now; a move by the rename's backfill since makes the condition fail (409)
+  const key = projectKeyFor(ctx.teamId, id, await readProjectItem(db, ctx.teamId, id));
   try {
     const { Attributes } = await connection(db).doc.send(
       new DeleteCommand({
         TableName: db.tableName,
-        Key: itemKey(collection, ctx.teamId, id),
+        Key: key,
         ReturnValues: "ALL_OLD",
-        ...(conditional
-          ? expected === 0
-            ? { ConditionExpression: "attribute_not_exists(PK)" }
-            : { ConditionExpression: "#version = :expected", ExpressionAttributeNames: { "#version": "version" }, ExpressionAttributeValues: { ":expected": expected } }
-          : {}),
+        ...(expected === 0
+          ? { ConditionExpression: "attribute_not_exists(PK)" }
+          : { ConditionExpression: "#version = :expected", ExpressionAttributeNames: { "#version": "version" }, ExpressionAttributeValues: { ":expected": expected } }),
       }),
     );
     return { before: Attributes ? fromItem(collection, Attributes) : undefined };
@@ -614,8 +623,8 @@ export async function deleteDocument(db: Db, ctx: TeamContext, collection: Colle
  */
 async function deleteAdhocSheet(db: Db, ctx: TeamContext, id: string, expected: number | undefined): Promise<{ before?: StoredDocument }> {
   for (let attempt = 1; ; attempt++) {
-    const item = await readItem(db, "sheets", ctx.teamId, id);
-    const before = item ? fromItem("sheets", item) : undefined;
+    const item = await readItem(db, "projects", ctx.teamId, id);
+    const before = item ? fromItem("projects", item) : undefined;
     if (expected !== undefined && (before?.version ?? 0) !== expected) throw new ConflictError("This document changed; reload and try again");
     if (!item) return {};
     const pointer = item.kind === "adhoc" ? await readAdhoc(db, ctx.teamId) : undefined;
@@ -623,7 +632,7 @@ async function deleteAdhocSheet(db: Db, ctx: TeamContext, id: string, expected: 
     const del = {
       Delete: {
         TableName: db.tableName,
-        Key: itemKey("sheets", ctx.teamId, id),
+        Key: projectKeyFor(ctx.teamId, id, item),
         ...(typeof version === "number"
           ? { ConditionExpression: "#version = :version", ExpressionAttributeValues: { ":version": version } }
           : { ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(#version)" }),

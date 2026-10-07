@@ -21,7 +21,7 @@ import { id as checkId, prefixes, productKey } from "./keys.js";
 export interface DocumentChange {
   readonly teamId: string;
   readonly collection: Collection;
-  /** The product key or sheet ID. */
+  /** The product key or project ID. */
   readonly id: string;
   readonly op: "put" | "delete";
   /** The version after a put, or the deleted document's last version. Missing only for a malformed item. */
@@ -31,7 +31,9 @@ export interface DocumentChange {
 const TEAM_PK = /^TEAM#([^#]+)$/;
 const COLLECTION_PREFIXES: readonly [string, Collection][] = [
   [prefixes.product, "products"],
-  [prefixes.sheet, "sheets"],
+  [prefixes.project, "projects"],
+  // Not yet moved by the rename's backfill (supply-checkout-005.6): the same collection
+  [prefixes.sheet, "projects"],
 ];
 
 function valid(check: () => string): string | undefined {
@@ -64,7 +66,7 @@ export function audienceChangeFromStream(record: DynamoDBRecord): string | undef
 
 /**
  * The document change in a stream record, or undefined for anything that
- * isn't a product or sheet document: team metadata, members, invites, usage,
+ * isn't a product or project document: team metadata, members, invites, usage,
  * audit entries, Stripe links, and anything malformed.
  */
 export function documentChangeFromStream(record: DynamoDBRecord): DocumentChange | undefined {

@@ -909,8 +909,8 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     it("is keyed by an immutable ID and read by ID alone", async () => {
       const { contributor, viewer } = await team();
       const sheet = await createSheet(db, contributor, { client: "Smith house", date: "2026-09-25", items: { towels: line(2) } });
-      const stored = await rawItem(db, `TEAM#${contributor.teamId}`, `SHEET#${sheet.id}`);
-      expect(stored).toMatchObject({ GSI1PK: `TEAM#${contributor.teamId}#SHEETS`, GSI1SK: `2026-09-25#${sheet.id}`, status: "open", createdBy: contributor.userId });
+      const stored = await rawItem(db, `TEAM#${contributor.teamId}`, `PROJECT#${sheet.id}`);
+      expect(stored).toMatchObject({ type: "project", GSI1PK: `TEAM#${contributor.teamId}#PROJECTS`, GSI1SK: `2026-09-25#${sheet.id}`, status: "open", createdBy: contributor.userId });
       expect(await getSheet(db, viewer, sheet.id)).toMatchObject({ id: sheet.id, client: "Smith house", items: { towels: line(2) }, version: 1 });
       await expect(createSheet(db, viewer, { client: "x", date: "2026-09-25" })).rejects.toThrow(ForbiddenError);
       await expect(createSheet(db, contributor, { client: "x", date: "Sept 25" })).rejects.toThrow(InvalidInputError);

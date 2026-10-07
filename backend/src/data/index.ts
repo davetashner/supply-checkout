@@ -51,6 +51,7 @@ export type { Page } from "./query.js";
 export * from "./teams.js";
 export * from "./invites.js";
 export * from "./products.js";
+export * from "./project-items.js";
 export * from "./sheets.js";
 export * from "./usage.js";
 export * from "./audit.js";

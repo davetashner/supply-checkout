@@ -112,7 +112,7 @@ export class MemoryTable {
    * `OPAUDIT#<team>`, is read-only there; tests check that separately).
    */
   db(team?: string): Db {
-    return this.scoped(team === undefined ? undefined : [`TEAM#${team}`, `TEAM#${team}#SHEETS`, `OPAUDIT#${team}`]);
+    return this.scoped(team === undefined ? undefined : [`TEAM#${team}`, `TEAM#${team}#PROJECTS`, `TEAM#${team}#SHEETS`, `OPAUDIT#${team}`]);
   }
 
   /** A Db allowed only the given partitions (PK, or the index partition for a query), like a LeadingKeys policy. */

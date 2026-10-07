@@ -1,5 +1,12 @@
-// The data API: the app's `products` and `sheets` documents over HTTP
+// The data API: the app's `products` and `projects` documents over HTTP
 // (ADR 0006, docs/api/openapi.yaml).
+//
+// Projects were called sheets (supply-checkout-005.6). Through the rename's
+// window every `/teams/{teamId}/projects...` route has a twin under
+// `/teams/{teamId}/sheets...` (routes.ts, `legacy`), served here by the same
+// code with the same role and body checks, and counted in
+// LegacySheetsRouteCalls. Bodies take either spelling of a renamed field, and
+// responses carry both (`project` and `sheet`, `projectId` and `sheetId`).
 //
 // Team isolation, in order, on every request:
 // 1. API Gateway's JWT authorizer checks the Cognito access token.
@@ -168,15 +175,22 @@ export function sheetMovement(result: WriteResult): { checkouts: number; returns
 
 const CHECKOUT_FIELDS = ["operationId", "productKey", "quantity", "name", "price", "code", "cost"];
 const QUICK_TAKE_FIELDS = ["operationId", "productKey", "quantity", "name", "price", "code", "cost", "date"];
-const MOVE_FIELDS = ["operationId", "productKey", "toSheetId"];
+const MOVE_FIELDS = ["operationId", "productKey", "toProjectId", "toSheetId"];
 const RETURN_FIELDS = ["operationId", "productKey", "quantity"];
 const LOST_FIELDS = ["operationId", "productKey", "quantity", "charge"];
 const LINES_FIELDS = ["operationId", "lines"];
 const STOCK_FIELDS = ["operationId", "reason", "quantity", "unitCost", "count", "expectedStock"];
 
+/** A project as a response carries it, under its name and (through the rename's window) its old one. */
+const bothNames = (name: "project" | "toProject", doc: StoredDocument | undefined) => {
+  const body = doc ? toBody(doc) : null;
+  return name === "project" ? { project: body, sheet: body } : { toProject: body, toSheet: body };
+};
+
 /**
- * A command's response: what it did (the same on a replay), and the sheet and
- * product as they are now, read after the write.
+ * A command's response: what it did (the same on a replay), and the project
+ * (as `project` and `sheet`) and product as they are now, read after the
+ * write.
  */
 async function commandResponse(deps: DataHandlerDeps, ctx: TeamContext, outcome: CommandOutcome): Promise<APIGatewayProxyStructuredResultV2> {
   const db = deps.dbForTeam(ctx.teamId);
@@ -188,15 +202,16 @@ async function commandResponse(deps: DataHandlerDeps, ctx: TeamContext, outcome:
     if (result.command === "checkout" || result.command === "quickTake") deps.obs.count(BusinessMetric.Checkouts, result.quantity ?? 0, metadata);
     if (result.command === "return") deps.obs.count(BusinessMetric.Returns, result.quantity ?? 0, metadata);
   }
-  const [sheet, product] = await Promise.all([
-    result.sheetId === undefined ? undefined : getDocument(db, ctx, "sheets", result.sheetId),
+  const projectId = result.projectId ?? result.sheetId;
+  const [project, product] = await Promise.all([
+    projectId === undefined ? undefined : getDocument(db, ctx, "projects", projectId),
     getDocument(db, ctx, "products", result.productKey),
   ]);
   return json(200, {
     operationId: result.operationId,
     replayed,
     result,
-    ...(result.sheetId === undefined ? {} : { sheet: sheet ? toBody(sheet) : null }),
+    ...(projectId === undefined ? {} : bothNames("project", project)),
     product: product ? toBody(product) : null,
   });
 }
@@ -222,37 +237,38 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
     const body = jsonBody(event, QUICK_TAKE_FIELDS);
     return commandResponse(deps, ctx, await quickTake(db, ctx, body as unknown as Parameters<typeof quickTake>[2], at));
   }
-  const sheetId = documentId(event, 1);
+  // The project is the path's, under either spelling of the route; a body can't name it
+  const projectId = documentId(event, 1);
   if (route.operation === "move") {
     const body = jsonBody(event, MOVE_FIELDS);
-    const { result, replayed } = await moveLine(db, ctx, { ...body, sheetId } as Parameters<typeof moveLine>[2], at);
+    const { result, replayed } = await moveLine(db, ctx, { ...body, projectId } as Parameters<typeof moveLine>[2], at);
     if (!replayed) deps.obs.count(BusinessMetric.Writes, 1, { teamId: ctx.teamId });
-    // Both sheets as they are now, read after the write (null if since deleted); no stock moved
-    const [sheet, toSheet] = await Promise.all([getDocument(db, ctx, "sheets", sheetId), getDocument(db, ctx, "sheets", result.toSheetId as string)]);
-    return json(200, { operationId: result.operationId, replayed, result, sheet: sheet ? toBody(sheet) : null, toSheet: toSheet ? toBody(toSheet) : null, product: null });
+    // Both projects as they are now, read after the write (null if since deleted); no stock moved
+    const [project, toProject] = await Promise.all([getDocument(db, ctx, "projects", projectId), getDocument(db, ctx, "projects", (result.toProjectId ?? result.toSheetId) as string)]);
+    return json(200, { operationId: result.operationId, replayed, result, ...bothNames("project", project), ...bothNames("toProject", toProject), product: null });
   }
   if (route.operation === "addLines") {
     const body = jsonBody(event, LINES_FIELDS);
-    const { result, replayed } = await addLines(db, ctx, { ...body, sheetId } as Parameters<typeof addLines>[2], at);
+    const { result, replayed } = await addLines(db, ctx, { ...body, projectId } as Parameters<typeof addLines>[2], at);
     if (!replayed) {
       deps.obs.count(BusinessMetric.Writes, 1, { teamId: ctx.teamId });
       // Bought for the client, not taken from storage: counted apart from Checkouts
       deps.obs.count(BusinessMetric.ReceiptLines, result.lines.reduce((n, l) => n + l.quantity, 0), { teamId: ctx.teamId });
     }
-    // The sheet as it is now, read after the write (null if it's since been deleted)
-    const sheet = await getDocument(db, ctx, "sheets", sheetId);
-    return json(200, { operationId: result.operationId, replayed, result, sheet: sheet ? toBody(sheet) : null });
+    // The project as it is now, read after the write (null if it's since been deleted)
+    const project = await getDocument(db, ctx, "projects", projectId);
+    return json(200, { operationId: result.operationId, replayed, result, ...bothNames("project", project) });
   }
   if (route.operation === "lost") {
     const body = jsonBody(event, LOST_FIELDS);
-    return commandResponse(deps, ctx, await markLost(db, ctx, { ...body, sheetId } as Parameters<typeof markLost>[2], at));
+    return commandResponse(deps, ctx, await markLost(db, ctx, { ...body, projectId } as Parameters<typeof markLost>[2], at));
   }
   if (route.operation === "checkout") {
     const body = jsonBody(event, CHECKOUT_FIELDS);
-    return commandResponse(deps, ctx, await checkout(db, ctx, { ...body, sheetId } as Parameters<typeof checkout>[2], at));
+    return commandResponse(deps, ctx, await checkout(db, ctx, { ...body, projectId } as Parameters<typeof checkout>[2], at));
   }
   const body = jsonBody(event, RETURN_FIELDS);
-  return commandResponse(deps, ctx, await returnItems(db, ctx, { ...body, sheetId } as Parameters<typeof returnItems>[2], at));
+  return commandResponse(deps, ctx, await returnItems(db, ctx, { ...body, projectId } as Parameters<typeof returnItems>[2], at));
 }
 
 const COMMANDS = new Set(["checkout", "quickTake", "move", "return", "lost", "addLines", "adjustStock", "movements"]);
@@ -321,7 +337,7 @@ async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ct
     const q = event.queryStringParameters ?? {};
     let orderBy: "date" | undefined;
     if (q.orderBy !== undefined) {
-      if (q.orderBy !== "date" || collection !== "sheets") throw new ApiError(400, "bad_request", "Only sheets can be ordered, and only by date");
+      if (q.orderBy !== "date" || collection !== "projects") throw new ApiError(400, "bad_request", "Only sheets can be ordered, and only by date");
       orderBy = "date";
     }
     if (q.direction !== undefined && q.direction !== "asc" && q.direction !== "desc") throw new ApiError(400, "bad_request", "direction is asc or desc");
@@ -357,7 +373,7 @@ async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ct
       ? await setDocument(db, ctx, collection, id, body.data, { expectedVersion, now: new Date((deps.now ?? Date.now)()) })
       : await updateDocument(db, ctx, collection, id, body.data, { expectedVersion, now: new Date((deps.now ?? Date.now)()) });
   deps.obs.count(BusinessMetric.Writes, 1, metadata);
-  if (collection === "sheets") {
+  if (collection === "projects") {
     const { checkouts, returns } = sheetMovement(result);
     if (checkouts) deps.obs.count(BusinessMetric.Checkouts, checkouts, metadata);
     if (returns) deps.obs.count(BusinessMetric.Returns, returns, metadata);
@@ -375,6 +391,8 @@ export function createDataHandler(deps: DataHandlerDeps) {
     let status = 500;
     try {
       if (!route) throw new ApiError(404, "not_found", "No such route");
+      // An old client still on `/sheets` (supply-checkout-005.6): counted, then served as `/projects`
+      if (route.legacy) deps.obs.count(BusinessMetric.LegacySheetsRouteCalls, 1, { route: routeKey(route) });
       const userId = callerId(event, now());
       if (typeof teamId !== "string") throw new ApiError(400, "bad_request", "Missing team ID");
       let ctx: TeamContext;

@@ -9,7 +9,8 @@ export const SK = "SK";
 /**
  * One overloaded global secondary index, projecting all attributes. It serves:
  *
- * - Sheets by date: GSI1PK `TEAM#<teamId>#SHEETS`, GSI1SK `<date>#<sheetId>`.
+ * - Projects by date: GSI1PK `TEAM#<teamId>#PROJECTS`, GSI1SK `<date>#<projectId>`
+ *   (`TEAM#<teamId>#SHEETS` for one not yet moved by the projects rename's backfill).
  * - Invites by hashed token: GSI1PK `INVITE#<tokenHash>`, GSI1SK `INVITE`.
  * - Imports still committing, across every team, for the stuck-import check:
  *   GSI1PK `IMPORTS#COMMITTING` (COMMITTING_IMPORTS_PARTITION), GSI1SK

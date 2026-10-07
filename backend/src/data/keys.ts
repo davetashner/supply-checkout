@@ -125,6 +125,16 @@ export const keys = {
     SK: `INVITEGUARD#${inviteLimitPartition(emailHash).slice(INVITE_LIMIT_PREFIX.length)}`,
   }),
   product: (teamId: string, key: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `PRODUCT#${productKey(key)}` }),
+  /** A project (formerly a sheet): where new ones are written, and where the rename's backfill moves old ones. */
+  project: (teamId: string, projectId: string) => ({
+    PK: `TEAM#${id(teamId, "team ID")}`,
+    SK: `PROJECT#${id(projectId, "project ID")}`,
+  }),
+  /**
+   * A project's legacy key, from before the rename (supply-checkout-005.6).
+   * Read, and updated in place, until the backfill has moved the item to
+   * `keys.project`; never used for a new item.
+   */
   sheet: (teamId: string, sheetId: string) => ({
     PK: `TEAM#${id(teamId, "team ID")}`,
     SK: `SHEET#${id(sheetId, "sheet ID")}`,
@@ -251,6 +261,8 @@ export const prefixes = {
   member: "MEMBER#",
   invite: "INVITE#",
   product: "PRODUCT#",
+  project: "PROJECT#",
+  /** Legacy: projects not yet moved by the rename's backfill (supply-checkout-005.6). */
   sheet: "SHEET#",
   audit: "AUDIT#",
   userTeam: "TEAM#",
@@ -258,7 +270,13 @@ export const prefixes = {
 
 /** GSI1 keys. */
 export const gsi1 = {
-  /** Sheets by date: one index partition per team, sorted by date then ID. */
+  /** Projects by date: one index partition per team, sorted by date then ID. */
+  projectsByDate: (teamId: string, projectDate: string, projectId: string) => ({
+    GSI1PK: `TEAM#${id(teamId, "team ID")}#PROJECTS`,
+    GSI1SK: `${date(projectDate)}#${id(projectId, "project ID")}`,
+  }),
+  projectsPartition: (teamId: string) => `TEAM#${id(teamId, "team ID")}#PROJECTS`,
+  /** Legacy: the date index partition of projects not yet moved by the rename's backfill. */
   sheetsByDate: (teamId: string, sheetDate: string, sheetId: string) => ({
     GSI1PK: `TEAM#${id(teamId, "team ID")}#SHEETS`,
     GSI1SK: `${date(sheetDate)}#${id(sheetId, "sheet ID")}`,

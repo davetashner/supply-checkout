@@ -277,7 +277,8 @@ describe("data-access role (LeadingKeys)", () => {
       Effect: "Allow",
       // UpdateItem and ConditionCheckItem: the inventory commands' transactions. No Scan, no batch writes.
       Action: ["dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"],
-      Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}", "TEAM#${aws:PrincipalTag/teamId}#SHEETS"] } },
+      // The team's partition and its date index partitions: projects', and sheets' (the old name) until the rename's backfill is done
+      Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}", "TEAM#${aws:PrincipalTag/teamId}#PROJECTS", "TEAM#${aws:PrincipalTag/teamId}#SHEETS"] } },
     });
     const resourcesJson = JSON.stringify(items?.Resource);
     expect(resourcesJson).toContain(":table/supply-checkout-prod-app");

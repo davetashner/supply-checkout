@@ -1,20 +1,23 @@
-// Checkout sheets (ADR 0005). One item holds a whole sheet, with its lines in
-// an `items` map keyed by product, as in the artifact's `sheets` collection.
+// Checkout sheets, now called projects (ADR 0005, supply-checkout-005.6). One
+// item holds a whole project, with its lines in an `items` map keyed by
+// product. A new one is written under `PROJECT#<id>`; through the rename's
+// window an old one can still be under `SHEET#<id>`, and is read, changed and
+// deleted where it is (project-items.ts).
 //
 // Deviation from ADR 0005: the sort key is `SHEET#<sheetId>`, not
 // `SHEET#<date>#<id>`. The date is editable, and a key can't change, so a date
 // in the key would turn every date edit into a delete and re-put. Date order
-// comes from GSI1 (`TEAM#<teamId>#SHEETS`, `<date>#<sheetId>`), whose keys are
+// comes from GSI1 (`TEAM#<teamId>#PROJECTS`, `<date>#<id>`), whose keys are
 // ordinary attributes that one update can change.
 
 import { randomUUID } from "node:crypto";
-import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
-import { barcode, date, gsi1, keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
+import { barcode, date, id as checkId, productKey, strip } from "./keys.js";
 import { money } from "./money.js";
-import { type Page, queryAll, queryPage, versionedSet } from "./query.js";
-import { GSI1, GSI1PK } from "./schema.js";
+import { listProjectItems, projectAttributes, projectItemsByDatePage, projectKeyFor, readProjectItem } from "./project-items.js";
+import { type Page, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
 /** One line of a sheet, as the app writes it: `{code, name, price, cost, out, returned}`. */
@@ -30,7 +33,8 @@ export interface SheetLine {
 }
 
 export interface Sheet {
-  readonly type: "sheet";
+  /** "project" for one written since the rename; "sheet" for one the backfill hasn't moved yet. */
+  readonly type: "project" | "sheet";
   readonly id: string;
   readonly client: string;
   readonly date: string;
@@ -99,7 +103,7 @@ export async function createSheet(
   const items: Record<string, SheetLine> = {};
   for (const [key, value] of Object.entries(input.items ?? {})) items[productKey(key)] = line(value);
   const sheet: Sheet = {
-    type: "sheet",
+    type: "project",
     id: randomUUID(),
     client: client(input.client),
     date: date(input.date),
@@ -114,24 +118,28 @@ export async function createSheet(
   await connection(db).doc.send(
     new PutCommand({
       TableName: db.tableName,
-      Item: storable({ ...keys.sheet(ctx.teamId, sheet.id), ...gsi1.sheetsByDate(ctx.teamId, sheet.date, sheet.id), ...sheet }),
+      Item: storable({ ...sheet, ...projectAttributes(ctx.teamId, sheet.id, sheet.date, "project") }),
       ConditionExpression: "attribute_not_exists(PK)",
     }),
   );
   return sheet;
 }
 
-/** Reads one sheet by ID, strongly consistent. */
+/** Reads one sheet by ID, strongly consistent, from either of its keys. */
 export async function getSheet(db: Db, ctx: TeamContext, sheetId: string): Promise<Sheet | undefined> {
   readable(ctx);
-  const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.sheet(ctx.teamId, sheetId), ConsistentRead: true }));
-  return strip<Sheet>(Item);
+  return strip<Sheet>(await readProjectItem(db, ctx.teamId, sheetId));
 }
 
 /** Every sheet in the team, strongly consistent, in no particular order (the app's initial load). */
 export async function listSheets(db: Db, ctx: TeamContext): Promise<Sheet[]> {
   readable(ctx);
-  return queryAll<Sheet>(db, teamPartition(ctx.teamId), prefixes.sheet);
+  return (await listProjectItems(db, ctx.teamId)).map((item) => strip<Sheet>(item) as Sheet);
+}
+
+/** The key a change to an existing sheet goes to: wherever it is now. */
+async function existingKey(db: Db, ctx: TeamContext, sheetId: string) {
+  return projectKeyFor(ctx.teamId, checkId(sheetId, "sheet ID"), await readProjectItem(db, ctx.teamId, sheetId));
 }
 
 /**
@@ -145,27 +153,8 @@ export async function listSheetsByDate(
   options: { readonly from?: string; readonly to?: string; readonly oldestFirst?: boolean; readonly limit?: number; readonly cursor?: string } = {},
 ): Promise<Page<Sheet>> {
   readable(ctx);
-  const pk = gsi1.sheetsPartition(ctx.teamId);
-  const values: Record<string, unknown> = { ":pk": pk };
-  let range = "";
-  if (options.from !== undefined || options.to !== undefined) {
-    // `<date>#<id>` sorts between `<from>#` and `<to>#~` for every ID
-    values[":from"] = `${date(options.from ?? "0000-01-01")}#`;
-    values[":to"] = `${date(options.to ?? "9999-12-31")}#~`;
-    range = " AND GSI1SK BETWEEN :from AND :to";
-  }
-  return queryPage<Sheet>(
-    db,
-    {
-      IndexName: GSI1,
-      KeyConditionExpression: `GSI1PK = :pk${range}`,
-      ExpressionAttributeValues: values,
-      ScanIndexForward: options.oldestFirst ?? false,
-      Limit: options.limit,
-    },
-    { attribute: GSI1PK, value: pk },
-    options.cursor,
-  );
+  const page = await projectItemsByDatePage(db, ctx.teamId, { from: options.from, to: options.to, forward: options.oldestFirst ?? false, limit: options.limit, cursor: options.cursor });
+  return { items: page.items.map((item) => strip<Sheet>(item) as Sheet), ...(page.cursor ? { cursor: page.cursor } : {}) };
 }
 
 /**
@@ -185,7 +174,7 @@ export async function updateSheet(
   if (changes.client !== undefined) fields.client = client(changes.client);
   if (changes.date !== undefined) {
     fields.date = date(changes.date);
-    fields.GSI1SK = gsi1.sheetsByDate(ctx.teamId, changes.date, sheetId).GSI1SK;
+    fields.GSI1SK = projectAttributes(ctx.teamId, sheetId, fields.date, "project").GSI1SK;
   }
   if (changes.createdByName !== undefined) fields.createdByName = text(changes.createdByName, "name");
   if (changes.status !== undefined) {
@@ -194,7 +183,7 @@ export async function updateSheet(
     if (changes.status === "closed") fields.closedAt = new Date().toISOString();
   }
   const { Attributes } = await connection(db).doc
-    .send(new UpdateCommand({ TableName: db.tableName, Key: keys.sheet(ctx.teamId, sheetId), ...versionedSet(fields, expectedVersion), ReturnValues: "ALL_NEW" }))
+    .send(new UpdateCommand({ TableName: db.tableName, Key: await existingKey(db, ctx, sheetId), ...versionedSet(fields, expectedVersion), ReturnValues: "ALL_NEW" }))
     .catch(conflictOnConditionFailure("This sheet changed; reload and try again"));
   return strip<Sheet>(Attributes) as Sheet;
 }
@@ -214,7 +203,7 @@ export async function setSheetLine(
     .send(
       new UpdateCommand({
         TableName: db.tableName,
-        Key: keys.sheet(ctx.teamId, sheetId),
+        Key: await existingKey(db, ctx, sheetId),
         ...update,
         UpdateExpression: `${update.UpdateExpression}, #items.#line = :line`,
         ExpressionAttributeNames: { ...update.ExpressionAttributeNames, "#items": "items", "#line": productKey(key) },
@@ -233,7 +222,7 @@ export async function removeSheetLine(db: Db, ctx: TeamContext, sheetId: string,
     .send(
       new UpdateCommand({
         TableName: db.tableName,
-        Key: keys.sheet(ctx.teamId, sheetId),
+        Key: await existingKey(db, ctx, sheetId),
         ...update,
         UpdateExpression: `${update.UpdateExpression} REMOVE #items.#line`,
         ExpressionAttributeNames: { ...update.ExpressionAttributeNames, "#items": "items", "#line": productKey(key) },
@@ -250,7 +239,7 @@ export async function deleteSheet(db: Db, ctx: TeamContext, sheetId: string, exp
     .send(
       new DeleteCommand({
         TableName: db.tableName,
-        Key: keys.sheet(ctx.teamId, sheetId),
+        Key: await existingKey(db, ctx, sheetId),
         ...(expectedVersion === undefined
           ? {}
           : { ConditionExpression: "#version = :expected", ExpressionAttributeNames: { "#version": "version" }, ExpressionAttributeValues: { ":expected": expectedVersion } }),

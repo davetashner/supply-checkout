@@ -54,8 +54,9 @@ import { MAX_DOCUMENT_BYTES } from "./documents.js";
 import { ConflictError, InvalidInputError, TeamClosedError } from "./errors.js";
 import { MAX_NAME_LENGTH, MAX_PACK_SIZE } from "./imports.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
-import { MAX_CODE_LENGTH, adhocNumber, gsi1, isAdhocId, keys, prefixes, teamPartition } from "./keys.js";
+import { MAX_CODE_LENGTH, adhocNumber, isAdhocId, keys, prefixes, strip, teamPartition } from "./keys.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
+import { listProjectItems, projectAttributes, readProjectItem } from "./project-items.js";
 import { queryAll } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
@@ -449,7 +450,7 @@ export async function planArtifactImport(db: Db, ctx: TeamContext, parsed: Parse
   writable(db, ctx, "owner");
   const [existingProducts, existingSheets] = await Promise.all([
     queryAll<Item>(db, teamPartition(ctx.teamId), prefixes.product),
-    queryAll<Item>(db, teamPartition(ctx.teamId), prefixes.sheet),
+    projectItems(db, ctx.teamId),
   ]);
   const productsByKey = new Map(existingProducts.map((p) => [String(p.key), p]));
   const keysByCode = new Map<string, string[]>();
@@ -537,6 +538,11 @@ async function createWithTeamOpen(db: Db, ctx: TeamContext, writes: Item[]): Pro
   }
 }
 
+/** The team's projects (sheets), from both their keys (project-items.ts), without key attributes. */
+async function projectItems(db: Db, teamId: string): Promise<Item[]> {
+  return (await listProjectItems(db, teamId)).map((item) => strip<Item>(item) as Item);
+}
+
 async function readItem(db: Db, key: Item): Promise<Item | undefined> {
   const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: key, ConsistentRead: true }));
   return Item;
@@ -582,17 +588,17 @@ export async function applyArtifactImport(db: Db, ctx: TeamContext, plan: Import
     }
   }
   for (const s of plan.sheets) {
-    const key = keys.sheet(ctx.teamId, s.id);
+    // A new project's key (project-items.ts); the plan skipped any already under either key
     const put = {
       Put: {
         TableName: db.tableName,
-        Item: storable({ ...s, ...key, ...gsi1.sheetsByDate(ctx.teamId, s.date, s.id), type: "sheet", id: s.id, version: 1 }),
+        Item: storable({ ...s, ...projectAttributes(ctx.teamId, s.id, s.date, "project"), id: s.id, version: 1 }),
         ConditionExpression: "attribute_not_exists(PK)",
       },
     };
     if (await createWithTeamOpen(db, ctx, [put])) sheetsCreated++;
     else {
-      const there = await readItem(db, key);
+      const there = await readProjectItem(db, ctx.teamId, s.id);
       if (!there || canonical(sheetContent(there)) !== canonical(sheetContent({ ...s }))) {
         throw new ConflictError(`Sheet id ${shown(s.id)} was added with other content while importing. Run the import again as a dry run to see what's left.`);
       }
@@ -611,7 +617,7 @@ export async function applyArtifactImport(db: Db, ctx: TeamContext, plan: Import
  * (a conflict means someone took meanwhile; run the import again).
  */
 async function pointAdhoc(db: Db, ctx: TeamContext, at: string): Promise<string | undefined> {
-  const [pointer, sheets] = await Promise.all([readAdhoc(db, ctx.teamId), queryAll<Item>(db, teamPartition(ctx.teamId), prefixes.sheet)]);
+  const [pointer, sheets] = await Promise.all([readAdhoc(db, ctx.teamId), projectItems(db, ctx.teamId)]);
   const adhoc = sheets
     .filter((s) => s.kind === "adhoc")
     .map((s) => ({ id: String(s.id), n: adhocNumber(String(s.id)) ?? 0, open: s.status !== "closed" }))
@@ -654,7 +660,7 @@ export async function verifyArtifactImport(db: Db, ctx: TeamContext, parsed: Par
   readable(ctx);
   const [products, sheets] = await Promise.all([
     queryAll<Item>(db, teamPartition(ctx.teamId), prefixes.product),
-    queryAll<Item>(db, teamPartition(ctx.teamId), prefixes.sheet),
+    projectItems(db, ctx.teamId),
   ]);
   const productsByKey = new Map(products.map((p) => [String(p.key), p]));
   const sheetsById = new Map(sheets.map((s) => [String(s.id), s]));

@@ -28,6 +28,12 @@ export const BusinessMetric = {
   Writes: "Writes",
   /** Writes rejected because the item changed since it was read (409 responses, J4). */
   ConditionalWriteConflicts: "ConditionalWriteConflicts",
+  /**
+   * Calls to the old `/teams/{teamId}/sheets...` routes, from clients not yet
+   * on the projects rename (supply-checkout-005.6), the route key in
+   * metadata. Flat zero for a day means the old routes can go.
+   */
+  LegacySheetsRouteCalls: "LegacySheetsRouteCalls",
   /** Change events the stream consumer tried to publish to team channels: the denominator for LiveUpdateFailures (J4). */
   LiveUpdates: "LiveUpdates",
   /** Change events that didn't go out on the first try; the batch is retried (J4). */

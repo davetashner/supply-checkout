@@ -32,7 +32,7 @@ export type HttpMethod = "GET" | "PUT" | "PATCH" | "DELETE" | "POST";
 
 /**
  * A team role, from least to most access (ADR 0007): viewers read; contributors
- * also scan and edit sheets and inventory; owners also manage members, billing
+ * also scan and edit projects and inventory; owners also manage members, billing
  * and imports.
  */
 export type TeamRole = "viewer" | "contributor" | "owner";
@@ -42,7 +42,7 @@ export interface DataRoute {
   readonly method: HttpMethod;
   readonly path: string;
   /** The documents it serves; `team` for a route about the team itself. */
-  readonly collection: "products" | "sheets" | "team";
+  readonly collection: "products" | "projects" | "team";
   readonly operation: Operation;
   /**
    * The least role that may call it. The handler checks it on every request,
@@ -52,27 +52,43 @@ export interface DataRoute {
   readonly minRole: TeamRole;
   /** API Gateway's throttle for this route across all callers, for routes much heavier than a document write. */
   readonly throttle?: { readonly rate: number; readonly burst: number };
+  /**
+   * The old spelling of a projects route, `/teams/{teamId}/sheets...`,
+   * served by the same handler with the same role and body checks through
+   * the sheets-to-projects rename's window (supply-checkout-005.6). Each call
+   * counts in the LegacySheetsRouteCalls metric, which shows when old clients
+   * are gone and the routes can be removed.
+   */
+  readonly legacy?: true;
 }
 
-const collectionRoutes = (collection: "products" | "sheets", param: string): DataRoute[] => [
-  { method: "GET", path: `/teams/{teamId}/${collection}`, collection, operation: "list", minRole: "viewer" },
-  { method: "GET", path: `/teams/{teamId}/${collection}/{${param}}`, collection, operation: "get", minRole: "viewer" },
-  { method: "PUT", path: `/teams/{teamId}/${collection}/{${param}}`, collection, operation: "set", minRole: "contributor" },
-  { method: "PATCH", path: `/teams/{teamId}/${collection}/{${param}}`, collection, operation: "update", minRole: "contributor" },
-  { method: "DELETE", path: `/teams/{teamId}/${collection}/{${param}}`, collection, operation: "delete", minRole: "contributor" },
-];
+const collectionRoutes = (collection: "products" | "projects", segment: string, param: string, legacy?: true): DataRoute[] =>
+  [
+    { method: "GET", path: `/teams/{teamId}/${segment}`, collection, operation: "list", minRole: "viewer" },
+    { method: "GET", path: `/teams/{teamId}/${segment}/{${param}}`, collection, operation: "get", minRole: "viewer" },
+    { method: "PUT", path: `/teams/{teamId}/${segment}/{${param}}`, collection, operation: "set", minRole: "contributor" },
+    { method: "PATCH", path: `/teams/{teamId}/${segment}/{${param}}`, collection, operation: "update", minRole: "contributor" },
+    { method: "DELETE", path: `/teams/{teamId}/${segment}/{${param}}`, collection, operation: "delete", minRole: "contributor" },
+  ].map((r) => ({ ...(r as DataRoute), ...(legacy ? { legacy } : {}) }));
+
+/** The commands on one project, under `/projects/{projectId}` or (legacy) `/sheets/{sheetId}`. */
+const projectCommandRoutes = (segment: string, param: string, legacy?: true): DataRoute[] =>
+  [
+    { method: "POST", path: `/teams/{teamId}/${segment}/{${param}}/checkout`, collection: "projects", operation: "checkout", minRole: "contributor" },
+    { method: "POST", path: `/teams/{teamId}/${segment}/{${param}}/return`, collection: "projects", operation: "return", minRole: "contributor" },
+    // Company equipment lost or broken on a job (ADR 0017, section 3): no stock moves
+    { method: "POST", path: `/teams/{teamId}/${segment}/{${param}}/lost`, collection: "projects", operation: "lost", minRole: "contributor" },
+    // A whole line from the open General Use project to an open job project, both in one transaction (no stock moves)
+    { method: "POST", path: `/teams/{teamId}/${segment}/{${param}}/move`, collection: "projects", operation: "move", minRole: "contributor" },
+    // A receipt's lines for a client, added to an existing project in one transaction (no stock moves)
+    { method: "POST", path: `/teams/{teamId}/${segment}/{${param}}/lines`, collection: "projects", operation: "addLines", minRole: "contributor" },
+  ].map((r) => ({ ...(r as DataRoute), ...(legacy ? { legacy } : {}) }));
 
 const commandRoutes: DataRoute[] = [
-  { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/checkout", collection: "sheets", operation: "checkout", minRole: "contributor" },
-  { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/return", collection: "sheets", operation: "return", minRole: "contributor" },
-  // Company equipment lost or broken on a job (ADR 0017, section 3): no stock moves
-  { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/lost", collection: "sheets", operation: "lost", minRole: "contributor" },
-  // Quick take onto the team's open ad hoc sheet, or the next one (ADR 0017, section 4)
-  { method: "POST", path: "/teams/{teamId}/adhoc/checkout", collection: "sheets", operation: "quickTake", minRole: "contributor" },
-  // A whole line from the open ad hoc sheet to an open job sheet, both in one transaction (no stock moves)
-  { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/move", collection: "sheets", operation: "move", minRole: "contributor" },
-  // A receipt's lines for a client, added to an existing sheet in one transaction (no stock moves)
-  { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/lines", collection: "sheets", operation: "addLines", minRole: "contributor" },
+  ...projectCommandRoutes("projects", "projectId"),
+  ...projectCommandRoutes("sheets", "sheetId", true),
+  // Quick take onto the team's open General Use project, or the next one (ADR 0017, section 4)
+  { method: "POST", path: "/teams/{teamId}/adhoc/checkout", collection: "projects", operation: "quickTake", minRole: "contributor" },
   { method: "POST", path: "/teams/{teamId}/products/{key}/stock", collection: "products", operation: "adjustStock", minRole: "contributor" },
   { method: "GET", path: "/teams/{teamId}/products/{key}/movements", collection: "products", operation: "movements", minRole: "viewer" },
   // CSV inventory import, all or nothing and idempotent by import ID (backend/src/data/imports.ts). Owners only.
@@ -87,7 +103,12 @@ const commandRoutes: DataRoute[] = [
 ];
 
 /** Team data. Every one needs a Cognito access token (the JWT authorizer). */
-export const DATA_ROUTES: readonly DataRoute[] = [...collectionRoutes("products", "key"), ...collectionRoutes("sheets", "sheetId"), ...commandRoutes];
+export const DATA_ROUTES: readonly DataRoute[] = [
+  ...collectionRoutes("products", "products", "key"),
+  ...collectionRoutes("projects", "projects", "projectId"),
+  ...collectionRoutes("projects", "sheets", "sheetId", true),
+  ...commandRoutes,
+];
 
 export interface ReceiptRoute {
   readonly method: "POST" | "GET";
