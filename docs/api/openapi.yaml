@@ -2951,9 +2951,11 @@ components:
         cost: { $ref: "#/components/schemas/Money" }
         stock: { type: integer, minimum: 0, maximum: 1000000 }
         packSize: { type: integer, minimum: 1, maximum: 10000 }
+        reorderAt: { type: integer, minimum: 0, maximum: 1000000, description: "From a `reorder_at` column (supply-checkout-005.13). Absent: the item's level is kept." }
+        reorderQty: { type: integer, minimum: 1, maximum: 1000000, description: "From a `reorder_qty` column. Absent: the item's usual order is kept." }
         key: { type: string, description: The product key the row writes. }
         action: { type: string, enum: [create, update, unchanged] }
-        changes: { type: array, items: { type: string, enum: [code, name, brand, kind, price, cost, packSize, stock] } }
+        changes: { type: array, items: { type: string, enum: [code, name, brand, kind, price, cost, packSize, reorderAt, reorderQty, stock] } }
     ImportRowError:
       type: object
       required: [line, message]

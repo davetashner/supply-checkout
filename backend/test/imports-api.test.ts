@@ -336,6 +336,47 @@ describe("importing again", () => {
     expect(product("0123")).toMatchObject({ version: 4, brand: "Showa" });
   });
 
+  it("imports reorder levels and usual orders, keeps them on blank cells, and checks them like the API (supply-checkout-005.13)", async () => {
+    seedProduct("0123", { code: "0123", name: "Gloves", price: 10, stock: 3, reorderAt: 5, reorderQty: 24, ackedAtStock: 3, orderedQty: 24, orderedOn: "2026-10-01" }, 3);
+    seedProduct("0456", { code: "0456", name: "Bags", price: 4, stock: 2, reorderAt: 4, ackedAtStock: 2 }, 1);
+    // Blank cells keep what's there: nothing changes, nothing is written
+    let res = await post({ importId: randomUUID(), csv: "name,barcode,price,reorder_at,reorder_qty\nGloves,0123,10,,\nBags,0456,4,4,\n" });
+    expect(res.body.summary).toEqual({ rows: 2, created: 0, updated: 0, unchanged: 2 });
+    expect(product("0123")).toMatchObject({ version: 3, reorderAt: 5, reorderQty: 24, ackedAtStock: 3 });
+    // A new level drops the acknowledgment (it was of the old one) and keeps the order; a new usual order alone keeps both
+    const preview = await post({ dryRun: true, csv: "name,barcode,price,Reorder Level,usual order\nGloves,0123,10,8,30\nBags,0456,4,4,10\nRags,,1,2,6\n" });
+    expect(preview.body.rows.map((r: { changes: string[] }) => r.changes)).toEqual([["reorderAt", "reorderQty"], ["reorderQty"], ["name", "price", "reorderAt", "reorderQty"]]);
+    expect(preview.body.rows[0]).toMatchObject({ reorderAt: 8, reorderQty: 30 });
+    res = await post({ importId: randomUUID(), csv: "name,barcode,price,Reorder Level,usual order\nGloves,0123,10,8,30\nBags,0456,4,4,10\nRags,,1,2,6\n" });
+    expect(res.body.summary).toEqual({ rows: 3, created: 1, updated: 2, unchanged: 0 });
+    expect(product("0123")).toMatchObject({ reorderAt: 8, reorderQty: 30, orderedQty: 24, orderedOn: "2026-10-01" });
+    expect(product("0123")).not.toHaveProperty("ackedAtStock");
+    expect(product("0456")).toMatchObject({ reorderAt: 4, reorderQty: 10, ackedAtStock: 2 });
+    expect(Object.values(Object.fromEntries([...table.items].filter(([, i]) => i.name === "Rags")))[0]).toMatchObject({ reorderAt: 2, reorderQty: 6 });
+    // With an order on it: a restock above the level ends the order (and an acknowledgment); a
+    // level change with no restock keeps the order and drops the acknowledgment
+    seedProduct("0789", { code: "0789", name: "Mops", price: 9, stock: 1, reorderAt: 3, ackedAtStock: 1, orderedQty: 6, orderedOn: "2026-10-01" }, 1);
+    seedProduct("0790", { code: "0790", name: "Pails", price: 9, stock: 1, reorderAt: 3, ackedAtStock: 1, orderedQty: 6, orderedOn: "2026-10-01" }, 1);
+    await post({ importId: randomUUID(), csv: "name,barcode,price,stock,reorder_at\nMops,0789,9,10,\nPails,0790,9,,2\n" });
+    expect(product("0789")).toMatchObject({ stock: 10, reorderAt: 3 });
+    for (const f of ["ackedAtStock", "orderedQty", "orderedOn"]) expect(product("0789")).not.toHaveProperty(f);
+    expect(product("0790")).toMatchObject({ stock: 1, reorderAt: 2, orderedQty: 6, orderedOn: "2026-10-01" });
+    expect(product("0790")).not.toHaveProperty("ackedAtStock");
+    // Both at once: the file's new level is what the restock is measured against (7 is at or below 8, so the order stays)
+    seedProduct("0791", { code: "0791", name: "Brooms", price: 9, stock: 1, reorderAt: 3, orderedQty: 6, orderedOn: "2026-10-01" }, 1);
+    await post({ importId: randomUUID(), csv: "name,barcode,price,stock,reorder_at\nBrooms,0791,9,7,8\n" });
+    expect(product("0791")).toMatchObject({ stock: 7, reorderAt: 8, orderedQty: 6 });
+    // Out of range or not whole: every problem, and nothing imported
+    const bad = await post({ dryRun: true, csv: "name,price,reorder_at,reorder_qty\nA,1,-1,1\nB,1,2.5,1\nC,1,1,0\nD,1,1000001,1\nE,1,x,1\n" });
+    expect(bad.body.errors).toEqual([
+      { line: 2, column: "reorder_at", message: "reorder_at can't be negative" },
+      { line: 3, column: "reorder_at", message: "reorder_at must be a whole number" },
+      { line: 4, column: "reorder_qty", message: "reorder_qty must be from 1 to 1,000,000" },
+      { line: 5, column: "reorder_at", message: "reorder_at must be from 0 to 1,000,000" },
+      { line: 6, column: "reorder_at", message: "reorder_at isn't a number" },
+    ]);
+  });
+
   it("gives an item without a barcode the file's barcode when their names match", async () => {
     seedProduct("nb-1", { code: "", name: "Mop heads", price: 4 });
     await post({ importId: randomUUID(), csv: "name,barcode,price\nMop Heads,999,4\n" });
@@ -728,7 +769,7 @@ describe("parsing", () => {
     expect(parsed.errors).toEqual([]);
     expect(parsed.ignoredColumns).toEqual([]);
     expect(parsed.rows).toEqual([
-      { line: 2, name: "EXAMPLE Glass cleaner (sample row)", brand: "EXAMPLE Brand", barcode: "EXAMPLE-0001", price: 6.5, cost: 4.25, stock: 24, packSize: 12 },
+      { line: 2, name: "EXAMPLE Glass cleaner (sample row)", brand: "EXAMPLE Brand", barcode: "EXAMPLE-0001", price: 6.5, cost: 4.25, stock: 24, packSize: 12, reorderAt: 6, reorderQty: 12 },
       { line: 3, name: "EXAMPLE Trash bags (sample row)", barcode: "", price: 0.4, cost: 0.25, stock: 90, packSize: 45 },
       { line: 4, name: "EXAMPLE Step ladder (sample row)", barcode: "EXAMPLE-0002", kind: "equipment", cost: 120, stock: 2 },
     ]);
