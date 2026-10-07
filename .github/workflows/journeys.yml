@@ -1,0 +1,262 @@
+name: Journeys
+
+# The customer journeys walked against prod as test accounts in test teams (supply-checkout-o60.6;
+# docs/journey-tests-plan.md, docs/testing.md "Journey tests against prod"). The deploy workflow
+# calls it after `apply` and the post-deploy checks; the owner or the lead can also run it by hand
+# from main (Actions, Journeys, Run workflow) to check prod after a spec change, an incident, or a
+# Stripe or AWS change outside a deploy.
+#
+# This is the only workflow that may name the production-journeys environment
+# (scripts/check-workflow-environments.mjs, in CI): the journeys role trusts any job in it, and
+# its secrets reach any job that names it. So it has no pull request trigger, and nothing that a
+# pull request starts may call it. The deploy workflow calls it as ./.github/workflows/journeys.yml.
+#
+# Jobs:
+#   check     no environment, no credentials: skips everything until the owner switches the
+#             journey tests on (the repository variable JOURNEYS_ENABLED = true, docs/releases.md
+#             "The production-journeys environment"), then refuses unless the environment is locked
+#             down (scripts/check-environments.mjs), since GitHub creates an environment with no
+#             protection the first time a job names one that doesn't exist
+#   suite     production-journeys (main only, no reviewer: the deploy's approvals came first, and
+#             this deploys nothing): the suite, then cleanup, the summary and the upload of the
+#             results to the private results bucket, each with `if: always()`, in one job, so
+#             cleanup shares the run directory (TOTP step claims, masked values) with the tests
+#
+# Nothing from the run is an Actions artifact (traces hold tokens; artifacts are public here). The
+# job summary is the masked table from scripts/journeys/prod-summary.mjs.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release just deployed (vX.Y.Z), for the summary
+        required: true
+        type: string
+    outputs:
+      suite:
+        description: The suite step's outcome (success, failure, cancelled, skipped), or empty when the journey tests are switched off
+        value: ${{ jobs.suite.outputs.suite }}
+      failed:
+        description: The failed steps, "J4.2 (desktop-chrome)", comma-separated
+        value: ${{ jobs.suite.outputs.failed }}
+      critical:
+        description: The failed steps of critical journeys, the same way
+        value: ${{ jobs.suite.outputs.critical }}
+  workflow_dispatch:
+
+permissions: {}
+
+# By hand, it joins the deploy's group, so it never runs during a deploy (and a deploy never starts
+# during it). Called from a deploy, that run already holds the group, and a called workflow in the
+# same group would deadlock, so it takes a group of its own.
+concurrency:
+  group: ${{ inputs.tag && format('journeys-in-deploy-{0}', github.run_id) || 'deploy-production' }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # -eo pipefail
+    shell: bash
+
+jobs:
+  check:
+    name: Check the journey tests are set up
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts
+          persist-credentials: false
+      - name: Check the environment
+        id: check
+        env:
+          ENABLED: ${{ vars.JOURNEYS_ENABLED }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$ENABLED" != true ]]; then
+            echo "::warning::The journey tests are switched off (the repository variable JOURNEYS_ENABLED isn't true): skipped. docs/releases.md, \"The production-journeys environment\", says how to switch them on."
+            echo "Journey tests: switched off (JOURNEYS_ENABLED isn't true), so they didn't run." >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node scripts/check-environments.mjs --repo "$GITHUB_REPOSITORY" --environment production-journeys
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  suite:
+    name: Journey tests against prod
+    needs: check
+    if: github.ref == 'refs/heads/main' && needs.check.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    # About 15 minutes of tests, the browser install's 10-minute bound, cleanup and upload
+    timeout-minutes: 45
+    environment: production-journeys
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      suite: ${{ steps.suite.outcome }}
+      failed: ${{ steps.verdict.outputs.failed }}
+      critical: ${{ steps.verdict.outputs.critical }}
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      # main's commit: this run's own (the deploy's, when it calls this), never a pull request's
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # No dependency cache in a job that holds prod credentials
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      # Before any credentials exist, and no secret is in any step's environment until the suite
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      # The browsers and their OS packages as ci.yml installs them, from main's caches (restored
+      # only: this job never saves a cache). Only runs on main save into main's scope, never a
+      # pull request's. apt checks every .deb against the signed package lists before using it.
+      - name: Playwright version
+        id: pw
+        run: |
+          echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "image-os=$ImageOS" >> "$GITHUB_OUTPUT"
+      - name: Restore Chromium
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-browsers-${{ runner.os }}-${{ runner.arch }}-chromium-${{ steps.pw.outputs.version }}
+      - name: Restore WebKit
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-browsers-${{ runner.os }}-${{ runner.arch }}-webkit-${{ steps.pw.outputs.version }}
+      - name: Restore Chromium's OS packages
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/playwright-debs
+          key: playwright-debs-${{ runner.os }}-${{ runner.arch }}-chromium-${{ steps.pw.outputs.image-os }}-run-${{ github.run_id }}
+          restore-keys: playwright-debs-${{ runner.os }}-${{ runner.arch }}-chromium-${{ steps.pw.outputs.image-os }}-
+      - name: Restore WebKit's OS packages
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/playwright-debs
+          key: playwright-debs-${{ runner.os }}-${{ runner.arch }}-webkit-${{ steps.pw.outputs.image-os }}-run-${{ github.run_id }}
+          restore-keys: playwright-debs-${{ runner.os }}-${{ runner.arch }}-webkit-${{ steps.pw.outputs.image-os }}-
+      # Bounded like ci.yml's: 90 seconds, then two tries of 3 minutes without the slow mirror
+      - name: Install the browsers and their OS packages
+        timeout-minutes: 10
+        run: |
+          debs="$HOME/.cache/playwright-debs"
+          mkdir -p "$debs"
+          if compgen -G "$debs/*.deb" > /dev/null; then sudo cp "$debs"/*.deb /var/cache/apt/archives/; fi
+          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries > /dev/null
+          mirrors=/etc/apt/apt-mirrors.txt
+          cli="node_modules/playwright-core/cli.js"
+          node="$(command -v node)"
+          status=1
+          for try in 1 2 3; do
+            if [[ "$try" -gt 1 && -f "$mirrors" ]] && grep -v azure "$mirrors" | grep -q .; then
+              sudo sed -i '/azure\.archive\.ubuntu\.com/d' "$mirrors"
+            fi
+            sudo dpkg --configure -a
+            limit=3m
+            if [[ "$try" -eq 1 ]]; then limit=90s; fi
+            if sudo timeout -k 15s "$limit" "$node" "$cli" install-deps chromium webkit &&
+              timeout -k 15s 3m "$node" "$cli" install chromium webkit; then
+              echo "Installed Chromium and WebKit on try $try"
+              status=0
+              break
+            fi
+            echo "::warning::Installing the browsers failed or took over $limit (try $try of 3)"
+          done
+          exit "$status"
+      # Before signing in: every secret the suite needs is there and well formed (the errors name
+      # variables, never values), so a missing secret isn't taken for a failing release
+      - name: Check the environment's secrets
+        env: &secrets
+          JOURNEYS_OWNER_EMAIL: ${{ secrets.JOURNEYS_OWNER_EMAIL }}
+          JOURNEYS_OWNER_PASSWORD: ${{ secrets.JOURNEYS_OWNER_PASSWORD }}
+          JOURNEYS_OWNER_TOTP: ${{ secrets.JOURNEYS_OWNER_TOTP }}
+          JOURNEYS_CREW_EMAIL: ${{ secrets.JOURNEYS_CREW_EMAIL }}
+          JOURNEYS_CREW_PASSWORD: ${{ secrets.JOURNEYS_CREW_PASSWORD }}
+          JOURNEYS_VIEWER_EMAIL: ${{ secrets.JOURNEYS_VIEWER_EMAIL }}
+          JOURNEYS_VIEWER_PASSWORD: ${{ secrets.JOURNEYS_VIEWER_PASSWORD }}
+          JOURNEYS_DESKTOP_TEAM_ID: ${{ secrets.JOURNEYS_DESKTOP_TEAM_ID }}
+          JOURNEYS_PHONE_TEAM_ID: ${{ secrets.JOURNEYS_PHONE_TEAM_ID }}
+          JOURNEYS_MAIL_BUCKET: ${{ secrets.JOURNEYS_MAIL_BUCKET }}
+          JOURNEYS_RESULTS_BUCKET: ${{ secrets.JOURNEYS_RESULTS_BUCKET }}
+        run: node scripts/journeys/workflow.mjs check-secrets
+      - name: Check the journeys role's ARN
+        env:
+          ROLE_ARN: ${{ secrets.JOURNEYS_AWS_ROLE_ARN }}
+        run: |
+          if [[ ! "$ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/supply-checkout-prod-journeys$ ]]; then
+            echo "::error::The environment secret JOURNEYS_AWS_ROLE_ARN isn't the journeys role's ARN (the journeys stack's JourneysRoleArn output)"
+            exit 1
+          fi
+      - name: Sign in to AWS with the journeys role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          # A secret, so the ARN (and the account ID in it) is masked in the log
+          role-to-assume: ${{ secrets.JOURNEYS_AWS_ROLE_ARN }}
+          role-session-name: journeys-${{ github.run_id }}-${{ github.run_attempt }}
+          # The mail and results buckets, and SES inbound, are in the primary region (ADR 0010)
+          aws-region: us-east-1
+          role-duration-seconds: 3600
+          # The account ID is masked in every later log line
+          mask-aws-account-id: true
+      - name: Prove who this job is
+        run: |
+          arn="$(aws sts get-caller-identity --query Arn --output text)"
+          if [[ ! "$arn" =~ ^arn:aws:sts::[0-9]{12}:assumed-role/supply-checkout-prod-journeys/ ]]; then
+            echo "::error::Signed in as something other than the journeys role"
+            exit 1
+          fi
+          echo "Signed in as the journeys role"
+      # The list reporter and a JSON report only (playwright.prod.config.mjs); no html or github
+      # reporter, which would print source and errors to annotations
+      - name: Run the journey tests
+        id: suite
+        env: *secrets
+        run: ./node_modules/.bin/playwright test --config playwright.prod.config.mjs
+      # Then, whatever happened, in this order, in this job: cleanup (which signs every test
+      # account out everywhere, so no token in a trace still works), the summary, the upload
+      - name: Clean up
+        if: always()
+        env: *secrets
+        run: node scripts/journeys/cleanup.mjs
+      - name: Summary
+        if: always()
+        env: *secrets
+        run: |
+          dir="$RUNNER_TEMP/journeys-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if [[ -n "$TAG" ]]; then echo "## Journey tests after deploying $TAG" >> "$GITHUB_STEP_SUMMARY"; fi
+          if [[ ! -f "$dir/report.json" ]]; then
+            echo "No report: the suite didn't start (see the failed step)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          warnings=()
+          if [[ -f "$dir/warnings.json" ]]; then warnings=(--warnings "$dir/warnings.json"); fi
+          node scripts/journeys/prod-summary.mjs --report "$dir/report.json" "${warnings[@]}" --json "$dir/verdict.json"
+      - name: Upload the results to the private results bucket
+        if: always()
+        env: *secrets
+        run: |
+          dir="$RUNNER_TEMP/journeys-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if [[ ! -d "$dir" ]]; then
+            echo "Nothing to upload: the suite didn't start"
+            exit 0
+          fi
+          node scripts/journeys/upload-results.mjs
+      # The failed steps for the deploy's verdict job, which notes them on the release (public):
+      # only entries shaped like "J4.2 (desktop-chrome)" (scripts/release-verdict.mjs checks again)
+      - name: Results for the release
+        id: verdict
+        if: always()
+        run: node scripts/journeys/workflow.mjs outputs "$RUNNER_TEMP/journeys-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/verdict.json"

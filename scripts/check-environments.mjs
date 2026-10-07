@@ -12,8 +12,14 @@
 //   - exactly one deployment branch policy: `main`, type branch (no tags, no patterns).
 //
 //   node scripts/check-environments.mjs [--repo owner/name] [--environment name ...]
+//        [--journeys required|if-present]
 //
 // With no --environment it checks `production` and `production-stateful` (ENVIRONMENTS).
+// --journeys adds the journey tests' environment (JOURNEYS_ENVIRONMENT) to them without naming
+// it on the command line, so the deploy workflow can check it on every deploy while only the
+// journeys workflow names it (scripts/check-workflow-environments.mjs). `required`: it must
+// exist; `if-present`: until the owner creates it (the journey tests are switched off), a
+// missing one is reported and passes, but one that exists must be locked down.
 // Uses `gh api` (GH_TOKEN in Actions; your gh login on a laptop). The deploy workflow's
 // release job runs it before any job names an environment, dry runs included;
 // `npm run deploy:github-deploy` (infra/) runs it before deploying the deploy role's trust, and
@@ -60,14 +66,24 @@ export function environmentProblems(name, environment, policies) {
   return problems;
 }
 
-/** Every problem across `names` (ENVIRONMENTS by default). `api(path)` returns the parsed JSON, or null for a 404. */
-export function checkEnvironments(repo, api, names = ENVIRONMENTS) {
+/**
+ * Every problem across `names` (ENVIRONMENTS by default). `api(path)` returns the parsed JSON, or
+ * null for a 404. A missing environment in `optional` isn't a problem: it's added to `skipped`.
+ */
+export function checkEnvironments(repo, api, names = ENVIRONMENTS, { optional = [], skipped = [] } = {}) {
   return names.flatMap((name) => {
     const environment = api(`repos/${repo}/environments/${name}`);
+    if (!environment && optional.includes(name)) {
+      skipped.push(name);
+      return [];
+    }
     const policies = environment ? api(`repos/${repo}/environments/${name}/deployment-branch-policies?per_page=100`) : null;
     return environmentProblems(name, environment, policies);
   });
 }
+
+/** What --journeys may say. */
+export const JOURNEYS_MODES = ["required", "if-present"];
 
 /** `gh api`, with a 404 as null and anything else an error. */
 export function ghApi(apiPath, run = execFileSync) {
@@ -83,27 +99,35 @@ export function ghApi(apiPath, run = execFileSync) {
 export function parseArgs(argv) {
   let repo = DEFAULT_REPO;
   const names = [];
+  let journeys;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--repo" && i + 1 < argv.length) repo = argv[++i];
     else if (argv[i] === "--environment" && i + 1 < argv.length) names.push(argv[++i]);
+    else if (argv[i] === "--journeys" && i + 1 < argv.length && journeys === undefined) journeys = argv[++i];
     else throw new Error(`Unknown argument: ${argv[i]}`);
   }
   if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(repo)) throw new Error(`--repo must be owner/name (got "${repo}")`);
   for (const name of names) if (!Object.hasOwn(RULES, name)) throw new Error(`--environment must be one of ${Object.keys(RULES).join(", ")} (got "${name}")`);
-  return { repo, names: names.length ? [...new Set(names)] : ENVIRONMENTS };
+  if (journeys !== undefined && !JOURNEYS_MODES.includes(journeys)) throw new Error(`--journeys must be one of ${JOURNEYS_MODES.join(", ")} (got "${journeys}")`);
+  const all = names.length ? [...names] : [...ENVIRONMENTS];
+  if (journeys) all.push(JOURNEYS_ENVIRONMENT);
+  // Named with --environment too, it's required whatever --journeys says
+  const optional = journeys === "if-present" && !names.includes(JOURNEYS_ENVIRONMENT) ? [JOURNEYS_ENVIRONMENT] : [];
+  return { repo, names: [...new Set(all)], optional };
 }
 
-export function main(argv, api = ghApi) {
-  const { repo, names } = parseArgs(argv);
-  return checkEnvironments(repo, api, names);
+export function main(argv, api = ghApi, skipped = []) {
+  const { repo, names, optional } = parseArgs(argv);
+  return checkEnvironments(repo, api, names, { optional, skipped });
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   let problems;
   let names;
+  const skipped = [];
   try {
     ({ names } = parseArgs(process.argv.slice(2)));
-    problems = main(process.argv.slice(2));
+    problems = main(process.argv.slice(2), ghApi, skipped);
   } catch (e) {
     console.error(`check-environments: ${e.message}`);
     process.exit(2);
@@ -112,6 +136,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     console.error(`These GitHub environments aren't locked down:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
     process.exit(1);
   }
-  const checked = names.map((name) => (RULES[name].requireReviewers ? `${name} (with required reviewers)` : name));
+  const checked = names.filter((name) => !skipped.includes(name)).map((name) => (RULES[name].requireReviewers ? `${name} (with required reviewers)` : name));
   console.log(`check-environments: ${checked.join(", ")}: each exists, main only, no admin bypass`);
+  for (const name of skipped) console.log(`check-environments: ${name} doesn't exist yet, which is allowed until it's set up (${RULES[name].setup})`);
 }
