@@ -4,7 +4,7 @@ These are the journeys Supply Checkout must never break. Each one lists who does
 
 Each step has an ID (J4.2 is the second step of J4). The journeys, their steps and their alarms live in [`journeys/registry.json`](../journeys/registry.json), and the journeys table and step lists below are generated from it. See [Keeping this page current](#keeping-this-page-current).
 
-End-to-end tests of every journey against a deployed environment are `supply-checkout-o60`. Until then, "tests" below means the Playwright suites that run against the mock runtime and the fake API (`tests/`), and the backend's tests (`backend/test/`).
+End-to-end tests of every journey against a deployed environment are `supply-checkout-o60` ([the plan](journey-tests-plan.md): against prod, with test teams, after each release). Until then, "tests" below means the Playwright suites that run against the mock runtime and the fake API (`tests/`), and the backend's tests (`backend/test/`).
 
 ## Keeping this page current
 
