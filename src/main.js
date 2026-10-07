@@ -668,12 +668,31 @@ function newProjectModal(existing) {
   });
 }
 
+// A scanned or typed barcode, shown before anything is saved. A photo can be misread, so with
+// recode (how to start over with another code) the number can be corrected in place: the form
+// opens again for the corrected code, looking it up in inventory and on the project afresh.
+function codeHTML(code, recode) {
+  return `<div class="code${recode ? " recode" : ""}" id="codeBox"><span>${esc(codeText(code))}</span>${recode ? ` <button type="button" class="btn ghost" id="fixCode">Not this number?</button>` : ""}</div>`;
+}
+function wireRecode(m, code, recode) {
+  const fix = m.querySelector("#fixCode");
+  if (!fix) return;
+  fix.addEventListener("click", () => {
+    const box = m.querySelector("#codeBox");
+    box.innerHTML = `<form class="manual" id="fixForm"><label class="vh" for="fixInput">Barcode number</label><input type="text" id="fixInput" inputmode="numeric" autocomplete="off" value="${esc(code)}"><button type="submit" class="btn">Use this number</button></form>`;
+    const input = box.querySelector("#fixInput");
+    input.focus(); input.select();
+    box.querySelector("#fixForm").addEventListener("submit", e => { e.preventDefault(); const c = input.value.trim(); if (c) recode(c); });
+  });
+}
+
 // s: the project, or null for a quick take onto the General Use project (ADR 0017, section 4)
-function checkoutModal(s, code, key = keyOf(code)) {
+// recode: see codeHTML
+function checkoutModal(s, code, key = keyOf(code), recode = null) {
   const on = s || openAdhoc() || {}, prod = products[key], line = own(on.items || {}, key), action = {};
   openModal(`
     <h2>${s ? "Check out" : "Quick take"}</h2>
-    <div class="code">${esc(codeText(code))}</div>
+    ${codeHTML(code, recode)}
     <form id="f" style="display:grid;gap:14px">
       ${prod ? `<div class="item-known"><strong>${esc(nameWithBrand(prod))}</strong><span class="num">${isEquipment(prod) ? "Company equipment · not charged" : `${money(prod.price)} each`}</span></div>${hasStock(prod) ? `<div class="summary"><span>In storage</span><b>${prod.stock}</b></div>` : ""}`
              : `<p class="hint" style="margin-top:-4px">${code ? "New barcode. Name it and set a price, and it'll be saved to inventory." : "Name the item and set a price."}</p>
@@ -684,6 +703,7 @@ function checkoutModal(s, code, key = keyOf(code)) {
       <div class="field"><label for="fQty">How many are you taking?</label>${stepperHTML("fQty", 1)}</div>
       <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary" id="go">Add to project</button></div>
     </form>`, m => {
+    wireRecode(m, code, recode);
     const goText = v => s ? `Add ${v} to project` : `Take ${v}`;
     const getQty = wireStepper(m, "fQty", v => setText(m.querySelector("#go"), goText(v)));
     m.querySelector("#go").textContent = goText(1);
@@ -776,6 +796,7 @@ function wireCodeEntry(m, onCode) {
 }
 
 // Quick take (ADR 0017, section 4): what's taken goes on the team's General Use project
+function quickTakeCode(c) { checkoutModal(null, c, keyForCode(c), quickTakeCode); }
 function quickTakeModal() {
   openModal(`
     <h2>Quick take</h2>
@@ -785,7 +806,7 @@ function quickTakeModal() {
     <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     m.querySelector("#qPick").addEventListener("click", () => pickOutModal(null));
-    wireCodeEntry(m, c => checkoutModal(null, c, keyForCode(c)));
+    wireCodeEntry(m, quickTakeCode);
   });
 }
 
@@ -805,24 +826,26 @@ function returnAnyModal() {
     <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     m.querySelectorAll("[data-k]").forEach(b => b.addEventListener("click", () => { const l = out.get(b.dataset.k); returnFrom(outOn(l.key), l.code || ""); }));
-    wireCodeEntry(m, c => { const k = keyForCode(c); returnFrom(outOn(k, c), c); });
+    wireCodeEntry(m, returnAnyCode);
   });
 }
+function returnAnyCode(c) { returnFrom(outOn(keyForCode(c), c), c, returnAnyCode); }
 // The return form for the one project the item is out on, or a list to pick from, the General Use project first
-function returnFrom(hits, code) {
+function returnFrom(hits, code, recode = null) {
   if (!hits.length) { closeModal(); toast("Nothing of this is checked out right now."); return; }
-  if (hits.length === 1) { returnModal(hits[0].s, code, hits[0].k, true); return; }
+  if (hits.length === 1) { returnModal(hits[0].s, code, hits[0].k, true, recode); return; }
   openModal(`
     <h2>Which project?</h2>
     <p class="hint" style="margin-top:-6px">${esc(own(hits[0].s.items, hits[0].k).name)} is out on more than one project. Pick the one it's coming back from.</p>
     <div class="pick">${hits.map(({ s, left }, i) => `<button type="button" data-i="${i}"><span>${esc(projectTitle(s))}<span class="code" style="display:block">${esc(fmtDate(s.date))}</span></span><span class="num">${left} out</span></button>`).join("")}</div>
     <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
-    m.querySelectorAll("[data-i]").forEach(b => b.addEventListener("click", () => { const h = hits[Number(b.dataset.i)]; returnModal(h.s, code, h.k, true); }));
+    m.querySelectorAll("[data-i]").forEach(b => b.addEventListener("click", () => { const h = hits[Number(b.dataset.i)]; returnModal(h.s, code, h.k, true, recode); }));
   });
 }
 
-function returnModal(s, code, key = keyOf(code), named = false) {
+// recode: see codeHTML
+function returnModal(s, code, key = keyOf(code), named = false, recode = null) {
   const line = own(s.items || {}, key), prod = products[key], action = {};
   if (!line) {
     // Still out on another open project: return it there instead (ADR 0017, section 5)
@@ -830,13 +853,14 @@ function returnModal(s, code, key = keyOf(code), named = false) {
     const there = elsewhere.length === 1 ? `Return it to ${projectName(elsewhere[0].s)}` : "Return it from another project";
     openModal(`
       <h2>Not on this project</h2>
-      <div class="code">${esc(codeText(code))}</div>
+      ${codeHTML(code, recode)}
       <p style="margin:0">${prod ? `<strong>${esc(prod.name)}</strong> wasn't` : "This item wasn't"} checked out on this project, so there's nothing to return.${elsewhere.length ? " It's out on another project." : ""}</p>
       <div class="modal-actions"><button type="button" class="btn" id="cancel">Close</button>${elsewhere.length ? `<button type="button" class="btn" id="elsewhere">${esc(there)}</button>` : ""}${isAdhoc(s) ? "" : `<button type="button" class="btn primary" id="switch">Check it out instead</button>`}</div>`, m => {
       m.querySelector("#cancel").addEventListener("click", closeModal);
+      wireRecode(m, code, recode);
       const other = m.querySelector("#elsewhere"), sw = m.querySelector("#switch");
-      if (other) other.addEventListener("click", () => returnFrom(elsewhere, code));
-      if (sw) sw.addEventListener("click", () => { ui.mode = "out"; draw(); checkoutModal(s, code, key); });
+      if (other) other.addEventListener("click", () => returnFrom(elsewhere, code, recode));
+      if (sw) sw.addEventListener("click", () => { ui.mode = "out"; draw(); checkoutModal(s, code, key, recode); });
     });
     return;
   }
@@ -847,16 +871,17 @@ function returnModal(s, code, key = keyOf(code), named = false) {
   if (!left) {
     openModal(`
       <h2>Already returned</h2>
-      <div class="code">${esc(codeText(code))}</div>
+      ${codeHTML(code, recode)}
       <p style="margin:0">${equip ? `None of <strong>${esc(line.name)}</strong> is still out.` : `All ${o} of <strong>${esc(line.name)}</strong> have been returned.`} To correct the counts, tap the item's row on the project.</p>
       <div class="modal-actions"><button type="button" class="btn primary" id="cancel">Close</button></div>`, m => {
       m.querySelector("#cancel").addEventListener("click", closeModal);
+      wireRecode(m, code, recode);
     });
     return;
   }
   openModal(`
     <h2>${named ? `Return to ${esc(projectName(s))}` : "Return"}</h2>
-    <div class="code">${esc(codeText(code))}</div>
+    ${codeHTML(code, recode)}
     <div class="item-known"><strong>${esc(line.name)}</strong><span class="num">${o} taken${already ? ` · ${already} back` : ""}</span></div>
     <form id="f" style="display:grid;gap:14px">
       <div class="field"><label for="fRet">How many are you returning now?</label>${stepperHTML("fRet", 1, left)}</div>
@@ -868,6 +893,7 @@ function returnModal(s, code, key = keyOf(code), named = false) {
       setHTML(m.querySelector("#sum"), equip ? `<span>Returned <b>${back}</b> of ${o}</span><span>Still out <b>${left - now}</b></span>`
         : `<span>Returned <b>${back}</b> of ${o}</span><span>Used <b>${o - back}</b></span>${isAdhoc(s) ? "" : `<span>Charge <b>${money((o - back) * price)}</b></span>`}`);
     };
+    wireRecode(m, code, recode);
     const getR = wireStepper(m, "fRet", paint); paint(1);
     cancelling(m, action);
     const form = m.querySelector("#f");
@@ -1068,10 +1094,10 @@ function keyForCode(code) {
 }
 function handleCode(code) {
   const s = currentProject(); if (!s || !code) return;
-  if (modeOf(s) === "out") { checkoutModal(s, code, keyForCode(code)); return; }
+  if (modeOf(s) === "out") { checkoutModal(s, code, keyForCode(code), handleCode); return; }
   const items = s.items || {};
   const onProject = Object.keys(items).find(k => items[k].purchased !== true && (k === keyOf(code) || items[k].code === code));
-  returnModal(s, code, onProject || keyForCode(code));
+  returnModal(s, code, onProject || keyForCode(code), false, handleCode);
 }
 
 /* ---------- export ---------- */
