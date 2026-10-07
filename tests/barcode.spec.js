@@ -82,8 +82,9 @@ function code39(text) {
 // ZXing itself is the real, bundled one.
 //   detector: "none" | "empty" | "throws" | a code to return | a list of detected codes
 //   slowClock: every reading of the clock is 4 seconds later (so the time budget runs out)
+//   stoppedClock: the clock never moves (so the time budget never runs out)
 //   held:     the detector waits for window.__releaseDetect() before answering
-//   bitmap:   "real" | "big" (3000×1000 blank canvas) | "tiny" (a 3200×500 canvas with a small
+//   bitmap:   "real" | "big" (3000×1000 blank canvas) | "blank" (a 1300×120 one) | "tiny" (a 3200×500 canvas with a small
 //             Code 39 of `modules` in it, one pixel to the bar: too fine to read when the
 //             whole photo is shrunk, readable in a tile at full size) | "label" (a 3000×2250 photo
 //             of a busy shelf, with a white label whose code of `modules`, `m` pixels to the bar, is
@@ -91,8 +92,9 @@ function code39(text) {
 //             | "qr" (a 4000×300 photo with a QR code of `rows`, two pixels to the module, in it:
 //             too fine to read when the whole photo is shrunk)
 //             | "throws" | "missing"
-function installScanner({ detector = "none", bitmap = "real", held = false, slowClock = false, modules = [], rows = [], angle = 90, m = 2, ink = 40, grain = 24 }) {
+function installScanner({ detector = "none", bitmap = "real", held = false, slowClock = false, stoppedClock = false, modules = [], rows = [], angle = 90, m = 2, ink = 40, grain = 24 }) {
   if (slowClock) { let t = 0; performance.now = () => (t += 4000); }
+  if (stoppedClock) performance.now = () => 0;
   delete window.BarcodeDetector;
   if (detector !== "none") {
     window.BarcodeDetector = class {
@@ -111,8 +113,8 @@ function installScanner({ detector = "none", bitmap = "real", held = false, slow
   const part = (src) => src instanceof HTMLCanvasElement && !src.photo;
   CanvasRenderingContext2D.prototype.drawImage = function (...args) { if (args.length === 5) window.__zxingTries++; if (args.length === 9 && part(args[0])) window.__tiles++; return draw.apply(this, args); };
   const photoOf = (canvas) => { canvas.photo = true; window.createImageBitmap = async () => canvas; };
-  if (bitmap === "big") {
-    photoOf(Object.assign(document.createElement("canvas"), { width: 3000, height: 1000 }));
+  if (bitmap === "big" || bitmap === "blank") {
+    photoOf(Object.assign(document.createElement("canvas"), bitmap === "big" ? { width: 3000, height: 1000 } : { width: 1300, height: 120 }));
   } else if (bitmap === "tiny") {
     const photo = Object.assign(document.createElement("canvas"), { width: 3200, height: 500 }), g = photo.getContext("2d");
     g.fillStyle = "#fff"; g.fillRect(0, 0, 3200, 500);
@@ -358,11 +360,13 @@ test("stops looking through tiles when the time budget is spent", { tag: ["@J4.2
   expect(await tiles(page)).toBe(1);
 });
 
+// With the clock stopped, so the count doesn't depend on how fast the machine is: 2 tiles of the
+// photo as taken, then 7, 7 and 9 at the smaller sizes
 test("a photo with no barcode in it is read in every tile before giving up", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openProject(page, { bitmap: "big" });
+  await openProject(page, { bitmap: "blank", stoppedClock: true });
   await page.setInputFiles("#scanFile", png);
   await noBarcode(page);
-  expect(await tiles(page)).toBeGreaterThan(10);
+  expect(await tiles(page)).toBe(25);
 });
 
 test("a retail code with a bad check digit is not trusted: ZXing reads the photo instead", { tag: ["@J4.2"] }, async ({ page }) => {
