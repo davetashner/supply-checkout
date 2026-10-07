@@ -10,7 +10,7 @@ import { shrinkPhoto } from "./photo.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 import { projectCsv, projectsCsv, inventoryCsv, allJson } from "./export.js";
 import { createFirstRun } from "./first-run.js";
-import { reorderLevel, isLow, isAcked, needsReorder, lowItems, reorderCsv, reorderText } from "./reorder.js";
+import { reorderLevel, isLow, isAcked, isOnOrder, onOrderText, withoutMarks, needsReorder, lowItems, reorderCsv, reorderText } from "./reorder.js";
 
 let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected = false, isOwner = false;
 // Keyed by product key, which can be any barcode's: no prototype, so a key like
@@ -245,6 +245,8 @@ $("#main").addEventListener("click", e => {
   else if (t.id === "copyReorder") copyReorder();
   else if (t.id === "downloadReorder") save("Reorder list.csv", reorderCsv(lowList()));
   else if (t.dataset.ack) acknowledge(t.dataset.ack);
+  else if (t.dataset.order) orderModal(t.dataset.order);
+  else if (t.dataset.cancelOrder) cancelOrder(t.dataset.cancelOrder);
   else if (t.dataset.filter) { ui.filter = t.dataset.filter; draw(); }
   else if (t.dataset.year) { const b = t.getAttribute("aria-expanded") === "true"; ui.years[t.dataset.year] = !b; draw(); }
   else if (t.dataset.kind) { ui.kind = t.dataset.kind; draw(); }
@@ -588,7 +590,7 @@ function drawPrices() {
 const lowList = () => lowItems(Object.entries(products).map(([key, p]) => ({ key, ...p })));
 const lowCount = list => list.filter(needsReorder).length;
 const lowLabel = list => { const n = lowCount(list); return n ? `Running low (${n})` : "Running low"; };
-const lowBadge = p => !isLow(p) ? "" : isAcked(p) ? `<span class="low-badge acked">Low, acknowledged</span>` : `<span class="low-badge">Low</span>`;
+const lowBadge = p => isOnOrder(p) ? `<span class="low-badge acked">On order</span>` : !isLow(p) ? "" : isAcked(p) ? `<span class="low-badge acked">Low, acknowledged</span>` : `<span class="low-badge">Low</span>`;
 // The Inventory tab says how many need looking at, from anywhere in the app
 function paintLowCount() {
   const n = lowCount(Object.values(products)), tab = $("#tab-prices");
@@ -600,14 +602,55 @@ function drawLow(all, kinds) {
   const list = lowItems(all), n = list.length;
   morph($("#main"), `
     <div class="bar">
-      <p class="muted" style="margin:0">${n ? `${n} item${n === 1 ? " is" : "s are"} at or below the reorder level. Acknowledge an item once it's ordered; it's flagged again if stock falls further, or after it's restocked and runs low again.` : "Nothing is running low. Set a reorder level on an item, and it shows here when storage is down to it."}</p>
+      <p class="muted" style="margin:0">${n ? `${n} item${n === 1 ? " is" : "s are"} low or on order. Mark an item ordered and it isn't flagged again until it's restocked above the reorder level and runs low again, or you cancel the order. Acknowledge one to quiet it until stock falls further.` : "Nothing is running low. Set a reorder level on an item, and it shows here when storage is down to it."}</p>
       ${n ? `<span class="row-actions"><button type="button" class="btn" id="copyReorder">Copy list</button><button type="button" class="btn" id="downloadReorder">Download CSV</button></span>` : ""}
     </div>
     <div class="bar">${kinds}</div>
     ${n ? `<div class="table-wrap"><table class="reorder">
       <thead><tr><th>Item</th><th>In storage</th><th>Reorder at</th><th>Usual order</th><th>Status</th></tr></thead>
-      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span></td><td>${p.stock}</td><td>${p.reorderAt}</td><td class="${Number.isInteger(p.reorderQty) ? "" : "muted"}">${Number.isInteger(p.reorderQty) ? p.reorderQty : "—"}</td><td>${isAcked(p) ? `<span class="muted">Acknowledged</span>` : canWrite ? `<button type="button" class="btn small" data-ack="${esc(p.key)}" aria-label="Acknowledge ${esc(p.name || "Unnamed item")}">Acknowledge</button>` : `<span class="low-badge">Low</span>`}</td></tr>`).join("")}</tbody>
+      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span></td><td>${hasStock(p) ? p.stock : "—"}</td><td>${reorderLevel(p) ?? "—"}</td><td class="${Number.isInteger(p.reorderQty) ? "" : "muted"}">${Number.isInteger(p.reorderQty) ? p.reorderQty : "—"}</td><td>${lowStatus(p)}</td></tr>`).join("")}</tbody>
     </table></div>` : ""}`);
+}
+// Running low's Status cell: on order (and Cancel order), acknowledged, or low (with Acknowledge
+// and Mark ordered for those who can write)
+function lowStatus(p) {
+  const name = esc(p.name || "Unnamed item"), key = esc(p.key);
+  const button = (attr, label, aria) => `<button type="button" class="btn small" data-${attr}="${key}" aria-label="${aria} ${name}">${label}</button>`;
+  if (isOnOrder(p)) return `<span class="status">${esc(onOrderText(p))}</span>${canWrite ? button("cancel-order", "Cancel order", "Cancel the order of") : ""}`;
+  const state = isAcked(p) ? `<span class="status">Acknowledged</span>` : canWrite ? button("ack", "Acknowledge", "Acknowledge") : `<span class="low-badge">Low</span>`;
+  return canWrite ? `${state}${button("order", "Mark ordered", "Mark ordered:")}` : state;
+}
+// Marked ordered (supply-checkout-005.14): how many and when, shared by the team on the item. It
+// isn't flagged while it's on order, until a restock above the level (the server ends the order
+// then, src/reorder.js) or a cancel. The whole item is saved, as the editor saves it, without its
+// acknowledgment, which the order replaces; made against the item as this page has it, so if it
+// changed meanwhile the latest shows instead (write()).
+function orderModal(key) {
+  const p = own(products, key);
+  if (!p) return;
+  openModal(`
+    <h2>Mark ordered</h2>
+    <p class="muted" style="margin-top:-6px">${esc(p.name || "Unnamed item")}</p>
+    <form id="f" style="display:grid;gap:14px">
+      <div class="field"><label for="fOrderQty">How many ordered</label><input type="number" id="fOrderQty" required min="1" max="${MAX_COUNT}" step="1" inputmode="numeric" data-autofocus value="${Number.isInteger(p.reorderQty) ? p.reorderQty : ""}"></div>
+      <div class="field"><label for="fOrderOn">Ordered on</label><input type="date" id="fOrderOn" required value="${todayISO()}"></div>
+      <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Mark ordered</button></div>
+    </form>`, m => {
+    m.querySelector("#cancel").addEventListener("click", closeModal);
+    const form = m.querySelector("#f");
+    onSubmit(form, () => {
+      const qty = int(m.querySelector("#fOrderQty").value), on = m.querySelector("#fOrderOn").value;
+      const body = { ...withoutMarks(p), orderedQty: qty, orderedOn: on };
+      saving(form, () => closing(write(() => db.doc("products/" + key).set(body), `Marked ${qty} ordered`)));
+    });
+  });
+}
+function cancelOrder(key) {
+  const p = own(products, key);
+  if (!p) return;
+  const body = { ...p };
+  delete body.orderedQty; delete body.orderedOn;
+  write(() => db.doc("products/" + key).set(body), "Order cancelled. It's flagged again while it's low.");
 }
 // Shared by the team, on the item: quiet until stock falls below what it is now, or until it's
 // restocked above the level and runs low again (src/reorder.js). Made against the item as this

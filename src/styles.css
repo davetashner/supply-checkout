@@ -200,6 +200,9 @@ td.charge{color:var(--ink);font-weight:500}
 .tab-count{display:inline-block;min-width:18px;margin-left:6px;padding:0 5px;border-radius:999px;background:var(--out);color:var(--surface);font-size:12px;line-height:18px;text-align:center}
 .row-actions{display:flex;gap:8px;flex-wrap:wrap}
 .btn.small{padding:5px 10px;font-size:13px}
+table.reorder td:last-child{white-space:nowrap}
+table.reorder td:last-child>*+*{margin-left:6px}
+table.reorder .status{font-family:var(--body);color:var(--muted)}
 table.reorder{min-width:480px}
 
 /* Company equipment: its section on a project, and Inventory's Out view */

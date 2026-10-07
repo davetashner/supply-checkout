@@ -464,10 +464,12 @@ before answering `409`, so `409` from contention is rare.
   supply-checkout-005.8). On an item with `ackedAtStock`, a return or receipt
   that takes `stock` above `reorderAt` (or any count that leaves it above)
   removes `ackedAtStock` in the same update, so the next fall to the reorder
-  level alerts again. An uncount removes it too. The update is conditional on
+  level alerts again. An uncount removes it too. An order (`orderedQty` and
+  `orderedOn`, supply-checkout-005.14) is removed with it, by the same rules
+  and on the same conditions: the "marks" below are both. The update is conditional on
   what that decision was made on (supply-checkout-005.16): with no
-  acknowledgment read, that there's still none
-  (`attribute_not_exists(ackedAtStock)`); with one read, that `reorderAt` is
+  marks read, that there are still none (`attribute_not_exists` of
+  `ackedAtStock`, `orderedQty` and `orderedOn`); with some read, that `reorderAt` is
   as read and, for a return or receipt, that the new stock is still on the
   same side of it (`stock > reorderAt − quantity` to remove, `<=` to keep; a
   count is already conditional on the exact stock it read). One that loses a

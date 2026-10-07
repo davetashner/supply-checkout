@@ -60,7 +60,7 @@ import { ConflictError, InvalidInputError, TooLargeError, isCancelledAsTooLarge,
 import { MAX_CODE_LENGTH, gsi1, keys, prefixes, teamPartition } from "./keys.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 import { queryAll } from "./query.js";
-import { ackEnds } from "./reorder.js";
+import { dropMarks, marksEnd } from "./reorder.js";
 import { COMMITTING_IMPORTS_PARTITION, GSI1, STUCK_IMPORT_ATTRIBUTES } from "./schema.js";
 import { type TeamContext, writable } from "./team-context.js";
 
@@ -388,9 +388,9 @@ function applyRow(current: Item | undefined, row: ImportRow): { data: Item; chan
   if (row.cost !== undefined) data.cost = row.cost;
   if (row.packSize !== undefined) data.packSize = row.packSize;
   if (row.stock !== undefined) data.stock = row.stock;
-  // Restocked above the reorder level: the low-stock acknowledgment ends (reorder.ts). An
+  // Restocked above the reorder level: the low-stock marks (acknowledgment, order) end (reorder.ts). An
   // item's reorder level and usual order are kept, as every field the file doesn't have is.
-  if (row.stock !== undefined && ackEnds(data, row.stock)) delete data.ackedAtStock;
+  if (row.stock !== undefined && marksEnd(data, row.stock)) dropMarks(data);
   const changes = IMPORTED.filter((f) => (current ? before[f] !== data[f] : data[f] !== undefined && data[f] !== ""));
   return { data, changes };
 }

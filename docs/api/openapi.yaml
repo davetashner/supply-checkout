@@ -3001,8 +3001,22 @@ components:
             while `stock` is at or above it. A return, a receipt or a count through the stock
             command, or a CSV import, that leaves `stock` above `reorderAt` removes it, and so does
             an uncount. A write that changes `reorderAt` and carries the stored value over
-            unchanged drops it. Writes never compare it with `stock`, so an old one never blocks an
-            edit.
+            unchanged drops it; that's judged on the document after the write, so a PATCH that
+            sets a new `reorderAt` and repeats the stored `ackedAtStock` drops it too (send a
+            different value, or acknowledge again after). Writes never compare it with `stock`, so
+            an old one never blocks an edit.
+        orderedQty:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+          description: >-
+            Marked ordered (supply-checkout-005.14): how many, in eaches. Always with `orderedOn`;
+            a write with only one of the two is 400. The app marks an item ordered with a PUT of
+            the item that sets both and leaves out `ackedAtStock`, and cancels with a PUT without
+            both. While it's set the app doesn't flag the item. The stock commands, an uncount and
+            the CSV import remove both exactly as they remove `ackedAtStock`; a new `reorderAt`
+            keeps them.
+        orderedOn: { type: string, format: date, description: "The day it was ordered, `YYYY-MM-DD`. Always with `orderedQty`." }
         updatedAt: { type: string, format: date-time }
     Project:
       type: object

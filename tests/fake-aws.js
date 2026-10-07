@@ -81,11 +81,14 @@ function merge(target, patch) {
   }
 }
 
-// A stock change that raises an acknowledged item above its reorder level ends the team's
-// acknowledgment of its low-stock alert, as backend/src/data/reorder.ts does (a count, whichever
-// way it goes, counts as raising)
+// The team's marks on an item's alert: its acknowledgment and its order (supply-checkout-005.14)
+const MARKS = ["ackedAtStock", "orderedQty", "orderedOn"];
+const dropMarks = (data) => MARKS.forEach((f) => delete data[f]);
+// A stock change that raises a marked item above its reorder level ends the team's marks on its
+// low-stock alert, as backend/src/data/reorder.ts does (a count, whichever way it goes, counts as
+// raising)
 const endAck = (data, delta) => {
-  if (delta > 0 && Object.hasOwn(data, "ackedAtStock") && !(typeof data.reorderAt === "number" && data.stock <= data.reorderAt)) delete data.ackedAtStock;
+  if (delta > 0 && MARKS.some((f) => Object.hasOwn(data, f)) && !(typeof data.reorderAt === "number" && data.stock <= data.reorderAt)) dropMarks(data);
 };
 
 export class FakeBackend {
@@ -747,7 +750,7 @@ export class FakeBackend {
     }
     const delta = reason === "receipt" ? quantity : reason === "count" ? count - before : -before;
     // An uncounted item is never low: its acknowledgment goes too (reorder.ts)
-    if (reason === "uncount") { delete product.data.stock; delete product.data.ackedAtStock; }
+    if (reason === "uncount") { delete product.data.stock; dropMarks(product.data); }
     else { product.data.stock = before + delta; endAck(product.data, reason === "count" ? 1 : delta); }
     if (tracked || reason !== "uncount") product.version++;
     const result = { operationId, command: "stockAdjust", reason, productKey: key, ...(reason === "receipt" ? { quantity, unitCost } : reason === "count" ? { count } : {}), stockDelta: delta, userId: this.user.id, at: new Date().toISOString() };

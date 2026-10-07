@@ -64,13 +64,13 @@ test.describe("low-stock alerts", { tag: ["@J15"] }, () => {
   test("lists what's running low, unacknowledged first, and acknowledges an item for the team", { tag: ["@J15.3"] }, async ({ page }) => {
     await openInventory(page);
     await lowChip(page).click();
-    await expect(page.locator("#main")).toContainText("2 items are at or below the reorder level.");
+    await expect(page.locator("#main")).toContainText("2 items are low or on order.");
     const rows = page.locator("#main table.reorder tbody tr");
     await expect(rows).toHaveCount(2);
     await expect(rows.nth(0)).toContainText("Nitrile gloves");
     await expect(rows.nth(0)).toContainText("Acme");
-    await expect(rows.nth(0).locator("td")).toHaveText([/Nitrile gloves/, "2", "5", "24", "Acknowledge"]);
-    await expect(rows.nth(1).locator("td")).toHaveText([/Storage bins/, "3", "4", "—", "Acknowledged"]);
+    await expect(rows.nth(0).locator("td")).toHaveText([/Nitrile gloves/, "2", "5", "24", "AcknowledgeMark ordered"]);
+    await expect(rows.nth(1).locator("td")).toHaveText([/Storage bins/, "3", "4", "—", "AcknowledgedMark ordered"]);
 
     await page.getByRole("button", { name: "Acknowledge Nitrile gloves" }).click();
     await expect(page.locator("#toast")).toContainText("Acknowledged. It's flagged again if stock falls below 2.");
@@ -78,8 +78,8 @@ test.describe("low-stock alerts", { tag: ["@J15"] }, () => {
     await expect(lowChip(page)).toHaveText("Running low");
     await expect(page.locator("#tab-prices")).toHaveText("Inventory");
     await expect(rows.nth(0)).toContainText("Nitrile gloves");
-    await expect(rows.nth(0).locator("td").nth(4)).toHaveText("Acknowledged");
-    await expect(page.locator("#main")).toContainText("2 items are at or below the reorder level.");
+    await expect(rows.nth(0).locator("td").nth(4)).toHaveText("AcknowledgedMark ordered");
+    await expect(page.locator("#main")).toContainText("2 items are low or on order.");
   });
 
   test("Enter on Acknowledge acknowledges, and Enter on the row opens the item", { tag: ["@J15.3"] }, async ({ page }) => {
@@ -132,7 +132,7 @@ test.describe("low-stock alerts", { tag: ["@J15"] }, () => {
     await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
     expect(await page.evaluate(() => window.__mock.saves[0])).toEqual({
       filename: "Reorder list.csv",
-      data: "Item,Brand,Barcode,In storage,Reorder at,Usual order,Acknowledged\nNitrile gloves,Acme,GLV,2,5,24,No\nStorage bins,,,3,4,,Yes",
+      data: "Item,Brand,Barcode,In storage,Reorder at,Usual order,Status\nNitrile gloves,Acme,GLV,2,5,24,Low\nStorage bins,,,3,4,,Acknowledged",
     });
   });
 
@@ -141,13 +141,17 @@ test.describe("low-stock alerts", { tag: ["@J15"] }, () => {
     await lowChip(page).click();
     await expect(page.locator("#main table.reorder tbody tr")).toHaveCount(2);
     await expect(page.getByRole("button", { name: "Acknowledge Unnamed item" })).toBeVisible();
+    await page.getByRole("button", { name: "Mark ordered: Unnamed item" }).click();
+    await expect(modal(page)).toContainText("Unnamed item");
+    await modal(page).getByRole("button", { name: "Cancel" }).click();
+    await expect(page.locator("#overlay")).toBeHidden();
     await page.evaluate(() => { window.__mock.docs.delete("products/nb-x"); window.__mock.notify(); });
     await expect(page.locator("#main table.reorder tbody tr")).toHaveCount(1);
-    await expect(page.locator("#main")).toContainText("1 item is at or below the reorder level.");
+    await expect(page.locator("#main")).toContainText("1 item is low or on order.");
     await page.getByRole("button", { name: "Download CSV" }).click();
     await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
     // A formula-looking name is written as text (src/export.js cell)
-    expect((await page.evaluate(() => window.__mock.saves[0])).data).toBe("Item,Barcode,In storage,Reorder at,Usual order,Acknowledged\n'=SUM(A1),'=X,0,0,,No");
+    expect((await page.evaluate(() => window.__mock.saves[0])).data).toBe("Item,Barcode,In storage,Reorder at,Usual order,Status\n'=SUM(A1),'=X,0,0,,Low");
   });
 
   test("view-only members see what's low and the list, but can't acknowledge", { tag: ["@J15.2", "@J9"] }, async ({ page }) => {
@@ -222,6 +226,111 @@ test.describe("a restock in the app's own storage (src/moves.js)", { tag: ["@J15
   });
 });
 
+test.describe("orders (supply-checkout-005.14)", { tag: ["@J15.4"] }, () => {
+  const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+
+  test("marks an item ordered with its usual order and today, quiets it until it's cancelled, and replaces the acknowledgment", async ({ page }) => {
+    await openInventory(page);
+    await lowChip(page).click();
+    await page.getByRole("button", { name: "Mark ordered: Nitrile gloves" }).click();
+    await expect(modal(page).getByRole("heading", { name: "Mark ordered" })).toBeVisible();
+    await expect(modal(page)).toContainText("Nitrile gloves");
+    await expect(modal(page).getByLabel("How many ordered")).toHaveValue("24");
+    await expect(modal(page).getByLabel("Ordered on")).toHaveValue(today());
+    await modal(page).getByLabel("Ordered on").fill("2026-10-01");
+    await modal(page).getByRole("button", { name: "Mark ordered" }).click();
+    await expect(page.locator("#toast")).toHaveText("Marked 24 ordered");
+    expect(await doc(page, "products/GLV")).toMatchObject({ stock: 2, reorderAt: 5, reorderQty: 24, orderedQty: 24, orderedOn: "2026-10-01" });
+
+    const rows = page.locator("#main table.reorder tbody tr");
+    // On order sorts after what still needs looking at, and isn't counted
+    await expect(lowChip(page)).toHaveText("Running low");
+    await expect(page.locator("#tab-prices")).toHaveText("Inventory");
+    await expect(rows.nth(0).locator("td").nth(4)).toHaveText("On order: 24 since Oct 1, 2026Cancel order");
+    // Falling further doesn't bring it back while it's on order
+    await page.evaluate(() => { window.__mock.docs.get("products/GLV").stock = 0; window.__mock.notify(); });
+    await expect(rows.nth(0).locator("td").nth(1)).toHaveText("0");
+    await expect(lowChip(page)).toHaveText("Running low");
+
+    // The acknowledged item, ordered: the order replaces the acknowledgment; a quantity is needed
+    await page.getByRole("button", { name: "Mark ordered: Storage bins" }).click();
+    await expect(modal(page).getByLabel("How many ordered")).toHaveValue("");
+    await modal(page).getByRole("button", { name: "Mark ordered" }).click();
+    await expect(modal(page).getByRole("heading", { name: "Mark ordered" })).toBeVisible();
+    await modal(page).getByLabel("How many ordered").fill("6");
+    await modal(page).getByRole("button", { name: "Mark ordered" }).click();
+    await expect(page.locator("#overlay")).toBeHidden();
+    const bins = await doc(page, "products/nb-bins");
+    expect(bins).toMatchObject({ orderedQty: 6, orderedOn: today() });
+    expect(bins).not.toHaveProperty("ackedAtStock");
+
+    // Inventory says so too
+    await page.getByRole("button", { name: "All", exact: true }).click();
+    await expect(inventoryRow(page, "Nitrile gloves").locator(".low-badge")).toHaveText("On order");
+    await lowChip(page).click();
+
+    // Cancelling brings the alert back
+    await page.getByRole("button", { name: "Cancel the order of Nitrile gloves" }).click();
+    await expect(page.locator("#toast")).toHaveText("Order cancelled. It's flagged again while it's low.");
+    await expect(lowChip(page)).toHaveText("Running low (1)");
+    const gloves = await doc(page, "products/GLV");
+    expect(gloves).not.toHaveProperty("orderedQty");
+    expect(gloves).not.toHaveProperty("orderedOn");
+    expect(gloves).toMatchObject({ stock: 0, reorderQty: 24, brand: "Acme" });
+  });
+
+  test("lists, copies and downloads what's on order, even when it isn't counted or has no level", async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__copied = [];
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (t) => { window.__copied.push(t); } } });
+    });
+    await openInventory(page, { seed: { "products/A": { code: "A", name: "Aprons", price: 3, orderedQty: 10, orderedOn: "2026-10-02" }, "products/B": { code: "B", name: "Bleach", price: 4, stock: 1, reorderAt: 1, reorderQty: 6, orderedQty: 6, orderedOn: "2026-10-03" } } });
+    await lowChip(page).click();
+    const rows = page.locator("#main table.reorder tbody tr");
+    await expect(rows.nth(0).locator("td")).toHaveText([/Aprons/, "—", "—", "—", "On order: 10 since Oct 2, 2026Cancel order"]);
+    await page.getByRole("button", { name: "Copy list" }).click();
+    await expect(page.locator("#toast")).toContainText("Reorder list copied");
+    expect(await page.evaluate(() => window.__copied[0])).toBe("Aprons: not counted left, reorder at none, on order: 10 since Oct 2, 2026\nBleach: 1 left, reorder at 1, order 6, on order: 6 since Oct 3, 2026");
+    await page.getByRole("button", { name: "Download CSV" }).click();
+    await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
+    expect((await page.evaluate(() => window.__mock.saves[0])).data).toBe("Item,Barcode,In storage,Reorder at,Usual order,Status\nAprons,A,,,,10 ordered 2026-10-02\nBleach,B,1,1,6,6 ordered 2026-10-03");
+  });
+
+  test("view-only members see what's on order, without the buttons", async ({ page }) => {
+    await openInventory(page, { canWrite: false, seed: { ...seed, "products/GLV": { ...seed["products/GLV"], orderedQty: 24, orderedOn: "2026-10-01" } } });
+    await lowChip(page).click();
+    await expect(page.locator("#main table.reorder tbody tr", { hasText: "Nitrile gloves" }).locator("td").nth(4)).toHaveText("On order: 24 since Oct 1, 2026");
+    await expect(page.getByRole("button", { name: /Mark ordered|Cancel the order/ })).toHaveCount(0);
+  });
+
+  test("a mark or cancel for an item deleted since the list was drawn does nothing", async ({ page }) => {
+    await openInventory(page, { seed: { ...seed, "products/GLV": { ...seed["products/GLV"], orderedQty: 24, orderedOn: "2026-10-01" } } });
+    await lowChip(page).click();
+    await expect(page.getByRole("button", { name: "Cancel the order of Nitrile gloves" })).toBeVisible();
+    await page.evaluate(() => {
+      for (const b of document.querySelectorAll("[data-order], [data-cancel-order]")) { if (b.dataset.order) b.dataset.order = "gone"; else b.dataset.cancelOrder = "gone"; b.click(); }
+    });
+    expect(await page.evaluate(() => window.__mock.writes)).toBe(0);
+    await expect(page.locator("#overlay")).toBeHidden();
+  });
+
+  test("a count above the level ends the order, and an editor save that leaves an item uncounted keeps its marks", async ({ page }) => {
+    await openInventory(page, { seed: { ...seed, "products/GLV": { ...seed["products/GLV"], orderedQty: 24, orderedOn: "2026-10-01" }, "products/OLD": { code: "OLD", name: "Old stock", price: 1, reorderAt: 3, ackedAtStock: 1, orderedQty: 2, orderedOn: "2026-10-01" } } });
+    await inventoryRow(page, "Old stock").click();
+    await modal(page).getByLabel("Item name").fill("Old stock, boxed");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(page.locator("#overlay")).toBeHidden();
+    expect(await doc(page, "products/OLD")).toMatchObject({ name: "Old stock, boxed", ackedAtStock: 1, orderedQty: 2, orderedOn: "2026-10-01" });
+    await inventoryRow(page, "Nitrile gloves").click();
+    await modal(page).getByLabel("Single items in storage now").fill("30");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(page.locator("#overlay")).toBeHidden();
+    const gloves = await doc(page, "products/GLV");
+    expect(gloves).toMatchObject({ stock: 30 });
+    expect(gloves).not.toHaveProperty("orderedQty");
+  });
+});
+
 test.describe("the reorder level in the item editor", { tag: ["@J15.1"] }, () => {
   test("sets a new item's reorder level and usual order", async ({ page }) => {
     await openInventory(page, { seed: {} });
@@ -284,6 +393,15 @@ for (const colorScheme of ["light", "dark"]) {
     await inventoryRow(page, "Nitrile gloves").click();
     await expect(modal(page).getByLabel("Reorder at (optional)")).toBeVisible();
     await expect(modal(page)).toHaveCSS("opacity", "1");
+    expect(await axe()).toEqual([]);
+    await modal(page).getByRole("button", { name: "Cancel" }).click();
+    // Mark ordered, and the row on order
+    await page.getByRole("button", { name: "Mark ordered: Nitrile gloves" }).click();
+    await expect(modal(page).getByLabel("How many ordered")).toBeVisible();
+    await expect(modal(page)).toHaveCSS("opacity", "1");
+    expect(await axe()).toEqual([]);
+    await modal(page).getByRole("button", { name: "Mark ordered" }).click();
+    await expect(page.getByRole("button", { name: "Cancel the order of Nitrile gloves" })).toBeVisible();
     expect(await axe()).toEqual([]);
   });
 }

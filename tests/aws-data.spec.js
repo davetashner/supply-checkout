@@ -1425,3 +1425,25 @@ test.describe("low-stock alerts", { tag: ["@J15"] }, () => {
     await expect(inventoryRow(page, "Nitrile gloves").locator(".low-badge")).toHaveText("Low");
   });
 });
+
+test.describe("orders", { tag: ["@J15.4"] }, () => {
+  test("marks an item ordered with a PUT of the item without its acknowledgment, and a count above the level ends the order", async ({ page }) => {
+    const backend = await open(page, new FakeBackend({ docs: { ...seeded(), "t1/products/GLV": { code: "GLV", name: "Nitrile gloves", price: 12.5, stock: 2, reorderAt: 5, reorderQty: 24, ackedAtStock: 2 } } }), {});
+    await page.locator("#tab-prices").click();
+    await page.getByRole("button", { name: "Running low", exact: true }).click();
+    await page.getByRole("button", { name: "Mark ordered: Nitrile gloves" }).click();
+    await modal(page).getByLabel("Ordered on").fill("2026-10-01");
+    await modal(page).getByRole("button", { name: "Mark ordered" }).click();
+    await expect(page.getByRole("button", { name: "Cancel the order of Nitrile gloves" })).toBeVisible();
+    expect(backend.requests("PUT", "/teams/t1/products/GLV").map((r) => r.body)).toEqual([
+      { data: { code: "GLV", name: "Nitrile gloves", price: 12.5, stock: 2, reorderAt: 5, reorderQty: 24, orderedQty: 24, orderedOn: "2026-10-01" }, expectedVersion: 1 },
+    ]);
+
+    await inventoryRow(page, "Nitrile gloves").click();
+    await modal(page).getByLabel("Single items in storage now").fill("30");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(page.locator("#main")).toContainText("Nothing is running low.");
+    expect(backend.doc("t1", "products", "GLV").data).not.toHaveProperty("orderedQty");
+    expect(backend.doc("t1", "products", "GLV").data).not.toHaveProperty("orderedOn");
+  });
+});
