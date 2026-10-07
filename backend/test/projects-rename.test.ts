@@ -372,7 +372,7 @@ describe("commands under either spelling", () => {
     ]);
   });
 
-  it("moves a line with toProjectId or toSheetId (or both, the same), across an old ad hoc project and a new job project", async () => {
+  it("moves a line with toProjectId or toSheetId (or both, the same), across an old General Use project and a new client project", async () => {
     legacy(A, "adhoc-1", { kind: "adhoc", client: "" });
     table.put({ PK: A, SK: "ADHOC", type: "adhoc", count: 1, open: "adhoc-1", version: 1 });
     current(A, "job");

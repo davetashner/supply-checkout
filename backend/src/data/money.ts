@@ -35,7 +35,7 @@ export function money(value: unknown, what: string): number {
 }
 
 /**
- * A stored price or cost copied onto a new sheet line. Stored values should
+ * A stored price or cost copied onto a new project line. Stored values should
  * already follow the money rule, but ones typed before it existed may not, so
  * a snapshot rounds to cents (ADR 0014: "rounded when next saved"). Returns
  * undefined for a value that isn't a usable amount.

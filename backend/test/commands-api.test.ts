@@ -82,13 +82,13 @@ async function call(method: string, path: string, body?: unknown, user = CONTRIB
 const op = () => randomUUID();
 const gloves = { code: "0123", name: "Nitrile gloves", price: 12.5, cost: 9.99, stock: 10 };
 
-function seed(options: { product?: Record<string, unknown> | null; sheet?: Record<string, unknown> } = {}) {
+function seed(options: { product?: Record<string, unknown> | null; project?: Record<string, unknown> } = {}) {
   const product = options.product === undefined ? gloves : options.product;
   if (product) table.put({ PK: "TEAM#team-a", SK: "PRODUCT#0123", type: "product", key: "0123", version: 3, ...product });
-  table.put({ PK: "TEAM#team-a", SK: "SHEET#s1", type: "sheet", id: "s1", version: 1, client: "Echo", date: "2026-09-26", status: "open", items: {}, ...options.sheet });
+  table.put({ PK: "TEAM#team-a", SK: "PROJECT#s1", type: "project", id: "s1", version: 1, client: "Echo", date: "2026-09-26", status: "open", items: {}, ...options.project });
 }
 
-const line = () => (table.get("TEAM#team-a", "SHEET#s1")?.items as Record<string, Record<string, unknown>>)["0123"];
+const line = () => (table.get("TEAM#team-a", "PROJECT#s1")?.items as Record<string, Record<string, unknown>>)["0123"];
 const stock = () => table.get("TEAM#team-a", "PRODUCT#0123")?.stock;
 const movements = () => [...table.items.values()].filter((i) => String(i.SK).startsWith("MOVE#"));
 const operations = () => [...table.items.values()].filter((i) => String(i.SK).startsWith("OP#"));
@@ -97,7 +97,7 @@ describe("checkout", () => {
   it("adds a line that copies the product's code, name, price and cost, takes stock down, and logs a movement", async () => {
     seed();
     const id = op();
-    const res = await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: id, productKey: "0123", quantity: 3, name: "Ignored", price: 1 });
+    const res = await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: id, productKey: "0123", quantity: 3, name: "Ignored", price: 1 });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       operationId: id,
@@ -106,7 +106,7 @@ describe("checkout", () => {
         command: "checkout",
         reason: "checkout",
         productKey: "0123",
-        sheetId: "s1",
+        projectId: "s1",
         quantity: 3,
         stockDelta: -3,
         lineCreated: true,
@@ -114,12 +114,12 @@ describe("checkout", () => {
         userId: CONTRIBUTOR,
         at: "2026-09-26T12:00:00.000Z",
       },
-      sheet: { id: "s1", version: 2 },
+      project: { id: "s1", version: 2 },
       // Every stock change is a new product version, for the edit screens' conditional writes
       product: { id: "0123", version: 4, data: { stock: 7 } },
     });
     expect(line()).toEqual({ code: "0123", name: "Nitrile gloves", price: 12.5, cost: 9.99, out: 3, returned: 0 });
-    expect(res.body.sheet.data.items["0123"]).toEqual(line());
+    expect(res.body.project.data.items["0123"]).toEqual(line());
     expect(stock()).toBe(7);
     expect(movements()).toEqual([
       expect.objectContaining({
@@ -140,8 +140,8 @@ describe("checkout", () => {
   });
 
   it("adds to an existing line and never changes its snapshot", async () => {
-    seed({ sheet: { items: { "0123": { code: "0123", name: "Old name", price: 10, out: 2, returned: 1 } } } });
-    const res = await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 4 });
+    seed({ project: { items: { "0123": { code: "0123", name: "Old name", price: 10, out: 2, returned: 1 } } } });
+    const res = await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 4 });
     expect(res.body.result).toMatchObject({ lineCreated: false, stockDelta: -4 });
     expect(res.body.result.snapshot).toBeUndefined();
     expect(line()).toEqual({ code: "0123", name: "Old name", price: 10, out: 6, returned: 1 });
@@ -150,11 +150,11 @@ describe("checkout", () => {
 
   it("uses the request's name and price only for an item that isn't in inventory, and moves no stock", async () => {
     seed({ product: null });
-    expect(await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 })).toMatchObject({
+    expect(await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 })).toMatchObject({
       status: 400,
       body: { error: { code: "bad_request", message: expect.stringMatching(/name and price/) } },
     });
-    const res = await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2, name: " Rags ", price: 1.5, code: "0123", cost: 1 });
+    const res = await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2, name: " Rags ", price: 1.5, code: "0123", cost: 1 });
     expect(res.body).toMatchObject({ result: { stockDelta: 0, lineCreated: true }, product: null });
     expect(line()).toEqual({ code: "0123", name: "Rags", price: 1.5, cost: 1, out: 2, returned: 0 });
     expect(movements()).toEqual([expect.objectContaining({ delta: 0, tracked: false, quantity: 2 })]);
@@ -162,38 +162,38 @@ describe("checkout", () => {
 
   it("leaves stock alone for an item that doesn't track it, and rounds a legacy price to cents", async () => {
     seed({ product: { code: "0123", name: "Gloves", price: 2.345 } });
-    const res = await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
+    const res = await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
     expect(res.body.result).toMatchObject({ stockDelta: 0, snapshot: { code: "0123", name: "Gloves", price: 2.35 } });
     expect(res.body.result.snapshot.cost).toBeUndefined();
     expect(stock()).toBeUndefined();
     expect(movements()).toEqual([expect.objectContaining({ delta: 0, tracked: false })]);
   });
 
-  it("creates the items map on a sheet that has none", async () => {
-    seed({ sheet: { items: undefined } });
-    await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 });
+  it("creates the items map on a project that has none", async () => {
+    seed({ project: { items: undefined } });
+    await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 });
     expect(line()).toMatchObject({ out: 1, returned: 0 });
   });
 
-  it("refuses a closed or missing sheet", async () => {
-    seed({ sheet: { status: "closed" } });
-    expect(await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 })).toMatchObject({
+  it("refuses a closed or missing project", async () => {
+    seed({ project: { status: "closed" } });
+    expect(await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 })).toMatchObject({
       status: 409,
       body: { error: { code: "aborted", message: expect.stringMatching(/closed/) } },
     });
-    expect((await call("POST", "/teams/team-a/sheets/nope/checkout", { operationId: op(), productKey: "0123", quantity: 1 })).status).toBe(404);
+    expect((await call("POST", "/teams/team-a/projects/nope/checkout", { operationId: op(), productKey: "0123", quantity: 1 })).status).toBe(404);
     expect(stock()).toBe(10);
     expect(operations()).toEqual([]);
   });
 });
 
 describe("add lines", () => {
-  const LINES = "/teams/team-a/sheets/s1/lines";
+  const LINES = "/teams/team-a/projects/s1/lines";
   const tape = { productKey: "k-tape", quantity: 2, name: " Painter's tape ", price: 6.25, cost: 6.25 };
-  const items = () => table.get("TEAM#team-a", "SHEET#s1")?.items as Record<string, Record<string, unknown>> | undefined;
+  const items = () => table.get("TEAM#team-a", "PROJECT#s1")?.items as Record<string, Record<string, unknown>> | undefined;
 
   it("adds new lines with the request's copy and adds to existing ones, in one transaction, without moving stock", async () => {
-    seed({ sheet: { items: { "0123": { code: "0123", name: "Old name", price: 10, out: 2, returned: 1 } } } });
+    seed({ project: { items: { "0123": { code: "0123", name: "Old name", price: 10, out: 2, returned: 1 } } } });
     const id = op();
     const res = await call("POST", LINES, { operationId: id, lines: [{ productKey: "0123", quantity: 4, name: "Ignored", price: 1, code: "0123" }, tape] });
     expect(res.status).toBe(200);
@@ -203,7 +203,7 @@ describe("add lines", () => {
       result: {
         operationId: id,
         command: "addLines",
-        sheetId: "s1",
+        projectId: "s1",
         lines: [
           { productKey: "0123", quantity: 4, lineCreated: false },
           { productKey: "k-tape", quantity: 2, lineCreated: true },
@@ -211,17 +211,17 @@ describe("add lines", () => {
         userId: CONTRIBUTOR,
         at: "2026-09-26T12:00:00.000Z",
       },
-      sheet: { id: "s1", version: 2 },
+      project: { id: "s1", version: 2 },
     });
     expect(res.body.product).toBeUndefined();
     expect(items()).toEqual({
       "0123": { code: "0123", name: "Old name", price: 10, out: 6, returned: 1 },
       "k-tape": { code: "", name: "Painter's tape", price: 6.25, cost: 6.25, out: 2, returned: 0 },
     });
-    expect(res.body.sheet.data.items).toEqual(items());
+    expect(res.body.project.data.items).toEqual(items());
     expect(stock()).toBe(10);
     expect(movements()).toEqual([]);
-    // The operation record, the sheet, and a check per line that its product is still a supply (ADR 0017)
+    // The operation record, the project, and a check per line that its product is still a supply (ADR 0017)
     expect(table.transactions).toEqual([4]);
     expect(operations()).toEqual([expect.objectContaining({ SK: `OP#${id}`, command: "addLines" })]);
     expect(counts).toMatchObject({ ReceiptLines: 6, Writes: 1 });
@@ -237,24 +237,24 @@ describe("add lines", () => {
     expect(items()?.["k-tape"]).toMatchObject({ out: 2 });
     expect(counts).toMatchObject({ ReceiptLines: 2, Writes: 1 });
     expect((await call("POST", LINES, { operationId: id, lines: [{ ...tape, quantity: 3 }] })).status).toBe(400);
-    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: id, productKey: "k-tape", quantity: 2 })).status).toBe(400);
+    expect((await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: id, productKey: "k-tape", quantity: 2 })).status).toBe(400);
     expect(items()?.["k-tape"]).toMatchObject({ out: 2 });
   });
 
-  it("creates the items map on a sheet that has none, even for a line keyed constructor", async () => {
-    seed({ sheet: { items: undefined } });
+  it("creates the items map on a project that has none, even for a line keyed constructor", async () => {
+    seed({ project: { items: undefined } });
     await call("POST", LINES, { operationId: op(), lines: [{ ...tape, productKey: "constructor" }, { ...tape, productKey: "k-2" }] });
     expect(Object.keys(items() ?? {})).toEqual(["constructor", "k-2"]);
     expect(Object.hasOwn(items() ?? {}, "constructor")).toBe(true);
   });
 
-  it("refuses a closed or missing sheet, and a malformed line, writing nothing", async () => {
-    seed({ sheet: { status: "closed" } });
+  it("refuses a closed or missing project, and a malformed line, writing nothing", async () => {
+    seed({ project: { status: "closed" } });
     expect(await call("POST", LINES, { operationId: op(), lines: [tape] })).toMatchObject({ status: 409, body: { error: { code: "aborted", message: expect.stringMatching(/closed/) } } });
-    expect((await call("POST", "/teams/team-a/sheets/nope/lines", { operationId: op(), lines: [tape] })).status).toBe(404);
-    seed({ sheet: { items: { "0123": { out: "2" } } } });
+    expect((await call("POST", "/teams/team-a/projects/nope/lines", { operationId: op(), lines: [tape] })).status).toBe(404);
+    seed({ project: { items: { "0123": { out: "2" } } } });
     expect(await call("POST", LINES, { operationId: op(), lines: [{ ...tape, productKey: "0123" }] })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(/whole numbers/) } } });
-    seed({ sheet: { items: { "0123": "junk" } } });
+    seed({ project: { items: { "0123": "junk" } } });
     expect((await call("POST", LINES, { operationId: op(), lines: [{ ...tape, productKey: "0123" }] })).status).toBe(400);
     expect(operations()).toEqual([]);
   });
@@ -266,7 +266,7 @@ describe("add lines", () => {
       if (once) return;
       once = true;
       // Someone checks the same item out first: the line now exists
-      const s = table.get("TEAM#team-a", "SHEET#s1") as Record<string, unknown>;
+      const s = table.get("TEAM#team-a", "PROJECT#s1") as Record<string, unknown>;
       table.put({ ...s, version: 2, items: { "k-tape": { code: "", name: "Tape", price: 5, out: 1, returned: 0 } } });
     };
     const res = await call("POST", LINES, { operationId: op(), lines: [tape] });
@@ -287,7 +287,7 @@ describe("add lines", () => {
     ["a bad cost", { lines: [{ ...tape, cost: -1 }] }],
     ["a quantity of 0", { lines: [{ ...tape, quantity: 0 }] }],
     ["a __proto__ key", { lines: [{ ...tape, productKey: "__proto__" }] }],
-    ["an unexpected body field", { lines: [tape], sheetId: "s2" }],
+    ["an unexpected body field", { lines: [tape], projectId: "s2" }],
   ])("refuses %s with 400", async (_, body) => {
     seed();
     expect((await call("POST", LINES, { operationId: op(), ...body })).status).toBe(400);
@@ -307,8 +307,8 @@ describe("add lines", () => {
     }
   });
 
-  it("refuses lines that would take the sheet past the document limit, with 413", async () => {
-    seed({ sheet: { notes: "x".repeat(MAX_DOCUMENT_BYTES - 100) } });
+  it("refuses lines that would take the project past the document limit, with 413", async () => {
+    seed({ project: { notes: "x".repeat(MAX_DOCUMENT_BYTES - 100) } });
     expect((await call("POST", LINES, { operationId: op(), lines: [tape] })).status).toBe(413);
   });
 
@@ -321,10 +321,10 @@ describe("add lines", () => {
 });
 
 describe("return", () => {
-  beforeEach(() => seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } }));
+  beforeEach(() => seed({ project: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } }));
 
   it("adds to returned and puts stock back", async () => {
-    const res = await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 3 });
+    const res = await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: "0123", quantity: 3 });
     expect(res).toMatchObject({ status: 200, body: { replayed: false, result: { command: "return", reason: "return", quantity: 3, stockDelta: 3 } } });
     expect(line()).toMatchObject({ out: 5, returned: 4 });
     expect(stock()).toBe(13);
@@ -334,26 +334,26 @@ describe("return", () => {
   });
 
   it("never returns more than went out", async () => {
-    expect(await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 5 })).toMatchObject({
+    expect(await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: "0123", quantity: 5 })).toMatchObject({
       status: 400,
       body: { error: { code: "bad_request", message: "Only 4 of this item are left to return" } },
     });
-    expect((await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "nope", quantity: 1 })).body.error.message).toMatch(/isn't on this sheet/);
+    expect((await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: "nope", quantity: 1 })).body.error.message).toMatch(/isn't on this project/);
     expect(line()).toMatchObject({ out: 5, returned: 1 });
     expect(stock()).toBe(10);
   });
 
   it("counts a line with no returned yet from zero", async () => {
-    table.put({ ...table.get("TEAM#team-a", "SHEET#s1"), items: { "0123": { name: "x", price: 1, out: 2 } } });
-    await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 2 });
+    table.put({ ...table.get("TEAM#team-a", "PROJECT#s1"), items: { "0123": { name: "x", price: 1, out: 2 } } });
+    await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: "0123", quantity: 2 });
     expect(line()).toMatchObject({ out: 2, returned: 2 });
   });
 
-  it("isn't taken on a closed sheet", async () => {
-    table.put({ ...table.get("TEAM#team-a", "SHEET#s1"), status: "closed" });
-    expect((await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 1 })).body.error).toEqual({
+  it("isn't taken on a closed project", async () => {
+    table.put({ ...table.get("TEAM#team-a", "PROJECT#s1"), status: "closed" });
+    expect((await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: "0123", quantity: 1 })).body.error).toEqual({
       code: "aborted",
-      message: "This sheet is closed. Reopen it to record returns.",
+      message: "This project is closed. Reopen it to record returns.",
     });
   });
 });
@@ -364,7 +364,7 @@ describe("stock adjust", () => {
   it("adds a receipt's eaches and records the unit cost, without touching the product's prices", async () => {
     const res = await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "receipt", quantity: 24, unitCost: 0.42 });
     expect(res).toMatchObject({ status: 200, body: { result: { command: "stockAdjust", reason: "receipt", quantity: 24, stockDelta: 24, unitCost: 0.42 }, product: { data: { stock: 34, price: 12.5, cost: 9.99 } } } });
-    expect(res.body.sheet).toBeUndefined();
+    expect(res.body.project).toBeUndefined();
     expect(res.body.product.version).toBe(4);
     expect(movements()).toEqual([expect.objectContaining({ reason: "receipt", delta: 24, unitCost: 0.42, tracked: true })]);
   });
@@ -466,11 +466,11 @@ describe("stock adjust", () => {
 
 describe("edits after a command", () => {
   it("refuse a product write made against the version before a checkout, return or stock change, so none of them is overwritten", async () => {
-    seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
+    seed({ project: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
     const edit = (expectedVersion: number) => call("PATCH", "/teams/team-a/products/0123", { data: { price: 13 }, expectedVersion });
-    await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
+    await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
     expect((await edit(3)).body.error.code).toBe("aborted");
-    await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 1 });
+    await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: "0123", quantity: 1 });
     expect((await edit(4)).body.error.code).toBe("aborted");
     await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "count", count: 20 });
     expect((await edit(5)).body.error.code).toBe("aborted");
@@ -480,8 +480,8 @@ describe("edits after a command", () => {
   });
 
   it("keep the stock the commands set through a product PUT or PATCH that leaves it out, and refuse one that changes it", async () => {
-    seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
-    await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
+    seed({ project: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
+    await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
     expect(stock()).toBe(8);
     const put = await call("PUT", "/teams/team-a/products/0123", { data: { code: "0123", name: "Gloves", price: 13 }, expectedVersion: 4 });
     expect(put.body).toMatchObject({ version: 5, data: { name: "Gloves", stock: 8 } });
@@ -492,10 +492,10 @@ describe("edits after a command", () => {
   });
 
   it("refuse, with 400 and nothing written, a stock change to a product whose stored version isn't a number", async () => {
-    seed({ product: { ...gloves, version: "x" }, sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
+    seed({ product: { ...gloves, version: "x" }, project: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
     for (const [path, body] of [
-      ["/teams/team-a/sheets/s1/checkout", { productKey: "0123", quantity: 1 }],
-      ["/teams/team-a/sheets/s1/return", { productKey: "0123", quantity: 1 }],
+      ["/teams/team-a/projects/s1/checkout", { productKey: "0123", quantity: 1 }],
+      ["/teams/team-a/projects/s1/return", { productKey: "0123", quantity: 1 }],
       ["/teams/team-a/products/0123/stock", { reason: "count", count: 3 }],
       ["/teams/team-a/products/0123/stock", { reason: "receipt", quantity: 1, unitCost: 1 }],
       ["/teams/team-a/products/0123/stock", { reason: "uncount" }],
@@ -508,19 +508,19 @@ describe("edits after a command", () => {
 
   it("refuse, with 400, a new line for an untracked product whose stored version isn't a number, and add to an existing line", async () => {
     seed({ product: { code: "0123", name: "Nitrile gloves", price: 12.5, version: "x" } });
-    const path = "/teams/team-a/sheets/s1/checkout";
+    const path = "/teams/team-a/projects/s1/checkout";
     expect(await call("POST", path, { operationId: op(), productKey: "0123", quantity: 1 })).toMatchObject({ status: 400, body: { error: { code: "bad_request", message: "This item's version isn't a number" } } });
     expect(line()).toBeUndefined();
     expect(movements()).toEqual([]);
-    // A line already on the sheet doesn't need the product's version
-    seed({ product: { code: "0123", name: "Nitrile gloves", price: 12.5, version: "x" }, sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
+    // A line already on the project doesn't need the product's version
+    seed({ product: { code: "0123", name: "Nitrile gloves", price: 12.5, version: "x" }, project: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
     expect(await call("POST", path, { operationId: op(), productKey: "0123", quantity: 1 })).toMatchObject({ status: 200 });
     expect(line().out).toBe(6);
   });
 
   it("leave an untracked product's version alone, since its stock didn't change", async () => {
     seed({ product: { code: "0123", name: "Nitrile gloves", price: 12.5 } });
-    await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
+    await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
     expect(table.get("TEAM#team-a", "PRODUCT#0123")?.version).toBe(3);
   });
 });
@@ -530,9 +530,9 @@ describe("retries", () => {
     seed();
     const id = op();
     const request = { operationId: id, productKey: "0123", quantity: 3 };
-    const first = await call("POST", "/teams/team-a/sheets/s1/checkout", request);
+    const first = await call("POST", "/teams/team-a/projects/s1/checkout", request);
     const before = structuredClone([...table.items.entries()]);
-    const again = await call("POST", "/teams/team-a/sheets/s1/checkout", { ...request, operationId: id.toUpperCase() });
+    const again = await call("POST", "/teams/team-a/projects/s1/checkout", { ...request, operationId: id.toUpperCase() });
     expect(again.status).toBe(200);
     expect(again.body).toEqual({ ...first.body, replayed: true });
     expect([...table.items.entries()]).toEqual(before);
@@ -540,12 +540,12 @@ describe("retries", () => {
     expect(counts).toMatchObject({ Checkouts: 3, Writes: 1 });
   });
 
-  it("replays even after the sheet has closed", async () => {
+  it("replays even after the project has closed", async () => {
     seed();
     const request = { operationId: op(), productKey: "0123", quantity: 3 };
-    const first = await call("POST", "/teams/team-a/sheets/s1/checkout", request);
-    table.put({ ...table.get("TEAM#team-a", "SHEET#s1"), status: "closed" });
-    const again = await call("POST", "/teams/team-a/sheets/s1/checkout", request);
+    const first = await call("POST", "/teams/team-a/projects/s1/checkout", request);
+    table.put({ ...table.get("TEAM#team-a", "PROJECT#s1"), status: "closed" });
+    const again = await call("POST", "/teams/team-a/projects/s1/checkout", request);
     expect(again).toMatchObject({ status: 200, body: { replayed: true, result: first.body.result } });
     expect(line()).toMatchObject({ out: 3 });
   });
@@ -553,14 +553,14 @@ describe("retries", () => {
   it("refuses an operation ID reused for a different request", async () => {
     seed();
     const id = op();
-    await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: id, productKey: "0123", quantity: 3 });
-    expect(await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: id, productKey: "0123", quantity: 4 })).toMatchObject({
+    await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: id, productKey: "0123", quantity: 3 });
+    expect(await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: id, productKey: "0123", quantity: 4 })).toMatchObject({
       status: 400,
       body: { error: { code: "bad_request", message: expect.stringMatching(/already used/) } },
     });
     // Another user reusing it is a different request too
-    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: id, productKey: "0123", quantity: 3 }, OWNER)).status).toBe(400);
-    expect((await call("POST", "/teams/team-a/sheets/s1/return", { operationId: id, productKey: "0123", quantity: 3 })).status).toBe(400);
+    expect((await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: id, productKey: "0123", quantity: 3 }, OWNER)).status).toBe(400);
+    expect((await call("POST", "/teams/team-a/projects/s1/return", { operationId: id, productKey: "0123", quantity: 3 })).status).toBe(400);
     expect(line()).toMatchObject({ out: 3 });
   });
 
@@ -568,7 +568,7 @@ describe("retries", () => {
     seed();
     const id = op();
     const request = { operationId: id, productKey: "0123", quantity: 2 };
-    const first = await call("POST", "/teams/team-a/sheets/s1/checkout", request);
+    const first = await call("POST", "/teams/team-a/projects/s1/checkout", request);
     const record = table.get("TEAM#team-a", `OP#${id}`) as Record<string, unknown>;
     // Start again without the record, and let it land (as a concurrent retry
     // of the same operation would) between this call's reads and its transaction
@@ -576,7 +576,7 @@ describe("retries", () => {
     table.seedTeam("team-a", { [CONTRIBUTOR]: "contributor" });
     seed();
     table.beforeTransactWrite = () => table.put(record);
-    const again = await call("POST", "/teams/team-a/sheets/s1/checkout", request);
+    const again = await call("POST", "/teams/team-a/projects/s1/checkout", request);
     expect(again.body).toMatchObject({ replayed: true, result: first.body.result });
     expect(line()).toBeUndefined();
     expect(stock()).toBe(10);
@@ -584,17 +584,17 @@ describe("retries", () => {
   });
 
   it("leaves nothing half-saved when a condition fails part way, then retries on a fresh read", async () => {
-    seed({ sheet: { items: { "0123": { code: "0123", name: "Gloves", price: 1, out: 2, returned: 0 } } } });
+    seed({ project: { items: { "0123": { code: "0123", name: "Gloves", price: 1, out: 2, returned: 0 } } } });
     // Another return lands between the read and the transaction: the line's
     // condition fails, the whole transaction is cancelled, and the retry sees it
     let once = false;
     table.beforeTransactWrite = () => {
       if (once) return;
       once = true;
-      const s = table.get("TEAM#team-a", "SHEET#s1") as Record<string, unknown>;
+      const s = table.get("TEAM#team-a", "PROJECT#s1") as Record<string, unknown>;
       table.put({ ...s, items: { "0123": { code: "0123", name: "Gloves", price: 1, out: 2, returned: 2 } } });
     };
-    const res = await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 1 });
+    const res = await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: "0123", quantity: 1 });
     expect(res).toMatchObject({ status: 400, body: { error: { message: "Only 0 of this item are left to return" } } });
     expect(stock()).toBe(10);
     expect(movements()).toEqual([]);
@@ -609,7 +609,7 @@ describe("retries", () => {
       const p = table.get("TEAM#team-a", "PRODUCT#0123") as Record<string, unknown>;
       table.put({ ...p, version: 100 + ++n });
     };
-    const res = await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 });
+    const res = await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 });
     expect(res).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
     expect(n).toBe(6);
     expect(line()).toBeUndefined();
@@ -638,7 +638,7 @@ describe("validation and roles", () => {
     ["no product key", { operationId: op(), quantity: 1 }],
     ["an unknown field", { operationId: op(), productKey: "0123", quantity: 1, expectedVersion: 1 }],
   ])("refuses a checkout with %s", async (_, body) => {
-    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", body)).body.error.code).toBe("bad_request");
+    expect((await call("POST", "/teams/team-a/projects/s1/checkout", body)).body.error.code).toBe("bad_request");
   });
 
   it.each([
@@ -664,19 +664,19 @@ describe("validation and roles", () => {
   });
 
   it("refuses a malformed line rather than adding to it", async () => {
-    table.put({ ...table.get("TEAM#team-a", "SHEET#s1"), items: { "0123": { name: "x", price: 1, out: "2" }, bad: "x" } });
-    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 })).status).toBe(400);
-    expect((await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 1 })).status).toBe(400);
-    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "bad", quantity: 1 })).status).toBe(400);
-    table.put({ ...table.get("TEAM#team-a", "SHEET#s1"), items: [] });
-    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 })).status).toBe(400);
+    table.put({ ...table.get("TEAM#team-a", "PROJECT#s1"), items: { "0123": { name: "x", price: 1, out: "2" }, bad: "x" } });
+    expect((await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 })).status).toBe(400);
+    expect((await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: "0123", quantity: 1 })).status).toBe(400);
+    expect((await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "bad", quantity: 1 })).status).toBe(400);
+    table.put({ ...table.get("TEAM#team-a", "PROJECT#s1"), items: [] });
+    expect((await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 })).status).toBe(400);
   });
 
   it("lets contributors and owners run commands, and gives viewers view-only", async () => {
-    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 }, OWNER)).status).toBe(200);
+    expect((await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 }, OWNER)).status).toBe(200);
     for (const [path, body] of [
-      ["/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 }],
-      ["/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 1 }],
+      ["/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 }],
+      ["/teams/team-a/projects/s1/return", { operationId: op(), productKey: "0123", quantity: 1 }],
       ["/teams/team-a/products/0123/stock", { operationId: op(), reason: "count", count: 1 }],
       ["/teams/team-a/products/0123/stock", { operationId: op(), reason: "uncount" }],
     ] as const) {
@@ -688,13 +688,13 @@ describe("validation and roles", () => {
   });
 
   it("refuses another team's members, and every call stays in the team's partition", async () => {
-    expect(await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 }, OUTSIDER)).toMatchObject({
+    expect(await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 }, OUTSIDER)).toMatchObject({
       status: 403,
       body: { error: { code: "permission_denied" } },
     });
     table.calls.length = 0;
-    await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 });
-    await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 1 });
+    await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 });
+    await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: "0123", quantity: 1 });
     await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "count", count: 1 });
     await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "uncount" });
     expect(await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "uncount" }, OUTSIDER)).toMatchObject({ status: 403 });
@@ -709,10 +709,10 @@ describe("stock history", () => {
     seed();
     table.put({ PK: "TEAM#team-a", SK: "PRODUCT#0123#x", type: "product", key: "0123#x", version: 1, name: "Look-alike", price: 1, stock: 0 });
     const steps: [string, unknown][] = [
-      ["/teams/team-a/sheets/s1/checkout", { productKey: "0123", quantity: 4 }],
-      ["/teams/team-a/sheets/s1/return", { productKey: "0123", quantity: 1 }],
+      ["/teams/team-a/projects/s1/checkout", { productKey: "0123", quantity: 4 }],
+      ["/teams/team-a/projects/s1/return", { productKey: "0123", quantity: 1 }],
       ["/teams/team-a/products/0123/stock", { reason: "receipt", quantity: 12, unitCost: 0.5 }],
-      ["/teams/team-a/sheets/s1/checkout", { productKey: "0123", quantity: 2 }],
+      ["/teams/team-a/projects/s1/checkout", { productKey: "0123", quantity: 2 }],
       ["/teams/team-a/products/0123/stock", { reason: "count", count: 15 }],
       ["/teams/team-a/products/0123/stock", { reason: "uncount" }],
       ["/teams/team-a/products/0123/stock", { reason: "count", count: 6 }],
@@ -748,107 +748,107 @@ describe("stock history", () => {
 });
 
 describe("product keys that are built-in object names", () => {
-  const sheet = () => table.get("TEAM#team-a", "SHEET#s1") as Record<string, unknown> & { items: Record<string, Record<string, unknown>> };
+  const project = () => table.get("TEAM#team-a", "PROJECT#s1") as Record<string, unknown> & { items: Record<string, Record<string, unknown>> };
   const stockOf = (key: string) => table.get("TEAM#team-a", `PRODUCT#${key}`)?.stock;
   const addProduct = (key: string, name: string) => table.put({ PK: "TEAM#team-a", SK: `PRODUCT#${key}`, type: "product", key, version: 1, code: key, name, price: 2, stock: 20 });
 
   it("refuses __proto__, which would be the items map's prototype rather than a line", async () => {
-    seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1, returned: 0 } } } });
+    seed({ project: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1, returned: 0 } } } });
     for (const [method, path, body] of [
-      ["POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "__proto__", quantity: 1, name: "x", price: 1 }],
-      ["POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "__proto__", quantity: 1 }],
+      ["POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "__proto__", quantity: 1, name: "x", price: 1 }],
+      ["POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: "__proto__", quantity: 1 }],
       ["POST", "/teams/team-a/products/__proto__/stock", { operationId: op(), reason: "count", count: 1 }],
       ["GET", "/teams/team-a/products/__proto__/movements", undefined],
       ["PUT", "/teams/team-a/products/__proto__", { data: { code: "", name: "x", price: 1 }, expectedVersion: 0 }],
     ] as const) {
       expect(await call(method, path, body)).toMatchObject({ status: 400, body: { error: { code: "bad_request" } } });
     }
-    expect(sheet().version).toBe(1);
+    expect(project().version).toBe(1);
     expect(movements()).toEqual([]);
     expect(operations()).toEqual([]);
   });
 
-  it.each(["constructor", "toString", "hasOwnProperty"])("checks out and returns a product keyed %s on a sheet that already has lines", async (key) => {
-    seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1, returned: 0 } } } });
+  it.each(["constructor", "toString", "hasOwnProperty"])("checks out and returns a product keyed %s on a project that already has lines", async (key) => {
+    seed({ project: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1, returned: 0 } } } });
     // Named "String": the SDK would store a map with its own `constructor` field as a string
     addProduct(key, "String");
-    const checkout = (quantity: number) => call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: key, quantity });
+    const checkout = (quantity: number) => call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: key, quantity });
     expect((await checkout(2)).body.result).toMatchObject({ lineCreated: true, stockDelta: -2 });
     expect((await checkout(3)).body.result).toMatchObject({ lineCreated: false, stockDelta: -3 });
-    const ret = await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: key, quantity: 4 });
+    const ret = await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: key, quantity: 4 });
     expect(ret).toMatchObject({ status: 200, body: { result: { stockDelta: 4 } } });
-    expect(ret.body.sheet.data.items[key]).toEqual({ code: key, name: "String", price: 2, out: 5, returned: 4 });
-    expect(sheet().items[key]).toEqual({ code: key, name: "String", price: 2, out: 5, returned: 4 });
-    expect(sheet().items["0123"]).toEqual({ code: "0123", name: "Nitrile gloves", price: 12.5, out: 1, returned: 0 });
-    expect(sheet().version).toBe(4);
+    expect(ret.body.project.data.items[key]).toEqual({ code: key, name: "String", price: 2, out: 5, returned: 4 });
+    expect(project().items[key]).toEqual({ code: key, name: "String", price: 2, out: 5, returned: 4 });
+    expect(project().items["0123"]).toEqual({ code: "0123", name: "Nitrile gloves", price: 12.5, out: 1, returned: 0 });
+    expect(project().version).toBe(4);
     expect(stockOf(key)).toBe(19);
     expect(movements().map((m) => m.delta)).toEqual([-2, -3, 4]);
-    expect(await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: key, quantity: 2 })).toMatchObject({
+    expect(await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: key, quantity: 2 })).toMatchObject({
       status: 400,
       body: { error: { message: expect.stringMatching(/Only 1 of this item is left/) } },
     });
   });
 
   it("creates the items map with a line keyed constructor", async () => {
-    seed({ sheet: { items: undefined } });
+    seed({ project: { items: undefined } });
     addProduct("constructor", "String");
-    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "constructor", quantity: 1 })).status).toBe(200);
-    expect(sheet().items).toEqual({ constructor: { code: "constructor", name: "String", price: 2, out: 1, returned: 0 } });
+    expect((await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "constructor", quantity: 1 })).status).toBe(200);
+    expect(project().items).toEqual({ constructor: { code: "constructor", name: "String", price: 2, out: 1, returned: 0 } });
   });
 
-  it("refuses a return of a built-in name that isn't on the sheet", async () => {
+  it("refuses a return of a built-in name that isn't on the project", async () => {
     seed();
     addProduct("toString", "Rags");
-    expect(await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "toString", quantity: 1 })).toMatchObject({
+    expect(await call("POST", "/teams/team-a/projects/s1/return", { operationId: op(), productKey: "toString", quantity: 1 })).toMatchObject({
       status: 400,
-      body: { error: { message: expect.stringMatching(/isn't on this sheet/) } },
+      body: { error: { message: expect.stringMatching(/isn't on this project/) } },
     });
   });
 
-  it("saves and merges sheet documents with a line keyed constructor", async () => {
+  it("saves and merges project documents with a line keyed constructor", async () => {
     seed();
     const items = { constructor: { code: "c", name: "String", price: 1, out: 2, returned: 0 } };
-    const put = await call("PUT", "/teams/team-a/sheets/s1", { data: { client: "Echo", date: "2026-09-26", status: "open", items }, expectedVersion: 1 });
+    const put = await call("PUT", "/teams/team-a/projects/s1", { data: { client: "Echo", date: "2026-09-26", status: "open", items }, expectedVersion: 1 });
     expect(put.status).toBe(200);
-    expect(sheet().items).toEqual(items);
+    expect(project().items).toEqual(items);
     // The merge adds to the stored line, not to Object
-    const patch = await call("PATCH", "/teams/team-a/sheets/s1", { data: { items: { constructor: { out: 3 }, toString: { name: "Rags", price: 1, out: 1, returned: 0 } } }, expectedVersion: 2 });
+    const patch = await call("PATCH", "/teams/team-a/projects/s1", { data: { items: { constructor: { out: 3 }, toString: { name: "Rags", price: 1, out: 1, returned: 0 } } }, expectedVersion: 2 });
     expect(patch.status).toBe(200);
-    expect(sheet().items).toEqual({ constructor: { code: "c", name: "String", price: 1, out: 3, returned: 0 }, toString: { name: "Rags", price: 1, out: 1, returned: 0 } });
+    expect(project().items).toEqual({ constructor: { code: "c", name: "String", price: 1, out: 3, returned: 0 }, toString: { name: "Rags", price: 1, out: 1, returned: 0 } });
     expect(counts).toMatchObject({ Checkouts: 4 });
   });
 });
 
-describe("sheet size", () => {
-  const sheetBytes = () => Buffer.byteLength(JSON.stringify(table.get("TEAM#team-a", "SHEET#s1")), "utf8");
-  /** Pads the sheet to exactly `bytes` of JSON. */
-  function padSheet(bytes: number) {
-    table.put({ ...table.get("TEAM#team-a", "SHEET#s1"), pad: "" });
-    table.put({ ...table.get("TEAM#team-a", "SHEET#s1"), pad: "x".repeat(bytes - sheetBytes()) });
-    expect(sheetBytes()).toBe(bytes);
+describe("project size", () => {
+  const projectBytes = () => Buffer.byteLength(JSON.stringify(table.get("TEAM#team-a", "PROJECT#s1")), "utf8");
+  /** Pads the project to exactly `bytes` of JSON. */
+  function padProject(bytes: number) {
+    table.put({ ...table.get("TEAM#team-a", "PROJECT#s1"), pad: "" });
+    table.put({ ...table.get("TEAM#team-a", "PROJECT#s1"), pad: "x".repeat(bytes - projectBytes()) });
+    expect(projectBytes()).toBe(bytes);
   }
 
-  it("refuses a new line that would take the sheet past the document limit, with 413 and nothing written", async () => {
+  it("refuses a new line that would take the project past the document limit, with 413 and nothing written", async () => {
     seed();
-    padSheet(MAX_DOCUMENT_BYTES - 200);
+    padProject(MAX_DOCUMENT_BYTES - 200);
     table.put({ PK: "TEAM#team-a", SK: "PRODUCT#nb-1", type: "product", key: "nb-1", version: 1, code: "nb-1", name: "N".repeat(200), price: 1, stock: 5 });
-    expect(await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "nb-1", quantity: 1 })).toMatchObject({
+    expect(await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "nb-1", quantity: 1 })).toMatchObject({
       status: 413,
-      body: { error: { code: "quota_exceeded", message: expect.stringMatching(/start another sheet/) } },
+      body: { error: { code: "quota_exceeded", message: expect.stringMatching(/start another project/) } },
     });
     expect(table.get("TEAM#team-a", "PRODUCT#nb-1")?.stock).toBe(5);
-    expect(table.get("TEAM#team-a", "SHEET#s1")?.version).toBe(1);
+    expect(table.get("TEAM#team-a", "PROJECT#s1")?.version).toBe(1);
     expect(movements()).toEqual([]);
     expect(operations()).toEqual([]);
     // A small line still fits
-    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "x", quantity: 1, name: "x", price: 1 })).status).toBe(200);
+    expect((await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "x", quantity: 1, name: "x", price: 1 })).status).toBe(200);
   });
 
   it("maps DynamoDB's item size refusal to 413, not 500", async () => {
-    // A sheet already at DynamoDB's limit, which a line's count growing by a digit passes
-    seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1 } } } });
-    padSheet(MemoryTable.MAX_ITEM_BYTES);
-    for (const [path, quantity] of [["/teams/team-a/sheets/s1/checkout", 9], ["/teams/team-a/sheets/s1/return", 1]] as const) {
+    // A project already at DynamoDB's limit, which a line's count growing by a digit passes
+    seed({ project: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1 } } } });
+    padProject(MemoryTable.MAX_ITEM_BYTES);
+    for (const [path, quantity] of [["/teams/team-a/projects/s1/checkout", 9], ["/teams/team-a/projects/s1/return", 1]] as const) {
       const res = await call("POST", path, { operationId: op(), productKey: "0123", quantity });
       expect({ status: res.status, code: res.body.error?.code }).toEqual({ status: 413, code: "quota_exceeded" });
     }

@@ -88,7 +88,7 @@ describe("router (CloudFront Function)", () => {
     expect((await live("APP.SupplyCheckout.com", "/")).uri).toBe("/releases/1.4.0/index.html");
     expect((await live(APP, "/assets/app.js")).uri).toBe("/releases/1.4.0/assets/app.js");
     expect((await live(APP, "/docs/")).uri).toBe("/releases/1.4.0/docs/index.html");
-    expect((await live(APP, "/sheets/42")).uri).toBe("/releases/1.4.0/sheets/42");
+    expect((await live(APP, "/projects/42")).uri).toBe("/releases/1.4.0/projects/42");
     expect((await live(APP, "/favicon.ico")).uri).toBe("/releases/1.4.0/favicon.ico");
     // app. has no /demo: it's an ordinary path in the app's release
     expect((await live(APP, "/demo/")).uri).toBe("/releases/1.4.0/demo/index.html");

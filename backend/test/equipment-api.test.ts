@@ -1,6 +1,6 @@
 // Company equipment through the data API's handler (ADR 0017), against the
 // in-memory table (memory-table.ts): the item's kind, equipment lines on a
-// sheet, lost or broken, Finished Return's refusal while equipment is out,
+// project, lost or broken, Finished Return's refusal while equipment is out,
 // equipment bought for a client at the team's markup, and the team settings
 // that hold the markup, readable and writable by owners only.
 // equipment.test.ts runs the transactions against DynamoDB Local.
@@ -86,28 +86,28 @@ const gloves = { code: "0123", name: "Nitrile gloves", price: 12.5, cost: 9.99, 
 function product(key: string, data: Record<string, unknown>, version = 1) {
   table.put({ PK: "TEAM#team-a", SK: `PRODUCT#${key}`, type: "product", key, version, ...data });
 }
-function sheet(data: Record<string, unknown> = {}, id = "s1") {
-  table.put({ PK: "TEAM#team-a", SK: `SHEET#${id}`, type: "sheet", id, version: 1, client: "Echo", date: "2026-10-01", status: "open", items: {}, ...data });
+function project(data: Record<string, unknown> = {}, id = "s1") {
+  table.put({ PK: "TEAM#team-a", SK: `PROJECT#${id}`, type: "project", id, version: 1, client: "Echo", date: "2026-10-01", status: "open", items: {}, ...data });
 }
 function seed() {
   product("ladder", ladder);
   product("0123", gloves);
-  sheet();
+  project();
 }
-const items = (id = "s1") => table.get("TEAM#team-a", `SHEET#${id}`)?.items as Record<string, Line>;
-const sheetVersion = (id = "s1") => table.get("TEAM#team-a", `SHEET#${id}`)?.version as number;
+const items = (id = "s1") => table.get("TEAM#team-a", `PROJECT#${id}`)?.items as Record<string, Line>;
+const projectVersion = (id = "s1") => table.get("TEAM#team-a", `PROJECT#${id}`)?.version as number;
 const stockOf = (key: string) => table.get("TEAM#team-a", `PRODUCT#${key}`)?.stock;
 const movements = () => [...table.items.values()].filter((i) => String(i.SK).startsWith("MOVE#"));
 const audits = () => [...table.items.values()].filter((i) => String(i.SK).startsWith("AUDIT#"));
 const settingsItem = () => table.get("TEAM#team-a", "SETTINGS");
 const setMarkup = (equipmentMarkup: number, version = 1) => table.put({ PK: "TEAM#team-a", SK: "SETTINGS", type: "settings", equipmentMarkup, version });
 
-const CHECKOUT = "/teams/team-a/sheets/s1/checkout";
-const RETURN = "/teams/team-a/sheets/s1/return";
-const LOST = "/teams/team-a/sheets/s1/lost";
-const LINES = "/teams/team-a/sheets/s1/lines";
+const CHECKOUT = "/teams/team-a/projects/s1/checkout";
+const RETURN = "/teams/team-a/projects/s1/return";
+const LOST = "/teams/team-a/projects/s1/lost";
+const LINES = "/teams/team-a/projects/s1/lines";
 const SETTINGS = "/teams/team-a/settings";
-const patchSheet = (data: Record<string, unknown>, user = CONTRIBUTOR) => call("PATCH", "/teams/team-a/sheets/s1", { data, expectedVersion: sheetVersion() }, user);
+const patchProject = (data: Record<string, unknown>, user = CONTRIBUTOR) => call("PATCH", "/teams/team-a/projects/s1", { data, expectedVersion: projectVersion() }, user);
 
 describe("items: a supply or company equipment", () => {
   it("saves equipment without a price, its value in cost, and refuses any other kind", async () => {
@@ -164,7 +164,7 @@ describe("checking equipment out", () => {
 describe("returns", () => {
   it("take back at most what's neither returned nor lost", async () => {
     seed();
-    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 3, returned: 1, lost: 1 } } });
+    project({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 3, returned: 1, lost: 1 } } });
     expect(await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 2 })).toMatchObject({ status: 400, body: { error: { message: "Only 1 of this item is left to return" } } });
     expect(await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 200, body: { result: { stockDelta: 1 } } });
     expect(items().ladder).toMatchObject({ out: 3, returned: 2, lost: 1 });
@@ -173,19 +173,19 @@ describe("returns", () => {
 
   it("refuse a line bought for the client, which doesn't come back", async () => {
     seed();
-    sheet({ items: { "ladder:bought": { name: "Step ladder", price: 150, cost: 120, purchased: true, priceSet: "markup", out: 1, returned: 0 } } });
+    project({ items: { "ladder:bought": { name: "Step ladder", price: 150, cost: 120, purchased: true, priceSet: "markup", out: 1, returned: 0 } } });
     expect(await call("POST", RETURN, { operationId: op(), productKey: "ladder:bought", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: "This was bought for the client, so it doesn't come back" } } });
     expect(stockOf("ladder")).toBe(4);
   });
 
   it("don't count a lost piece that a concurrent write recorded between the read and the transaction", async () => {
     seed();
-    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0 } } });
+    project({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0 } } });
     let once = false;
     table.beforeTransactWrite = () => {
       if (once) return;
       once = true;
-      const s = table.get("TEAM#team-a", "SHEET#s1") as Record<string, unknown>;
+      const s = table.get("TEAM#team-a", "PROJECT#s1") as Record<string, unknown>;
       table.put({ ...s, items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 2 } } });
     };
     expect(await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: "Only 0 of this item are left to return" } } });
@@ -196,7 +196,7 @@ describe("returns", () => {
 describe("lost or broken", () => {
   beforeEach(() => {
     seed();
-    sheet({ items: { ladder: { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 3, returned: 0 }, "0123": { name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 } } });
+    project({ items: { ladder: { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 3, returned: 0 }, "0123": { name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 } } });
   });
 
   it("adds to lost and the client's charge, records a lost movement, and leaves stock alone", async () => {
@@ -206,8 +206,8 @@ describe("lost or broken", () => {
       status: 200,
       body: {
         replayed: false,
-        result: { command: "lost", reason: "lost", productKey: "ladder", sheetId: "s1", quantity: 1, stockDelta: 0, charge: 0.1, userId: CONTRIBUTOR },
-        sheet: { version: 2 },
+        result: { command: "lost", reason: "lost", productKey: "ladder", projectId: "s1", quantity: 1, stockDelta: 0, charge: 0.1, userId: CONTRIBUTOR },
+        project: { version: 2 },
         product: { data: { stock: 4 } },
       },
     });
@@ -240,29 +240,29 @@ describe("lost or broken", () => {
     expect(items().ladder).toMatchObject({ lost: 3, lostCharge: 12.5 });
   });
 
-  it("takes at most what's still out, equipment only, on an open sheet, and a charge only for a client", async () => {
+  it("takes at most what's still out, equipment only, on an open project, and a charge only for a client", async () => {
     await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 2 });
     expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 2 })).toMatchObject({ status: 400, body: { error: { message: "Only 1 of this item is still out" } } });
     expect(await call("POST", LOST, { operationId: op(), productKey: "0123", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: "Only company equipment is recorded as lost or broken" } } });
-    expect(await call("POST", LOST, { operationId: op(), productKey: "mat", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: "This item isn't on this sheet" } } });
+    expect(await call("POST", LOST, { operationId: op(), productKey: "mat", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: "This item isn't on this project" } } });
     for (const charge of [-1, 1.005, "5", 1_000_001]) expect((await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge })).status).toBe(400);
     expect((await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 0 })).status).toBe(400);
     expect((await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, note: "x" })).status).toBe(400);
-    expect((await call("POST", "/teams/team-a/sheets/nope/lost", { operationId: op(), productKey: "ladder", quantity: 1 })).status).toBe(404);
-    sheet({ kind: "adhoc", items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } }, "adhoc-1");
-    expect(await call("POST", "/teams/team-a/sheets/adhoc-1/lost", { operationId: op(), productKey: "ladder", quantity: 1, charge: 5 })).toMatchObject({ status: 400, body: { error: { message: "This sheet has no client to charge" } } });
-    expect(await call("POST", "/teams/team-a/sheets/adhoc-1/lost", { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 200 });
-    sheet({ status: "closed", items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } });
+    expect((await call("POST", "/teams/team-a/projects/nope/lost", { operationId: op(), productKey: "ladder", quantity: 1 })).status).toBe(404);
+    project({ kind: "adhoc", items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } }, "adhoc-1");
+    expect(await call("POST", "/teams/team-a/projects/adhoc-1/lost", { operationId: op(), productKey: "ladder", quantity: 1, charge: 5 })).toMatchObject({ status: 400, body: { error: { message: "This project has no client to charge" } } });
+    expect(await call("POST", "/teams/team-a/projects/adhoc-1/lost", { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 200 });
+    project({ status: "closed", items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } });
     expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
     expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1 }, VIEWER)).toMatchObject({ status: 403, body: { error: { reason: "view_only" } } });
   });
 
   it("refuses a line whose stored counts or charge aren't usable, and a total charge over the limit", async () => {
-    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lostCharge: "lots" } } });
+    project({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lostCharge: "lots" } } });
     expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 1 })).toMatchObject({ status: 400, body: { error: { message: "This line's charge isn't an amount; correct the line first" } } });
-    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 0.5 } } });
+    project({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 0.5 } } });
     expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(/whole numbers/) } } });
-    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 1, lostCharge: 999_999.5 } } });
+    project({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 1, lostCharge: 999_999.5 } } });
     expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 1 })).toMatchObject({ status: 400, body: { error: { message: "A line's charge can't be more than 1000000" } } });
   });
 
@@ -271,7 +271,7 @@ describe("lost or broken", () => {
     table.beforeTransactWrite = () => {
       if (once) return;
       once = true;
-      const s = table.get("TEAM#team-a", "SHEET#s1") as Record<string, unknown>;
+      const s = table.get("TEAM#team-a", "PROJECT#s1") as Record<string, unknown>;
       table.put({ ...s, version: 2, items: { ...(s.items as object), ladder: { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 3, returned: 0, lost: 1, lostCharge: 40 } } });
     };
     expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 60 })).toMatchObject({ status: 200 });
@@ -282,130 +282,130 @@ describe("lost or broken", () => {
 describe("Finished Return with equipment out", () => {
   beforeEach(() => {
     seed();
-    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 1 }, "0123": { name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 } } });
+    project({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 1 }, "0123": { name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 } } });
   });
 
   it("is refused with 409 equipment_out while any piece is still out, and isn't counted as a write conflict", async () => {
-    const res = await patchSheet({ status: "closed", closedAt: "2026-10-01T12:00:00.000Z" });
-    expect(res).toMatchObject({ status: 409, body: { error: { code: "aborted", reason: "equipment_out", message: "Equipment is still out on this sheet" } } });
-    expect(table.get("TEAM#team-a", "SHEET#s1")?.status).toBe("open");
+    const res = await patchProject({ status: "closed", closedAt: "2026-10-01T12:00:00.000Z" });
+    expect(res).toMatchObject({ status: 409, body: { error: { code: "aborted", reason: "equipment_out", message: "Equipment is still out on this project" } } });
+    expect(table.get("TEAM#team-a", "PROJECT#s1")?.status).toBe("open");
     expect(counts.ConditionalWriteConflicts).toBeUndefined();
     // A PUT closing it is refused the same way
-    const { PK, SK, type, id, version, ...whole } = table.get("TEAM#team-a", "SHEET#s1") as Record<string, unknown>;
+    const { PK, SK, type, id, version, ...whole } = table.get("TEAM#team-a", "PROJECT#s1") as Record<string, unknown>;
     void [PK, SK, type, id, version];
-    expect(await call("PUT", "/teams/team-a/sheets/s1", { data: { ...whole, status: "closed" }, expectedVersion: 1 })).toMatchObject({ status: 409, body: { error: { reason: "equipment_out" } } });
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: { ...whole, status: "closed" }, expectedVersion: 1 })).toMatchObject({ status: 409, body: { error: { reason: "equipment_out" } } });
   });
 
   it("closes once each piece is back or lost; unreturned supplies don't stop it", async () => {
     await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 80 });
-    expect(await patchSheet({ status: "closed" })).toMatchObject({ status: 200, body: { data: { status: "closed" } } });
+    expect(await patchProject({ status: "closed" })).toMatchObject({ status: 200, body: { data: { status: "closed" } } });
   });
 
-  it("refuses an edit to a closed sheet that puts more equipment out, but not other edits to one that already had some out", async () => {
-    // Closed before the rule (an imported artifact sheet, say)
-    sheet({ status: "closed", items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 1 } } });
-    expect(await patchSheet({ client: "Echo Ltd" })).toMatchObject({ status: 200 });
-    expect(await patchSheet({ items: { ladder: { returned: 0 } } })).toMatchObject({ status: 409, body: { error: { reason: "equipment_out" } } });
-    expect(await patchSheet({ items: { ladder: { returned: 2 } } })).toMatchObject({ status: 200 });
+  it("refuses an edit to a closed project that puts more equipment out, but not other edits to one that already had some out", async () => {
+    // Closed before the rule (an imported artifact project, say)
+    project({ status: "closed", items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 1 } } });
+    expect(await patchProject({ client: "Echo Ltd" })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: { returned: 0 } } })).toMatchObject({ status: 409, body: { error: { reason: "equipment_out" } } });
+    expect(await patchProject({ items: { ladder: { returned: 2 } } })).toMatchObject({ status: 200 });
   });
 });
 
-describe("sheet documents and the new fields", () => {
+describe("project documents and the new fields", () => {
   beforeEach(seed);
 
   it("take an equipment line, and keep a line's kind as it was first saved", async () => {
-    expect(await patchSheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } })).toMatchObject({ status: 200 });
-    expect(await patchSheet({ items: { ladder: { kind: "supply" } } })).toMatchObject({ status: 400, body: { error: { message: 'A line\'s kind is "equipment" or left out' } } });
+    expect(await patchProject({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: { kind: "supply" } } })).toMatchObject({ status: 400, body: { error: { message: 'A line\'s kind is "equipment" or left out' } } });
     await call("POST", CHECKOUT, { operationId: op(), productKey: "0123", quantity: 1 });
-    expect(await patchSheet({ items: { "0123": { kind: "equipment" } } })).toMatchObject({ status: 400, body: { error: { message: "A line's kind can't change" } } });
+    expect(await patchProject({ items: { "0123": { kind: "equipment" } } })).toMatchObject({ status: 400, body: { error: { message: "A line's kind can't change" } } });
     // A PUT can't drop it either
     const whole = { client: "Echo", date: "2026-10-01", status: "open", items: { ...items(), ladder: { name: "Step ladder", out: 1, returned: 0 } } };
-    expect(await call("PUT", "/teams/team-a/sheets/s1", { data: whole, expectedVersion: sheetVersion() })).toMatchObject({ status: 400, body: { error: { message: "A line's kind can't change" } } });
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: whole, expectedVersion: projectVersion() })).toMatchObject({ status: 400, body: { error: { message: "A line's kind can't change" } } });
   });
 
-  it("allow lost and a charge on equipment lines only, the charge on a client's sheet only, and check their types", async () => {
-    await patchSheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0 } } });
-    expect(await patchSheet({ items: { ladder: { lost: 1, lostCharge: 25.5 } } })).toMatchObject({ status: 200 });
+  it("allow lost and a charge on equipment lines only, the charge on a client's project only, and check their types", async () => {
+    await patchProject({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0 } } });
+    expect(await patchProject({ items: { ladder: { lost: 1, lostCharge: 25.5 } } })).toMatchObject({ status: 200 });
     const refused = [
       [{ ladder: { lost: 1.5 } }, "lost is a whole number, on company equipment lines only"],
       [{ ladder: { lost: -1 } }, "lost is a whole number, on company equipment lines only"],
       [{ gloves: { name: "Gloves", price: 1, out: 1, returned: 0, lost: 1 } }, "lost is a whole number, on company equipment lines only"],
-      [{ gloves: { name: "Gloves", price: 1, out: 1, returned: 0, lostCharge: 1 } }, "lostCharge is only on company equipment lines of a client's sheet"],
+      [{ gloves: { name: "Gloves", price: 1, out: 1, returned: 0, lostCharge: 1 } }, "lostCharge is only on company equipment lines of a client project"],
       [{ ladder: { lostCharge: 1.234 } }, "lostCharge must be an amount from 0 to 1000000 with at most two decimals"],
       [{ ladder: { returned: 2 } }, "A line's returned and lost can't add up to more than its out"],
     ] as const;
-    for (const [lines, message] of refused) expect(await patchSheet({ items: lines }), message).toMatchObject({ status: 400, body: { error: { message } } });
-    sheet({ kind: "adhoc", items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } }, "adhoc-1");
-    expect(await call("PATCH", "/teams/team-a/sheets/adhoc-1", { data: { items: { ladder: { lost: 1 } } }, expectedVersion: 1 })).toMatchObject({ status: 200 });
-    expect(await call("PATCH", "/teams/team-a/sheets/adhoc-1", { data: { items: { ladder: { lostCharge: 5 } } }, expectedVersion: 2 })).toMatchObject({ status: 400 });
+    for (const [lines, message] of refused) expect(await patchProject({ items: lines }), message).toMatchObject({ status: 400, body: { error: { message } } });
+    project({ kind: "adhoc", items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } }, "adhoc-1");
+    expect(await call("PATCH", "/teams/team-a/projects/adhoc-1", { data: { items: { ladder: { lost: 1 } } }, expectedVersion: 1 })).toMatchObject({ status: 200 });
+    expect(await call("PATCH", "/teams/team-a/projects/adhoc-1", { data: { items: { ladder: { lostCharge: 5 } } }, expectedVersion: 2 })).toMatchObject({ status: 400 });
   });
 
   it("leave who took equipment and when to the checkout command: a write may only repeat them", async () => {
     const takenAt = "2026-10-01T12:00:00.000Z";
     for (const [field, value] of [["takenBy", "Sam"], ["takenAt", takenAt], ["priceSetBy", OWNER], ["priceSetAt", takenAt]] as const) {
-      expect(await patchSheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0, [field]: value } } }), field).toMatchObject({ status: 400, body: { error: { message: `${field} is set by the server` } } });
+      expect(await patchProject({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0, [field]: value } } }), field).toMatchObject({ status: 400, body: { error: { message: `${field} is set by the server` } } });
     }
     await call("POST", CHECKOUT, { operationId: op(), productKey: "ladder", quantity: 1 });
     expect(items().ladder).toMatchObject({ takenBy: CONTRIBUTOR, takenAt });
-    expect(await patchSheet({ items: { ladder: { takenBy: OWNER } } })).toMatchObject({ status: 400, body: { error: { message: "takenBy is set by the server" } } });
-    expect(await patchSheet({ items: { ladder: { takenAt: "2026-10-02T08:00:00.000Z" } } })).toMatchObject({ status: 400, body: { error: { message: "takenAt is set by the server" } } });
-    // Repeating them (a PATCH of other fields, or a PUT of the sheet as read) is fine; dropping them isn't
-    expect(await patchSheet({ items: { ladder: { out: 2, takenBy: CONTRIBUTOR } } })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: { takenBy: OWNER } } })).toMatchObject({ status: 400, body: { error: { message: "takenBy is set by the server" } } });
+    expect(await patchProject({ items: { ladder: { takenAt: "2026-10-02T08:00:00.000Z" } } })).toMatchObject({ status: 400, body: { error: { message: "takenAt is set by the server" } } });
+    // Repeating them (a PATCH of other fields, or a PUT of the project as read) is fine; dropping them isn't
+    expect(await patchProject({ items: { ladder: { out: 2, takenBy: CONTRIBUTOR } } })).toMatchObject({ status: 200 });
     const whole = { client: "Echo", date: "2026-10-01", status: "open", items: items() };
-    expect(await call("PUT", "/teams/team-a/sheets/s1", { data: whole, expectedVersion: sheetVersion() })).toMatchObject({ status: 200 });
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: whole, expectedVersion: projectVersion() })).toMatchObject({ status: 200 });
     const { takenBy, ...dropped } = items().ladder as Line;
     void takenBy;
-    expect(await call("PUT", "/teams/team-a/sheets/s1", { data: { ...whole, items: { ladder: dropped } }, expectedVersion: sheetVersion() })).toMatchObject({ status: 400, body: { error: { message: "takenBy is set by the server" } } });
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: { ...whole, items: { ladder: dropped } }, expectedVersion: projectVersion() })).toMatchObject({ status: 400, body: { error: { message: "takenBy is set by the server" } } });
   });
 
   it("don't hold a line the write doesn't change to returned + lost <= out", async () => {
-    sheet({ items: { odd: { name: "Odd", price: 1, out: 1, returned: 3 } } });
-    expect(await patchSheet({ client: "Echo 2" })).toMatchObject({ status: 200 });
+    project({ items: { odd: { name: "Odd", price: 1, out: 1, returned: 3 } } });
+    expect(await patchProject({ client: "Echo 2" })).toMatchObject({ status: 200 });
   });
 
-  it("can't set a sheet's kind: only the server makes an ad hoc sheet", async () => {
-    expect(await call("PUT", "/teams/team-a/sheets/s2", { data: { client: "Van", date: "2026-10-01", kind: "adhoc", items: {} }, expectedVersion: 0 })).toMatchObject({ status: 400, body: { error: { message: "A sheet's kind is set by the server" } } });
-    expect(await patchSheet({ kind: "adhoc" })).toMatchObject({ status: 400 });
-    sheet({ kind: "adhoc" }, "adhoc-1");
-    expect(await call("PATCH", "/teams/team-a/sheets/adhoc-1", { data: { kind: "job" }, expectedVersion: 1 })).toMatchObject({ status: 400 });
-    expect(await call("PUT", "/teams/team-a/sheets/adhoc-1", { data: { client: "", date: "2026-10-01", items: {} }, expectedVersion: 1 })).toMatchObject({ status: 400 });
-    expect(await call("PATCH", "/teams/team-a/sheets/adhoc-1", { data: { date: "2026-10-02" }, expectedVersion: 1 })).toMatchObject({ status: 200 });
+  it("can't set a project's kind: only the server makes a General Use project", async () => {
+    expect(await call("PUT", "/teams/team-a/projects/s2", { data: { client: "Van", date: "2026-10-01", kind: "adhoc", items: {} }, expectedVersion: 0 })).toMatchObject({ status: 400, body: { error: { message: "A project's kind is set by the server" } } });
+    expect(await patchProject({ kind: "adhoc" })).toMatchObject({ status: 400 });
+    project({ kind: "adhoc" }, "adhoc-1");
+    expect(await call("PATCH", "/teams/team-a/projects/adhoc-1", { data: { kind: "job" }, expectedVersion: 1 })).toMatchObject({ status: 400 });
+    expect(await call("PUT", "/teams/team-a/projects/adhoc-1", { data: { client: "", date: "2026-10-01", items: {} }, expectedVersion: 1 })).toMatchObject({ status: 400 });
+    expect(await call("PATCH", "/teams/team-a/projects/adhoc-1", { data: { date: "2026-10-02" }, expectedVersion: 1 })).toMatchObject({ status: 200 });
   });
 
   it("can't add a line bought for the client, or mark or unmark one; a changed price is recorded as typed", async () => {
     const bought = { name: "Step ladder", price: 150, cost: 120, purchased: true, out: 1, returned: 0 };
-    expect(await patchSheet({ items: { "ladder:bought": bought } })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(/Only a receipt's lines/) } } });
-    expect(await patchSheet({ items: { other: bought } })).toMatchObject({ status: 400 });
-    expect(await patchSheet({ items: { "ladder:bought": { ...bought, purchased: undefined } } })).toMatchObject({ status: 400 });
-    expect(await call("PUT", "/teams/team-a/sheets/s3", { data: { client: "New", date: "2026-10-01", items: { "x:bought": bought } }, expectedVersion: 0 })).toMatchObject({ status: 400 });
+    expect(await patchProject({ items: { "ladder:bought": bought } })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(/Only a receipt's lines/) } } });
+    expect(await patchProject({ items: { other: bought } })).toMatchObject({ status: 400 });
+    expect(await patchProject({ items: { "ladder:bought": { ...bought, purchased: undefined } } })).toMatchObject({ status: 400 });
+    expect(await call("PUT", "/teams/team-a/projects/s3", { data: { client: "New", date: "2026-10-01", items: { "x:bought": bought } }, expectedVersion: 0 })).toMatchObject({ status: 400 });
 
-    sheet({ items: { "ladder:bought": { ...bought, priceSet: "markup" }, "0123": { name: "Gloves", price: 1, out: 1, returned: 0 } } });
-    expect(await patchSheet({ items: { "ladder:bought": { purchased: false } } })).toMatchObject({ status: 400, body: { error: { message: "purchased is true or left out" } } });
-    expect(await patchSheet({ items: { "0123": { purchased: true } } })).toMatchObject({ status: 400 });
-    expect(await patchSheet({ items: { "ladder:bought": { kind: "equipment" } } })).toMatchObject({ status: 400 });
-    expect(await patchSheet({ items: { "0123": { priceSet: "manual" } } })).toMatchObject({ status: 400, body: { error: { message: "priceSet is set by the server, on lines bought for the client" } } });
-    expect(await patchSheet({ items: { "ladder:bought": { priceSet: "typed" } } })).toMatchObject({ status: 400 });
+    project({ items: { "ladder:bought": { ...bought, priceSet: "markup" }, "0123": { name: "Gloves", price: 1, out: 1, returned: 0 } } });
+    expect(await patchProject({ items: { "ladder:bought": { purchased: false } } })).toMatchObject({ status: 400, body: { error: { message: "purchased is true or left out" } } });
+    expect(await patchProject({ items: { "0123": { purchased: true } } })).toMatchObject({ status: 400 });
+    expect(await patchProject({ items: { "ladder:bought": { kind: "equipment" } } })).toMatchObject({ status: 400 });
+    expect(await patchProject({ items: { "0123": { priceSet: "manual" } } })).toMatchObject({ status: 400, body: { error: { message: "priceSet is set by the server, on lines bought for the client" } } });
+    expect(await patchProject({ items: { "ladder:bought": { priceSet: "typed" } } })).toMatchObject({ status: 400 });
     // Counts change freely; a priceSet sent without a price change stays the server's
-    expect(await patchSheet({ items: { "ladder:bought": { out: 2, priceSet: "manual" } } })).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { out: 2, priceSet: "markup" } } } } });
+    expect(await patchProject({ items: { "ladder:bought": { out: 2, priceSet: "manual" } } })).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { out: 2, priceSet: "markup" } } } } });
     // Nothing of it comes back
     for (const returned of [1, -1, "0", null]) {
-      expect(await patchSheet({ items: { "ladder:bought": { returned } } }), String(returned)).toMatchObject({ status: 400, body: { error: { message: "Nothing bought for the client comes back, so its returned stays 0" } } });
+      expect(await patchProject({ items: { "ladder:bought": { returned } } }), String(returned)).toMatchObject({ status: 400, body: { error: { message: "Nothing bought for the client comes back, so its returned stays 0" } } });
     }
     // A changed price is a typed one, stamped with who typed it and when
     clock += 60_000;
-    expect(await patchSheet({ items: { "ladder:bought": { price: 140 } } }, OWNER)).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { price: 140, priceSet: "manual", priceSetBy: OWNER, priceSetAt: "2026-10-01T12:01:00.000Z" } } } } });
-    expect(await patchSheet({ items: { "ladder:bought": { priceSetBy: CONTRIBUTOR } } })).toMatchObject({ status: 400, body: { error: { message: "priceSetBy is set by the server" } } });
+    expect(await patchProject({ items: { "ladder:bought": { price: 140 } } }, OWNER)).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { price: 140, priceSet: "manual", priceSetBy: OWNER, priceSetAt: "2026-10-01T12:01:00.000Z" } } } } });
+    expect(await patchProject({ items: { "ladder:bought": { priceSetBy: CONTRIBUTOR } } })).toMatchObject({ status: 400, body: { error: { message: "priceSetBy is set by the server" } } });
     // Typed again by someone else: their name now
     clock += 60_000;
-    expect(await patchSheet({ items: { "ladder:bought": { price: 141 } } })).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { price: 141, priceSetBy: CONTRIBUTOR, priceSetAt: "2026-10-01T12:02:00.000Z" } } } } });
+    expect(await patchProject({ items: { "ladder:bought": { price: 141 } } })).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { price: 141, priceSetBy: CONTRIBUTOR, priceSetAt: "2026-10-01T12:02:00.000Z" } } } } });
     // Re-saving a price from before the money rule rounds it, but nobody typed it
-    sheet({ items: { "ladder:bought": { name: "Step ladder", price: 150.005, cost: 120, purchased: true, priceSet: "markup", out: 1, returned: 0 } } });
-    const legacy = await patchSheet({ items: { "ladder:bought": { out: 2 } } });
+    project({ items: { "ladder:bought": { name: "Step ladder", price: 150.005, cost: 120, purchased: true, priceSet: "markup", out: 1, returned: 0 } } });
+    const legacy = await patchProject({ items: { "ladder:bought": { out: 2 } } });
     expect(legacy.body.data.items["ladder:bought"]).toMatchObject({ price: 150.01, priceSet: "markup", out: 2 });
     expect(legacy.body.data.items["ladder:bought"].priceSetBy).toBeUndefined();
     // One without a priceSet (written before it) stays without one until its price changes
-    sheet({ items: { "ladder:bought": bought } });
-    const kept = await patchSheet({ items: { "ladder:bought": { out: 3 } } });
+    project({ items: { "ladder:bought": bought } });
+    const kept = await patchProject({ items: { "ladder:bought": { out: 3 } } });
     expect(kept.status).toBe(200);
     expect(kept.body.data.items["ladder:bought"].priceSet).toBeUndefined();
   });
@@ -447,14 +447,14 @@ describe("equipment bought on a receipt for a client", () => {
     expect(boughtLine()).toMatchObject({ price: 120, priceSet: "markup" });
     setMarkup(1);
     // 0.5 × 1.01 = 0.505: half a cent, up
-    await call("POST", "/teams/team-a/sheets/s2/lines", { operationId: op(), lines: [{ productKey: "mat", quantity: 1, name: "Cutting mat", cost: 0.5 }] }).then((r) => expect(r.status).toBe(404));
-    sheet({}, "s2");
-    await call("POST", "/teams/team-a/sheets/s2/lines", { operationId: op(), lines: [{ productKey: "mat", quantity: 1, name: "Cutting mat", cost: 0.5 }] });
+    await call("POST", "/teams/team-a/projects/s2/lines", { operationId: op(), lines: [{ productKey: "mat", quantity: 1, name: "Cutting mat", cost: 0.5 }] }).then((r) => expect(r.status).toBe(404));
+    project({}, "s2");
+    await call("POST", "/teams/team-a/projects/s2/lines", { operationId: op(), lines: [{ productKey: "mat", quantity: 1, name: "Cutting mat", cost: 0.5 }] });
     expect(items("s2")["mat:bought"]).toMatchObject({ price: 0.51, cost: 0.5 });
     // A pack of 12 for $14.76 is 1.23 each (the app divides); 1.23 × 1.25 = 1.5375
     setMarkup(25);
-    sheet({}, "s3");
-    await call("POST", "/teams/team-a/sheets/s3/lines", { operationId: op(), lines: [{ productKey: "mat", quantity: 12, name: "Cutting mat", cost: 1.23 }] });
+    project({}, "s3");
+    await call("POST", "/teams/team-a/projects/s3/lines", { operationId: op(), lines: [{ productKey: "mat", quantity: 12, name: "Cutting mat", cost: 1.23 }] });
     expect(items("s3")["mat:bought"]).toMatchObject({ price: 1.54, cost: 1.23, out: 12 });
   });
 
@@ -570,7 +570,7 @@ describe("team settings", () => {
   it("never reaches a contributor or viewer, in any response they get", async () => {
     seed();
     setMarkup(37.77);
-    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } });
+    project({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } });
     const bodies: string[] = [];
     for (const user of [CONTRIBUTOR, VIEWER]) {
       const mine = await call("GET", SETTINGS, undefined, user);
@@ -578,7 +578,7 @@ describe("team settings", () => {
       expect(mine).toMatchObject({ status: 200 });
       expect(mine.body).toEqual({ settings: {} });
       bodies.push(mine.text);
-      for (const path of ["/teams/team-a/products", "/teams/team-a/sheets", "/teams/team-a/sheets/s1", "/teams/team-a/products/ladder", "/teams/team-a/products/ladder/movements"]) {
+      for (const path of ["/teams/team-a/products", "/teams/team-a/projects", "/teams/team-a/projects/s1", "/teams/team-a/products/ladder", "/teams/team-a/products/ladder/movements"]) {
         bodies.push((await call("GET", path, undefined, user)).text);
       }
     }

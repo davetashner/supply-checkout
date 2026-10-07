@@ -871,7 +871,7 @@
           },
           "S3Key": "<asset hash>.zip"
         },
-        "Description": "Publishes product and sheet changes from the table's stream to each team member's AppSync Events channel",
+        "Description": "Publishes product and project changes from the table's stream to each team member's AppSync Events channel",
         "Environment": {
           "Variables": {
             "NODE_OPTIONS": "--enable-source-maps",

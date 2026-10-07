@@ -479,9 +479,10 @@ The `api` stack (`lib/stacks/api-stack.ts`, [ADR 0006](adr/0006-api-and-realtime
 
 | Route | Auth | Function |
 | --- | --- | --- |
-| `GET /teams/{teamId}/products`, `GET /teams/{teamId}/sheets` (`?orderBy=date&direction=desc`, `limit`, `cursor`) | Cognito access token | `data` |
-| `GET`, `PUT` (set), `PATCH` (deep-merge update), `DELETE` `/teams/{teamId}/products/{key}` and `/teams/{teamId}/sheets/{sheetId}` | Cognito access token | `data` |
-| `POST /teams/{teamId}/sheets/{sheetId}/checkout`, `.../return`, `POST /teams/{teamId}/products/{key}/stock`, `GET /teams/{teamId}/products/{key}/movements` (the inventory commands and stock history, [docs/api/commands.md](api/commands.md)) | Cognito access token | `data` |
+| `GET /teams/{teamId}/products`, `GET /teams/{teamId}/projects` (`?orderBy=date&direction=desc`, `limit`, `cursor`) | Cognito access token | `data` |
+| `GET`, `PUT` (set), `PATCH` (deep-merge update), `DELETE` `/teams/{teamId}/products/{key}` and `/teams/{teamId}/projects/{projectId}` | Cognito access token | `data` |
+| `POST /teams/{teamId}/projects/{projectId}/checkout`, `.../return`, `POST /teams/{teamId}/products/{key}/stock`, `GET /teams/{teamId}/products/{key}/movements` (the inventory commands and stock history, [docs/api/commands.md](api/commands.md)) | Cognito access token | `data` |
+| The same project routes under their old name, `/teams/{teamId}/sheets...`, deprecated through the projects rename's window (`supply-checkout-005.6`; counted in `LegacySheetsRouteCalls`, [docs/api/commands.md](api/commands.md)) | Cognito access token | `data` |
 | `POST /teams/{teamId}/imports` (CSV inventory import, owners only, all or nothing; [backend.md](backend.md)) | Cognito access token | `data` |
 | `POST /teams/{teamId}/receipts/read` (read a receipt photo for the review screen; contributors and owners; see [Receipt reading](#receipt-reading)) | Cognito access token | `receipts` |
 | `GET /teams/{teamId}/receipts/usage` (the team's receipt reads against its allowance; contributors and owners) | Cognito access token | `receipts` |
@@ -541,21 +542,21 @@ A `FunctionError` in the response, or `AccessDeniedException` in the log group o
 
 ```bash
 # The environment being measured (dev): its profile, region and table
-P="--profile <dev profile> --region us-east-1"; T=supply-checkout-dev-app; TEAM=perf-team; SUB=<test user's sub>
-aws dynamodb put-item $P --table-name $T --item '{"PK":{"S":"TEAM#'$TEAM'"},"SK":{"S":"META"},"type":{"S":"team"},"teamId":{"S":"'$TEAM'"},"name":{"S":"Perf"},"homeRegion":{"S":"us-east-1"},"owners":{"N":"1"},"version":{"N":"1"}}'
-aws dynamodb put-item $P --table-name $T --item '{"PK":{"S":"TEAM#'$TEAM'"},"SK":{"S":"MEMBER#'$SUB'"},"type":{"S":"member"},"teamId":{"S":"'$TEAM'"},"userId":{"S":"'$SUB'"},"role":{"S":"owner"}}'
+P=(--profile <dev-profile> --region us-east-1); T=supply-checkout-dev-app; TEAM=perf-team; SUB=<test user's sub>
+aws dynamodb put-item "${P[@]}" --table-name $T --item '{"PK":{"S":"TEAM#'$TEAM'"},"SK":{"S":"META"},"type":{"S":"team"},"teamId":{"S":"'$TEAM'"},"name":{"S":"Perf"},"homeRegion":{"S":"us-east-1"},"owners":{"N":"1"},"version":{"N":"1"}}'
+aws dynamodb put-item "${P[@]}" --table-name $T --item '{"PK":{"S":"TEAM#'$TEAM'"},"SK":{"S":"MEMBER#'$SUB'"},"type":{"S":"member"},"teamId":{"S":"'$TEAM'"},"userId":{"S":"'$SUB'"},"role":{"S":"owner"}}'
 # An access token for the test user (password sign-in through the web client)
-TOKEN=$(aws cognito-idp initiate-auth $P --auth-flow USER_AUTH --client-id <web client ID> \
+TOKEN=$(aws cognito-idp initiate-auth "${P[@]}" --auth-flow USER_AUTH --client-id <web client ID> \
   --auth-parameters USERNAME=<email>,PREFERRED_CHALLENGE=PASSWORD,PASSWORD=<password> \
   --query AuthenticationResult.AccessToken --output text)
 API=https://api.dev.supplycheckout.com/teams/$TEAM
 curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"data":{"client":"Perf","date":"2026-09-26","status":"open","items":{}}}' $API/sheets/perf-1
+  -d '{"data":{"client":"Perf","date":"2026-09-26","status":"open","items":{}}}' $API/projects/perf-1
 # 30 seconds to warm up, then 2 minutes at 10 connections, reads and writes
-npx autocannon -d 30 -c 10 -H "Authorization=Bearer $TOKEN" "$API/sheets?orderBy=date&direction=desc" > /dev/null
-npx autocannon -d 120 -c 10 -H "Authorization=Bearer $TOKEN" "$API/sheets?orderBy=date&direction=desc"
+npx autocannon -d 30 -c 10 -H "Authorization=Bearer $TOKEN" "$API/projects?orderBy=date&direction=desc" > /dev/null
+npx autocannon -d 120 -c 10 -H "Authorization=Bearer $TOKEN" "$API/projects?orderBy=date&direction=desc"
 npx autocannon -d 120 -c 10 -m PATCH -H "Authorization=Bearer $TOKEN" -H content-type=application/json \
-  -b '{"data":{"items":{"x":{"out":1,"returned":0}}}}' "$API/sheets/perf-1"
+  -b '{"data":{"items":{"x":{"out":1,"returned":0}}}}' "$API/projects/perf-1"
 ```
 
 Read the server-side p95 per route from the access logs (Logs Insights on the api stack's `AccessLogs` group, over the run's window), which leaves out network time to the laptop:
@@ -564,7 +565,7 @@ Read the server-side p95 per route from the access logs (Logs Insights on the ap
 filter routeKey like /teams/ | stats count(*), pct(latencyMs, 50), pct(latencyMs, 95), pct(integrationLatencyMs, 95) by routeKey
 ```
 
-or the whole API's from CloudWatch: `aws cloudwatch get-metric-statistics $P --namespace AWS/ApiGateway --metric-name Latency --dimensions Name=ApiId,Value=<api id> --extended-statistics p95 --period 300 --start-time … --end-time …`. Cold starts show up in the first minute only; X-Ray traces break a slow request down by DynamoDB and STS call. Delete the test items afterwards.
+or the whole API's from CloudWatch: `aws cloudwatch get-metric-statistics "${P[@]}" --namespace AWS/ApiGateway --metric-name Latency --dimensions Name=ApiId,Value=<api id> --extended-statistics p95 --period 300 --start-time … --end-time …`. Cold starts show up in the first minute only; X-Ray traces break a slow request down by DynamoDB and STS call. Delete the test items afterwards.
 
 ### Receipt reading
 
@@ -818,14 +819,14 @@ Run them after the deploy that adds GSI3 is `ACTIVE`, in this order (`ops-index`
 ```bash
 aws sso login --profile supply-prod
 cd backend && npm ci
-B="--table supply-checkout-prod-app --region us-east-1 --profile supply-prod"
-npm run backfill -- stray-ops-keys $B            # dry run: expect 0; check the account in the first line
-npm run backfill -- stray-ops-keys $B --apply    # only if it found some, after looking at them
-npm run backfill -- ops-index $B                 # dry run: team META and owner MEMBER items without keys
-npm run backfill -- ops-index $B --apply
-npm run backfill -- members $B                   # dry run: teams without a count
-npm run backfill -- members $B --apply
-npm run backfill -- ops-index $B && npm run backfill -- members $B   # both find 0
+B=(--table supply-checkout-prod-app --region us-east-1 --profile supply-prod)
+npm run backfill -- stray-ops-keys "${B[@]}"            # dry run: expect 0; check the account in the first line
+npm run backfill -- stray-ops-keys "${B[@]}" --apply    # only if it found some, after looking at them
+npm run backfill -- ops-index "${B[@]}"                 # dry run: team META and owner MEMBER items without keys
+npm run backfill -- ops-index "${B[@]}" --apply
+npm run backfill -- members "${B[@]}"                   # dry run: teams without a count
+npm run backfill -- members "${B[@]}" --apply
+npm run backfill -- ops-index "${B[@]}" && npm run backfill -- members "${B[@]}"   # both find 0
 npm run ops -- teams                             # every team is listed
 ```
 
@@ -834,10 +835,10 @@ npm run ops -- teams                             # every team is listed
 ```bash
 aws sso login --profile supply-prod
 cd backend && npm ci
-B="--table supply-checkout-prod-app --region us-east-1 --profile supply-prod"
-npm run backfill -- notice-address $B            # dry run: check the account in the first line, and the counts
-npm run backfill -- notice-address $B --apply
-npm run backfill -- notice-address $B            # finds 0 accounts with a trusted verified address and no notice address
+B=(--table supply-checkout-prod-app --region us-east-1 --profile supply-prod)
+npm run backfill -- notice-address "${B[@]}"            # dry run: check the account in the first line, and the counts
+npm run backfill -- notice-address "${B[@]}" --apply
+npm run backfill -- notice-address "${B[@]}"            # finds 0 accounts with a trusted verified address and no notice address
 ```
 
 It prints how many pool users it listed, how many it left alone (no verified address the API trusts, an address already recorded, being deleted) and how many it recorded. `changed by something else first, left alone` is an account whose address was recorded (by GET /me or a trigger), or whose deletion started, between the check and the write.
@@ -862,7 +863,7 @@ The output is counts and check names only: no team, sheet or user IDs, names or 
 
 - no `SHEET#` items are left, and GSI1's `TEAM#<t>#SHEETS` partition is empty;
 - the `PROJECT#` count is the count before plus the sheets moved, and GSI1's `TEAM#<t>#PROJECTS` count equals it (it waits up to 60 seconds for the index);
-- every moved item's attributes hash the same as before, the renamed ones left out, and its totals (counts and charge in cents, added as `src/sheet-math.js` adds them) are the same;
+- every moved item's attributes hash the same as before, the renamed ones left out, and its totals (counts and charge in cents, added as `src/project-math.js` adds them) are the same;
 - every product's `stock` is what it was;
 - no movement still has `sheetId` or `fromSheetId`.
 
@@ -873,25 +874,25 @@ The runbook. `<profile>`, `<teamId>`, `<recovery point ARN>` and `<path>` are pl
 ```bash
 aws sso login --profile <profile>
 cd backend && npm ci
-P="--profile <profile> --region us-east-1"
-B="--table supply-checkout-prod-app --region us-east-1 --profile <profile>"
+P=(--profile <profile> --region us-east-1)
+B=(--table supply-checkout-prod-app "${P[@]}")
 
 # 1. Backup: an on-demand AWS Backup recovery point (as in docs/backups.md, "Prove the copy path now"), and the PITR time
-TABLE_ARN=$(aws dynamodb describe-table --table-name supply-checkout-prod-app --query Table.TableArn --output text $P)
+TABLE_ARN=$(aws dynamodb describe-table --table-name supply-checkout-prod-app --query Table.TableArn --output text "${P[@]}")
 ROLE_ARN=$(aws iam get-role --role-name supply-checkout-prod-backup --query Role.Arn --output text --profile <profile>)
-aws backup start-backup-job $P --backup-vault-name supply-checkout-prod-backups \
+aws backup start-backup-job "${P[@]}" --backup-vault-name supply-checkout-prod-backups \
   --resource-arn "$TABLE_ARN" --iam-role-arn "$ROLE_ARN" --lifecycle DeleteAfterDays=35
-aws backup describe-backup-job $P --backup-job-id <id>    # until COMPLETED; note the recovery point ARN in the bead
+aws backup describe-backup-job "${P[@]}" --backup-job-id <id>    # until COMPLETED; note the recovery point ARN in the bead
 date -u +%Y-%m-%dT%H:%M:%SZ                              # the PITR time to restore to, if it ever comes to that
-aws dynamodb describe-continuous-backups --table-name supply-checkout-prod-app $P   # PITR is ENABLED
+aws dynamodb describe-continuous-backups --table-name supply-checkout-prod-app "${P[@]}"   # PITR is ENABLED
 
 # 2. Export and dry run: read the counts (and the account on the first line)
-B="$B --expect-account <account ID>"                     # stops unless the profile signs in to prod's account
-npm run backfill -- projects-rename $B --team <teamId> --export-to <path outside the repo>/rename-<teamId>.json
+B=("${B[@]}" --expect-account <account ID>)                     # stops unless the profile signs in to prod's account
+npm run backfill -- projects-rename "${B[@]}" --team <teamId> --export-to <path outside the repo>/rename-<teamId>.json
 
 # 3. Apply, then the final check: a second run finds nothing to move and prints Done.
-npm run backfill -- projects-rename $B --team <teamId> --apply
-npm run backfill -- projects-rename $B --team <teamId> --apply
+npm run backfill -- projects-rename "${B[@]}" --team <teamId> --apply
+npm run backfill -- projects-rename "${B[@]}" --team <teamId> --apply
 ```
 
 Then sign in as one of the team's users: the list is there, one finished and one open project open, a checkout and a return work, and the production alarms stay clear ([journeys](journeys.md)). Later, once every team is done, a run without `--team` (dry run, then `--apply`) is the cleanup and should find nothing.
@@ -899,7 +900,7 @@ Then sign in as one of the team's users: the list is there, one finished and one
 **Rollback**, in order:
 
 1. Before `--apply` there's nothing to roll back.
-2. During or after: `npm run backfill -- projects-rename $B --team <teamId> --reverse` (dry run), then with `--apply`. It carries back anything written to a project since, which is why it comes before a restore. If the application is rolled back to a release that reads only `SHEET#`, run it first. While the dual-reading release is deployed, a part-moved team works as it is.
+2. During or after: `npm run backfill -- projects-rename "${B[@]}" --team <teamId> --reverse` (dry run), then with `--apply`. It carries back anything written to a project since, which is why it comes before a restore. If the application is rolled back to a release that reads only `SHEET#`, run it first. While the dual-reading release is deployed, a part-moved team works as it is.
 3. Last resort: restore to the PITR time into a new table (`supply-checkout-<env>-app-restore-*`) and copy the team's partition back, as in [the restore drill](backups.md#restore-drill) and [Put a restored table back into service](backups.md#put-a-restored-table-back-into-service). This loses every write since that time. The export file is a smaller option for a few items: put them back with `aws dynamodb put-item` from it.
 
 The tests (`backend/test/backfill-projects-rename.test.ts`) run it against DynamoDB Local: an empty team, many sheets, a conflicting copy, a re-run, an edit mid-move and one that keeps changing, a round trip with `--reverse`, movements, `--limit`, the export and where it may go, every team by scan, and that the output holds no IDs or names.
@@ -927,11 +928,11 @@ The temporary password (`add`, `reset`) is 24 characters from `node:crypto` with
 By hand, if the script can't be used:
 
 ```bash
-P="--profile supply-prod --region us-east-1"
-POOL=$(aws ssm get-parameter $P --name /supply-checkout/prod/identity/ops-user-pool-id --query Parameter.Value --output text)
-aws cognito-idp admin-create-user $P --user-pool-id "$POOL" --username alex --message-action SUPPRESS \
+P=(--profile supply-prod --region us-east-1)
+POOL=$(aws ssm get-parameter "${P[@]}" --name /supply-checkout/prod/identity/ops-user-pool-id --query Parameter.Value --output text)
+aws cognito-idp admin-create-user "${P[@]}" --user-pool-id "$POOL" --username alex --message-action SUPPRESS \
   --temporary-password "$(openssl rand -base64 18)Aa1!"   # note it, then hand it over in person
-aws cognito-idp admin-add-user-to-group $P --user-pool-id "$POOL" --username alex --group-name operators
+aws cognito-idp admin-add-user-to-group "${P[@]}" --user-pool-id "$POOL" --username alex --group-name operators
 ```
 
 (That puts the password on the command line, where `ps` shows it for a moment; the script doesn't.)
@@ -942,12 +943,12 @@ aws cognito-idp admin-add-user-to-group $P --user-pool-id "$POOL" --username ale
 
 1. `npm run operators -- reset alex` cuts them off and resets them in one go: global sign-out and disable (both take effect on the next request), TOTP off (the pool, which requires MFA, then asks for a new TOTP setup at the next sign-in), a new temporary password (printed once to hand over in person). They stay disabled until `npm run operators -- enable alex`, once they've a clean device and within the temporary password's day; `--enable` enables them at the end instead. `--send-email` (with `--enable`) sets a throwaway temporary password nobody sees (Cognito's `RESEND` refuses a confirmed user, and this puts them in `FORCE_CHANGE_PASSWORD`), then has Cognito resend the invitation with a new password it generates to the address on the account; that relies on `RESEND` working for a user just given a temporary password, so confirm the email arrives and works the first time it's used. It prints what the operator does next. Then run `npm run operators -- list` and check it shows them with `no TOTP`. By hand:
    ```bash
-   aws cognito-idp admin-user-global-sign-out $P --user-pool-id "$POOL" --username alex
-   aws cognito-idp admin-disable-user $P --user-pool-id "$POOL" --username alex
-   aws cognito-idp admin-set-user-mfa-preference $P --user-pool-id "$POOL" --username alex --software-token-mfa-settings Enabled=false,PreferredMfa=false
-   aws cognito-idp admin-set-user-password $P --user-pool-id "$POOL" --username alex --no-permanent \
+   aws cognito-idp admin-user-global-sign-out "${P[@]}" --user-pool-id "$POOL" --username alex
+   aws cognito-idp admin-disable-user "${P[@]}" --user-pool-id "$POOL" --username alex
+   aws cognito-idp admin-set-user-mfa-preference "${P[@]}" --user-pool-id "$POOL" --username alex --software-token-mfa-settings Enabled=false,PreferredMfa=false
+   aws cognito-idp admin-set-user-password "${P[@]}" --user-pool-id "$POOL" --username alex --no-permanent \
      --password "$(openssl rand -base64 18)Aa1!"   # note it, then hand it over in person
-   aws cognito-idp admin-enable-user $P --user-pool-id "$POOL" --username alex   # once they've a clean device
+   aws cognito-idp admin-enable-user "${P[@]}" --user-pool-id "$POOL" --username alex   # once they've a clean device
    ```
 2. Read what the account did: `npm run ops -- audit` for the month (and `--team PLATFORM` for team lists and searches), CloudWatch Logs Insights on the ops function's log group (`filter operator = "<sub>"`), and CloudTrail for the pool's calls. Comps it made can be ended with `npm run ops -- uncomp`; its audit items can't be changed or removed by the ops role.
 3. The operator deletes the old entry from their authenticator app, signs in with the new temporary password, and sets up TOTP again.

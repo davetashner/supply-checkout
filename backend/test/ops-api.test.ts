@@ -175,7 +175,7 @@ beforeEach(async () => {
   const setup = table.db();
   teamA = (await createTeam(setup, { userId: OWNER, email: OWNER_EMAIL }, { name: "Acme Cleaning" }, new Date(NOW - 2 * DAY))).team.teamId;
   teamB = (await createTeam(setup, { userId: "user-b" }, { name: "Bravo Janitorial" }, new Date(NOW - DAY))).team.teamId;
-  table.put({ PK: `TEAM#${teamA}`, SK: "SHEET#s1", type: "sheet", id: "s1", version: 1, client: "Secret client", date: "2026-09-26", items: {} });
+  table.put({ PK: `TEAM#${teamA}`, SK: "PROJECT#s1", type: "project", id: "s1", version: 1, client: "Secret client", date: "2026-09-26", items: {} });
   handler = createOpsHandler({
     dbFor: (operatorSub, teamId) => {
       tags.push(`${operatorSub} ${teamId ?? "."}`);
@@ -348,7 +348,7 @@ describe("teams", () => {
     // Another partition, a key with more or other attributes than a team's index entry, or not a META item
     { cursor: cursorOf({ GSI3PK: "OPS#OWNERS#t1", GSI3SK: "t1", PK: "TEAM#t1", SK: "META" }) },
     { cursor: cursorOf({ GSI3PK: "OPS#TEAMS", GSI3SK: "t1", PK: "TEAM#t1", SK: "META", extra: "x" }) },
-    { cursor: cursorOf({ GSI3PK: "OPS#TEAMS", GSI3SK: "t1", PK: "TEAM#t1", SK: "SHEET#s1" }) },
+    { cursor: cursorOf({ GSI3PK: "OPS#TEAMS", GSI3SK: "t1", PK: "TEAM#t1", SK: "PROJECT#s1" }) },
     { cursor: cursorOf({ GSI3PK: "OPS#TEAMS", GSI3SK: "t2", PK: "TEAM#t1", SK: "META" }) },
     { cursor: cursorOf({ GSI3PK: "OPS#TEAMS", GSI3SK: "t1", PK: "USER#t1", SK: "META" }) },
   ])("refuses %o", async (query) => {

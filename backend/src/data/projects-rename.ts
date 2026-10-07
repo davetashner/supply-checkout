@@ -262,7 +262,7 @@ export function itemBytes(value: unknown): number {
   return 0;
 }
 
-/** A project's totals as src/sheet-math.js `totals` adds them (the charge in whole cents), as artifact-import checks them. */
+/** A project's totals as src/project-math.js `totals` adds them (the charge in whole cents), as artifact-import checks them. */
 export interface ProjectTotals {
   readonly out: number;
   readonly ret: number;
@@ -277,7 +277,7 @@ const int = (v: unknown) => Math.max(0, Math.floor(Number(v) || 0));
 const cents = (n: number) => Math.round(Number((n * 100).toPrecision(12)));
 const round2 = (n: unknown) => cents(Number(n) || 0) / 100;
 
-/** sheet-math.js's `totals`, on a stored item's `items` map. */
+/** project-math.js's `totals`, on a stored item's `items` map. */
 export function projectTotals(item: Item): ProjectTotals {
   let out = 0, ret = 0, used = 0, chargeCents = 0, valueCents = 0, count = 0, equipmentOut = 0;
   const lines = item.items && typeof item.items === "object" && !Array.isArray(item.items) ? Object.values(item.items as Item) : [];

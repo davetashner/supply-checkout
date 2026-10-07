@@ -10,10 +10,10 @@
 //    It keeps the command's result, so a retry with the same ID gets the
 //    first result back and changes nothing. It expires after
 //    OPERATION_TTL_DAYS.
-// 2. The sheet line (checkout and return): add to `out` or `returned` on the
+// 2. The project line (checkout and return): add to `out` or `returned` on the
 //    server (`SET x = x + :qty`, since DynamoDB's ADD works only on top-level
-//    attributes and a line is nested in the sheet's `items` map) and ADD 1 to
-//    the sheet's `version`, only while the sheet is open, and for a return
+//    attributes and a line is nested in the project's `items` map) and ADD 1 to
+//    the project's `version`, only while the project is open, and for a return
 //    only while returned stays at or below out. A new line snapshots `code`,
 //    `name`, `price` and `cost` from the product (ADR 0014).
 // 3. The product: ADD to `stock` and 1 to `version` when the product tracks
@@ -23,7 +23,7 @@
 //    overwriting the command's change. Checking
 //    out a new line also checks the product's version, so the snapshot is the
 //    product as it is when the transaction commits.
-//    (A receipt's lines for a client, addLines, change only the sheet: those
+//    (A receipt's lines for a client, addLines, change only the project: those
 //    items were never in storage.)
 // 4. Put a movement record `MOVE#<escaped key>#<at>#<operationId>`: the
 //    product's stock history, which the nightly drift check reconciles against
@@ -37,11 +37,12 @@
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
-import { MAX_DOCUMENT_BYTES, sheetItem } from "./documents.js";
+import { MAX_DOCUMENT_BYTES, projectItem } from "./documents.js";
 import { ConflictError, InvalidInputError, NotFoundError, StockChangedError, TooLargeError, isCancelledAsTooLarge } from "./errors.js";
-import { BOUGHT_SUFFIX, adhocSheetId, barcode, date as checkDate, id as checkId, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
+import { BOUGHT_SUFFIX, adhocProjectId, barcode, date as checkDate, id as checkId, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
 import { count as checkCount, MAX_MONEY, MAX_QUANTITY, money, quantity as checkQuantity, roundCents, storedMoney } from "./money.js";
 import { type Page, queryPage } from "./query.js";
+import { legacy } from "./legacy-sheets.js";
 import { projectKeyFor, readProjectItem } from "./project-items.js";
 import { PK } from "./schema.js";
 import { storedMarkup } from "./settings.js";
@@ -56,8 +57,8 @@ export type CommandName = "checkout" | "quickTake" | "return" | "lost" | "move" 
  * counting the item, which removes its stock, recorded as taking it to 0.
  * `lost` is company equipment lost or broken on a job (ADR 0017): it left the
  * business, but stock already went down when it was checked out, so its
- * delta is always 0. `move` is a whole line moved from the ad hoc sheet to a
- * job sheet (ADR 0017, section 5): the items left storage once, at the quick
+ * delta is always 0. `move` is a whole line moved from the General Use project to a
+ * client project (ADR 0017, section 5): the items left storage once, at the quick
  * take, so its delta is always 0 too.
  */
 export type MovementReason = "checkout" | "return" | "receipt" | "count" | "uncount" | "import" | "delete" | "lost" | "move";
@@ -94,31 +95,32 @@ export interface CommandResult {
   readonly command: CommandName;
   readonly reason: MovementReason;
   readonly productKey: string;
-  /** The sheet it acted on: for a quick take, the ad hoc sheet it went on; for a move, the ad hoc sheet it came off. */
-  readonly sheetId?: string;
+  /** The project it acted on: for a quick take, the General Use project it went on; for a move, the General Use project it came off. */
+  readonly projectId?: string;
   /** Eaches checked out, returned or received; for a move, the line's `out`. Absent for a count or uncount. */
   readonly quantity?: number;
   /** For a count: the stock level counted. */
   readonly count?: number;
   /** The change to the product's `stock`: 0 when the product doesn't track stock (or isn't in inventory). */
   readonly stockDelta: number;
-  /** Checkout: true when this checkout added the line to the sheet. For a move: when it added the line to the job sheet. */
+  /** Checkout: true when this checkout added the line to the project. For a move: when it added the line to the client project. */
   readonly lineCreated?: boolean;
-  /** Quick take: true when this take started the ad hoc sheet. */
-  readonly sheetCreated?: boolean;
-  /** Move: the job sheet the line went to. */
-  readonly toSheetId?: string;
+  /** Quick take: true when this take started the General Use project. */
+  readonly projectCreated?: boolean;
+  /** Move: the client project the line went to. */
+  readonly toProjectId?: string;
   /** Move: the line's `returned` and `lost` that moved with it. */
   readonly returned?: number;
   readonly lost?: number;
   /**
-   * The new names of `sheetId`, `toSheetId` and `sheetCreated`, with the same
-   * values. A command's response carries both spellings through the rename's
-   * window (supply-checkout-005.6): withProjectNames adds them.
+   * The old names of `projectId`, `toProjectId` and `projectCreated`, with the
+   * same values: a command's response carries both spellings through the
+   * rename's window (supply-checkout-005.6), and withProjectNames adds them.
+   * An operation record stored before the rename has only these.
    */
-  readonly projectId?: string;
-  readonly toProjectId?: string;
-  readonly projectCreated?: boolean;
+  readonly sheetId?: string;
+  readonly toSheetId?: string;
+  readonly sheetCreated?: boolean;
   /** Checkout of a new line: what the line copied. */
   readonly snapshot?: LineSnapshot;
   /** Receipt: what was paid per each. */
@@ -146,7 +148,7 @@ export interface Movement {
   readonly tracked: boolean;
   readonly quantity?: number;
   readonly count?: number;
-  /** The project a checkout, return or lost record was on; for a move, the job project the line went to. */
+  /** The project a checkout, return or lost record was on; for a move, the client project the line went to. */
   readonly projectId?: string;
   /** Move: the General Use project the line came off. */
   readonly fromProjectId?: string;
@@ -199,7 +201,7 @@ export interface LostInput {
   readonly sheetId?: unknown;
   readonly productKey: unknown;
   readonly quantity: unknown;
-  /** Dollars to charge the client for the lot, if anything (job sheets only). */
+  /** Dollars to charge the client for the lot, if anything (client projects only). */
   readonly charge?: unknown;
 }
 
@@ -247,12 +249,12 @@ function eitherName(current: unknown, old: unknown, what: string): unknown {
 
 /** The command's project ID: `projectId`, or its old name `sheetId`. */
 function projectIdOf(input: { readonly projectId?: unknown; readonly sheetId?: unknown }): string {
-  return checkId(eitherName(input.projectId, input.sheetId, "projectId (or sheetId)"), "sheet ID");
+  return checkId(eitherName(input.projectId, input.sheetId, "projectId (or sheetId)"), "project ID");
 }
 
 /** A move's destination: `toProjectId`, or its old name `toSheetId`. */
 function toProjectIdOf(input: MoveInput): string {
-  return checkId(eitherName(input.toProjectId, input.toSheetId, "toProjectId (or toSheetId)"), "toSheetId");
+  return checkId(eitherName(input.toProjectId, input.toSheetId, "toProjectId (or toSheetId)"), "toProjectId");
 }
 
 /** A client-generated operation ID: a UUID, compared in lowercase. */
@@ -274,8 +276,8 @@ function anyOf(common: string[], alternatives: string[][]): string {
   return alternatives.map((alt) => [...common, ...alt].join(" AND ")).join(" OR ");
 }
 
-/** The sheet isn't closed. The app treats any status but "closed" as open. */
-const SHEET_OPEN = [["attribute_not_exists(#status)"], ["#status <> :closed"]];
+/** The project isn't closed. The app treats any status but "closed" as open. */
+const PROJECT_OPEN = [["attribute_not_exists(#status)"], ["#status <> :closed"]];
 
 function cancellationCodes(error: unknown): (string | undefined)[] | undefined {
   if ((error as { name?: string } | null)?.name !== "TransactionCanceledException") return undefined;
@@ -289,7 +291,7 @@ export function isBoughtKey(key: string): boolean {
   return key.endsWith(BOUGHT_SUFFIX);
 }
 
-/** A sheet's line for `key`, only if the sheet has one: never a built-in like `constructor` from the map's prototype. */
+/** A project's line for `key`, only if the project has one: never a built-in like `constructor` from the map's prototype. */
 function lineOf(items: Item | undefined, key: string): unknown {
   return items !== undefined && Object.hasOwn(items, key) ? items[key] : undefined;
 }
@@ -300,7 +302,7 @@ async function getItem(db: Db, key: Item): Promise<Item | undefined> {
 }
 
 /** A request fingerprint's fields under their old names (sheets-to-projects rename, supply-checkout-005.6). */
-const LEGACY_REQUEST_FIELDS: Readonly<Record<string, string>> = { sheetId: "projectId", toSheetId: "toProjectId" };
+const LEGACY_REQUEST_FIELDS: Readonly<Record<string, string>> = legacy.requestFields;
 
 /**
  * A command's request fingerprint in its canonical form: the old field names
@@ -330,7 +332,7 @@ export function canonicalRequest(request: unknown): unknown {
 export function withProjectNames<R>(result: R): R {
   if (typeof result !== "object" || result === null) return result;
   const r = { ...(result as Record<string, unknown>) };
-  for (const [old, current] of [["sheetId", "projectId"], ["toSheetId", "toProjectId"], ["sheetCreated", "projectCreated"]] as const) {
+  for (const [old, current] of Object.entries(legacy.resultFields)) {
     if (r[old] === undefined && r[current] !== undefined) r[old] = r[current];
     if (r[current] === undefined && r[old] !== undefined) r[current] = r[old];
   }
@@ -393,7 +395,7 @@ async function execute<R = CommandResult>(
       );
       return { result: withProjectNames(result), replayed: false };
     } catch (error) {
-      if (isCancelledAsTooLarge(error)) throw new TooLargeError("This sheet is too large to add to; start another sheet");
+      if (isCancelledAsTooLarge(error)) throw new TooLargeError("This project is too large to add to; start another project");
       const codes = cancellationCodes(error);
       // Anything but a failed condition or a race (a malformed item, say) won't get better by retrying
       if (!codes || !codes.every((c) => RETRYABLE.has(c))) throw error;
@@ -482,7 +484,7 @@ function productWrite(
 
 const NO_EXTRA = { names: {}, values: {}, clauses: [] };
 
-/** A sheet line's counts, as stored, or InvalidInputError if they can't be added to. */
+/** A project line's counts, as stored, or InvalidInputError if they can't be added to. */
 function lineCounts(line: Item): { out: number; returned: number | undefined; lost: number | undefined } {
   const { out, returned, lost } = line;
   if (!isCount(out) || (returned !== undefined && !isCount(returned)) || (lost !== undefined && !isCount(lost))) {
@@ -497,40 +499,40 @@ function unchangedCount(field: "#returned" | "#lost", value: number | undefined,
 }
 
 /** The project, from whichever key it's under (project-items.ts), and the product. */
-function readSheetAndProduct(db: Db, ctx: TeamContext, sheetId: string, key: string): Promise<[Item | undefined, Item | undefined]> {
-  return Promise.all([readProjectItem(db, ctx.teamId, sheetId), getItem(db, keys.product(ctx.teamId, key))]);
+function readProjectAndProduct(db: Db, ctx: TeamContext, projectId: string, key: string): Promise<[Item | undefined, Item | undefined]> {
+  return Promise.all([readProjectItem(db, ctx.teamId, projectId), getItem(db, keys.product(ctx.teamId, key))]);
 }
 
-function openSheet(sheet: Item | undefined, action: string): Item {
-  if (!sheet) throw new NotFoundError("No such sheet");
-  if (sheet.status === "closed") throw new ConflictError(`This sheet is closed. Reopen it to ${action}.`);
-  if (sheet.items !== undefined && !isMap(sheet.items)) throw new InvalidInputError("This sheet's items are malformed");
-  return sheet;
+function openProject(project: Item | undefined, action: string): Item {
+  if (!project) throw new NotFoundError("No such project");
+  if (project.status === "closed") throw new ConflictError(`This project is closed. Reopen it to ${action}.`);
+  if (project.items !== undefined && !isMap(project.items)) throw new InvalidInputError("This project's items are malformed");
+  return project;
 }
 
 /**
- * Checks `quantity` eaches of `productKey` out onto a sheet: adds them to the
+ * Checks `quantity` eaches of `productKey` out onto a project: adds them to the
  * line's `out` (creating the line if needed) and takes them off stock.
  *
  * A new line copies `code`, `name`, `price` and `cost` from the product. Only
  * for an item that isn't in inventory does it use the request's `name` and
  * `price` (both required then), and its optional `code` and `cost`. An
- * existing line's copy never changes. The sheet must be open.
+ * existing line's copy never changes. The project must be open.
  */
 export async function checkout(db: Db, ctx: TeamContext, input: CheckoutInput, now = new Date()): Promise<CommandOutcome> {
   writable(db, ctx);
   const opId = operationId(input.operationId);
-  const sheetId = projectIdOf(input);
+  const projectId = projectIdOf(input);
   const { key, qty, oneOff } = takeInput(input);
-  const request = JSON.stringify({ command: "checkout", userId: ctx.userId, projectId: sheetId, key, qty, ...oneOff });
+  const request = JSON.stringify({ command: "checkout", userId: ctx.userId, projectId, key, qty, ...oneOff });
   const at = now.toISOString();
 
   return execute(db, ctx, opId, "checkout", request, now, async () => {
-    const [rawSheet, product] = await readSheetAndProduct(db, ctx, sheetId, key);
-    const sheet = openSheet(rawSheet, "check items out");
-    // The ad hoc sheet takes only quick takes (ADR 0017, section 4), and a sheet's kind never changes
-    if (sheet.kind === "adhoc") throw new InvalidInputError("Take items for no job with Quick take, not onto the ad hoc sheet");
-    return takePlan(db, ctx, { opId, command: "checkout", sheet, sheetId, key, product, qty, oneOff, at, kind: "job" });
+    const [rawProject, product] = await readProjectAndProduct(db, ctx, projectId, key);
+    const project = openProject(rawProject, "check items out");
+    // The General Use project takes only quick takes (ADR 0017, section 4), and a project's kind never changes
+    if (project.kind === "adhoc") throw new InvalidInputError("Take items for no job with Quick take, not onto the General Use project");
+    return takePlan(db, ctx, { opId, command: "checkout", project, projectId, key, product, qty, oneOff, at, kind: "job" });
   });
 }
 
@@ -604,27 +606,27 @@ function takeProduct(db: Db, ctx: TeamContext, key: string, product: Item | unde
 interface TakeOptions {
   readonly opId: string;
   readonly command: "checkout" | "quickTake";
-  /** The sheet as read: open, with its items a map or missing. */
-  readonly sheet: Item;
-  readonly sheetId: string;
+  /** The project as read: open, with its items a map or missing. */
+  readonly project: Item;
+  readonly projectId: string;
   readonly key: string;
   readonly product: Item | undefined;
   readonly qty: number;
   readonly oneOff: OneOff;
   readonly at: string;
-  /** The sheet's kind, which the transaction checks it still is: a job sheet's checkout, or the ad hoc sheet's quick take. */
+  /** The project's kind, which the transaction checks it still is: a client project's checkout, or the General Use project's quick take. */
   readonly kind: "job" | "adhoc";
 }
 
 /**
- * Takes `qty` of `key` onto an open sheet that exists: adds to the line's
+ * Takes `qty` of `key` onto an open project that exists: adds to the line's
  * `out`, or creates the line with its snapshot, takes it off stock, and
- * records a checkout movement. The sheet's part is conditional on it still
+ * records a checkout movement. The project's part is conditional on it still
  * being open and of `kind`, and the line on still being there (or not).
  */
 function takePlan(db: Db, ctx: TeamContext, o: TakeOptions): Plan {
-  const { sheet, sheetId, key, qty, at } = o;
-  const items = sheet.items as Item | undefined;
+  const { project, projectId, key, qty, at } = o;
+  const items = project.items as Item | undefined;
   const existing = lineOf(items, key);
   if (existing !== undefined && !isMap(existing)) throw new InvalidInputError("This line is malformed; correct it first");
 
@@ -652,10 +654,10 @@ function takePlan(db: Db, ctx: TeamContext, o: TakeOptions): Plan {
   } else {
     snapshot = lineSnapshot(o.product, o.oneOff);
     const line = newLine(snapshot, qty, ctx.userId, at);
-    // Refuse early a line that would take the sheet past the document limit
+    // Refuse early a line that would take the project past the document limit
     // (DynamoDB would refuse it past 400 KB anyway, which execute also maps to 413)
-    if (Buffer.byteLength(JSON.stringify(sheet), "utf8") + Buffer.byteLength(JSON.stringify({ [key]: line }), "utf8") > MAX_DOCUMENT_BYTES) {
-      throw new TooLargeError(`Sheets are limited to ${MAX_DOCUMENT_BYTES} bytes; start another sheet`);
+    if (Buffer.byteLength(JSON.stringify(project), "utf8") + Buffer.byteLength(JSON.stringify({ [key]: line }), "utf8") > MAX_DOCUMENT_BYTES) {
+      throw new TooLargeError(`Projects are limited to ${MAX_DOCUMENT_BYTES} bytes; start another project`);
     }
     if (items) {
       values[":line"] = line;
@@ -678,7 +680,7 @@ function takePlan(db: Db, ctx: TeamContext, o: TakeOptions): Plan {
     command: o.command,
     reason: "checkout",
     productKey: key,
-    sheetId,
+    projectId,
     quantity: qty,
     stockDelta,
     lineCreated: !existing,
@@ -693,15 +695,15 @@ function takePlan(db: Db, ctx: TeamContext, o: TakeOptions): Plan {
         Update: {
           TableName: db.tableName,
           // Where the project was read from (project-items.ts)
-          Key: projectKeyFor(ctx.teamId, sheetId, sheet),
+          Key: projectKeyFor(ctx.teamId, projectId, project),
           UpdateExpression: update,
-          ConditionExpression: anyOf([...clauses, kindClause], SHEET_OPEN),
+          ConditionExpression: anyOf([...clauses, kindClause], PROJECT_OPEN),
           ExpressionAttributeNames: names,
           ExpressionAttributeValues: storable(values),
         },
       },
       productItem,
-      movementPut(db, ctx, { productKey: key, reason: "checkout", delta: stockDelta, tracked, quantity: qty, projectId: sheetId, operationId: o.opId, userId: ctx.userId, at }),
+      movementPut(db, ctx, { productKey: key, reason: "checkout", delta: stockDelta, tracked, quantity: qty, projectId, operationId: o.opId, userId: ctx.userId, at }),
     ],
   };
 }
@@ -715,25 +717,25 @@ export interface QuickTakeInput {
   readonly price?: unknown;
   readonly code?: unknown;
   readonly cost?: unknown;
-  /** The person's local date, YYYY-MM-DD: a new ad hoc sheet's date. Default: today in UTC. */
+  /** The person's local date, YYYY-MM-DD: a new General Use project's date. Default: today in UTC. */
   readonly date?: unknown;
 }
 
-/** How many taken ad hoc IDs a quick take steps past (sheets the ADHOC count doesn't know of) before giving up. */
+/** How many taken ad hoc IDs a quick take steps past (projects the ADHOC count doesn't know of) before giving up. */
 const MAX_ADHOC_SKIPS = 20;
 
 /**
  * Quick take (ADR 0017, section 4): checks `quantity` eaches of `productKey`
- * out onto the team's open ad hoc sheet, without choosing a sheet.
+ * out onto the team's open General Use project, without choosing a project.
  *
- * Reads the team's ADHOC item (adhoc.ts). When it names an open ad hoc sheet,
+ * Reads the team's ADHOC item (adhoc.ts). When it names an open General Use project,
  * this is a checkout onto it, on the condition that ADHOC is unchanged and the
- * sheet is still an open ad hoc sheet. Otherwise it makes the next one,
+ * project is still an open General Use project. Otherwise it makes the next one,
  * `adhoc-<count + 1>` (with `kind: "adhoc"`, no client, `date`, and the line),
  * and points ADHOC at it, on the condition that ADHOC is still as read and the
- * sheet doesn't exist. Two first takes at once both aim at the same sheet: one
- * transaction makes it, the other is cancelled, reads again, finds the sheet
- * open and adds to it. `result.sheetId` names the sheet, and a retry with the
+ * project doesn't exist. Two first takes at once both aim at the same project: one
+ * transaction makes it, the other is cancelled, reads again, finds the project
+ * open and adds to it. `result.projectId` names the project, and a retry with the
  * same operation ID returns the same one. Stock and the movement are as for a
  * checkout.
  */
@@ -741,7 +743,7 @@ export async function quickTake(db: Db, ctx: TeamContext, input: QuickTakeInput,
   writable(db, ctx);
   const opId = operationId(input.operationId);
   const { key, qty, oneOff } = takeInput(input);
-  const day = input.date === undefined ? now.toISOString().slice(0, 10) : sheetDate(input.date);
+  const day = input.date === undefined ? now.toISOString().slice(0, 10) : projectDate(input.date);
   const request = JSON.stringify({ command: "quickTake", userId: ctx.userId, key, qty, ...oneOff, date: day });
   const at = now.toISOString();
 
@@ -751,9 +753,9 @@ export async function quickTake(db: Db, ctx: TeamContext, input: QuickTakeInput,
     const openId = adhocOpen(pointer);
     const open = openId === undefined ? undefined : await readProjectItem(db, ctx.teamId, openId);
     if (openId !== undefined && open && open.kind === "adhoc" && open.status !== "closed") {
-      const plan = takePlan(db, ctx, { opId, command: "quickTake", sheet: openSheet(open, "take"), sheetId: openId, key, product, qty, oneOff, at, kind: "adhoc" });
-      const [sheetWrite, ...rest] = plan.writes;
-      // The pointer still names this sheet when the take commits
+      const plan = takePlan(db, ctx, { opId, command: "quickTake", project: openProject(open, "take"), projectId: openId, key, product, qty, oneOff, at, kind: "adhoc" });
+      const [projectWrite, ...rest] = plan.writes;
+      // The pointer still names this project when the take commits
       const check = {
         ConditionCheck: {
           TableName: db.tableName,
@@ -763,34 +765,34 @@ export async function quickTake(db: Db, ctx: TeamContext, input: QuickTakeInput,
           ...(unchanged.ExpressionAttributeValues ? { ExpressionAttributeValues: unchanged.ExpressionAttributeValues } : {}),
         },
       };
-      return { result: plan.result, writes: [sheetWrite as TransactItem, check, ...rest] };
+      return { result: plan.result, writes: [projectWrite as TransactItem, check, ...rest] };
     }
 
-    // No open ad hoc sheet: the next number that's free (one made outside the count, by a restore say, is stepped past)
+    // No open General Use project: the next number that's free (one made outside the count, by a restore say, is stepped past)
     let n = adhocCount(pointer) + 1;
-    for (let skips = 0; await readProjectItem(db, ctx.teamId, adhocSheetId(n)); skips++) {
-      if (skips >= MAX_ADHOC_SKIPS) throw new ConflictError("Couldn't start the ad hoc sheet; try again");
+    for (let skips = 0; await readProjectItem(db, ctx.teamId, adhocProjectId(n)); skips++) {
+      if (skips >= MAX_ADHOC_SKIPS) throw new ConflictError("Couldn't start the General Use project; try again");
       n++;
     }
-    const sheetId = adhocSheetId(n);
+    const projectId = adhocProjectId(n);
     const snapshot = lineSnapshot(product, oneOff);
     const data = { kind: "adhoc", client: "", date: day, status: "open", createdBy: ctx.userId, createdAt: at, items: Object.fromEntries([[key, newLine(snapshot, qty, ctx.userId, at)]]) };
     const { item: productItem, tracked } = takeProduct(db, ctx, key, product, qty, true);
     const stockDelta = tracked ? -qty : 0;
     return {
-      result: { operationId: opId, command: "quickTake", reason: "checkout", productKey: key, sheetId, quantity: qty, stockDelta, lineCreated: true, sheetCreated: true, snapshot, userId: ctx.userId, at },
+      result: { operationId: opId, command: "quickTake", reason: "checkout", productKey: key, projectId, quantity: qty, stockDelta, lineCreated: true, projectCreated: true, snapshot, userId: ctx.userId, at },
       writes: [
-        { Put: { TableName: db.tableName, Item: storable(sheetItem(ctx.teamId, sheetId, data, 1)), ConditionExpression: "attribute_not_exists(PK)" } },
-        adhocPut(db, ctx.teamId, pointer, { open: sheetId, count: n }, at),
+        { Put: { TableName: db.tableName, Item: storable(projectItem(ctx.teamId, projectId, data, 1)), ConditionExpression: "attribute_not_exists(PK)" } },
+        adhocPut(db, ctx.teamId, pointer, { open: projectId, count: n }, at),
         productItem,
-        movementPut(db, ctx, { productKey: key, reason: "checkout", delta: stockDelta, tracked, quantity: qty, projectId: sheetId, operationId: opId, userId: ctx.userId, at }),
+        movementPut(db, ctx, { productKey: key, reason: "checkout", delta: stockDelta, tracked, quantity: qty, projectId, operationId: opId, userId: ctx.userId, at }),
       ],
     };
   });
 }
 
 /** A date sent with a quick take: YYYY-MM-DD. */
-function sheetDate(value: unknown): string {
+function projectDate(value: unknown): string {
   try {
     return checkDate(value);
   } catch {
@@ -801,23 +803,23 @@ function sheetDate(value: unknown): string {
 /**
  * Records `quantity` eaches of a line coming back: adds them to the line's
  * `returned`, which can't go above `out`, and puts them back in stock. The
- * sheet must be open: a closed sheet takes no returns (reopen it, or correct
+ * project must be open: a closed project takes no returns (reopen it, or correct
  * the line's counts with a document edit, which doesn't move stock).
  */
 export async function returnItems(db: Db, ctx: TeamContext, input: ReturnInput, now = new Date()): Promise<CommandOutcome> {
   writable(db, ctx);
   const opId = operationId(input.operationId);
-  const sheetId = projectIdOf(input);
+  const projectId = projectIdOf(input);
   const key = productKey(input.productKey);
   const qty = checkQuantity(input.quantity);
-  const request = JSON.stringify({ command: "return", userId: ctx.userId, projectId: sheetId, key, qty });
+  const request = JSON.stringify({ command: "return", userId: ctx.userId, projectId, key, qty });
   const at = now.toISOString();
 
   return execute(db, ctx, opId, "return", request, now, async () => {
-    const [rawSheet, product] = await readSheetAndProduct(db, ctx, sheetId, key);
-    const sheet = openSheet(rawSheet, "record returns");
-    const line = lineOf(sheet.items as Item | undefined, key);
-    if (!isMap(line)) throw new InvalidInputError("This item isn't on this sheet");
+    const [rawProject, product] = await readProjectAndProduct(db, ctx, projectId, key);
+    const project = openProject(rawProject, "record returns");
+    const line = lineOf(project.items as Item | undefined, key);
+    if (!isMap(line)) throw new InvalidInputError("This item isn't on this project");
     // Bought for the client (ADR 0017, section 2a): it belongs to them and isn't expected back
     if (line.purchased === true) throw new InvalidInputError("This was bought for the client, so it doesn't come back");
     const { out, returned, lost } = lineCounts(line);
@@ -831,14 +833,14 @@ export async function returnItems(db: Db, ctx: TeamContext, input: ReturnInput, 
     const { item: productItem, tracked } = productWrite(db, ctx, key, product, qty, NO_EXTRA);
     const stockDelta = tracked ? qty : 0;
     return {
-      result: { operationId: opId, command: "return", reason: "return", productKey: key, sheetId, quantity: qty, stockDelta, userId: ctx.userId, at },
+      result: { operationId: opId, command: "return", reason: "return", productKey: key, projectId, quantity: qty, stockDelta, userId: ctx.userId, at },
       writes: [
         {
           Update: {
             TableName: db.tableName,
-            Key: projectKeyFor(ctx.teamId, sheetId, sheet),
+            Key: projectKeyFor(ctx.teamId, projectId, project),
             UpdateExpression: "SET #items.#line.#returned = if_not_exists(#items.#line.#returned, :zero) + :qty ADD #version :one",
-            ConditionExpression: anyOf(clauses, SHEET_OPEN),
+            ConditionExpression: anyOf(clauses, PROJECT_OPEN),
             ExpressionAttributeNames: { "#items": "items", "#line": key, "#out": "out", "#returned": "returned", "#lost": "lost", "#status": "status", "#version": "version" },
             ExpressionAttributeValues: {
               ":qty": qty,
@@ -852,7 +854,7 @@ export async function returnItems(db: Db, ctx: TeamContext, input: ReturnInput, 
           },
         },
         productItem,
-        movementPut(db, ctx, { productKey: key, reason: "return", delta: stockDelta, tracked, quantity: qty, projectId: sheetId, operationId: opId, userId: ctx.userId, at }),
+        movementPut(db, ctx, { productKey: key, reason: "return", delta: stockDelta, tracked, quantity: qty, projectId, operationId: opId, userId: ctx.userId, at }),
       ],
     };
   });
@@ -863,27 +865,27 @@ export async function returnItems(db: Db, ctx: TeamContext, input: ReturnInput, 
  * (ADR 0017, section 3): adds them to the line's `lost`, which with `returned`
  * can't go above `out`, and records a `lost` movement in the item's history.
  * Stock doesn't change: it went down when the item was checked out, and the
- * item has left the business. With `charge` (dollars for the lot, job sheets
- * only), adds it to the line's `lostCharge`, which the sheet charges the
- * client. The sheet must be open.
+ * item has left the business. With `charge` (dollars for the lot, client projects
+ * only), adds it to the line's `lostCharge`, which the project charges the
+ * client. The project must be open.
  */
 export async function markLost(db: Db, ctx: TeamContext, input: LostInput, now = new Date()): Promise<CommandOutcome> {
   writable(db, ctx);
   const opId = operationId(input.operationId);
-  const sheetId = projectIdOf(input);
+  const projectId = projectIdOf(input);
   const key = productKey(input.productKey);
   const qty = checkQuantity(input.quantity);
   const charge = input.charge === undefined ? undefined : money(input.charge, "charge");
-  const request = JSON.stringify({ command: "lost", userId: ctx.userId, projectId: sheetId, key, qty, ...(charge === undefined ? {} : { charge }) });
+  const request = JSON.stringify({ command: "lost", userId: ctx.userId, projectId, key, qty, ...(charge === undefined ? {} : { charge }) });
   const at = now.toISOString();
 
   return execute(db, ctx, opId, "lost", request, now, async () => {
-    const [rawSheet, product] = await readSheetAndProduct(db, ctx, sheetId, key);
-    const sheet = openSheet(rawSheet, "record what was lost or broken");
-    // An ad hoc sheet (supply-checkout-mdae) has no client to charge
-    if (charge !== undefined && sheet.kind === "adhoc") throw new InvalidInputError("This sheet has no client to charge");
-    const line = lineOf(sheet.items as Item | undefined, key);
-    if (!isMap(line)) throw new InvalidInputError("This item isn't on this sheet");
+    const [rawProject, product] = await readProjectAndProduct(db, ctx, projectId, key);
+    const project = openProject(rawProject, "record what was lost or broken");
+    // A General Use project (supply-checkout-mdae) has no client to charge
+    if (charge !== undefined && project.kind === "adhoc") throw new InvalidInputError("This project has no client to charge");
+    const line = lineOf(project.items as Item | undefined, key);
+    if (!isMap(line)) throw new InvalidInputError("This item isn't on this project");
     if (line.kind !== "equipment") throw new InvalidInputError("Only company equipment is recorded as lost or broken");
     const { out, returned, lost } = lineCounts(line);
     const left = out - (returned ?? 0) - (lost ?? 0);
@@ -919,7 +921,7 @@ export async function markLost(db: Db, ctx: TeamContext, input: LostInput, now =
         command: "lost",
         reason: "lost",
         productKey: key,
-        sheetId,
+        projectId,
         quantity: qty,
         stockDelta: 0,
         ...(charge === undefined ? {} : { charge }),
@@ -930,9 +932,9 @@ export async function markLost(db: Db, ctx: TeamContext, input: LostInput, now =
         {
           Update: {
             TableName: db.tableName,
-            Key: projectKeyFor(ctx.teamId, sheetId, sheet),
+            Key: projectKeyFor(ctx.teamId, projectId, project),
             UpdateExpression: `SET ${sets.join(", ")} ADD #version :one`,
-            ConditionExpression: anyOf(clauses, SHEET_OPEN),
+            ConditionExpression: anyOf(clauses, PROJECT_OPEN),
             ExpressionAttributeNames: names,
             ExpressionAttributeValues: values,
           },
@@ -943,7 +945,7 @@ export async function markLost(db: Db, ctx: TeamContext, input: LostInput, now =
           delta: 0,
           tracked,
           quantity: qty,
-          projectId: sheetId,
+          projectId,
           ...(charge === undefined ? {} : { charge }),
           operationId: opId,
           userId: ctx.userId,
@@ -960,85 +962,85 @@ export interface MoveInput {
   readonly projectId?: unknown;
   readonly sheetId?: unknown;
   readonly productKey: unknown;
-  /** The open job project it goes to: `toProjectId`, or its old name `toSheetId`. */
+  /** The open client project it goes to: `toProjectId`, or its old name `toSheetId`. */
   readonly toProjectId?: unknown;
   readonly toSheetId?: unknown;
 }
 
-/** A sheet's version condition: the version read, or none when it had none. */
-function sameVersion(sheet: Item, values: Item): string {
-  if (typeof sheet.version !== "number") return "attribute_not_exists(#version)";
-  values[":version"] = sheet.version;
+/** A project's version condition: the version read, or none when it had none. */
+function sameVersion(project: Item, values: Item): string {
+  if (typeof project.version !== "number") return "attribute_not_exists(#version)";
+  values[":version"] = project.version;
   return "#version = :version";
 }
 
 /**
- * Moves a whole line from the open ad hoc sheet to an open job sheet (ADR
+ * Moves a whole line from the open General Use project to an open client project (ADR
  * 0017, section 5), with its counts (`out`, `returned`, `lost`), in one
  * transaction:
  *
- * - The ad hoc sheet loses the line, on the condition that the sheet is
+ * - The General Use project loses the line, on the condition that the project is
  *   unchanged since the read (its version), so the counts moved are exactly
  *   the ones taken off.
- * - The job sheet's line for the item gets the counts added to it, keeping its
+ * - The client project's line for the item gets the counts added to it, keeping its
  *   own snapshot (its price), or, if it has none, the line arrives as it is,
  *   with the snapshot it was taken with. Lines of different kinds (the item's
  *   kind changed between the two checkouts) are refused.
- * - A `move` movement records the counts, `fromSheetId` and `sheetId` (the
- *   job sheet), with `delta: 0`: stock doesn't change, since the items left
+ * - A `move` movement records the counts, `fromProjectId` and `projectId` (the
+ *   client project), with `delta: 0`: stock doesn't change, since the items left
  *   storage once, at the quick take.
  *
- * Both sheets get a new version. Both must be open, and the job sheet must be
- * a job sheet, checked in the transaction. A retry with the same operation ID
+ * Both projects get a new version. Both must be open, and the client project must be
+ * a client project, checked in the transaction. A retry with the same operation ID
  * changes nothing more.
  */
 export async function moveLine(db: Db, ctx: TeamContext, input: MoveInput, now = new Date()): Promise<CommandOutcome> {
   writable(db, ctx);
   const opId = operationId(input.operationId);
-  const sheetId = projectIdOf(input);
-  const toSheetId = toProjectIdOf(input);
+  const projectId = projectIdOf(input);
+  const toProjectId = toProjectIdOf(input);
   const key = productKey(input.productKey);
-  const request = JSON.stringify({ command: "move", userId: ctx.userId, projectId: sheetId, key, toProjectId: toSheetId });
+  const request = JSON.stringify({ command: "move", userId: ctx.userId, projectId, key, toProjectId });
   const at = now.toISOString();
 
   return execute(db, ctx, opId, "move", request, now, async () => {
     const [rawFrom, rawTo, product, pointer] = await Promise.all([
-      readProjectItem(db, ctx.teamId, sheetId),
-      readProjectItem(db, ctx.teamId, toSheetId),
+      readProjectItem(db, ctx.teamId, projectId),
+      readProjectItem(db, ctx.teamId, toProjectId),
       getItem(db, keys.product(ctx.teamId, key)),
       readAdhoc(db, ctx.teamId),
     ]);
-    const from = openSheet(rawFrom, "move its lines");
-    // The team's open ad hoc sheet, the one its ADHOC item names (checked in the transaction)
-    if (from.kind !== "adhoc" || adhocOpen(pointer) !== sheetId) throw new InvalidInputError("Only a line on the open ad hoc sheet moves to a job sheet");
-    if (!rawTo) throw new NotFoundError("No such job sheet");
-    const to = openSheet(rawTo, "move a line to it");
-    if (to.kind !== undefined) throw new InvalidInputError("A line moves to a client's sheet only");
+    const from = openProject(rawFrom, "move its lines");
+    // The team's open General Use project, the one its ADHOC item names (checked in the transaction)
+    if (from.kind !== "adhoc" || adhocOpen(pointer) !== projectId) throw new InvalidInputError("Only a line on the open General Use project moves to another project");
+    if (!rawTo) throw new NotFoundError("No such project");
+    const to = openProject(rawTo, "move a line to it");
+    if (to.kind !== undefined) throw new InvalidInputError("A line moves to a client project only");
     const line = lineOf(from.items as Item | undefined, key);
-    if (!isMap(line)) throw new InvalidInputError("This item isn't on this sheet");
+    if (!isMap(line)) throw new InvalidInputError("This item isn't on this project");
     if (line.purchased === true) throw new InvalidInputError("This line was bought for a client and doesn't move");
     const { out, returned = 0, lost = 0 } = lineCounts(line);
     const toItems = to.items as Item | undefined;
     const existing = lineOf(toItems, key);
-    if (existing !== undefined && !isMap(existing)) throw new InvalidInputError("The job sheet's line for this item is malformed; correct it first");
+    if (existing !== undefined && !isMap(existing)) throw new InvalidInputError("The project's line for this item is malformed; correct it first");
     if (existing && (existing.kind ?? null) !== (line.kind ?? null)) {
-      throw new InvalidInputError(existing.kind === "equipment" ? "The job sheet has this item as company equipment; correct the lines by hand" : "The job sheet has this item as a supply; correct the lines by hand");
+      throw new InvalidInputError(existing.kind === "equipment" ? "The project has this item as company equipment; correct the lines by hand" : "The project has this item as a supply; correct the lines by hand");
     }
 
-    // Off the ad hoc sheet, only as it was read
+    // Off the General Use project, only as it was read
     const fromValues: Item = { ":one": 1, ":closed": "closed", ":adhoc": "adhoc" };
     const fromWrite: TransactItem = {
       Update: {
         TableName: db.tableName,
-        Key: projectKeyFor(ctx.teamId, sheetId, from),
+        Key: projectKeyFor(ctx.teamId, projectId, from),
         UpdateExpression: "REMOVE #items.#line ADD #version :one",
-        ConditionExpression: anyOf(["#kind = :adhoc", "attribute_exists(#items.#line)", sameVersion(from, fromValues)], SHEET_OPEN),
+        ConditionExpression: anyOf(["#kind = :adhoc", "attribute_exists(#items.#line)", sameVersion(from, fromValues)], PROJECT_OPEN),
         ExpressionAttributeNames: { "#items": "items", "#line": key, "#kind": "kind", "#status": "status", "#version": "version" },
         ExpressionAttributeValues: fromValues,
       },
     };
 
-    // Onto the job sheet: counts added to its line, or the line as it is
+    // Onto the client project: counts added to its line, or the line as it is
     const names: Record<string, string> = { "#items": "items", "#line": key, "#kind": "kind", "#status": "status", "#version": "version" };
     const values: Item = { ":one": 1, ":closed": "closed" };
     let update: string;
@@ -1075,7 +1077,7 @@ export async function moveLine(db: Db, ctx: TeamContext, input: MoveInput, now =
       update = `SET ${sets.join(", ")} ADD #version :one`;
     } else {
       if (Buffer.byteLength(JSON.stringify(to), "utf8") + Buffer.byteLength(JSON.stringify({ [key]: line }), "utf8") > MAX_DOCUMENT_BYTES) {
-        throw new TooLargeError(`Sheets are limited to ${MAX_DOCUMENT_BYTES} bytes; move it to another sheet`);
+        throw new TooLargeError(`Projects are limited to ${MAX_DOCUMENT_BYTES} bytes; move it to another project`);
       }
       if (toItems) {
         values[":line"] = line;
@@ -1091,9 +1093,9 @@ export async function moveLine(db: Db, ctx: TeamContext, input: MoveInput, now =
     const toWrite: TransactItem = {
       Update: {
         TableName: db.tableName,
-        Key: projectKeyFor(ctx.teamId, toSheetId, to),
+        Key: projectKeyFor(ctx.teamId, toProjectId, to),
         UpdateExpression: update,
-        ConditionExpression: anyOf([...clauses, "attribute_not_exists(#kind)"], SHEET_OPEN),
+        ConditionExpression: anyOf([...clauses, "attribute_not_exists(#kind)"], PROJECT_OPEN),
         ExpressionAttributeNames: names,
         ExpressionAttributeValues: storable(values),
       },
@@ -1105,8 +1107,8 @@ export async function moveLine(db: Db, ctx: TeamContext, input: MoveInput, now =
         command: "move",
         reason: "move",
         productKey: key,
-        sheetId,
-        toSheetId,
+        projectId,
+        toProjectId,
         quantity: out,
         returned,
         lost,
@@ -1118,9 +1120,9 @@ export async function moveLine(db: Db, ctx: TeamContext, input: MoveInput, now =
       writes: [
         fromWrite,
         toWrite,
-        // The ADHOC item still names the ad hoc sheet when this commits
-        { ConditionCheck: { TableName: db.tableName, Key: keys.adhoc(ctx.teamId), ConditionExpression: "#open = :from", ExpressionAttributeNames: { "#open": "open" }, ExpressionAttributeValues: { ":from": sheetId } } },
-        movementPut(db, ctx, { productKey: key, reason: "move", delta: 0, tracked, quantity: out, returned, lost, projectId: toSheetId, fromProjectId: sheetId, operationId: opId, userId: ctx.userId, at }),
+        // The ADHOC item still names the General Use project when this commits
+        { ConditionCheck: { TableName: db.tableName, Key: keys.adhoc(ctx.teamId), ConditionExpression: "#open = :from", ExpressionAttributeNames: { "#open": "open" }, ExpressionAttributeValues: { ":from": projectId } } },
+        movementPut(db, ctx, { productKey: key, reason: "move", delta: 0, tracked, quantity: out, returned, lost, projectId: toProjectId, fromProjectId: projectId, operationId: opId, userId: ctx.userId, at }),
       ],
     };
   });
@@ -1143,7 +1145,7 @@ export interface AddedLine {
   /** The product, as requested. */
   readonly productKey: string;
   readonly quantity: number;
-  /** True when this added the line to the sheet; false when it added to an existing line. */
+  /** True when this added the line to the project; false when it added to an existing line. */
   readonly lineCreated: boolean;
   /** Company equipment bought for the client (ADR 0017, section 2a): the line it went on, `<productKey>:bought`. */
   readonly lineKey?: string;
@@ -1154,8 +1156,8 @@ export interface AddedLine {
 export interface AddLinesResult {
   readonly operationId: string;
   readonly command: "addLines";
-  readonly sheetId: string;
-  /** Each line as requested, and whether this added it to the sheet (false: it added to an existing line). */
+  readonly projectId: string;
+  /** Each line as requested, and whether this added it to the project (false: it added to an existing line). */
   readonly lines: readonly AddedLine[];
   readonly userId: string;
   readonly at: string;
@@ -1237,9 +1239,9 @@ function boughtLine(line: RequestedLine, equipment: boolean, markup: number, typ
 }
 
 /**
- * Adds lines bought for a sheet's client (a receipt saved to an existing
- * sheet): each line's `quantity` goes on the sheet's `out` for its product,
- * creating the line if the sheet doesn't have it (boughtLine says what the
+ * Adds lines bought for a project's client (a receipt saved to an existing
+ * project): each line's `quantity` goes on the project's `out` for its product,
+ * creating the line if the project doesn't have it (boughtLine says what the
  * new line holds). An existing line keeps its copy and its price. All the
  * lines change in one transaction, or none do, and a retry with the same
  * operation ID changes nothing.
@@ -1250,27 +1252,27 @@ function boughtLine(line: RequestedLine, equipment: boolean, markup: number, typ
  * as read, and the transaction checks the markup is unchanged.
  *
  * Stock doesn't move: the items were bought for the client and never were in
- * storage. The sheet must be open.
+ * storage. The project must be open.
  */
 export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, now = new Date()): Promise<CommandOutcome<AddLinesResult>> {
   writable(db, ctx);
   const opId = operationId(input.operationId);
-  const sheetId = projectIdOf(input);
+  const projectId = projectIdOf(input);
   const lines = addLinesInput(input.lines);
-  const request = JSON.stringify({ command: "addLines", userId: ctx.userId, projectId: sheetId, lines });
+  const request = JSON.stringify({ command: "addLines", userId: ctx.userId, projectId, lines });
   const at = now.toISOString();
 
   return execute<AddLinesResult>(db, ctx, opId, "addLines", request, now, async () => {
-    const [rawSheet, ...products] = await Promise.all([readProjectItem(db, ctx.teamId, sheetId), ...lines.map((l) => getItem(db, keys.product(ctx.teamId, l.key)))]);
-    const sheet = openSheet(rawSheet, "add to it");
-    // A receipt's lines go to a client's sheet, never the ad hoc sheet (ADR 0017, section 4)
-    if (sheet.kind === "adhoc") throw new InvalidInputError("A receipt's lines go on a client's sheet, not the ad hoc sheet");
+    const [rawProject, ...products] = await Promise.all([readProjectItem(db, ctx.teamId, projectId), ...lines.map((l) => getItem(db, keys.product(ctx.teamId, l.key)))]);
+    const project = openProject(rawProject, "add to it");
+    // A receipt's lines go to a client project, never the General Use project (ADR 0017, section 4)
+    if (project.kind === "adhoc") throw new InvalidInputError("A receipt's lines go on a client project, not the General Use project");
     // The team's settings, read only when an equipment line is priced by its markup
     const needsMarkup = lines.some((l, n) => products[n]?.kind === "equipment" && l.priceSet !== "manual");
     const settings = needsMarkup ? await getItem(db, keys.settings(ctx.teamId)) : undefined;
     const markup = storedMarkup(settings);
 
-    const items = sheet.items as Item | undefined;
+    const items = project.items as Item | undefined;
     const names: Record<string, string> = { "#i": "items", "#s": "status", "#v": "version", "#kd": "kind" };
     const values: Item = { ":one": 1, ":closed": "closed" };
     const sets: string[] = [];
@@ -1291,7 +1293,7 @@ export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, n
         },
       });
       const existing = lineOf(items, key);
-      if (existing !== undefined && !isMap(existing)) throw new InvalidInputError("A line on this sheet is malformed; correct it first");
+      if (existing !== undefined && !isMap(existing)) throw new InvalidInputError("A line on this project is malformed; correct it first");
       if (existing) {
         lineCounts(existing);
         names[`#k${n}`] = key;
@@ -1311,10 +1313,10 @@ export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, n
       }
       return { productKey: requested.key, quantity: requested.qty, lineCreated: !existing, ...(purchased ? { lineKey: key, purchased: true as const } : {}) };
     });
-    if (Buffer.byteLength(JSON.stringify(sheet), "utf8") + Buffer.byteLength(JSON.stringify(added), "utf8") > MAX_DOCUMENT_BYTES) {
-      throw new TooLargeError(`Sheets are limited to ${MAX_DOCUMENT_BYTES} bytes; start another sheet`);
+    if (Buffer.byteLength(JSON.stringify(project), "utf8") + Buffer.byteLength(JSON.stringify(added), "utf8") > MAX_DOCUMENT_BYTES) {
+      throw new TooLargeError(`Projects are limited to ${MAX_DOCUMENT_BYTES} bytes; start another project`);
     }
-    // Still a job sheet when this commits
+    // Still a client project when this commits
     clauses.unshift("attribute_not_exists(#kd)");
     if (items) clauses.unshift("attribute_exists(#i)");
     else {
@@ -1337,12 +1339,12 @@ export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, n
       });
     }
     return {
-      result: { operationId: opId, command: "addLines", sheetId, lines: result, userId: ctx.userId, at },
+      result: { operationId: opId, command: "addLines", projectId, lines: result, userId: ctx.userId, at },
       writes: [
         {
           Update: {
             TableName: db.tableName,
-            Key: projectKeyFor(ctx.teamId, sheetId, sheet),
+            Key: projectKeyFor(ctx.teamId, projectId, project),
             UpdateExpression: `SET ${sets.join(", ")} ADD #v :one`,
             ConditionExpression: anyOf(clauses, [["attribute_not_exists(#s)"], ["#s <> :closed"]]),
             ExpressionAttributeNames: names,
@@ -1356,7 +1358,7 @@ export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, n
 }
 
 /**
- * Changes a product's stock outside a sheet:
+ * Changes a product's stock outside a project:
  *
  * - `receipt`: `quantity` eaches bought at `unitCost` each (after any pack
  *   conversion, ADR 0014) are added to stock. A product that didn't track
@@ -1520,13 +1522,13 @@ export async function listMovements(
 }
 
 /**
- * A movement with both spellings of its project fields (`projectId` and
- * `sheetId`, `fromProjectId` and `fromSheetId`), whichever it was stored
+ * A movement with both spellings of its project fields (`sheetId` and
+ * `projectId`, `fromSheetId` and `fromProjectId`), whichever it was stored
  * with, through the rename's window (supply-checkout-005.6).
  */
 export function movementWithBothNames(movement: Movement): Movement {
   const m: Record<string, unknown> = { ...movement };
-  for (const [old, current] of [["sheetId", "projectId"], ["fromSheetId", "fromProjectId"]] as const) {
+  for (const [old, current] of Object.entries(legacy.movementFields)) {
     if (m[current] === undefined && m[old] !== undefined) m[current] = m[old];
     if (m[old] === undefined && m[current] !== undefined) m[old] = m[current];
   }

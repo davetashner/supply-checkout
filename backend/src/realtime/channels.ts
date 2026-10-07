@@ -129,10 +129,17 @@ export const COLLECTION_EVENT_AFTER = 10;
  * the old code ignores a collection it doesn't know and would stop updating.
  * LEGACY_EVENT_COLLECTIONS says which collections get the second event.
  */
-export type EventCollection = "products" | "projects" | "sheets";
+export type EventCollection = "products" | "projects" | typeof LEGACY_SHEETS_COLLECTION;
+
+/**
+ * The projects collection's old name, for the copy of each event. The same as
+ * `legacy.sheetsCollection` in src/data/legacy-sheets.ts (a test checks),
+ * repeated because this file has no imports; server release 2 removes both.
+ */
+export const LEGACY_SHEETS_COLLECTION = "sheets";
 
 /** The old collection name each collection's events are published under too, through the rename's window. */
-export const LEGACY_EVENT_COLLECTIONS: Readonly<Partial<Record<EventCollection, EventCollection>>> = { projects: "sheets" };
+export const LEGACY_EVENT_COLLECTIONS: Readonly<Partial<Record<EventCollection, EventCollection>>> = { projects: LEGACY_SHEETS_COLLECTION };
 
 /** The change event's format version. A client ignores events with a version it doesn't know. */
 export const CHANGE_EVENT_FORMAT = 1;
@@ -210,17 +217,20 @@ export const COLLECTION_EVENT_FIELDS: readonly (keyof CollectionEvent)[] = ["v",
 /** AppSync Events takes at most 5 events per publish request. */
 export const EVENTS_PER_PUBLISH = 5;
 
+/** A legacy project's sort-key prefix (supply-checkout-005.6): `legacy.sheetPrefix` in src/data/legacy-sheets.ts (a test checks). */
+const LEGACY_SHEET_SK_PREFIX = "SHEET#";
+
 /**
  * Sort-key prefixes of the items that are documents (products and projects,
  * whose items are under `PROJECT#`, or still under `SHEET#` until the
  * rename's backfill moves them, supply-checkout-005.6). The event source
  * mapping's filter passes only these to the consumer. The same as
- * `prefixes.product`, `prefixes.project` and `prefixes.sheet` in
- * src/data/keys.ts (a test checks), repeated because this file has no
- * imports. With AUDIENCE_SK's two that's 5 filters, Lambda's limit per event
+ * `prefixes.product` and `prefixes.project` in src/data/keys.ts and
+ * `legacy.sheetPrefix` in src/data/legacy-sheets.ts (a test checks), repeated
+ * because this file has no imports. With AUDIENCE_SK's two that's 5 filters, Lambda's limit per event
  * source mapping.
  */
-export const DOCUMENT_SK_PREFIXES = ["PRODUCT#", "PROJECT#", "SHEET#"] as const;
+export const DOCUMENT_SK_PREFIXES = ["PRODUCT#", "PROJECT#", LEGACY_SHEET_SK_PREFIX] as const;
 
 /**
  * Sort keys of the items that decide who gets a team's changes: the team's

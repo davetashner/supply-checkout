@@ -37,14 +37,14 @@ const logs = () => lines.filter((l) => !("_aws" in l));
 
 const context = {
   awsRequestId: "req-1",
-  functionName: "supply-checkout-prod-sheets",
+  functionName: "supply-checkout-prod-projects",
   functionVersion: "7",
   memoryLimitInMB: "512",
 } as Context;
 
 describe("business metrics", () => {
   it("sends counts in the SupplyCheckout namespace with Region as the only dimension", () => {
-    const obs = createObservability({ service: "sheets", env });
+    const obs = createObservability({ service: "projects", env });
     obs.count(BusinessMetric.Checkouts, 3);
     obs.count(BusinessMetric.Returns);
     obs.flush();
@@ -136,10 +136,10 @@ describe("business metrics", () => {
 
 describe("structured logs", () => {
   it("writes one JSON object per line with the service, environment and region", () => {
-    const obs = createObservability({ service: "sheets", env });
-    obs.logger.info("Checked out", { sheetId: "s1" });
+    const obs = createObservability({ service: "projects", env });
+    obs.logger.info("Checked out", { projectId: "s1" });
     expect(logs()).toEqual([
-      expect.objectContaining({ level: "INFO", message: "Checked out", service: "sheets", env: "prod", region: REGION, sheetId: "s1" }),
+      expect.objectContaining({ level: "INFO", message: "Checked out", service: "projects", env: "prod", region: REGION, projectId: "s1" }),
     ]);
   });
 
@@ -159,7 +159,7 @@ describe("structured logs", () => {
 
 describe("withObservability", () => {
   it("adds the request ID to every line and flushes metrics after the handler", async () => {
-    const obs = createObservability({ service: "sheets", env });
+    const obs = createObservability({ service: "projects", env });
     const handler = withObservability(obs, async (event: { n: number }) => {
       obs.logger.info("working");
       obs.count(BusinessMetric.Checkouts, event.n);

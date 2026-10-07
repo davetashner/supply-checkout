@@ -140,7 +140,7 @@
           },
           "S3Key": "<asset hash>.zip"
         },
-        "Description": "Products and sheets for the app (the data API)",
+        "Description": "Products and projects for the app (the data API)",
         "Environment": {
           "Variables": {
             "DATA_ROLE_ARN": {

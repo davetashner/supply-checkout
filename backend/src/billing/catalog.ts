@@ -61,7 +61,7 @@ export const CATALOG: Catalog = {
       plan: "starter",
       productId: "supply_checkout_starter",
       name: "Supply Checkout Starter",
-      description: "Supply checkout sheets, inventory, and barcode and receipt scanning for your crew. Includes 3 seats.",
+      description: "Supply checkout by project, inventory, and barcode and receipt scanning for your crew. Includes 3 seats.",
       includedSeats: 3,
       prices: [
         { lookupKey: "supply_checkout_starter_monthly", interval: "month", flatAmount: 900, perSeatAmount: 300 },

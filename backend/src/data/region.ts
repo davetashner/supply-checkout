@@ -19,7 +19,7 @@ export interface HomedTeam {
  * The one place that decides which region takes a team's writes.
  *
  * MVP: always the local region, because there is only one. Phase 2 returns
- * `team.homeRegion` (so each team's counters and sheets have one writer and
+ * `team.homeRegion` (so each team's counters and projects have one writer and
  * global-table last-writer-wins can't lose updates), or the local region when
  * the home region is unhealthy.
  */

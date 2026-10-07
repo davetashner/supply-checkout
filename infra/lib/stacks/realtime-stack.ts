@@ -179,7 +179,7 @@ export class RealtimeStack extends SupplyCheckoutStack {
     }
   }
 
-  /** The stream consumer: publishes each product and sheet write to the channel of each of its team's members. */
+  /** The stream consumer: publishes each product and project write to the channel of each of its team's members. */
   private consumer(
     config: DeploymentConfig,
     functionName: string,
@@ -191,7 +191,7 @@ export class RealtimeStack extends SupplyCheckoutStack {
       functionName,
       // The publisher stops starting requests well before this (PUBLISH_BUDGET_MS in channels.ts)
       timeout: Duration.seconds(CONSUMER_TIMEOUT_SECONDS),
-      description: "Publishes product and sheet changes from the table's stream to each team member's AppSync Events channel",
+      description: "Publishes product and project changes from the table's stream to each team member's AppSync Events channel",
       environment: { [REALTIME_ENV.httpHost]: this.api.httpDns, [REALTIME_ENV.tableName]: data.table },
     });
     this.users.grantPublish(fn);

@@ -1,7 +1,10 @@
 // One-time import of a claude.ai artifact's data into a team
 // (supply-checkout-ig9, ADR 0004, ADR 0014): the artifact's "Everything
 // (JSON)" export (allJson in src/export.js) goes into a team's products and
-// sheets, with the same keys and IDs, so the team sees what the artifact showed.
+// projects, with the same keys and IDs, so the team sees what the artifact showed.
+// The export lists projects under `projects`, or, in a file from before the
+// sheets-to-projects rename (supply-checkout-005.6), under `sheets`: either is
+// read the same way.
 //
 // Run by the owner with scripts/import-artifact.ts (docs/backend.md,
 // "Importing artifact data"), never by a Lambda: index.ts doesn't export it.
@@ -12,17 +15,17 @@
 // In three steps, each a function the CLI calls:
 //
 // 1. Read (parseArtifactExport). Checks the whole file before anything is
-//    written: its shape, every field's type and size, and that each sheet's
-//    lines add up to the totals the artifact exported with it (sheet-math.js's
+//    written: its shape, every field's type and size, and that each project's
+//    lines add up to the totals the artifact exported with it (project-math.js's
 //    rule: used x price each, in whole cents). Legacy values are mapped per
 //    ADR 0014: money rounded to cents (as the artifact already rounds it for
 //    display), a stock that isn't a number means the item doesn't track stock
 //    (hasStock in src/format.js), `packSize` and `cost` are kept when valid.
 //    Marks of recent saves (`ops`) and the claude.ai user IDs in `createdBy`
 //    are dropped: the name the artifact showed (`preparedBy`) becomes the
-//    sheet's `createdByName`, as for a sheet made without a signed-in user.
+//    project's `createdByName`, as for a project made without a signed-in user.
 //    Unknown fields are left out, and named in the report.
-// 2. Plan (planArtifactImport). Reads the team's products and sheets. A
+// 2. Plan (planArtifactImport). Reads the team's products and projects. A
 //    document that's already there with the same content is skipped (so a
 //    re-run, or a run after one that stopped part-way, only writes what's
 //    missing). One that's there with other content, or a team item with the
@@ -32,18 +35,18 @@
 //    document, created only if its key is still free and the team is still
 //    open (a condition check on its META item in the same transaction). A product that tracks
 //    stock is written in one transaction with an `import` movement from 0 to
-//    its count, so the stock history adds up. Ad hoc sheets (`adhoc-<n>`, ADR
+//    its count, so the stock history adds up. General Use projects (`adhoc-<n>`, ADR
 //    0017) keep their `kind`, and the team's ADHOC item is then set from them:
 //    its count to the highest number, and its pointer to the open one, so the
 //    next quick take adds to it or starts the one after. Then it reads everything back
-//    and checks every stock count and every sheet's totals against the file.
+//    and checks every stock count and every project's totals against the file.
 //
 // Resumable and idempotent rather than all or nothing: every write is a
 // create-if-absent of a whole document, so a run that stops (a throttle, an
 // expired session) leaves only complete documents, and running it again
 // finishes the rest. A second run over a finished import writes nothing.
 //
-// Reports hold counts, sums, indexes, product keys and sheet IDs: never
+// Reports hold counts, sums, indexes, product keys and project IDs: never
 // names, clients or user IDs.
 
 import { randomUUID } from "node:crypto";
@@ -55,17 +58,18 @@ import { ConflictError, InvalidInputError, TeamClosedError } from "./errors.js";
 import { MAX_NAME_LENGTH, MAX_PACK_SIZE } from "./imports.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
 import { MAX_CODE_LENGTH, adhocNumber, isAdhocId, keys, prefixes, strip, teamPartition } from "./keys.js";
+import { legacy } from "./legacy-sheets.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 import { listProjectItems, projectAttributes, readProjectItem } from "./project-items.js";
 import { queryAll } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
-/** The largest export file, as UTF-8. A family business's years of sheets are a few MB. */
+/** The largest export file, as UTF-8. A family business's years of projects are a few MB. */
 export const MAX_EXPORT_BYTES = 20_000_000;
 /** The most products one import takes. */
 export const MAX_EXPORT_PRODUCTS = 5000;
-/** The most sheets one import takes. */
-export const MAX_EXPORT_SHEETS = 5000;
+/** The most projects one import takes. */
+export const MAX_EXPORT_PROJECTS = 5000;
 /** Problems listed at most; the counts have the totals. */
 export const MAX_ISSUES = 200;
 
@@ -100,9 +104,9 @@ export interface ArtifactLine {
   readonly returned: number;
 }
 
-export interface ArtifactSheet {
+export interface ArtifactProject {
   readonly id: string;
-  /** The team's ad hoc sheet (ADR 0017), `adhoc-<n>`. Absent for a client's sheet. */
+  /** The team's General Use project (ADR 0017), `adhoc-<n>`. Absent for a client's project. */
   readonly kind?: "adhoc";
   readonly client: string;
   readonly date: string;
@@ -114,8 +118,8 @@ export interface ArtifactSheet {
   readonly items: Record<string, ArtifactLine>;
 }
 
-/** A sheet's totals, as the app shows them: counts, and the charge in whole cents. */
-export interface SheetTotals {
+/** A project's totals, as the app shows them: counts, and the charge in whole cents. */
+export interface ProjectTotals {
   readonly taken: number;
   readonly returned: number;
   readonly used: number;
@@ -131,16 +135,16 @@ export interface ImportIssue {
 export interface ParsedExport {
   readonly exportedAt?: string;
   readonly products: ArtifactProduct[];
-  readonly sheets: ArtifactSheet[];
-  /** Each sheet's totals, from its lines: equal to the exported totals where the file has them. */
-  readonly totals: Map<string, SheetTotals>;
+  readonly projects: ArtifactProject[];
+  /** Each project's totals, from its lines: equal to the exported totals where the file has them. */
+  readonly totals: Map<string, ProjectTotals>;
   readonly errors: ImportIssue[];
   /** Field names left out, with how many documents had each. */
   readonly ignoredFields: Record<string, number>;
-  /** Sheets whose claude.ai user ID was dropped (the name the artifact showed is kept). */
+  /** Projects whose claude.ai user ID was dropped (the name the artifact showed is kept). */
   readonly droppedCreatedBy: number;
-  /** Sheets the file had no totals for, so only their lines could be checked. */
-  readonly sheetsWithoutTotals: number;
+  /** Projects the file had no totals for, so only their lines could be checked. */
+  readonly projectsWithoutTotals: number;
 }
 
 const isMap = (v: unknown): v is Item => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -155,7 +159,7 @@ function printable(s: string): string {
   // eslint-disable-next-line no-control-regex -- escaping control characters is the point
   return s.replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
-/** Cent-safe cents of an amount (sheet-math.js's `cents`). */
+/** Cent-safe cents of an amount (project-math.js's `cents`). */
 const cents = (n: number) => Math.round(Number((n * 100).toPrecision(12)));
 
 class FieldError extends Error {}
@@ -203,7 +207,7 @@ function docKey(value: unknown, field: string): string {
 }
 
 const PRODUCT_FIELDS = new Set(["key", "code", "name", "price", "cost", "packSize", "stock", "updatedAt", "ops"]);
-const SHEET_FIELDS = new Set(["id", "kind", "client", "date", "status", "createdAt", "closedAt", "createdBy", "createdByName", "preparedBy", "source", "items", "totals", "ops", "savedReceipts"]);
+const PROJECT_FIELDS = new Set(["id", "kind", "client", "date", "status", "createdAt", "closedAt", "createdBy", "createdByName", "preparedBy", "source", "items", "totals", "ops", "savedReceipts"]);
 const LINE_FIELDS = new Set(["code", "name", "price", "cost", "out", "returned", "ops"]);
 
 function product(raw: unknown, ignored: (field: string) => void): ArtifactProduct {
@@ -229,7 +233,7 @@ function product(raw: unknown, ignored: (field: string) => void): ArtifactProduc
 
 function line(raw: unknown, ignored: (field: string) => void): ArtifactLine {
   if (!isMap(raw)) throw new FieldError("isn't an object");
-  for (const field of Object.keys(raw)) if (!LINE_FIELDS.has(field)) ignored(`sheets.items.${field}`);
+  for (const field of Object.keys(raw)) if (!LINE_FIELDS.has(field)) ignored(`items.${field}`);
   const out = whole(raw.out ?? 0, "out", 0, MAX_QUANTITY);
   const returned = whole(raw.returned ?? 0, "returned", 0, MAX_QUANTITY);
   if (returned > out) throw new FieldError("returned is more than out");
@@ -244,8 +248,8 @@ function line(raw: unknown, ignored: (field: string) => void): ArtifactLine {
   };
 }
 
-/** A sheet's totals, as sheet-math.js adds them: row charges in whole cents. */
-export function sheetTotals(items: Record<string, ArtifactLine>): SheetTotals {
+/** A project's totals, as project-math.js adds them: row charges in whole cents. */
+export function projectTotals(items: Record<string, ArtifactLine>): ProjectTotals {
   let taken = 0, returned = 0, used = 0, chargeCents = 0;
   for (const l of Object.values(items)) {
     const u = l.out - l.returned;
@@ -257,7 +261,7 @@ export function sheetTotals(items: Record<string, ArtifactLine>): SheetTotals {
   return { taken, returned, used, chargeCents };
 }
 
-function exportedTotals(raw: unknown): SheetTotals | undefined {
+function exportedTotals(raw: unknown): ProjectTotals | undefined {
   if (raw === undefined) return undefined;
   if (!isMap(raw)) throw new FieldError("totals isn't an object");
   const count = (v: unknown, field: string) => whole(v, `totals.${field}`, 0, Number.MAX_SAFE_INTEGER);
@@ -265,31 +269,31 @@ function exportedTotals(raw: unknown): SheetTotals | undefined {
   return { taken: count(raw.taken, "taken"), returned: count(raw.returned, "returned"), used: count(raw.used, "used"), chargeCents: cents(raw.charge) };
 }
 
-const sameTotals = (a: SheetTotals, b: SheetTotals) => a.taken === b.taken && a.returned === b.returned && a.used === b.used && a.chargeCents === b.chargeCents;
-const totalsText = (t: SheetTotals) => `taken ${t.taken}, returned ${t.returned}, used ${t.used}, charge ${(t.chargeCents / 100).toFixed(2)}`;
+const sameTotals = (a: ProjectTotals, b: ProjectTotals) => a.taken === b.taken && a.returned === b.returned && a.used === b.used && a.chargeCents === b.chargeCents;
+const totalsText = (t: ProjectTotals) => `taken ${t.taken}, returned ${t.returned}, used ${t.used}, charge ${(t.chargeCents / 100).toFixed(2)}`;
 
-function sheet(raw: unknown, ignored: (field: string) => void, lineErrors: ImportIssue[], at: string): { sheet: ArtifactSheet; exported?: SheetTotals; droppedCreatedBy: boolean } {
+function project(raw: unknown, ignored: (field: string) => void, lineErrors: ImportIssue[], at: string): { project: ArtifactProject; exported?: ProjectTotals; droppedCreatedBy: boolean } {
   if (!isMap(raw)) throw new FieldError("isn't an object");
-  for (const field of Object.keys(raw)) if (!SHEET_FIELDS.has(field)) ignored(`sheets.${field}`);
-  if (typeof raw.id !== "string" || !ID.test(raw.id)) throw new FieldError("id isn't a valid sheet ID");
+  for (const field of Object.keys(raw)) if (!PROJECT_FIELDS.has(field)) ignored(field);
+  if (typeof raw.id !== "string" || !ID.test(raw.id)) throw new FieldError("id isn't a valid project ID");
   const date = text(raw.date, "date", 10);
   if (!DATE.test(date)) throw new FieldError("date isn't YYYY-MM-DD");
   const adhoc = raw.kind !== undefined && raw.kind !== null;
-  if (adhoc && (raw.kind !== "adhoc" || adhocNumber(raw.id) === undefined)) throw new FieldError('kind must be "adhoc", on a sheet whose id is adhoc-<n>');
-  // adhoc- IDs are the ad hoc sheets' (only the quick take makes one in a team)
-  if (!adhoc && isAdhocId(raw.id)) throw new FieldError('an id starting "adhoc-" is an ad hoc sheet\'s, which needs kind "adhoc"');
+  if (adhoc && (raw.kind !== "adhoc" || adhocNumber(raw.id) === undefined)) throw new FieldError('kind must be "adhoc", on a project whose id is adhoc-<n>');
+  // adhoc- IDs are the General Use projects' (only the quick take makes one in a team)
+  if (!adhoc && isAdhocId(raw.id)) throw new FieldError('an id starting "adhoc-" is a General Use project\'s, which needs kind "adhoc"');
   let status: "open" | "closed" = "open";
   if (raw.status !== undefined && raw.status !== null) {
     if (raw.status !== "open" && raw.status !== "closed") throw new FieldError('status must be "open" or "closed"');
     status = raw.status;
   }
-  let source: ArtifactSheet["source"];
+  let source: ArtifactProject["source"];
   if (raw.source !== undefined && raw.source !== null) {
     if (!isMap(raw.source)) throw new FieldError("source isn't an object");
     source = { store: text(raw.source.store, "source.store", MAX_NAME_LENGTH, ""), receiptDate: text(raw.source.receiptDate, "source.receiptDate", MAX_NAME_LENGTH, "") };
   }
   // The name the artifact showed, which the export resolved (preparedBy: the claude.ai
-  // profile's name, or the sheet's own createdByName), else the sheet's createdByName
+  // profile's name, or the project's own createdByName), else the project's createdByName
   const nameField = raw.preparedBy !== undefined && raw.preparedBy !== null ? "preparedBy" : "createdByName";
   const createdByName = raw[nameField] === undefined || raw[nameField] === null ? undefined : text(raw[nameField], nameField, MAX_NAME_LENGTH);
   const createdAt = timestamp(raw.createdAt, "createdAt");
@@ -307,7 +311,7 @@ function sheet(raw: unknown, ignored: (field: string) => void, lineErrors: Impor
     }
   }
   const exported = exportedTotals(raw.totals);
-  const out: ArtifactSheet = {
+  const out: ArtifactProject = {
     id: raw.id,
     ...(adhoc ? { kind: "adhoc" as const } : {}),
     client: text(raw.client, "client", MAX_NAME_LENGTH, ""),
@@ -320,7 +324,7 @@ function sheet(raw: unknown, ignored: (field: string) => void, lineErrors: Impor
     items,
   };
   if (bad) throw new FieldError("has lines with problems (listed separately)");
-  return { sheet: out, ...(exported ? { exported } : {}), droppedCreatedBy: typeof raw.createdBy === "string" && raw.createdBy !== "" };
+  return { project: out, ...(exported ? { exported } : {}), droppedCreatedBy: typeof raw.createdBy === "string" && raw.createdBy !== "" };
 }
 
 /**
@@ -337,11 +341,15 @@ export function parseArtifactExport(json: unknown): ParsedExport {
   } catch {
     throw new InvalidInputError("The file isn't JSON. Use the artifact's Export, Everything (JSON)");
   }
-  if (!isMap(doc) || doc.app !== APP || !Array.isArray(doc.inventory) || !Array.isArray(doc.sheets)) {
+  if (!isMap(doc) || doc.app !== APP || !Array.isArray(doc.inventory) || !(Array.isArray(doc.projects) || Array.isArray(doc[legacy.sheetsCollection]))) {
     throw new InvalidInputError("The file isn't a Supply Checkout export. Use the artifact's Export, Everything (JSON)");
   }
+  // `projects`, or `sheets` in an export from before the rename; never both, so nothing is read twice or left out
+  if (doc.projects !== undefined && doc[legacy.sheetsCollection] !== undefined) throw new InvalidInputError("The file has both projects and sheets. Export it again");
+  const listKey = Array.isArray(doc.projects) ? "projects" : legacy.sheetsCollection;
+  const list = doc[listKey] as unknown[];
   if (doc.inventory.length > MAX_EXPORT_PRODUCTS) throw new InvalidInputError(`The export has more than ${MAX_EXPORT_PRODUCTS} items`);
-  if (doc.sheets.length > MAX_EXPORT_SHEETS) throw new InvalidInputError(`The export has more than ${MAX_EXPORT_SHEETS} sheets`);
+  if (list.length > MAX_EXPORT_PROJECTS) throw new InvalidInputError(`The export has more than ${MAX_EXPORT_PROJECTS} projects`);
   let exportedAt: string | undefined;
   try {
     exportedAt = timestamp(doc.exportedAt, "exportedAt");
@@ -356,7 +364,7 @@ export function parseArtifactExport(json: unknown): ParsedExport {
     const name = shown(field.slice(0, 80));
     ignoredFields[name] = (ignoredFields[name] ?? 0) + 1;
   };
-  // Only a sheet can pass the document size limit: a product's fields are all bounded
+  // Only a project can pass the document size limit: a product's fields are all bounded
   const tooLarge = (data: Item) => Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_DOCUMENT_BYTES - 100;
 
   const products: ArtifactProduct[] = [];
@@ -381,38 +389,39 @@ export function parseArtifactExport(json: unknown): ParsedExport {
     }
   });
 
-  const sheets: ArtifactSheet[] = [];
-  const totals = new Map<string, SheetTotals>();
-  const sheetIds = new Map<string, number>();
+  const projects: ArtifactProject[] = [];
+  const totals = new Map<string, ProjectTotals>();
+  const projectIds = new Map<string, number>();
   let droppedCreatedBy = 0;
-  let sheetsWithoutTotals = 0;
-  doc.sheets.forEach((raw, i) => {
-    const at = `sheets[${i}]${isMap(raw) && typeof raw.id === "string" ? ` id ${shown(raw.id)}` : ""}`;
+  let projectsWithoutTotals = 0;
+  const ignoredOnProject = (field: string) => ignored(`${listKey}.${field}`);
+  list.forEach((raw, i) => {
+    const at = `${listKey}[${i}]${isMap(raw) && typeof raw.id === "string" ? ` id ${shown(raw.id)}` : ""}`;
     try {
-      const read = sheet(raw, ignored, errors, at);
-      const s = read.sheet;
-      const earlier = sheetIds.get(s.id);
-      if (earlier !== undefined) throw new FieldError(`has the same id as sheets[${earlier}]`);
+      const read = project(raw, ignoredOnProject, errors, at);
+      const s = read.project;
+      const earlier = projectIds.get(s.id);
+      if (earlier !== undefined) throw new FieldError(`has the same id as ${listKey}[${earlier}]`);
       if (tooLarge({ ...s })) throw new FieldError("is too large to save");
-      const computed = sheetTotals(s.items);
+      const computed = projectTotals(s.items);
       // Before: the lines, as imported, add up to what the artifact showed
       if (read.exported && !sameTotals(read.exported, computed)) {
         throw new FieldError(`its lines add up to ${totalsText(computed)}, not the exported ${totalsText(read.exported)}`);
       }
-      if (!read.exported) sheetsWithoutTotals++;
+      if (!read.exported) projectsWithoutTotals++;
       if (read.droppedCreatedBy) droppedCreatedBy++;
-      sheetIds.set(s.id, i);
+      projectIds.set(s.id, i);
       totals.set(s.id, computed);
-      sheets.push(s);
+      projects.push(s);
     } catch (error) {
       if (!(error instanceof FieldError)) throw error;
       errors.push({ at, message: error.message });
     }
   });
-  // A team has at most one open ad hoc sheet (ADR 0017, section 4)
-  const openAdhoc = sheets.filter((s) => s.kind === "adhoc" && s.status !== "closed");
-  for (const s of openAdhoc.slice(1)) errors.push({ at: `sheet id ${shown(s.id)}`, message: `is a second open ad hoc sheet (${shown(openAdhoc[0]?.id ?? "")} is open too); finish all but one first` });
-  return { ...(exportedAt === undefined ? {} : { exportedAt }), products, sheets, totals, errors, ignoredFields, droppedCreatedBy, sheetsWithoutTotals };
+  // A team has at most one open General Use project (ADR 0017, section 4)
+  const openAdhoc = projects.filter((s) => s.kind === "adhoc" && s.status !== "closed");
+  for (const s of openAdhoc.slice(1)) errors.push({ at: `project id ${shown(s.id)}`, message: `is a second open General Use project (${shown(openAdhoc[0]?.id ?? "")} is open too); finish all but one first` });
+  return { ...(exportedAt === undefined ? {} : { exportedAt }), products, projects, totals, errors, ignoredFields, droppedCreatedBy, projectsWithoutTotals };
 }
 
 /** JSON with object keys sorted, so two documents compare by content. */
@@ -429,7 +438,7 @@ function productContent(p: Item): Item {
   return pick;
 }
 
-function sheetContent(s: Item): Item {
+function projectContent(s: Item): Item {
   const pick: Item = {};
   for (const field of ["kind", "client", "date", "status", "createdAt", "closedAt", "createdByName", "source", "items"]) if (s[field] !== undefined) pick[field] = s[field];
   return pick;
@@ -437,18 +446,18 @@ function sheetContent(s: Item): Item {
 
 export interface ImportPlan {
   readonly products: ArtifactProduct[];
-  readonly sheets: ArtifactSheet[];
-  /** Products and sheets already in the team with the same content: skipped. */
+  readonly projects: ArtifactProject[];
+  /** Products and projects already in the team with the same content: skipped. */
   readonly productsPresent: number;
-  readonly sheetsPresent: number;
+  readonly projectsPresent: number;
   /** Nothing is written while there are any. */
   readonly conflicts: ImportIssue[];
 }
 
-/** Matches the export against the team's products and sheets (see the top of this file). */
+/** Matches the export against the team's products and projects (see the top of this file). */
 export async function planArtifactImport(db: Db, ctx: TeamContext, parsed: ParsedExport): Promise<ImportPlan> {
   writable(db, ctx, "owner");
-  const [existingProducts, existingSheets] = await Promise.all([
+  const [existingProducts, existingProjects] = await Promise.all([
     queryAll<Item>(db, teamPartition(ctx.teamId), prefixes.product),
     projectItems(db, ctx.teamId),
   ]);
@@ -458,7 +467,7 @@ export async function planArtifactImport(db: Db, ctx: TeamContext, parsed: Parse
     const code = typeof p.code === "string" ? p.code.trim() : "";
     if (code) keysByCode.set(code, [...(keysByCode.get(code) ?? []), String(p.key)]);
   }
-  const sheetsById = new Map(existingSheets.map((s) => [String(s.id), s]));
+  const projectsById = new Map(existingProjects.map((s) => [String(s.id), s]));
   const importedKeys = new Set(parsed.products.map((p) => p.key));
 
   const conflicts: ImportIssue[] = [];
@@ -480,34 +489,34 @@ export async function planArtifactImport(db: Db, ctx: TeamContext, parsed: Parse
     }
     products.push(p);
   }
-  // An open ad hoc sheet already in the team, other than one the file has: the file's open one would be a second
-  const openHere = existingSheets.find((s) => s.kind === "adhoc" && s.status !== "closed" && !parsed.sheets.some((p) => p.id === s.id));
-  const openThere = parsed.sheets.find((s) => s.kind === "adhoc" && s.status !== "closed");
-  if (openHere && openThere) conflicts.push({ at: `sheet id ${shown(openThere.id)}`, message: `the team already has an open ad hoc sheet, ${shown(String(openHere.id))}; finish one of them first` });
-  const sheets: ArtifactSheet[] = [];
-  let sheetsPresent = 0;
-  for (const s of parsed.sheets) {
-    const existing = sheetsById.get(s.id);
+  // An open General Use project already in the team, other than one the file has: the file's open one would be a second
+  const openHere = existingProjects.find((s) => s.kind === "adhoc" && s.status !== "closed" && !parsed.projects.some((p) => p.id === s.id));
+  const openThere = parsed.projects.find((s) => s.kind === "adhoc" && s.status !== "closed");
+  if (openHere && openThere) conflicts.push({ at: `project id ${shown(openThere.id)}`, message: `the team already has an open General Use project, ${shown(String(openHere.id))}; finish one of them first` });
+  const projects: ArtifactProject[] = [];
+  let projectsPresent = 0;
+  for (const s of parsed.projects) {
+    const existing = projectsById.get(s.id);
     if (existing) {
-      if (canonical(sheetContent(existing)) === canonical(sheetContent({ ...s }))) sheetsPresent++;
-      else conflicts.push({ at: `sheet id ${shown(s.id)}`, message: "the team already has a sheet with this ID, with other content" });
+      if (canonical(projectContent(existing)) === canonical(projectContent({ ...s }))) projectsPresent++;
+      else conflicts.push({ at: `project id ${shown(s.id)}`, message: "the team already has a project with this ID, with other content" });
       continue;
     }
-    sheets.push(s);
+    projects.push(s);
   }
-  return { products, sheets, productsPresent, sheetsPresent, conflicts };
+  return { products, projects, productsPresent, projectsPresent, conflicts };
 }
 
 export interface ApplyResult {
   readonly productsCreated: number;
-  readonly sheetsCreated: number;
+  readonly projectsCreated: number;
   /** Stock movements recorded (one per created product that tracks stock). */
   readonly movements: number;
   /** Documents someone else created with the same content between the plan and the write. */
   readonly alreadyThere: number;
   /** The run's operation ID, on every movement it recorded. */
   readonly operationId: string;
-  /** The open ad hoc sheet the team's ADHOC item names afterwards, if any. */
+  /** The open General Use project the team's ADHOC item names afterwards, if any. */
   readonly adhocOpen?: string;
 }
 
@@ -538,7 +547,7 @@ async function createWithTeamOpen(db: Db, ctx: TeamContext, writes: Item[]): Pro
   }
 }
 
-/** The team's projects (sheets), from both their keys (project-items.ts), without key attributes. */
+/** The team's projects, from both their keys (project-items.ts), without key attributes. */
 async function projectItems(db: Db, teamId: string): Promise<Item[]> {
   return (await listProjectItems(db, teamId)).map((item) => strip<Item>(item) as Item);
 }
@@ -559,7 +568,7 @@ export async function applyArtifactImport(db: Db, ctx: TeamContext, plan: Import
   if (plan.conflicts.length) throw new ConflictError("The import has conflicts; nothing was written");
   const operationId = randomUUID();
   const at = now.toISOString();
-  let productsCreated = 0, sheetsCreated = 0, movements = 0, alreadyThere = 0;
+  let productsCreated = 0, projectsCreated = 0, movements = 0, alreadyThere = 0;
   for (const p of plan.products) {
     const key = keys.product(ctx.teamId, p.key);
     const { updatedAt, ...fields } = p;
@@ -587,7 +596,7 @@ export async function applyArtifactImport(db: Db, ctx: TeamContext, plan: Import
       alreadyThere++;
     }
   }
-  for (const s of plan.sheets) {
+  for (const s of plan.projects) {
     // A new project's key (project-items.ts); the plan skipped any already under either key
     const put = {
       Put: {
@@ -596,29 +605,29 @@ export async function applyArtifactImport(db: Db, ctx: TeamContext, plan: Import
         ConditionExpression: "attribute_not_exists(PK)",
       },
     };
-    if (await createWithTeamOpen(db, ctx, [put])) sheetsCreated++;
+    if (await createWithTeamOpen(db, ctx, [put])) projectsCreated++;
     else {
       const there = await readProjectItem(db, ctx.teamId, s.id);
-      if (!there || canonical(sheetContent(there)) !== canonical(sheetContent({ ...s }))) {
-        throw new ConflictError(`Sheet id ${shown(s.id)} was added with other content while importing. Run the import again as a dry run to see what's left.`);
+      if (!there || canonical(projectContent(there)) !== canonical(projectContent({ ...s }))) {
+        throw new ConflictError(`Project id ${shown(s.id)} was added with other content while importing. Run the import again as a dry run to see what's left.`);
       }
       alreadyThere++;
     }
   }
   const open = await pointAdhoc(db, ctx, at);
-  return { productsCreated, sheetsCreated, movements, alreadyThere, operationId, ...(open === undefined ? {} : { adhocOpen: open }) };
+  return { productsCreated, projectsCreated, movements, alreadyThere, operationId, ...(open === undefined ? {} : { adhocOpen: open }) };
 }
 
 /**
- * Sets the team's ADHOC item (adhoc.ts) from its ad hoc sheets after an
+ * Sets the team's ADHOC item (adhoc.ts) from its General Use projects after an
  * import: the count to at least the highest `adhoc-<n>`, and the pointer, if
- * it doesn't already name an open ad hoc sheet, to the highest-numbered open
+ * it doesn't already name an open General Use project, to the highest-numbered open
  * one. Written only when that changes it, on the condition that it's as read
  * (a conflict means someone took meanwhile; run the import again).
  */
 async function pointAdhoc(db: Db, ctx: TeamContext, at: string): Promise<string | undefined> {
-  const [pointer, sheets] = await Promise.all([readAdhoc(db, ctx.teamId), projectItems(db, ctx.teamId)]);
-  const adhoc = sheets
+  const [pointer, projects] = await Promise.all([readAdhoc(db, ctx.teamId), projectItems(db, ctx.teamId)]);
+  const adhoc = projects
     .filter((s) => s.kind === "adhoc")
     .map((s) => ({ id: String(s.id), n: adhocNumber(String(s.id)) ?? 0, open: s.status !== "closed" }))
     .sort((a, b) => b.n - a.n);
@@ -626,14 +635,14 @@ async function pointAdhoc(db: Db, ctx: TeamContext, at: string): Promise<string 
   const named = adhocOpen(pointer);
   const opens = adhoc.filter((s) => s.open);
   // Never leave two open (the plan refuses that; this catches a quick take made meanwhile)
-  if (opens.length > 1) throw new ConflictError(`After importing, the team has more than one open ad hoc sheet (${opens.map((s) => shown(s.id)).join(", ")}): the imported sheets are saved, but quick takes need one. Finish all but one in the app (Finished Return on each), then run the import again to set the team's ad hoc sheet`);
+  if (opens.length > 1) throw new ConflictError(`After importing, the team has more than one open General Use project (${opens.map((s) => shown(s.id)).join(", ")}): the imported projects are saved, but quick takes need one. Finish all but one in the app (Finished Return on each), then run the import again to set the team's General Use project`);
   const open = opens[0]?.id;
   const count = Math.max(adhocCount(pointer), adhoc[0]?.n ?? 0);
   if (pointer && count === adhocCount(pointer) && open === named) return open;
   try {
     await connection(db).doc.send(new TransactWriteCommand({ TransactItems: [adhocPut(db, ctx.teamId, pointer, { open, count }, at)] }));
   } catch (error) {
-    if (cancellationCodes(error)) throw new ConflictError("The team's ad hoc sheet changed while importing. Run the import again to finish.");
+    if (cancellationCodes(error)) throw new ConflictError("The team's General Use project changed while importing. Run the import again to finish.");
     throw error;
   }
   return open;
@@ -642,28 +651,28 @@ async function pointAdhoc(db: Db, ctx: TeamContext, at: string): Promise<string 
 export interface Verification {
   /** Imported products whose stock (a count, or not tracked) is as in the file. */
   readonly productsChecked: number;
-  readonly sheetsChecked: number;
+  readonly projectsChecked: number;
   /** The file's total eaches in storage, and the team's for the same items. */
   readonly stockBefore: number;
   readonly stockAfter: number;
-  /** The file's sheet charges, in cents, and the team's for the same sheets. */
+  /** The file's project charges, in cents, and the team's for the same projects. */
   readonly chargeBeforeCents: number;
   readonly chargeAfterCents: number;
   readonly mismatches: ImportIssue[];
 }
 
 /**
- * Reads the team's products and sheets back and checks that every imported
- * item's stock and every imported sheet's totals are what the export had.
+ * Reads the team's products and projects back and checks that every imported
+ * item's stock and every imported project's totals are what the export had.
  */
 export async function verifyArtifactImport(db: Db, ctx: TeamContext, parsed: ParsedExport): Promise<Verification> {
   readable(ctx);
-  const [products, sheets] = await Promise.all([
+  const [products, projects] = await Promise.all([
     queryAll<Item>(db, teamPartition(ctx.teamId), prefixes.product),
     projectItems(db, ctx.teamId),
   ]);
   const productsByKey = new Map(products.map((p) => [String(p.key), p]));
-  const sheetsById = new Map(sheets.map((s) => [String(s.id), s]));
+  const projectsById = new Map(projects.map((s) => [String(s.id), s]));
   const mismatches: ImportIssue[] = [];
   let stockBefore = 0, stockAfter = 0, chargeBeforeCents = 0, chargeAfterCents = 0;
   for (const p of parsed.products) {
@@ -675,18 +684,18 @@ export async function verifyArtifactImport(db: Db, ctx: TeamContext, parsed: Par
     if (!stored) mismatches.push({ at: `item key ${shown(p.key)}`, message: "isn't in the team" });
     else if (before !== after) mismatches.push({ at: `item key ${shown(p.key)}`, message: `stock is ${after ?? "not tracked"}, not ${before ?? "not tracked"}` });
   }
-  for (const s of parsed.sheets) {
-    const before = parsed.totals.get(s.id) as SheetTotals;
+  for (const s of parsed.projects) {
+    const before = parsed.totals.get(s.id) as ProjectTotals;
     chargeBeforeCents += before.chargeCents;
-    const stored = sheetsById.get(s.id);
+    const stored = projectsById.get(s.id);
     if (!stored) {
-      mismatches.push({ at: `sheet id ${shown(s.id)}`, message: "isn't in the team" });
+      mismatches.push({ at: `project id ${shown(s.id)}`, message: "isn't in the team" });
       continue;
     }
     const lines = (isMap(stored.items) ? stored.items : {}) as Record<string, ArtifactLine>;
-    const after = sheetTotals(lines);
+    const after = projectTotals(lines);
     chargeAfterCents += after.chargeCents;
-    if (!sameTotals(before, after)) mismatches.push({ at: `sheet id ${shown(s.id)}`, message: `totals are ${totalsText(after)}, not ${totalsText(before)}` });
+    if (!sameTotals(before, after)) mismatches.push({ at: `project id ${shown(s.id)}`, message: `totals are ${totalsText(after)}, not ${totalsText(before)}` });
   }
-  return { productsChecked: parsed.products.length, sheetsChecked: parsed.sheets.length, stockBefore, stockAfter, chargeBeforeCents, chargeAfterCents, mismatches };
+  return { productsChecked: parsed.products.length, projectsChecked: parsed.projects.length, stockBefore, stockAfter, chargeBeforeCents, chargeAfterCents, mismatches };
 }

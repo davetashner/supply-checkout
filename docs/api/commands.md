@@ -30,11 +30,9 @@ working:
   new ones, so a retry sent to `/projects` matches an operation first run on
   `/sheets` (or by the server before the rename), and the other way round.
 
-The rest of this page still says "sheet" for a project.
-
 ## Why
 
-The artifact saves a checkout as two writes: the sheet line (`PATCH` with the
+The artifact saves a checkout as two writes: the project line (`PATCH` with the
 line's new absolute `out`), then the stock (`addStock` in `src/moves.js`, a
 read-then-write). Marks on the line and the item keep a retry from counting twice
 there, but two people
@@ -52,25 +50,25 @@ The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-ru
 
 `src/moves.js` sends every checkout and return: through the commands when the
 db has `command` (the web build's adapter, `src/aws/db.js`), otherwise as the
-artifact's two writes. It saves an item whose stock changes outside a sheet
+artifact's two writes. It saves an item whose stock changes outside a project
 (`saveItem`) through the adapter's `saveItem` when there is one, otherwise as
 the artifact's document write.
 
 | App action (src/main.js) | Artifact build | Web build (AWS adapter) |
 | --- | --- | --- |
-| Check out (`checkoutModal`) | `PATCH sheets/<id>` with the whole line, then `addStock(key, -qty)` | `POST /teams/{teamId}/sheets/{sheetId}/checkout`. No `addStock`. |
-| Lost or broken (`finishModal`, Finished Return) | `PATCH sheets/<id>` with the line's new `lost` (and `lostCharge` plus the charge), added to the line as saved now, with the action's mark; no stock write | `POST /teams/{teamId}/sheets/{sheetId}/lost`. No stock moves |
-| Quick take (sheet list, ADR 0017 §4) | Works out `adhoc-<n>` from the sheets it holds, `set`s the sheet if it doesn't exist, or moves on to the next number if it's been finished, then adds the line as a checkout does, with the action's mark, and reads it again to write the line once more if its mark isn't there (ADR 0017 §6) | `POST /teams/{teamId}/adhoc/checkout`. No `addStock` |
-| Move an ad hoc line to a job sheet (line editor, ADR 0017 §5) | Two writes with the move's mark: the counts onto the job sheet's line, then the ad hoc line replaced by a hidden "moved" marker (ADR 0017 §6) | `POST /teams/{teamId}/sheets/{sheetId}/move`. No stock moves |
-| Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `addStock(key, back - before)` | `POST /teams/{teamId}/sheets/{sheetId}/return`. No `addStock`. |
+| Check out (`checkoutModal`) | `PATCH sheets/<id>` with the whole line, then `addStock(key, -qty)` | `POST /teams/{teamId}/projects/{projectId}/checkout`. No `addStock`. |
+| Lost or broken (`finishModal`, Finished Return) | `PATCH sheets/<id>` with the line's new `lost` (and `lostCharge` plus the charge), added to the line as saved now, with the action's mark; no stock write | `POST /teams/{teamId}/projects/{projectId}/lost`. No stock moves |
+| Quick take (project list, ADR 0017 §4) | Works out `adhoc-<n>` from the projects it holds, `set`s the project if it doesn't exist, or moves on to the next number if it's been finished, then adds the line as a checkout does, with the action's mark, and reads it again to write the line once more if its mark isn't there (ADR 0017 §6) | `POST /teams/{teamId}/adhoc/checkout`. No `addStock` |
+| Move a General Use line to a client project (line editor, ADR 0017 §5) | Two writes with the move's mark: the counts onto the client project's line, then the General Use line replaced by a hidden "moved" marker (ADR 0017 §6) | `POST /teams/{teamId}/projects/{projectId}/move`. No stock moves |
+| Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `addStock(key, back - before)` | `POST /teams/{teamId}/projects/{projectId}/return`. No `addStock`. |
 | Inventory form, "Single items in storage now" (`productModal`) | Reads the item, then `PUT products/<key>`: with the new `stock` if the person changed the count field, otherwise with the stock read now. A changed count over stock that moved since the form opened is refused, and the item is saved with the stock as it is | `PUT products/<key>` without `stock`, if any other field changed, then, only if the person changed the count field, `POST /teams/{teamId}/products/{key}/stock` with `reason: "count"` and `expectedStock` (the count the form opened with). A count field emptied on a counted item stops counting it: `reason: "uncount"`, with `expectedStock`. A count field left as it opened sends no command. |
 | Receipt save, General inventory lines (`saveReceipt`) | `PUT products/<key>` with `stock` plus the lines' quantities | `PUT products/<key>` without `stock` (price and name updates), if they changed, then one `POST .../products/{key}/stock` with `reason: "receipt"` per line: its quantity in eaches and its receipt price as `unitCost` |
-| Receipt save, a client's lines on an existing sheet (`saveReceipt`) | Reads the sheet, then `PATCH sheets/<id>` with the lines added to it and a mark for this receipt in `savedReceipts`; an attempt that finds its mark writes nothing | `POST /teams/{teamId}/sheets/{sheetId}/lines`, up to 40 lines each, no stock moved |
-| Receipt save, company equipment bought for a client (`saveReceipt`, ADR 0017 §2a) | As above, on the line `<key>:bought` with `purchased: true`, at the receipt price, or the typed price with `priceSet: "manual"`, `priceSetBy` and `priceSetAt` (no markup). A new sheet is set first, then its bought lines are added | The same command, sending the receipt price as `cost` and no `price`, or a typed price with `priceSet: "manual"`; the server adds the markup. A new sheet is `PUT` first, then its bought lines are added |
+| Receipt save, a client's lines on an existing project (`saveReceipt`) | Reads the project, then `PATCH sheets/<id>` with the lines added to it and a mark for this receipt in `savedReceipts`; an attempt that finds its mark writes nothing | `POST /teams/{teamId}/projects/{projectId}/lines`, up to 40 lines each, no stock moved |
+| Receipt save, company equipment bought for a client (`saveReceipt`, ADR 0017 §2a) | As above, on the line `<key>:bought` with `purchased: true`, at the receipt price, or the typed price with `priceSet: "manual"`, `priceSetBy` and `priceSetAt` (no markup). A new project is set first, then its bought lines are added | The same command, sending the receipt price as `cost` and no `price`, or a typed price with `priceSet: "manual"`; the server adds the markup. A new project is `PUT` first, then its bought lines are added |
 | Item history (new) | none | `GET /teams/{teamId}/products/{key}/movements` (not used by the app yet) |
 
 Everything else stays on the document routes: creating, editing and deleting
-sheets and products, closing and reopening sheets, and **correcting a line's
+projects and products, closing and reopening projects, and **correcting a line's
 counts or price** (the line edit, a `PATCH` that doesn't move stock). A new
 item scanned at checkout is still saved to inventory with `PUT products/<key>`
 first, as today; the checkout then copies it.
@@ -118,9 +116,9 @@ rather than rounding ([ADR 0014](../adr/0014-units-cost-and-rounding.md)).
 - `productKey` is the line's key: the product key, as the app's `keyOf(code)`
   or `newKey()` makes it. Any key the documents accept works, including
   built-in names like `constructor`, except `__proto__` (400).
-- A sheet that a new line would take past the 350,000-byte document limit
+- A project that a new line would take past the 350,000-byte document limit
   refuses it with 413 `quota_exceeded`, as does any checkout or return that
-  DynamoDB refuses for its 400 KB item limit. Start another sheet.
+  DynamoDB refuses for its 400 KB item limit. Start another project.
 - A new line copies `code`, `name`, `price` and `cost` from the product, read
   inside the transaction. The client doesn't send them.
 - For an item that isn't in inventory (the "Save to inventory" box unticked),
@@ -138,7 +136,7 @@ rather than rounding ([ADR 0014](../adr/0014-units-cost-and-rounding.md)).
 - A key ending in `:bought` is refused (400): those lines are bought for a
   client and never come from storage.
 
-- **Not on the ad hoc sheet**: a checkout onto a sheet with `kind: "adhoc"`
+- **Not on the General Use project**: a checkout onto a project with `kind: "adhoc"`
   is `400`. Taking for no job is the quick take, below.
 
 **Quick take** ([ADR 0017](../adr/0017-company-equipment-and-ad-hoc-checkout.md),
@@ -148,58 +146,58 @@ section 4): `POST /teams/{teamId}/adhoc/checkout`
 { "operationId": "…", "productKey": "0123", "quantity": 2, "date": "2026-10-01" }
 ```
 
-- A checkout without choosing a sheet. The body is a checkout's without
-  `sheetId`, plus an optional `date` (`YYYY-MM-DD`, the person's local
-  date; default today in UTC), used only when this take starts a sheet.
-- It goes on the team's open ad hoc sheet. When there's none, it starts the
+- A checkout without choosing a project. The body is a checkout's without
+  `projectId`, plus an optional `date` (`YYYY-MM-DD`, the person's local
+  date; default today in UTC), used only when this take starts a project.
+- It goes on the team's open General Use project. When there's none, it starts the
   next one, `adhoc-<n>`: `kind: "adhoc"`, `client: ""`, the `date`,
   `status: "open"`, `createdBy` (the caller) and `createdAt`. A team has at
-  most one open ad hoc sheet.
-- The team's `ADHOC` item keeps the open sheet's ID and how many ad hoc
-  sheets it has made. The take reads it and, in the same transaction as the
-  line, stock and movement, either adds to the open sheet (checking `ADHOC`
-  is unchanged and the sheet is still an open ad hoc sheet) or creates
+  most one open General Use project.
+- The team's `ADHOC` item keeps the open project's ID and how many General
+  Use projects it has made. The take reads it and, in the same transaction as the
+  line, stock and movement, either adds to the open project (checking `ADHOC`
+  is unchanged and the project is still an open General Use project) or creates
   `adhoc-<n+1>` and points `ADHOC` at it (checking `ADHOC` is unchanged and
-  the sheet doesn't exist). When two people's first takes race, one
-  transaction makes the sheet and the other is cancelled, reads again, and
-  adds its line to that sheet. Neither is lost.
-- The response is a checkout's: `result.sheetId` names the ad hoc sheet,
-  `result.sheetCreated` is `true` when this take started it, `result.command`
-  is `quickTake`, and `sheet` is the ad hoc sheet as it is now. A retry with
-  the same operation ID returns the same sheet. The movement is a
-  `checkout` on the ad hoc sheet, and the `Checkouts` metric counts it.
+  the project doesn't exist). When two people's first takes race, one
+  transaction makes the project and the other is cancelled, reads again, and
+  adds its line to that project. Neither is lost.
+- The response is a checkout's: `result.projectId` names the General Use project,
+  `result.projectCreated` is `true` when this take started it, `result.command`
+  is `quickTake`, and `project` is the General Use project as it is now. A retry with
+  the same operation ID returns the same project. The movement is a
+  `checkout` on the General Use project, and the `Checkouts` metric counts it.
 
-**Move an ad hoc line to a job sheet** (ADR 0017, section 5):
+**Move a General Use line to a client project** (ADR 0017, section 5):
 `POST /teams/{teamId}/projects/{projectId}/move` (deprecated: `/sheets/{sheetId}/move`)
 
 ```json
 { "operationId": "…", "productKey": "0123", "toProjectId": "s1" }
 ```
 
-- `sheetId` is the open ad hoc sheet, the one the team's `ADHOC` item names
-  (checked in the transaction); `toSheetId` an open job sheet (no `kind`).
+- `projectId` is the open General Use project, the one the team's `ADHOC` item names
+  (checked in the transaction); `toProjectId` an open client project (no `kind`).
   The whole line moves, with its `out`, `returned` and `lost`. The
-  transaction also checks that the job sheet's line, if it has one, is still
+  transaction also checks that the client project's line, if it has one, is still
   the kind (supply or equipment) it was read as.
-- One transaction: the line comes off the ad hoc sheet, on the condition
-  that the sheet's version is still the one read (so the counts moved are
+- One transaction: the line comes off the General Use project, on the condition
+  that the project's version is still the one read (so the counts moved are
   exactly the ones removed; a return that lands meanwhile makes the command
   read again and move the line as it is then); the counts are added to the
-  job sheet's line for the item, which keeps its own `code`, `name`, `price`
-  and `cost`, or, if the job sheet has none, the line arrives as it is, with
+  client project's line for the item, which keeps its own `code`, `name`, `price`
+  and `cost`, or, if the client project has none, the line arrives as it is, with
   the price it was taken at; and a movement with `reason: "move"`,
-  `delta: 0`, `quantity` (the `out`), `returned`, `lost`, `sheetId` (the job
-  sheet) and `fromSheetId` (the ad hoc sheet). Both sheets get a new
-  version. For equipment, the job sheet's `takenBy` and `takenAt` become
+  `delta: 0`, `quantity` (the `out`), `returned`, `lost`, `projectId` (the client
+  project) and `fromProjectId` (the General Use project). Both projects get a new
+  version. For equipment, the client project's `takenBy` and `takenAt` become
   the moved line's when it was taken later.
 - **Stock doesn't move**: the items left storage once, at the quick take.
-- Refused: a `sheetId` that isn't an ad hoc sheet, or a `toSheetId` that
-  isn't a job sheet (`400`); either sheet closed (`409`); no such job sheet
-  (`404`); the item not on the ad hoc sheet, or on the job sheet as the
-  other kind (supply or equipment) (`400`); a job sheet the line would take
+- Refused: a `projectId` that isn't a General Use project, or a `toProjectId` that
+  isn't a client project (`400`); either project closed (`409`); no such client project
+  (`404`); the item not on the General Use project, or on the client project as the
+  other kind (supply or equipment) (`400`); a client project the line would take
   past the document limit (`413`).
-- The response has `result`, `sheet` (the ad hoc sheet), `toSheet` (the job
-  sheet) and `product: null`. A retry with the same operation ID changes
+- The response has `result`, `project` (the General Use project), `toProject` (the client
+  project) and `product: null`. A retry with the same operation ID changes
   nothing more and returns the first result, even when it races the first
   run.
 
@@ -209,19 +207,19 @@ section 4): `POST /teams/{teamId}/adhoc/checkout`
 { "operationId": "…", "lines": [{ "productKey": "0123", "quantity": 4, "name": "Nitrile gloves", "price": 12.5, "code": "0123", "cost": 9.99 }] }
 ```
 
-- Items bought on a receipt for a client, added to a sheet that already
+- Items bought on a receipt for a client, added to a project that already
   exists: every line changes in one transaction, or none does, and **stock
   doesn't move** (they were never in storage). A new line takes the request's
   `code`, `name`, `price` and `cost` (the receipt's choices); a line already
-  on the sheet keeps its copy and adds to `out`.
+  on the project keeps its copy and adds to `out`.
 - 1 to 40 lines, each product at most once. The app sends a longer receipt
-  as one request per 40, each its own operation. The sheet must be open, and
-  a client's sheet: the ad hoc sheet takes no receipt lines (`400`).
-- The response has `result` (each line, with `lineCreated`) and the `sheet`
+  as one request per 40, each its own operation. The project must be open, and
+  a client project: the General Use project takes no receipt lines (`400`).
+- The response has `result` (each line, with `lineCreated`) and the `project`
   as it is now; there's no `product`.
 - **Company equipment bought for the client** ([ADR 0017](../adr/0017-company-equipment-and-ad-hoc-checkout.md),
   section 2a). The server reads each line's product inside the transaction.
-  When it's equipment, the line goes on the sheet under `<productKey>:bought`
+  When it's equipment, the line goes on the project under `<productKey>:bought`
   with `purchased: true` and no `kind`, whatever the request says, so it
   never merges with the same item on loan. Its price is either:
   - worked out by the server (`priceSet: "markup"`): the line's `cost` (the
@@ -243,7 +241,7 @@ section 4): `POST /teams/{teamId}/adhoc/checkout`
   as before.
 - The app keeps each request's operation ID with the receipt draft, so
   saving again after a lost answer, even after a reload, adds nothing twice.
-  A new sheet from a receipt keeps its ID with the draft too, and a retry
+  A new project from a receipt keeps its ID with the draft too, and a retry
   looks for it before saving it.
 
 **Return**: `POST /teams/{teamId}/projects/{projectId}/return` (deprecated: `/sheets/{sheetId}/return`)
@@ -252,7 +250,7 @@ section 4): `POST /teams/{teamId}/adhoc/checkout`
 { "operationId": "…", "productKey": "0123", "quantity": 2 }
 ```
 
-The line must be on the sheet, and `returned + lost + quantity` can't be more
+The line must be on the project, and `returned + lost + quantity` can't be more
 than `out`. The app's stepper already stops at what's left; the server
 enforces it too, inside the transaction. A line bought for the client
 (`purchased: true`) doesn't come back: `400`.
@@ -264,15 +262,15 @@ section 3): `POST /teams/{teamId}/projects/{projectId}/lost` (deprecated: `/shee
 { "operationId": "…", "productKey": "ladder", "quantity": 1, "charge": 80 }
 ```
 
-- Equipment lines only (`kind: "equipment"`), on an open sheet, and
+- Equipment lines only (`kind: "equipment"`), on an open project, and
   `quantity` at most what's still out (`out − returned − lost`).
 - Adds `quantity` to the line's `lost`. Stock doesn't change: it went down at
   checkout, and the item has left the business. A movement with
   `reason: "lost"`, `delta: 0`, the `quantity` and any `charge` goes into
   the item's history.
 - `charge` (optional) is dollars for the lot, not each, following the money
-  rule. It's added to the line's `lostCharge`, which the sheet charges the
-  client. Not on an ad hoc sheet, which has no client.
+  rule. It's added to the line's `lostCharge`, which the project charges the
+  client. Not on a General Use project, which has no client.
 - The response is a command's, with `stockDelta: 0`.
 
 **Team settings**: `GET` and `PUT /teams/{teamId}/settings`
@@ -353,30 +351,30 @@ stands for, so a retry has to send the same one.
 
 - `result` is what the command did, fixed when it first ran. A retry returns
   the same `result` with `replayed: true`.
-- `sheet` and `product` are the documents **as they are now**, read after the
+- `project` and `product` are the documents **as they are now**, read after the
   command, in the same shape as `GET` returns. Put them in the local cache so
   the screen updates before the live update arrives. `product` is `null` for an
-  item that isn't in inventory; `sheet` is `null` if the sheet was deleted
-  since. Stock adjustments have no `sheet`.
+  item that isn't in inventory; `project` is `null` if the project was deleted
+  since. Stock adjustments have no `project`.
 - `stockDelta` is 0 when the item doesn't track stock (it has no numeric
   `stock`), and for a one-off item. For an uncount it's minus the stock the
   item had.
-- The sheet's `version` goes up by one with each checkout or return, so an
+- The project's `version` goes up by one with each checkout or return, so an
   edit screen that sends `expectedVersion` sees the change. So does the
   product's with every change to its `stock` (not for an item that doesn't
   track stock), so an inventory edit made against the version before a
   command gets `409` rather than being saved over a copy it hasn't seen.
-- Live updates: the sheet and product each produce a change event, as a
+- Live updates: the project and product each produce a change event, as a
   document write does.
 
 The toast text the app shows today still works: "Checked out 3 × <name>" from
-`quantity` and the line's name in `sheet.data.items[productKey]`, and
+`quantity` and the line's name in `project.data.items[productKey]`, and
 "`n` returned · `back` of `out` back" from the returned line.
 
 ## Operation IDs
 
 - Make one with `crypto.randomUUID()` **when the person confirms** the action
-  (taps "Add to sheet" or "Save return"), and keep it with that pending action
+  (taps "Add to project" or "Save return"), and keep it with that pending action
   until it settles.
 - Send the **same ID on every retry** of that action: after a timeout, a
   dropped connection, a 5xx, a 429, or a 409 from a busy line. It doesn't matter
@@ -396,7 +394,7 @@ The toast text the app shows today still works: "Checked out 3 × <name>" from
 - The server keeps the result for **7 days**. A retry within that returns the
   first result and changes nothing. After that the ID is forgotten, so don't
   queue retries for longer.
-- Reusing an ID for a **different request** (another quantity, item, sheet,
+- Reusing an ID for a **different request** (another quantity, item, project,
   command or user) is `400 bad_request`. It never applies either request.
 
 ## Errors and retrying
@@ -406,15 +404,15 @@ movement or the operation record changed.
 
 | Response | Meaning | What the app does |
 | --- | --- | --- |
-| `200`, `replayed: false` | Done now | Update the cache from `sheet` and `product` |
+| `200`, `replayed: false` | Done now | Update the cache from `project` and `product` |
 | `200`, `replayed: true` | An earlier attempt did it | The same |
-| `400 bad_request` | Refused: malformed, a non-whole or zero quantity, money with more than two decimals, more returned than is out, an item not on the sheet, an item not in inventory without `name` and `price`, an item whose stored version isn't a number, or a reused ID | Show the message; don't retry unchanged. The web build fetches the sheet and item, closes the form and shows the message |
+| `400 bad_request` | Refused: malformed, a non-whole or zero quantity, money with more than two decimals, more returned than is out, an item not on the project, an item not in inventory without `name` and `price`, an item whose stored version isn't a number, or a reused ID | Show the message; don't retry unchanged. The web build fetches the project and item, closes the form and shows the message |
 | `403 permission_denied`, `reason: "view_only"` | The caller is a viewer | Switch to view-only, as for document writes |
 | `403 permission_denied`, `reason: "not_member"` | Not a member of the team | As for document writes |
-| `404 not_found` | No such sheet, or (stock adjustment) no such item | Show the message (the web build handles it as for `400`) |
-| `409 aborted` | The sheet is closed ("Reopen it to …"), or the line or item changed on every retry | Show the message. Safe to retry with the same ID |
-| `409 aborted`, `reason: "equipment_out"` | A document write closing a sheet (Finished Return) while company equipment is still out on it | Ask about each piece still out (back, still at the job, or lost or broken), then close |
-| `409 aborted`, `reason: "adhoc_open"` | A document write reopening a finished ad hoc sheet while another ad hoc sheet is open | Show the message: finish the open one first |
+| `404 not_found` | No such project, or (stock adjustment) no such item | Show the message (the web build handles it as for `400`) |
+| `409 aborted` | The project is closed ("Reopen it to …"), or the line or item changed on every retry | Show the message. Safe to retry with the same ID |
+| `409 aborted`, `reason: "equipment_out"` | A document write closing a project (Finished Return) while company equipment is still out on it | Ask about each piece still out (back, still at the job, or lost or broken), then close |
+| `409 aborted`, `reason: "adhoc_open"` | A document write reopening a finished General Use project while another General Use project is open | Show the message: finish the open one first |
 | `429`, `5xx`, timeout, network error | Unknown whether it ran | Retry with the same ID, with backoff |
 
 The server already retries a busy line or item several times on a fresh read
@@ -422,37 +420,37 @@ before answering `409`, so `409` from contention is rare.
 
 ## Rules the server enforces
 
-- **Open sheets only.** Checkout and return need the sheet's `status` to be
-  anything but `closed`, checked inside the transaction. A closed sheet takes
-  no checkouts and **no returns**: to record a late return, reopen the sheet,
+- **Open projects only.** Checkout and return need the project's `status` to be
+  anything but `closed`, checked inside the transaction. A closed project takes
+  no checkouts and **no returns**: to record a late return, reopen the project,
   return, and finish the return again, or correct the line's counts with a
   line edit (which doesn't move stock). This matches the app, which hides the
-  scan bar on a closed sheet ([section 4a](../architecture/README.md#4a-project-states)).
+  scan bar on a closed project ([section 4a](../architecture/README.md#4a-project-states)).
 - **Returned never exceeds out**, checked inside the transaction. With
   equipment lost or broken, `returned + lost` never exceeds `out`.
-- **No sheet closes with equipment out.** A `PUT` or `PATCH` that sets
+- **No project closes with equipment out.** A `PUT` or `PATCH` that sets
   `status: "closed"` is refused with `409 aborted`, reason `equipment_out`,
   while any equipment line has `out − returned − lost > 0`.
 - **The line fields are checked on document writes too** (`documents.ts`):
   a line's `kind` is `"equipment"` or missing and can't change once the line
   exists; `lost` and `lostCharge` are only on equipment lines (a charge only
-  on a client's sheet); `takenBy` is text and `takenAt` an ISO time; a changed
+  on a client project); `takenBy` is text and `takenAt` an ISO time; a changed
   line keeps `returned + lost ≤ out`. A document write can't add a line
   bought for the client or a `:bought` key, or mark or unmark one; it may
   change a bought line's counts or price, and a changed price is stored with
   `priceSet: "manual"`, `priceSetBy` (the writer) and `priceSetAt`. A bought
   line's `returned` stays 0. `takenBy`, `takenAt`, `priceSetBy` and
   `priceSetAt` are the server's: a document write may only repeat what's
-  stored. A sheet's `kind` can't be set, changed or removed by
-  a document write, and no document write creates a sheet whose ID starts
-  `adhoc-`: only the quick take makes ad hoc sheets. A product's `kind` is `"supply"` or `"equipment"`, and
+  stored. A project's `kind` can't be set, changed or removed by
+  a document write, and no document write creates a project whose ID starts
+  `adhoc-`: only the quick take makes General Use projects. A product's `kind` is `"supply"` or `"equipment"`, and
   no new product's key ends in `:bought`.
-- **One open ad hoc sheet.** Closing the open ad hoc sheet (`status:
+- **One open General Use project.** Closing the open General Use project (`status:
   "closed"`) or deleting it clears the team's `ADHOC` pointer in the same
   transaction, so the next quick take starts `adhoc-<n+1>`. Reopening a
   finished one is refused with `409 aborted`, reason `adhoc_open`, while
-  another ad hoc sheet is open, and otherwise points `ADHOC` at it. Deleting
-  an ad hoc sheet doesn't change stock, as for any sheet.
+  another General Use project is open, and otherwise points `ADHOC` at it. Deleting
+  a General Use project doesn't change stock, as for any project.
 - **Stock can go below zero.** A checkout takes the full quantity off, even
   when that's more than the count, where `bumpStock` stops at 0. A negative
   count says the storage count was wrong, and a `count` adjustment fixes it;
@@ -468,8 +466,8 @@ before answering `409`, so `409` from contention is rare.
 `GET /teams/{teamId}/products/{key}/movements?limit=50&cursor=…` returns the
 item's movements, newest first, a page at a time (up to 100). Any member can
 read it. Each movement has who (`userId`), when (`at`), why (`reason`:
-`checkout`, `return`, `receipt`, `count`, `uncount` when someone stopped counting it, `import`, `delete` when the item was deleted, `lost` for equipment lost or broken, or `move` for a line moved from the ad hoc sheet to a job sheet; an uncount and a delete take its stock to 0, and lost and move movements don't change it), the `sheetId` for checkouts (quick takes included),
-returns, lost equipment and moves (the job sheet; `fromSheetId` is the ad hoc sheet), the `quantity` or `count` (a move's `quantity` is the line's `out`, with its `returned` and `lost`), the change to stock (`delta`), whether the
+`checkout`, `return`, `receipt`, `count`, `uncount` when someone stopped counting it, `import`, `delete` when the item was deleted, `lost` for equipment lost or broken, or `move` for a line moved from the General Use project to a client project; an uncount and a delete take its stock to 0, and lost and move movements don't change it), the `projectId` for checkouts (quick takes included),
+returns, lost equipment and moves (the client project; `fromProjectId` is the General Use project), the `quantity` or `count` (a move's `quantity` is the line's `out`, with its `returned` and `lost`), the change to stock (`delta`), whether the
 item tracked stock (`tracked`), the `unitCost` for receipts, any `charge` for lost equipment, and the
 `operationId`. Movements are kept as long as the team's data.
 
@@ -499,14 +497,14 @@ drifting") is a separate bead. It reconciles each item from the movements:
   it isn't counted. Its baseline can stay: a later count starts from 0, so an
   item reconciled at S, uncounted and counted again at C has movements since
   that add up to C − S, and C still equals S plus their deltas.
-- Sheet lines can be reconciled the same way: the checkout and return
-  movements for a sheet and item add up to its `out` and `returned`, and its
+- Project lines can be reconciled the same way: the checkout and return
+  movements for a project and item add up to its `out` and `returned`, and its
   `lost` movements to its `lost`, unless the line was corrected with a line
-  edit. `move` movements count in and out: one whose `sheetId` is the sheet
-  adds its `quantity`, `returned` and `lost` to the sheet's `out`,
-  `returned` and `lost`, and one whose `fromSheetId` is the sheet takes them
-  away (the ad hoc line is gone, so it adds up to 0). A `lost` or `move`
+  edit. `move` movements count in and out: one whose `projectId` is the project
+  adds its `quantity`, `returned` and `lost` to the project's `out`,
+  `returned` and `lost`, and one whose `fromProjectId` is the project takes them
+  away (the General Use line is gone, so it adds up to 0). A `lost` or `move`
   movement's `delta` is always 0, so it never changes an item's sum, and a
   move never counts stock twice: the quick take's `checkout` took it off
   once. Lines bought for the client (`:bought`) have no movements, as
-  no receipt line put on a sheet does.
+  no receipt line put on a project does.

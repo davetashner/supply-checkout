@@ -141,7 +141,7 @@ export interface OpsChecksProps {
  *   PutItem in `LAPSE#` partitions (its own records) naming only
  *   LAPSE_RECORD_ATTRIBUTES; send the app's email (grantSendEmail); and read
  *   the Stripe secret key. No Scan, no DeleteItem, no Query of a team's
- *   partition, so it never reads sheets, inventory or members' data.
+ *   partition, so it never reads projects, inventory or members' data.
  *   `lapseNotRunning` alarms when its LapseTeamsChecked gauge stops arriving.
  *   It has no async retries, and one run at a time holds its lease (a
  *   `LAPSE#RUN` record), so a timeout or duplicate never doubles its closures.

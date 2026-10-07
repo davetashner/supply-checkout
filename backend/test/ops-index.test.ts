@@ -1,6 +1,6 @@
 // The operators' index (GSI3, ADR 0015): which items the data layer puts in
 // it. A team's META item and its owners' MEMBER items, and nothing else, so
-// the ops role's index queries can't reach sheets, inventory or invites.
+// the ops role's index queries can't reach projects, inventory or invites.
 
 import { describe, expect, it } from "vitest";
 import { acceptInvite, authorizeTeam, createInvite, createTeam, removeMember, setMemberRole } from "../src/data/index.js";
@@ -39,7 +39,7 @@ describe("the operators' index", () => {
     expect(table.get(`TEAM#${team.teamId}`, "MEMBER#user-sam")).toBeUndefined();
   });
 
-  it("never lists invites, sheets or anything else in a team's partition", async () => {
+  it("never lists invites, projects or anything else in a team's partition", async () => {
     const table = new MemoryTable();
     const db = table.db();
     const { team, context } = await createTeam(db, { userId: "user-owner" }, { name: "Acme" }, NOW);

@@ -129,7 +129,7 @@ beforeEach(() => {
   team("team-a", { [OWNER]: "owner", [PAT]: "contributor", [VIEWER]: "viewer" });
   team("team-b", { [OWNER]: "owner", [CO_OWNER]: "owner", [PAT]: "viewer" });
   table.put({ PK: "TEAM#team-a", SK: "PRODUCT#0123", type: "product", key: "0123", version: 3, code: "0123", name: "Nitrile gloves", price: 12.5, stock: 10 });
-  table.put({ PK: "TEAM#team-a", SK: "SHEET#s1", GSI1PK: "TEAM#team-a#SHEETS", GSI1SK: "2026-09-26#s1", type: "sheet", id: "s1", version: 1, client: "Echo", date: "2026-09-26", status: "open", items: {} });
+  table.put({ PK: "TEAM#team-a", SK: "PROJECT#s1", GSI1PK: "TEAM#team-a#PROJECTS", GSI1SK: "2026-09-26#s1", type: "project", id: "s1", version: 1, client: "Echo", date: "2026-09-26", status: "open", items: {} });
   invite("team-a", "inv-a1", "newbie@example.com");
   const dbFor: DbForAccount = (scope) => {
     scopes.push(scope);
@@ -223,7 +223,7 @@ describe("closing a team", () => {
     expect(logs).toContainEqual(["info", "Team closed", { teamId: "team-a", purgeAfter: deletesAt }]);
     // Members keep reading it; /me says it's closed
     expect((await data("GET", "/teams/team-a/products", PAT)).status).toBe(200);
-    expect((await data("GET", "/teams/team-a/sheets/s1", VIEWER)).status).toBe(200);
+    expect((await data("GET", "/teams/team-a/projects/s1", VIEWER)).status).toBe(200);
     const me = await call("GET", "/me", PAT);
     // Owners can reopen it until REOPEN_CUTOFF_MINUTES before it's deleted
     const reopenBy = new Date(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY - REOPEN_CUTOFF_MINUTES * 60_000).toISOString();
@@ -237,8 +237,8 @@ describe("closing a team", () => {
     await close();
     const closed = { status: 403, body: { error: { code: "permission_denied", message: expect.stringContaining("closed"), reason: "team_closed" } } };
     expect(await data("PATCH", "/teams/team-a/products/0123", PAT, { data: { name: "Gloves" }, expectedVersion: 3 })).toEqual(closed);
-    expect(await data("DELETE", "/teams/team-a/sheets/s1", OWNER, undefined, { expectedVersion: "1" })).toEqual(closed);
-    expect(await data("POST", "/teams/team-a/sheets/s1/checkout", PAT, { operationId: crypto.randomUUID(), productKey: "0123", quantity: 1 })).toEqual(closed);
+    expect(await data("DELETE", "/teams/team-a/projects/s1", OWNER, undefined, { expectedVersion: "1" })).toEqual(closed);
+    expect(await data("POST", "/teams/team-a/projects/s1/checkout", PAT, { operationId: crypto.randomUUID(), productKey: "0123", quantity: 1 })).toEqual(closed);
     // A viewer is still told they're view-only: the role check comes first
     expect((await data("PATCH", "/teams/team-a/products/0123", VIEWER, { data: { name: "Gloves" }, expectedVersion: 3 })).body.error.reason).toBe("view_only");
     expect(await call("POST", "/teams/team-a/invites", OWNER, { email: "late@example.com", role: "viewer" })).toEqual(closed);

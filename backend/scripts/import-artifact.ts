@@ -1,7 +1,7 @@
 // npm run import-artifact: the one-time import of a claude.ai artifact's data
 // into a team (src/data/artifact-import.ts; docs/backend.md, "Importing
 // artifact data"). For the owner to run, never a Lambda. A dry run unless
-// --apply is given. It prints counts, sums, product keys and sheet IDs: never
+// --apply is given. It prints counts, sums, product keys and project IDs: never
 // names, clients, emails or user IDs.
 //
 //   npm run import-artifact -- --file export.json --team <teamId> --owner <userId> \
@@ -29,7 +29,7 @@ export const USAGE = `Usage: npm run import-artifact -- --file <export.json> --t
          --table supply-checkout-<env>-app --region <region> --profile <profile> [--apply]
 
 Imports a claude.ai artifact's "Everything (JSON)" export (Export in the artifact) into a team:
-its items (with their stock counts) and its sheets, with the same keys and IDs.
+its items (with their stock counts) and its projects, with the same keys and IDs.
 --owner is the user ID of one of the team's owners (npm run ops -- team <teamId> lists them);
 the import runs as them and is refused unless they are an owner and the team is open.
 
@@ -170,9 +170,9 @@ export async function main(
   const p = parsedExport;
   const stock = p.products.reduce((sum, x) => sum + (x.stock ?? 0), 0);
   const charge = [...p.totals.values()].reduce((sum, t) => sum + t.chargeCents, 0);
-  out(`Export${p.exportedAt ? ` of ${p.exportedAt}` : ""}: ${p.products.length} items (${p.products.filter((x) => x.stock !== undefined).length} counted, ${stock} eaches in storage), ${p.sheets.length} sheets (charges ${dollars(charge)})`);
-  if (p.sheetsWithoutTotals) out(`  sheets without exported totals (only their lines were checked): ${p.sheetsWithoutTotals}`);
-  if (p.droppedCreatedBy) out(`  sheets whose claude.ai user ID is replaced by the name the artifact showed: ${p.droppedCreatedBy}`);
+  out(`Export${p.exportedAt ? ` of ${p.exportedAt}` : ""}: ${p.products.length} items (${p.products.filter((x) => x.stock !== undefined).length} counted, ${stock} eaches in storage), ${p.projects.length} projects (charges ${dollars(charge)})`);
+  if (p.projectsWithoutTotals) out(`  projects without exported totals (only their lines were checked): ${p.projectsWithoutTotals}`);
+  if (p.droppedCreatedBy) out(`  projects whose claude.ai user ID is replaced by the name the artifact showed: ${p.droppedCreatedBy}`);
   const ignored = Object.entries(p.ignoredFields);
   if (ignored.length) out(`  fields left out: ${ignored.map(([f, n]) => `${f} (${n})`).join(", ")}`);
   if (p.errors.length) {
@@ -185,10 +185,10 @@ export async function main(
     const ctx = await authorizeTeam(db, values.owner, values.team);
     const plan = await planArtifactImport(db, ctx, p);
     out(`Items: ${plan.products.length} to add, ${plan.productsPresent} already in the team`);
-    out(`Sheets: ${plan.sheets.length} to add, ${plan.sheetsPresent} already in the team`);
+    out(`Projects: ${plan.projects.length} to add, ${plan.projectsPresent} already in the team`);
     if (plan.conflicts.length) {
       issues("Conflicts with the team's data", plan.conflicts, err);
-      err("Nothing was written. These items or sheets are in the team already with other values.");
+      err("Nothing was written. These items or projects are in the team already with other values.");
       return 1;
     }
     if (!values.apply) {
@@ -196,17 +196,17 @@ export async function main(
       return 0;
     }
     const result = await applyArtifactImport(db, ctx, plan);
-    out(`Added ${result.productsCreated} items (${result.movements} stock counts recorded as import movements, operation ${result.operationId}) and ${result.sheetsCreated} sheets`);
+    out(`Added ${result.productsCreated} items (${result.movements} stock counts recorded as import movements, operation ${result.operationId}) and ${result.projectsCreated} projects`);
     if (result.alreadyThere) out(`  added by another run first, with the same values: ${result.alreadyThere}`);
-    if (result.adhocOpen) out(`The open ad hoc sheet is ${result.adhocOpen}: quick takes go on it`);
+    if (result.adhocOpen) out(`The open General Use project is ${result.adhocOpen}: quick takes go on it`);
     const check = await verifyArtifactImport(db, ctx, p);
     out(`Stock: ${check.stockAfter} eaches in the team for the ${check.productsChecked} items, ${check.stockBefore} in the export`);
-    out(`Sheet charges: ${dollars(check.chargeAfterCents)} in the team for the ${check.sheetsChecked} sheets, ${dollars(check.chargeBeforeCents)} in the export`);
+    out(`Project charges: ${dollars(check.chargeAfterCents)} in the team for the ${check.projectsChecked} projects, ${dollars(check.chargeBeforeCents)} in the export`);
     if (check.mismatches.length) {
       issues("Differences after the import", check.mismatches, err);
       return 1;
     }
-    out("Done: every stock count and sheet total matches the export.");
+    out("Done: every stock count and project total matches the export.");
     return 0;
   } catch (e) {
     // Error names and the data layer's messages (keys and IDs at most): no item contents

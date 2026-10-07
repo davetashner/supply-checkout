@@ -29,10 +29,10 @@ import {
   verifiedEmailHash,
   createInvite,
   createProduct,
-  createSheet,
+  createProject,
   createTeam,
   deleteProduct,
-  deleteSheet,
+  deleteProject,
   EMAIL_CODES_PER_USER_PER_DAY,
   findInvite,
   findInviteForEmail,
@@ -41,7 +41,7 @@ import {
   getMember,
   getProduct,
   getReceiptUsage,
-  getSheet,
+  getProject,
   getTeam,
   hashEmail,
   InvalidInputError,
@@ -57,8 +57,8 @@ import {
   listInvitesForEmail,
   listMembers,
   listProducts,
-  listSheets,
-  listSheetsByDate,
+  listProjects,
+  listProjectsByDate,
   listTeamsForUser,
   markInviteFailed,
   markInviteNotSent,
@@ -75,12 +75,12 @@ import {
   RateLimitedError,
   RECEIPT_RATE_LIMITS,
   removeMember,
-  removeSheetLine,
+  removeProjectLine,
   resendInvite,
   revokeInvite,
   setMemberRole,
   setOwnMemberEmail,
-  setSheetLine,
+  setProjectLine,
   closeTeam,
   TeamClosedError,
   teamContextForEmailEvent,
@@ -90,7 +90,7 @@ import {
   TEAMS_PER_USER_PER_DAY,
   TRIAL_DAYS,
   updateProduct,
-  updateSheet,
+  updateProject,
   updateTeam,
   type Db,
   type Invite,
@@ -859,116 +859,116 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     });
   });
 
-  describe("Sheet", () => {
+  describe("Project", () => {
     const line = (out: number, returned = 0) => ({ name: "Towels", price: 2, out, returned });
 
     it("keeps every field the app writes: each line's barcode, the preparer's name and the receipt", async () => {
       const { contributor, viewer } = await team();
       const gloves = { code: "0123456789", name: "Gloves", price: 12.5, out: 3, returned: 0 };
       const rags = { code: "", name: "Rags", price: 1, out: 1, returned: 0 };
-      const sheet = await createSheet(db, contributor, {
+      const project = await createProject(db, contributor, {
         client: "Smith house",
         date: "2026-09-25",
         createdByName: "Dana",
         source: { store: "Hardware Co", receiptDate: "2026-09-24" },
         items: { "0123456789": gloves, "nb-1": rags },
       });
-      let s = await getSheet(db, viewer, sheet.id);
+      let s = await getProject(db, viewer, project.id);
       expect(s).toMatchObject({ createdByName: "Dana", source: { store: "Hardware Co", receiptDate: "2026-09-24" }, items: { "0123456789": gloves, "nb-1": rags } });
-      s = await setSheetLine(db, contributor, sheet.id, "0123456789", { ...gloves, returned: 2 }, 1);
+      s = await setProjectLine(db, contributor, project.id, "0123456789", { ...gloves, returned: 2 }, 1);
       expect(s.items["0123456789"]).toEqual({ ...gloves, returned: 2 });
-      expect((await getSheet(db, viewer, sheet.id))?.items["0123456789"]?.code).toBe("0123456789");
+      expect((await getProject(db, viewer, project.id))?.items["0123456789"]?.code).toBe("0123456789");
 
       const long = { ...gloves, code: "1".repeat(257) };
-      await expect(setSheetLine(db, contributor, sheet.id, "x", long, s.version)).rejects.toThrow(InvalidInputError);
-      await expect(setSheetLine(db, contributor, sheet.id, "x", { ...gloves, code: 5 as unknown as string }, s.version)).rejects.toThrow(InvalidInputError);
-      expect((await setSheetLine(db, contributor, sheet.id, "x", { ...gloves, code: "1".repeat(256) }, s.version)).items.x?.code).toHaveLength(256);
+      await expect(setProjectLine(db, contributor, project.id, "x", long, s.version)).rejects.toThrow(InvalidInputError);
+      await expect(setProjectLine(db, contributor, project.id, "x", { ...gloves, code: 5 as unknown as string }, s.version)).rejects.toThrow(InvalidInputError);
+      expect((await setProjectLine(db, contributor, project.id, "x", { ...gloves, code: "1".repeat(256) }, s.version)).items.x?.code).toHaveLength(256);
       // A line's cost each (ADR 0014) is kept, and has to be an amount in whole cents
-      s = await setSheetLine(db, contributor, sheet.id, "x", { ...gloves, cost: 9.99 }, s.version + 1);
+      s = await setProjectLine(db, contributor, project.id, "x", { ...gloves, cost: 9.99 }, s.version + 1);
       expect(s.items.x).toEqual({ ...gloves, cost: 9.99 });
-      const costed = await createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, cost: 0 } } });
-      expect((await getSheet(db, viewer, costed.id))?.items.a).toEqual({ ...rags, cost: 0 });
+      const costed = await createProject(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, cost: 0 } } });
+      expect((await getProject(db, viewer, costed.id))?.items.a).toEqual({ ...rags, cost: 0 });
       for (const cost of [-0.01, Number.NaN, "1" as unknown as number, 1.234, 1_000_001]) {
-        await expect(setSheetLine(db, contributor, sheet.id, "x", { ...gloves, cost }, s.version)).rejects.toThrow(InvalidInputError);
-        await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, cost } } })).rejects.toThrow(InvalidInputError);
+        await expect(setProjectLine(db, contributor, project.id, "x", { ...gloves, cost }, s.version)).rejects.toThrow(InvalidInputError);
+        await expect(createProject(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, cost } } })).rejects.toThrow(InvalidInputError);
       }
       // So is its price (ADR 0014), and one within 1e-12 of whole cents is stored as those cents
       for (const price of [-0.01, Number.NaN, "1" as unknown as number, 1.234, 1_000_000.01]) {
-        await expect(setSheetLine(db, contributor, sheet.id, "x", { ...gloves, price }, s.version)).rejects.toThrow(InvalidInputError);
-        await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, price } } })).rejects.toThrow(InvalidInputError);
+        await expect(setProjectLine(db, contributor, project.id, "x", { ...gloves, price }, s.version)).rejects.toThrow(InvalidInputError);
+        await expect(createProject(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, price } } })).rejects.toThrow(InvalidInputError);
       }
-      s = await setSheetLine(db, contributor, sheet.id, "x", { ...gloves, price: 0.1 + 0.2 }, s.version);
+      s = await setProjectLine(db, contributor, project.id, "x", { ...gloves, price: 0.1 + 0.2 }, s.version);
       expect(s.items.x?.price).toBe(0.3);
-      const priciest = await createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, price: 1_000_000 } } });
-      expect((await getSheet(db, viewer, priciest.id))?.items.a?.price).toBe(1_000_000);
-      await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", source: null as unknown as { store: string; receiptDate: string } })).rejects.toThrow(InvalidInputError);
-      await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", source: { store: 1 as unknown as string, receiptDate: "" } })).rejects.toThrow(InvalidInputError);
-      await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", createdByName: "x".repeat(201) })).rejects.toThrow(InvalidInputError);
+      const priciest = await createProject(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, price: 1_000_000 } } });
+      expect((await getProject(db, viewer, priciest.id))?.items.a?.price).toBe(1_000_000);
+      await expect(createProject(db, contributor, { client: "x", date: "2026-09-25", source: null as unknown as { store: string; receiptDate: string } })).rejects.toThrow(InvalidInputError);
+      await expect(createProject(db, contributor, { client: "x", date: "2026-09-25", source: { store: 1 as unknown as string, receiptDate: "" } })).rejects.toThrow(InvalidInputError);
+      await expect(createProject(db, contributor, { client: "x", date: "2026-09-25", createdByName: "x".repeat(201) })).rejects.toThrow(InvalidInputError);
     });
 
     it("is keyed by an immutable ID and read by ID alone", async () => {
       const { contributor, viewer } = await team();
-      const sheet = await createSheet(db, contributor, { client: "Smith house", date: "2026-09-25", items: { towels: line(2) } });
-      const stored = await rawItem(db, `TEAM#${contributor.teamId}`, `PROJECT#${sheet.id}`);
-      expect(stored).toMatchObject({ type: "project", GSI1PK: `TEAM#${contributor.teamId}#PROJECTS`, GSI1SK: `2026-09-25#${sheet.id}`, status: "open", createdBy: contributor.userId });
-      expect(await getSheet(db, viewer, sheet.id)).toMatchObject({ id: sheet.id, client: "Smith house", items: { towels: line(2) }, version: 1 });
-      await expect(createSheet(db, viewer, { client: "x", date: "2026-09-25" })).rejects.toThrow(ForbiddenError);
-      await expect(createSheet(db, contributor, { client: "x", date: "Sept 25" })).rejects.toThrow(InvalidInputError);
-      await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { t: line(1, 2) } })).rejects.toThrow(InvalidInputError);
+      const project = await createProject(db, contributor, { client: "Smith house", date: "2026-09-25", items: { towels: line(2) } });
+      const stored = await rawItem(db, `TEAM#${contributor.teamId}`, `PROJECT#${project.id}`);
+      expect(stored).toMatchObject({ type: "project", GSI1PK: `TEAM#${contributor.teamId}#PROJECTS`, GSI1SK: `2026-09-25#${project.id}`, status: "open", createdBy: contributor.userId });
+      expect(await getProject(db, viewer, project.id)).toMatchObject({ id: project.id, client: "Smith house", items: { towels: line(2) }, version: 1 });
+      await expect(createProject(db, viewer, { client: "x", date: "2026-09-25" })).rejects.toThrow(ForbiddenError);
+      await expect(createProject(db, contributor, { client: "x", date: "Sept 25" })).rejects.toThrow(InvalidInputError);
+      await expect(createProject(db, contributor, { client: "x", date: "2026-09-25", items: { t: line(1, 2) } })).rejects.toThrow(InvalidInputError);
     });
 
     it("changes date in one update, keeping its ID, lines and place in date order", async () => {
       const { contributor, viewer } = await team();
-      const a = await createSheet(db, contributor, { client: "A", date: "2026-09-01" });
-      const b = await createSheet(db, contributor, { client: "B", date: "2026-09-10" });
-      const c = await createSheet(db, contributor, { client: "C", date: "2026-09-20", items: { towels: line(1) } });
-      const moved = await updateSheet(db, contributor, c.id, { date: "2026-08-15", client: "C (moved)" }, 1);
+      const a = await createProject(db, contributor, { client: "A", date: "2026-09-01" });
+      const b = await createProject(db, contributor, { client: "B", date: "2026-09-10" });
+      const c = await createProject(db, contributor, { client: "C", date: "2026-09-20", items: { towels: line(1) } });
+      const moved = await updateProject(db, contributor, c.id, { date: "2026-08-15", client: "C (moved)" }, 1);
       expect(moved).toMatchObject({ id: c.id, date: "2026-08-15", client: "C (moved)", items: { towels: line(1) }, version: 2 });
-      expect(await getSheet(db, viewer, c.id)).toMatchObject({ date: "2026-08-15" });
+      expect(await getProject(db, viewer, c.id)).toMatchObject({ date: "2026-08-15" });
 
-      const newestFirst = await listSheetsByDate(db, viewer);
+      const newestFirst = await listProjectsByDate(db, viewer);
       expect(newestFirst.items.map((s) => s.id)).toEqual([b.id, a.id, c.id]);
-      const oldestFirst = await listSheetsByDate(db, viewer, { oldestFirst: true });
+      const oldestFirst = await listProjectsByDate(db, viewer, { oldestFirst: true });
       expect(oldestFirst.items.map((s) => s.id)).toEqual([c.id, a.id, b.id]);
-      const september = await listSheetsByDate(db, viewer, { from: "2026-09-01", to: "2026-09-30" });
+      const september = await listProjectsByDate(db, viewer, { from: "2026-09-01", to: "2026-09-30" });
       expect(september.items.map((s) => s.id)).toEqual([b.id, a.id]);
-      expect((await listSheetsByDate(db, viewer, { from: "2026-09-05" })).items.map((s) => s.id)).toEqual([b.id]);
+      expect((await listProjectsByDate(db, viewer, { from: "2026-09-05" })).items.map((s) => s.id)).toEqual([b.id]);
 
       // Pages follow on with the cursor
-      const first = await listSheetsByDate(db, viewer, { limit: 2 });
+      const first = await listProjectsByDate(db, viewer, { limit: 2 });
       expect(first.items).toHaveLength(2);
-      const rest = await listSheetsByDate(db, viewer, { limit: 2, cursor: first.cursor });
+      const rest = await listProjectsByDate(db, viewer, { limit: 2, cursor: first.cursor });
       expect([...first.items, ...rest.items].map((s) => s.id)).toEqual([b.id, a.id, c.id]);
       expect(rest.cursor).toBeUndefined();
 
-      expect((await listSheets(db, viewer)).map((s) => s.id).sort()).toEqual([a.id, b.id, c.id].sort());
+      expect((await listProjects(db, viewer)).map((s) => s.id).sort()).toEqual([a.id, b.id, c.id].sort());
     });
 
     it("sets, returns and removes lines, closes and reopens, with a version check on each", async () => {
       const { contributor } = await team();
-      const sheet = await createSheet(db, contributor, { client: "Smith house", date: "2026-09-25" });
-      let s = await setSheetLine(db, contributor, sheet.id, "towels", line(3), 1);
-      s = await setSheetLine(db, contributor, sheet.id, "glass cleaner #2", { name: "Glass", price: 4, out: 1, returned: 0 }, s.version);
-      s = await setSheetLine(db, contributor, sheet.id, "towels", line(3, 2), s.version);
+      const project = await createProject(db, contributor, { client: "Smith house", date: "2026-09-25" });
+      let s = await setProjectLine(db, contributor, project.id, "towels", line(3), 1);
+      s = await setProjectLine(db, contributor, project.id, "glass cleaner #2", { name: "Glass", price: 4, out: 1, returned: 0 }, s.version);
+      s = await setProjectLine(db, contributor, project.id, "towels", line(3, 2), s.version);
       expect(s.items).toEqual({ towels: line(3, 2), "glass cleaner #2": { name: "Glass", price: 4, out: 1, returned: 0 } });
-      await expect(setSheetLine(db, contributor, sheet.id, "towels", line(4), 1)).rejects.toThrow(ConflictError);
+      await expect(setProjectLine(db, contributor, project.id, "towels", line(4), 1)).rejects.toThrow(ConflictError);
 
-      s = await removeSheetLine(db, contributor, sheet.id, "glass cleaner #2", s.version);
+      s = await removeProjectLine(db, contributor, project.id, "glass cleaner #2", s.version);
       expect(Object.keys(s.items)).toEqual(["towels"]);
 
-      s = await updateSheet(db, contributor, sheet.id, { status: "closed" }, s.version);
+      s = await updateProject(db, contributor, project.id, { status: "closed" }, s.version);
       expect(s.status).toBe("closed");
       expect(s.closedAt).toBeTruthy();
-      s = await updateSheet(db, contributor, sheet.id, { status: "open", createdByName: "Dana" }, s.version);
+      s = await updateProject(db, contributor, project.id, { status: "open", createdByName: "Dana" }, s.version);
       expect(s).toMatchObject({ status: "open", createdByName: "Dana" });
-      await expect(updateSheet(db, contributor, sheet.id, { status: "lost" as "open" }, s.version)).rejects.toThrow(InvalidInputError);
+      await expect(updateProject(db, contributor, project.id, { status: "lost" as "open" }, s.version)).rejects.toThrow(InvalidInputError);
 
-      await expect(deleteSheet(db, contributor, sheet.id, 1)).rejects.toThrow(ConflictError);
-      await deleteSheet(db, contributor, sheet.id, s.version);
-      expect(await getSheet(db, contributor, sheet.id)).toBeUndefined();
-      const other = await createSheet(db, contributor, { client: "x", date: "2026-09-26" });
-      await deleteSheet(db, contributor, other.id);
-      expect(await listSheets(db, contributor)).toEqual([]);
+      await expect(deleteProject(db, contributor, project.id, 1)).rejects.toThrow(ConflictError);
+      await deleteProject(db, contributor, project.id, s.version);
+      expect(await getProject(db, contributor, project.id)).toBeUndefined();
+      const other = await createProject(db, contributor, { client: "x", date: "2026-09-26" });
+      await deleteProject(db, contributor, other.id);
+      expect(await listProjects(db, contributor)).toEqual([]);
     });
   });
 
@@ -1041,16 +1041,16 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     it("records who did what, with a TTL, and lists newest first for owners", async () => {
       const { owner, viewer } = await team();
       const t0 = new Date("2026-09-25T10:00:00Z");
-      await recordAudit(db, owner, { action: "sheet.create", target: "s1" }, t0);
-      await recordAudit(db, viewer, { action: "sheet.export", target: "s1" }, new Date(t0.getTime() + 1000));
+      await recordAudit(db, owner, { action: "project.create", target: "s1" }, t0);
+      await recordAudit(db, viewer, { action: "project.export", target: "s1" }, new Date(t0.getTime() + 1000));
       const latest = await recordAudit(db, owner, { action: "product.delete", target: "p1", detail: { name: "Towels" } }, new Date(t0.getTime() + 2000));
       expect(latest.expiresAt).toBe(Math.floor(t0.getTime() / 1000) + 2 + 365 * 86400);
 
       const page1 = await listAudit(db, owner, { limit: 2 });
-      expect(page1.items.map((e) => e.action)).toEqual(["product.delete", "sheet.export"]);
+      expect(page1.items.map((e) => e.action)).toEqual(["product.delete", "project.export"]);
       expect(page1.items[1]?.userId).toBe(viewer.userId);
       const page2 = await listAudit(db, owner, { limit: 2, cursor: page1.cursor });
-      expect(page2.items.map((e) => e.action)).toEqual(["sheet.create"]);
+      expect(page2.items.map((e) => e.action)).toEqual(["project.create"]);
       await expect(listAudit(db, viewer)).rejects.toThrow(ForbiddenError);
       await expect(recordAudit(db, owner, { action: "Bad Action!" })).rejects.toThrow(InvalidInputError);
     });
@@ -1092,23 +1092,23 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     it("never shows or changes one team's data through another team's context", async () => {
       const a = await team("Team A");
       const b = await team("Team B");
-      const sheet = await createSheet(db, a.contributor, { client: "A's client", date: "2026-09-25" });
+      const project = await createProject(db, a.contributor, { client: "A's client", date: "2026-09-25" });
       await createProduct(db, a.contributor, "shared-key", { code: "", name: "A's towels", price: 1 }, 5);
       await createProduct(db, b.contributor, "shared-key", { code: "", name: "B's towels", price: 1 }, 1);
 
-      expect(await getSheet(db, b.owner, sheet.id)).toBeUndefined();
-      expect(await listSheets(db, b.owner)).toEqual([]);
-      expect((await listSheetsByDate(db, b.owner)).items).toEqual([]);
+      expect(await getProject(db, b.owner, project.id)).toBeUndefined();
+      expect(await listProjects(db, b.owner)).toEqual([]);
+      expect((await listProjectsByDate(db, b.owner)).items).toEqual([]);
       expect((await listProducts(db, b.owner)).map((p) => p.name)).toEqual(["B's towels"]);
-      await expect(updateSheet(db, b.owner, sheet.id, { client: "hijack" }, 1)).rejects.toThrow(ConflictError);
+      await expect(updateProject(db, b.owner, project.id, { client: "hijack" }, 1)).rejects.toThrow(ConflictError);
       await adjustStock(db, b.contributor, "shared-key", -1);
       expect((await getProduct(db, a.viewer, "shared-key"))?.stock).toBe(5);
       expect((await listMembers(db, b.owner)).some((m) => m.userId === a.owner.userId)).toBe(false);
 
       // A cursor from team A's listing is refused in team B
-      await createSheet(db, a.contributor, { client: "A2", date: "2026-09-26" });
-      const pageA = await listSheetsByDate(db, a.viewer, { limit: 1 });
-      await expect(listSheetsByDate(db, b.viewer, { limit: 1, cursor: pageA.cursor })).rejects.toThrow(InvalidInputError);
+      await createProject(db, a.contributor, { client: "A2", date: "2026-09-26" });
+      const pageA = await listProjectsByDate(db, a.viewer, { limit: 1 });
+      await expect(listProjectsByDate(db, b.viewer, { limit: 1, cursor: pageA.cursor })).rejects.toThrow(InvalidInputError);
     });
   });
 });

@@ -88,7 +88,7 @@ const isPlainMap = (v: unknown): v is Record<string, unknown> =>
 /**
  * An item (or an ExpressionAttributeValues map) in a form the document client
  * stores as it is. The SDK's marshaller picks a value's type from its
- * `constructor` property, so a nested map with a "constructor" key (a sheet
+ * `constructor` property, so a nested map with a "constructor" key (a project
  * line for a product keyed "constructor") would be refused, or stored as the
  * wrong type if that line's `name` were "String", say. Such a map goes as a
  * Map, whose entries can't hide its constructor. The item's own attributes

@@ -1,5 +1,5 @@
 // The role check every team route runs before it does anything (ADR 0007):
-// viewers read; contributors also scan and edit sheets and inventory; owners
+// viewers read; contributors also scan and edit projects and inventory; owners
 // also manage members, billing and imports. The data layer checks roles again
 // before each write (writable() in data/team-context.ts); this check gives the
 // client the answer it can act on.
