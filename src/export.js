@@ -1,7 +1,7 @@
 // Exports: one project as CSV, and all of a team's data as CSV or JSON. Built from the
 // documents the app already holds and shows (both collections are loaded in full to draw
 // the lists), with the same math and labels as the screens, so an export matches them.
-import { hasStock, isEquipment, unitValue } from "./format.js";
+import { hasStock, isEquipment, unitValue, brandOf } from "./format.js";
 import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts, lostCharge, lostRows, lineLabel, projectTitle, isAdhoc } from "./project-math.js";
 
 // One CSV cell. Text that a spreadsheet would run as a formula (=, +, -, @, tab or return
@@ -63,14 +63,15 @@ export function projectsCsv(projects, preparedBy) {
 const byName = products => Object.entries(products).map(([key, p]) => ({ key, ...p })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
 // The inventory, as the Inventory tab lists it. Items nobody has counted have no count or value.
-// Company equipment has no price; its value is what the business paid for each.
+// Company equipment has no price; its value is what the business paid for each. Brand is blank
+// for an item without one (supply-checkout-005.9). The headers are ones the CSV import reads.
 export function inventoryCsv(products) {
   return toCsv([
-    ["Item", "Barcode", "In storage", "Price each", "Value", "Kind"],
+    ["Item", "Brand", "Barcode", "In storage", "Price each", "Value", "Kind"],
     ...byName(products).map(p => {
       const counted = hasStock(p), equipment = isEquipment(p);
       const each = equipment ? unitValue(p) : Number(p.price) || 0;
-      return [p.name || "Unnamed item", p.code || "", counted ? p.stock : "", equipment ? "" : fixed(p.price), counted ? fixed(p.stock * each) : "", equipment ? "Equipment" : "Supply"];
+      return [p.name || "Unnamed item", brandOf(p), p.code || "", counted ? p.stock : "", equipment ? "" : fixed(p.price), counted ? fixed(p.stock * each) : "", equipment ? "Equipment" : "Supply"];
     }),
   ]);
 }

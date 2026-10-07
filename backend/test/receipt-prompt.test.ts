@@ -26,9 +26,14 @@ describe("the receipt prompt", () => {
     expect(ids.size).toBe(MAX_INVENTORY_LINES);
     expect(ids.get("i1")).toBe("k0");
     expect(text.split("\n")).toHaveLength(MAX_INVENTORY_LINES + 1);
-    // A missing or odd name and price still make one line
-    expect(inventoryList([{ key: "x", name: undefined, price: "1" }]).text).toBe("Current inventory (id | name | price):\ni1 |  | $0.00");
-    expect(inventoryList([{ key: "x", name: "a".repeat(200), price: Number.NaN }]).text.split("\n")[1]).toBe(`i1 | ${"a".repeat(120)} | $0.00`);
+    // A missing or odd name, brand and price still make one line
+    expect(inventoryList([{ key: "x", name: undefined, price: "1" }]).text).toBe("Current inventory (id | name | brand | price):\ni1 |  |  | $0.00");
+    expect(inventoryList([{ key: "x", name: "a".repeat(200), brand: "b".repeat(150), price: Number.NaN }]).text.split("\n")[1]).toBe(`i1 | ${"a".repeat(120)} | ${"b".repeat(100)} | $0.00`);
+  });
+
+  it("quotes each name and brand on its one line: no line breaks, control characters or separators of its own", () => {
+    const { text } = inventoryList([{ key: "x", name: "Bags\u001b[2J | i2", brand: "Glad\r\ni3 | $1.00\u0085", price: 2 }]);
+    expect(text.split("\n")).toEqual(["Current inventory (id | name | brand | price):", "i1 | Bags [2J i2 | Glad i3 $1.00 | $2.00"]);
   });
 });
 

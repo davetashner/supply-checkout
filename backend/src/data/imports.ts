@@ -1,5 +1,5 @@
 // CSV inventory import (supply-checkout-1dg.4, ADR 0014): an owner uploads a
-// spreadsheet of items (name, barcode, price, cost, stock, pack_size) and
+// spreadsheet of items (name, brand, barcode, price, cost, stock, pack_size) and
 // every row goes in, or none does.
 //
 // All or nothing, for more rows than one DynamoDB transaction can hold (100
@@ -51,6 +51,7 @@
 
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { MAX_BRAND_LENGTH } from "./brand.js";
 import { type Db, connection, storable } from "./client.js";
 import { type Movement, OPERATION_TTL_DAYS } from "./commands.js";
 import { parseCsv } from "./csv.js";
@@ -92,10 +93,10 @@ const IMPORT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
-type Field = "name" | "barcode" | "kind" | "price" | "cost" | "stock" | "packSize";
+type Field = "name" | "brand" | "barcode" | "kind" | "price" | "cost" | "stock" | "packSize";
 
 /** The column names errors use, as the file would spell them. */
-const LABEL: Record<Field, string> = { name: "name", barcode: "barcode", kind: "kind", price: "price", cost: "cost", stock: "stock", packSize: "pack_size" };
+const LABEL: Record<Field, string> = { name: "name", brand: "brand", barcode: "barcode", kind: "kind", price: "price", cost: "cost", stock: "stock", packSize: "pack_size" };
 
 /**
  * Header names, lowercased with spaces, underscores and hyphens removed
@@ -105,6 +106,7 @@ const LABEL: Record<Field, string> = { name: "name", barcode: "barcode", kind: "
  */
 const HEADERS = new Map<string, Field>([
   ["name", "name"], ["item", "name"], ["itemname", "name"],
+  ["brand", "brand"], ["make", "brand"], ["manufacturer", "brand"],
   ["barcode", "barcode"], ["code", "barcode"], ["upc", "barcode"],
   ["kind", "kind"], ["type", "kind"],
   ["price", "price"], ["priceeach", "price"],
@@ -118,6 +120,8 @@ export interface ImportRow {
   /** The line of the file it's on (from 1; the header is usually line 1). */
   readonly line: number;
   readonly name: string;
+  /** Absent: keep the item's brand (a blank or missing brand cell). */
+  readonly brand?: string;
   /** Empty for an item without one. */
   readonly barcode: string;
   /** Company equipment (ADR 0017): reused, not charged, so it has no price. Absent: a supply (a blank or missing kind cell). */
@@ -146,7 +150,7 @@ export interface PlannedRow extends ImportRow {
   /** The product key it writes: the matched item's, or a new one. */
   readonly key: string;
   readonly action: ImportAction;
-  /** The fields that change (all of the row's for a new item): code, name, kind, price, cost, packSize, stock. */
+  /** The fields that change (all of the row's for a new item): code, name, brand, kind, price, cost, packSize, stock. */
   readonly changes: string[];
 }
 
@@ -195,6 +199,7 @@ interface StagedRow {
   readonly create?: true;
   readonly key: string;
   readonly name: string;
+  readonly brand?: string;
   readonly barcode: string;
   readonly kind?: "equipment";
   readonly price?: number;
@@ -277,7 +282,7 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
   }
   for (const required of ["name", "price"] as const) {
     if (!columns.includes(required)) {
-      throw new InvalidInputError(`The file needs a ${LABEL[required]} column. Its first row names the columns: name, barcode, kind, price, cost, stock, pack_size`);
+      throw new InvalidInputError(`The file needs a ${LABEL[required]} column. Its first row names the columns: name, brand, barcode, kind, price, cost, stock, pack_size`);
     }
   }
   if (!body.length) throw new InvalidInputError("The file has no rows under its header");
@@ -310,6 +315,8 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
       }
     };
     const name = read("name", (raw) => textCell("name", raw, MAX_NAME_LENGTH));
+    // The brand's rules (brand.ts): the cell is already trimmed, and blank keeps the item's
+    const brand = read("brand", (raw) => textCell("brand", raw, MAX_BRAND_LENGTH));
     const barcode = read("barcode", (raw) => textCell("barcode", raw, MAX_CODE_LENGTH));
     // Company equipment has no price (ADR 0017); a supply (a blank kind) must have one
     const kind = read("kind", kindCell);
@@ -327,6 +334,7 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
     rows.push({
       line: record.line,
       name,
+      ...(brand === undefined ? {} : { brand }),
       barcode: barcode ?? "",
       ...(kind === "equipment" ? { kind } : {}),
       ...(price === undefined ? {} : { price }),
@@ -357,7 +365,7 @@ function kindCell(raw: string): "supply" | "equipment" {
 }
 
 /** The fields an import sets, in the order `changes` lists them. */
-const IMPORTED = ["code", "name", "kind", "price", "cost", "packSize", "stock"] as const;
+const IMPORTED = ["code", "name", "brand", "kind", "price", "cost", "packSize", "stock"] as const;
 
 /** An item's data after a row is applied: the row's values over what's there, and blank cells keep what's there. */
 function applyRow(current: Item | undefined, row: ImportRow): { data: Item; changes: string[] } {
@@ -367,6 +375,7 @@ function applyRow(current: Item | undefined, row: ImportRow): { data: Item; chan
   if (row.barcode) data.code = row.barcode;
   else if (!current) data.code = "";
   data.name = row.name;
+  if (row.brand !== undefined) data.brand = row.brand;
   // Company equipment says so and has no price; a supply row makes the item a supply again
   if (row.kind === "equipment") {
     data.kind = "equipment";
@@ -486,12 +495,13 @@ function importId(value: unknown): string {
 }
 
 function staged(row: PlannedRow): StagedRow {
-  const { line, key, name, barcode, kind, price, cost, stock, packSize } = row;
+  const { line, key, name, brand, barcode, kind, price, cost, stock, packSize } = row;
   return {
     line,
     ...(row.action === "create" ? { create: true as const } : {}),
     key,
     name,
+    ...(brand === undefined ? {} : { brand }),
     barcode,
     ...(kind === undefined ? {} : { kind }),
     ...(price === undefined ? {} : { price }),

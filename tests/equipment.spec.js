@@ -251,8 +251,8 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     await modal(page).getByRole("button", { name: "Inventory (CSV)" }).click();
     await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(2);
     const items = (await page.evaluate(() => window.__mock.saves[1].data)).split("\n");
-    expect(items).toContain("Step ladder,LAD-1,3,,360.00,Equipment");
-    expect(items).toContain("Shop vacuum,,,,,Equipment");
+    expect(items).toContain("Step ladder,,LAD-1,3,,360.00,Equipment");
+    expect(items).toContain("Shop vacuum,,,,,,Equipment");
     // The client's file has the charges, and the total
     await modal(page).getByRole("button", { name: "Close" }).click();
     await openProject(page, "Delta Dental");

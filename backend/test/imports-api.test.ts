@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
-import { InvalidInputError, keyOfBarcode, MAX_IMPORT_BYTES, MAX_IMPORT_ROWS, parseInventoryCsv, planImport, ROWS_PER_CHUNK } from "../src/data/index.js";
+import { InvalidInputError, keyOfBarcode, MAX_BRAND_LENGTH, MAX_IMPORT_BYTES, MAX_IMPORT_ROWS, parseInventoryCsv, planImport, ROWS_PER_CHUNK } from "../src/data/index.js";
 import { parseCsv } from "../src/data/csv.js";
 import type { Observability } from "../src/observability/index.js";
 import { MemoryTable } from "./memory-table.js";
@@ -322,6 +322,18 @@ describe("importing again", () => {
     expect(product("nb-bins")).toEqual(expect.objectContaining({ version: 1, name: "Bins", price: 3, stock: 2 }));
     expect(product("nb-bins")?.code).toBeUndefined();
     expect(movements().map((m) => [m.productKey, m.delta, m.count])).toEqual([["0123", -15, 25], ["nb-old", 4, 4]]);
+  });
+
+  it("imports a brand, keeps an item's brand on a blank cell, and leaves items without one unchanged (supply-checkout-005.9)", async () => {
+    seedProduct("0123", { code: "0123", name: "Gloves", brand: "Ansell", price: 10 }, 3);
+    seedProduct("nb-rags", { code: "", name: "Rags", price: 1 }, 2);
+    const res = await post({ importId: randomUUID(), csv: "name,brand,barcode,price\nGloves,,0123,10\nRags,,,1\nBags, Glad ,555,4\n" });
+    expect(res.body.summary).toEqual({ rows: 3, created: 1, updated: 0, unchanged: 2 });
+    expect(product("0123")).toMatchObject({ version: 3, brand: "Ansell" });
+    expect(product("nb-rags")).not.toHaveProperty("brand");
+    expect(product("555")).toMatchObject({ name: "Bags", brand: "Glad", price: 4, version: 1 });
+    await post({ importId: randomUUID(), csv: "name,brand,barcode,price\nGloves,Showa,0123,10\n" });
+    expect(product("0123")).toMatchObject({ version: 4, brand: "Showa" });
   });
 
   it("gives an item without a barcode the file's barcode when their names match", async () => {
@@ -716,7 +728,7 @@ describe("parsing", () => {
     expect(parsed.errors).toEqual([]);
     expect(parsed.ignoredColumns).toEqual([]);
     expect(parsed.rows).toEqual([
-      { line: 2, name: "EXAMPLE Glass cleaner (sample row)", barcode: "EXAMPLE-0001", price: 6.5, cost: 4.25, stock: 24, packSize: 12 },
+      { line: 2, name: "EXAMPLE Glass cleaner (sample row)", brand: "EXAMPLE Brand", barcode: "EXAMPLE-0001", price: 6.5, cost: 4.25, stock: 24, packSize: 12 },
       { line: 3, name: "EXAMPLE Trash bags (sample row)", barcode: "", price: 0.4, cost: 0.25, stock: 90, packSize: 45 },
       { line: 4, name: "EXAMPLE Step ladder (sample row)", barcode: "EXAMPLE-0002", kind: "equipment", cost: 120, stock: 2 },
     ]);
@@ -755,6 +767,26 @@ describe("parsing", () => {
     expect(planImport([{ line: 2, name: "Ladder", barcode: "LAD", price: 9 }], [equipment]).planned[0]).toMatchObject({ action: "update", changes: ["kind", "price"] });
     // One that says it's a supply stays as it is
     expect(planImport([{ line: 2, name: "Rags", barcode: "", price: 2 }], [{ key: "r", code: "", name: "Rags", kind: "supply", price: 2 }]).planned[0]).toMatchObject({ action: "unchanged" });
+  });
+
+  it("reads an optional brand column (brand, make or manufacturer): trimmed, blank keeps the item's, and checked like a name (supply-checkout-005.9)", () => {
+    const parsed = parseInventoryCsv(`Name,Make,Price\nGloves,  Ansell ,12.5\nRags,,2\nBags,${"b".repeat(MAX_BRAND_LENGTH)},1\nMops,${"b".repeat(MAX_BRAND_LENGTH + 1)},1\nBins,"Ster\nilite",3\n`);
+    expect(parsed.rows).toEqual([
+      { line: 2, name: "Gloves", brand: "Ansell", barcode: "", price: 12.5 },
+      { line: 3, name: "Rags", barcode: "", price: 2 },
+      { line: 4, name: "Bags", brand: "b".repeat(MAX_BRAND_LENGTH), barcode: "", price: 1 },
+    ]);
+    expect(parsed.errors).toEqual([
+      { line: 5, column: "brand", message: `brand is longer than ${MAX_BRAND_LENGTH} characters` },
+      { line: 6, column: "brand", message: "brand has a control character in it" },
+    ]);
+    expect(parseInventoryCsv("manufacturer,name,price\nGlad,Bags,1\n").rows[0]).toMatchObject({ brand: "Glad", name: "Bags" });
+    // A brand sets the item's and says it changed; a blank one keeps it
+    const gloves = { key: "g", code: "", name: "Gloves", brand: "Ansell", price: 12.5 };
+    expect(planImport([{ line: 2, name: "Gloves", brand: "Showa", barcode: "", price: 12.5 }], [gloves]).planned[0]).toMatchObject({ action: "update", changes: ["brand"] });
+    expect(planImport([{ line: 2, name: "Gloves", barcode: "", price: 12.5 }], [gloves]).planned[0]).toMatchObject({ action: "unchanged", changes: [] });
+    expect(planImport([{ line: 2, name: "Gloves", brand: "Ansell", barcode: "", price: 12.5 }], [gloves]).planned[0]).toMatchObject({ action: "unchanged" });
+    expect(planImport([{ line: 2, name: "Rags", brand: "Acme", barcode: "", price: 2 }], []).planned[0]).toMatchObject({ action: "create", changes: ["name", "brand", "price"] });
   });
 
   it("planImport skips an item without a usable name or barcode when indexing", () => {

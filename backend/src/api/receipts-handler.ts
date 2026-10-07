@@ -175,7 +175,7 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
     log.imageBytes = image.bytes;
     const taken = await take(db, ctx, log);
     const products = await listDocuments(db, ctx, "products", { limit: MAX_INVENTORY_LINES });
-    const inventory = products.items.map((doc) => ({ key: doc.id, name: doc.data.name, price: doc.data.price }));
+    const inventory = products.items.map((doc) => ({ key: doc.id, name: doc.data.name, brand: doc.data.brand, price: doc.data.price }));
     log.inventoryItems = inventory.length;
 
     // The deadline: RECEIPT_DEADLINE_MS, or less if the function has less time left
