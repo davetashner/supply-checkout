@@ -150,29 +150,36 @@ describe("hidden characters (supply-checkout-1dg.12)", () => {
     expect(hasHiddenCharacter("👩")).toBe(false);
   });
 
-  it("takes time linear in the text: 200,000 characters of any adversarial shape in under 100 ms", () => {
-    const n = 200_000;
-    const shapes: Record<string, string> = {
-      "a letter and marks": "क" + "ि".repeat(n),
-      "marks and a joiner": "क" + "ि".repeat(n) + "\u200dष",
-      "letters and joiners": "क\u200d".repeat(n / 2),
-      "letters, marks and joiners": "بََََ\u200c".repeat(n / 6),
-      "Arabic marks": "ب" + "ّ".repeat(n),
-      "an emoji ZWJ chain": "\u{1f469}\u200d".repeat(n / 3),
-      "an emoji ZWJ chain with selectors": "❤\ufe0f\u200d".repeat(n / 3),
-      "joiners": "\u200d".repeat(n),
-      "a long tag run in a flag": "\u{1f3f4}" + "\u{e0067}".repeat(n / 2) + "\u{e007f}",
-      "flags": "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}".repeat(n / 14),
-      "selectors": "❤" + "\ufe0f".repeat(n),
-      "lone surrogates": "\ud83d".repeat(n),
-      "plain text": "Gloves ".repeat(n / 7),
+  // A quadratic scan takes minutes on 200,000 characters (7 s at 40,000 marks before the fix); the
+  // linear one takes about 10 ms. The limit is the best of three runs under a second: a hundred
+  // times what it needs, so a busy machine or CI runner doesn't flake it (a 100 ms limit did), and
+  // a hundred times less than a quadratic scan.
+  it("takes time linear in the text: 200,000 characters of any adversarial shape in well under a second", () => {
+    const shapes: Record<string, (n: number) => string> = {
+      "a letter and marks": (n) => "क" + "ि".repeat(n),
+      "marks and a joiner": (n) => "क" + "ि".repeat(n) + "\u200dष",
+      "letters and joiners": (n) => "क\u200d".repeat(n / 2),
+      "letters, marks and joiners": (n) => "بََََ\u200c".repeat(n / 6),
+      "Arabic marks": (n) => "ب" + "ّ".repeat(n),
+      "an emoji ZWJ chain": (n) => "\u{1f469}\u200d".repeat(n / 3),
+      "an emoji ZWJ chain with selectors": (n) => "❤\ufe0f\u200d".repeat(n / 3),
+      "joiners": (n) => "\u200d".repeat(n),
+      "a long tag run in a flag": (n) => "\u{1f3f4}" + "\u{e0067}".repeat(n / 2) + "\u{e007f}",
+      "flags": (n) => "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}".repeat(n / 14),
+      "selectors": (n) => "❤" + "\ufe0f".repeat(n),
+      "lone surrogates": (n) => "\ud83d".repeat(n),
+      "plain text": (n) => "Gloves ".repeat(n / 7),
     };
-    for (const [shape, text] of Object.entries(shapes)) {
-      const start = performance.now();
-      hasHiddenCharacter(text);
-      withoutHiddenCharacters(text);
-      expect(performance.now() - start, shape).toBeLessThan(100);
-    }
+    const time = (text: string) =>
+      Math.min(
+        ...[1, 2, 3].map(() => {
+          const start = performance.now();
+          hasHiddenCharacter(text);
+          withoutHiddenCharacters(text);
+          return performance.now() - start;
+        }),
+      );
+    for (const [shape, make] of Object.entries(shapes)) expect(time(make(200_000)), shape).toBeLessThan(1000);
   });
 
   it("is the rule the app cleans pasted text by (visibleText in src/format.js), pattern for pattern", async () => {
