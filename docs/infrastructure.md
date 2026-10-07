@@ -327,7 +327,7 @@ A complaint means the person asked not to get our mail, so remove a `COMPLAINT` 
 U=supply-checkout-prod-support-smtp
 aws iam list-access-keys --profile supply-prod --user-name $U \
   --query 'AccessKeyMetadata[].[AccessKeyId,Status,CreateDate]' --output text   # exactly one, Active, under 90 days old
-aws iam get-access-key-last-used --profile supply-prod --access-key-id <key ID> \
+aws iam get-access-key-last-used --profile supply-prod --access-key-id '<key ID>' \
   --query 'AccessKeyLastUsed.[LastUsedDate,ServiceName,Region]' --output text  # ses, us-east-1, when you last replied
 ```
 
@@ -346,8 +346,8 @@ The P2 alerts: a change to the support SMTP user nobody made (a new key or other
    # The boundary: back on the user, and its CloudFormation version the default again
    aws iam put-user-permissions-boundary --profile supply-prod --user-name $U --permissions-boundary "$BOUNDARY"
    aws iam list-policy-versions --profile supply-prod --policy-arn "$BOUNDARY"   # find the version CloudFormation wrote (created before the alert)
-   aws iam set-default-policy-version --profile supply-prod --policy-arn "$BOUNDARY" --version-id <that version>
-   aws iam delete-policy-version --profile supply-prod --policy-arn "$BOUNDARY" --version-id <the attacker's version>
+   aws iam set-default-policy-version --profile supply-prod --policy-arn "$BOUNDARY" --version-id '<that version>'
+   aws iam delete-policy-version --profile supply-prod --policy-arn "$BOUNDARY" --version-id '<the version the attacker made>'
    # The inline policy: its name and document are in the domain stack's template (SupportSmtpUserDefaultPolicy)
    aws iam list-user-policies --profile supply-prod --user-name $U
    aws cloudformation detect-stack-drift --profile supply-prod --region us-east-1 --stack-name supply-checkout-prod-us-east-1-domain
@@ -542,12 +542,12 @@ A `FunctionError` in the response, or `AccessDeniedException` in the log group o
 
 ```bash
 # The environment being measured (dev): its profile, region and table
-P=(--profile <dev-profile> --region us-east-1); T=supply-checkout-dev-app; TEAM=perf-team; SUB=<test user's sub>
+P=(--profile '<dev-profile>' --region us-east-1); T=supply-checkout-dev-app; TEAM=perf-team; SUB='<the test user sub>'
 aws dynamodb put-item "${P[@]}" --table-name $T --item '{"PK":{"S":"TEAM#'$TEAM'"},"SK":{"S":"META"},"type":{"S":"team"},"teamId":{"S":"'$TEAM'"},"name":{"S":"Perf"},"homeRegion":{"S":"us-east-1"},"owners":{"N":"1"},"version":{"N":"1"}}'
 aws dynamodb put-item "${P[@]}" --table-name $T --item '{"PK":{"S":"TEAM#'$TEAM'"},"SK":{"S":"MEMBER#'$SUB'"},"type":{"S":"member"},"teamId":{"S":"'$TEAM'"},"userId":{"S":"'$SUB'"},"role":{"S":"owner"}}'
 # An access token for the test user (password sign-in through the web client)
-TOKEN=$(aws cognito-idp initiate-auth "${P[@]}" --auth-flow USER_AUTH --client-id <web client ID> \
-  --auth-parameters USERNAME=<email>,PREFERRED_CHALLENGE=PASSWORD,PASSWORD=<password> \
+TOKEN=$(aws cognito-idp initiate-auth "${P[@]}" --auth-flow USER_AUTH --client-id '<web client ID>' \
+  --auth-parameters 'USERNAME=<email>,PREFERRED_CHALLENGE=PASSWORD,PASSWORD=<password>' \
   --query AuthenticationResult.AccessToken --output text)
 API=https://api.dev.supplycheckout.com/teams/$TEAM
 curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -639,14 +639,14 @@ For live mode, the same with a live key and `live-ops-restricted-key`. To rotate
 
 ```bash
 npm run ops -- teams --q acme                  # list or search teams, with owners' emails (follow --cursor)
-npm run ops -- team <teamId>                   # one team's record, Stripe subscription, invoices and receipt reads (audited)
-npm run ops -- comp <teamId> --plan free --until 2026-12-31 --reason "Pilot, 90 days"
-npm run ops -- uncomp <teamId> --reason "Pilot over"
-npm run ops -- reopen <teamId> --reason "Owner disputes the closure"
-npm run ops -- audit --team <teamId>           # or --month 2026-09 for everyone's
+npm run ops -- team '<teamId>'                   # one team's record, Stripe subscription, invoices and receipt reads (audited)
+npm run ops -- comp '<teamId>' --plan free --until 2026-12-31 --reason "Pilot, 90 days"
+npm run ops -- uncomp '<teamId>' --reason "Pilot over"
+npm run ops -- reopen '<teamId>' --reason "Owner disputes the closure"
+npm run ops -- audit --team '<teamId>'           # or --month 2026-09 for everyone's
 npm run ops -- stuck-imports                   # imports stuck part-way for over an hour
 npm run ops -- receipts --month 2026-09        # the teams that read the most receipts, with estimated cost (audited)
-npm run ops -- clear-import <teamId> <importId> --reason "Owner re-imported it"
+npm run ops -- clear-import '<teamId>' '<importId>' --reason "Owner re-imported it"
 npm run ops -- sign-out                        # revokes every token (GlobalSignOut)
 ```
 
@@ -872,27 +872,27 @@ A user taking or returning stock during the run changes a stock count and fails 
 The runbook. `<profile>`, `<teamId>`, `<recovery point ARN>` and `<path>` are placeholders: keep the real values out of the repo, and put the recovery point in the bead.
 
 ```bash
-aws sso login --profile <profile>
+aws sso login --profile '<profile>'
 cd backend && npm ci
-P=(--profile <profile> --region us-east-1)
+P=(--profile '<profile>' --region us-east-1)
 B=(--table supply-checkout-prod-app "${P[@]}")
 
 # 1. Backup: an on-demand AWS Backup recovery point (as in docs/backups.md, "Prove the copy path now"), and the PITR time
 TABLE_ARN=$(aws dynamodb describe-table --table-name supply-checkout-prod-app --query Table.TableArn --output text "${P[@]}")
-ROLE_ARN=$(aws iam get-role --role-name supply-checkout-prod-backup --query Role.Arn --output text --profile <profile>)
+ROLE_ARN=$(aws iam get-role --role-name supply-checkout-prod-backup --query Role.Arn --output text --profile '<profile>')
 aws backup start-backup-job "${P[@]}" --backup-vault-name supply-checkout-prod-backups \
   --resource-arn "$TABLE_ARN" --iam-role-arn "$ROLE_ARN" --lifecycle DeleteAfterDays=35
-aws backup describe-backup-job "${P[@]}" --backup-job-id <id>    # until COMPLETED; note the recovery point ARN in the bead
+aws backup describe-backup-job "${P[@]}" --backup-job-id '<id>'    # until COMPLETED; note the recovery point ARN in the bead
 date -u +%Y-%m-%dT%H:%M:%SZ                              # the PITR time to restore to, if it ever comes to that
 aws dynamodb describe-continuous-backups --table-name supply-checkout-prod-app "${P[@]}"   # PITR is ENABLED
 
 # 2. Export and dry run: read the counts (and the account on the first line)
-B=("${B[@]}" --expect-account <account ID>)                     # stops unless the profile signs in to prod's account
-npm run backfill -- projects-rename "${B[@]}" --team <teamId> --export-to <path outside the repo>/rename-<teamId>.json
+B=("${B[@]}" --expect-account '<account ID>')                     # stops unless the profile signs in to prod's account
+npm run backfill -- projects-rename "${B[@]}" --team '<teamId>' --export-to '<path outside the repo>/rename-<teamId>.json'
 
 # 3. Apply, then the final check: a second run finds nothing to move and prints Done.
-npm run backfill -- projects-rename "${B[@]}" --team <teamId> --apply
-npm run backfill -- projects-rename "${B[@]}" --team <teamId> --apply
+npm run backfill -- projects-rename "${B[@]}" --team '<teamId>' --apply
+npm run backfill -- projects-rename "${B[@]}" --team '<teamId>' --apply
 ```
 
 Then sign in as one of the team's users: the list is there, one finished and one open project open, a checkout and a return work, and the production alarms stay clear ([journeys](journeys.md)). Later, once every team is done, a run without `--team` (dry run, then `--apply`) is the cleanup and should find nothing.
@@ -1060,8 +1060,8 @@ The `realtime` stack (`lib/stacks/realtime-stack.ts`, [ADR 0006](adr/0006-api-an
 **Deploying.** The realtime stack reads, from SSM in its region: the table's stream and key ARNs (data stack), the user pool ID and web client ID (identity stack) and the `realtime.` certificate (the domain stack in `GLOBAL_SERVICES_REGION`). Deploy it after those, and before observability. Deploying it deploys the data stack too, so keep `-c backupCopy=false` until that environment has done [step 4 of the backup setup](backups.md#setting-it-up) ([why](#the-cloudtrail-trail)):
 
 ```bash
-npx cdk diff supply-checkout-staging-us-east-1-realtime --profile <staging profile> -c backupCopy=false
-npx cdk deploy supply-checkout-staging-us-east-1-realtime supply-checkout-staging-us-east-1-observability --profile <staging profile> -c backupCopy=false
+npx cdk diff supply-checkout-staging-us-east-1-realtime --profile '<staging profile>' -c backupCopy=false
+npx cdk deploy supply-checkout-staging-us-east-1-realtime supply-checkout-staging-us-east-1-observability --profile '<staging profile>' -c backupCopy=false
 ```
 
 Then measure the 2-second p95 and the reconnect behavior in staging as described in [docs/api/realtime.md](api/realtime.md#measuring-after-a-deploy).

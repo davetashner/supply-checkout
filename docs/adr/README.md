@@ -4,6 +4,8 @@ Each record captures one decision about turning Supply Checkout from a claude.ai
 
 A record starts as **Proposed**. Change it to **Accepted** once we agree, or **Superseded by NNNN** when a later record replaces it. Don't rewrite an accepted record; write a new one.
 
+ADRs written before October 2026 call projects "sheets": the app, code, API and stored data renamed them in October 2026 ([rename plan](../projects-rename-plan.md)). The records keep their original wording.
+
 | # | Decision | Status |
 | --- | --- | --- |
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |

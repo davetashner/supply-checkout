@@ -29,7 +29,7 @@ It also has the HTTP API's handlers in `backend/src/api` (see [Data API](infrast
     ```bash
     aws sso login --profile supply-prod
     cd backend && npm ci
-    I=(--file "$HOME/Downloads/export.json" --team <teamId> --owner <userId> --table supply-checkout-prod-app --region us-east-1 --profile supply-prod)
+    I=(--file "$HOME/Downloads/export.json" --team '<teamId>' --owner '<userId>' --table supply-checkout-prod-app --region us-east-1 --profile supply-prod)
     npm run import-artifact -- "${I[@]}"            # dry run: check the account in the first line, and that it lists no problems
     npm run import-artifact -- "${I[@]}" --apply    # ends "Done: every stock count and project total matches the export."
     ```
