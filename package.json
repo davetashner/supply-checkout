@@ -32,7 +32,6 @@
     "beads:export": "node scripts/export-beads.mjs",
     "beads:pr": "bash scripts/beads-pr.sh",
     "backlog:page": "node scripts/backlog-page.mjs",
-    "backlog:published": "node scripts/backlog-page.mjs --published",
     "check:public": "node scripts/check-public-safety.mjs && node scripts/check-stray-files.mjs",
     "check:regions": "node scripts/check-region-strings.mjs",
     "hooks:install": "git config core.hooksPath scripts/git-hooks",
