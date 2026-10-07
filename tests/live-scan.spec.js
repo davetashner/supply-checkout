@@ -199,6 +199,27 @@ test("the camera stops while the page is hidden", { tag: ["@J4.2"] }, async ({ p
   await expect(status(page)).toHaveText("Hold the barcode inside the frame.");
 });
 
+// supply-checkout-005.7.2: hidden before the camera has started, it stops as soon as it starts
+test("the camera stops if the page is hidden while it starts, and no frame is read", { tag: ["@J4.2"] }, async ({ page }) => {
+  await page.clock.install();
+  await openProject(page, { camera: "held", detector: [[code("SKU1")]] });
+  await scan(page);
+  await expect(status(page)).toHaveText("Starting the camera…");
+  await page.evaluate(() => { Object.defineProperty(document, "hidden", { value: true, configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
+  await page.evaluate(() => window.__answerCamera(true));
+  await expect(status(page)).toHaveText("Scanning paused.");
+  expect(await stopped(page)).toBe(1);
+  // Any frame the scanner had scheduled would run now
+  await page.clock.runFor(2000);
+  expect(await page.evaluate(() => window.__camera.detects)).toBe(0);
+  expect(await page.locator("#scanVideo").evaluate((v) => v.srcObject)).toBeNull();
+  // Back on the page, Try again starts it
+  await page.evaluate(() => { Object.defineProperty(document, "hidden", { value: false, configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
+  await page.getByRole("button", { name: "Try again" }).click();
+  await page.evaluate(() => window.__answerCamera(true));
+  await expect(modal(page)).toContainText("Paper towels, 6 roll");
+});
+
 test("the flashlight toggles where the camera has one", { tag: ["@J4.2"] }, async ({ page }) => {
   await openProject(page, { detector: [[]], torch: "yes" });
   await scan(page);

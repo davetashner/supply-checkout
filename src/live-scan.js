@@ -130,6 +130,8 @@ async function start(session) {
     show(e && e.name === "NotAllowedError" ? "denied" : "none");
     return;
   }
+  // Hidden while the camera started (visibilitychange came before there was a camera to stop)
+  if (document.hidden) { stop(session); show("paused"); return; }
   const track = stream.getVideoTracks()[0], can = track.getCapabilities ? track.getCapabilities() : {};
   $s("#scanLight").hidden = !can.torch;
   setLight(false);
