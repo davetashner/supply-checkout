@@ -271,13 +271,13 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     const ctx = await team();
     const product = async () => (await getDocument(db, ctx, "products", "0123"))?.data;
     await counted(ctx, "0123", { code: "0123", name: "Nitrile gloves", price: 12.5, stock: 10, reorderAt: 5, reorderQty: 24 });
-    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 7 });
+    await checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 7 });
     await updateDocument(db, ctx, "products", "0123", { ackedAtStock: 3 });
     // A checkout never ends it, and a return that stays at the level keeps it
-    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 1 });
-    await returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 3 });
+    await checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 1 });
+    await returnItems(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 3 });
     expect(await product()).toMatchObject({ stock: 5, ackedAtStock: 3 });
-    await returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 1 });
+    await returnItems(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 1 });
     expect(await product()).toMatchObject({ stock: 6, reorderAt: 5, reorderQty: 24 });
     expect(await product()).not.toHaveProperty("ackedAtStock");
 
@@ -295,9 +295,9 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     expect(await product()).toMatchObject({ stock: 9 });
     expect(await product()).not.toHaveProperty("ackedAtStock");
     // Concurrent returns of an acknowledged item: each decides on the stock it adds to, so none is lost
-    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 9 });
+    await checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 9 });
     await updateDocument(db, ctx, "products", "0123", { ackedAtStock: 0 });
-    const outcomes = await Promise.allSettled(Array.from({ length: 4 }, () => returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 2 })));
+    const outcomes = await Promise.allSettled(Array.from({ length: 4 }, () => returnItems(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 2 })));
     for (const o of outcomes) if (o.status === "rejected") expect(o.reason).toBeInstanceOf(ConflictError);
     const back = outcomes.filter((o) => o.status === "fulfilled").length * 2;
     expect(await stock(ctx)).toBe(back);

@@ -76,9 +76,9 @@ async function call(method: string, path: string, body?: unknown, user = CONTRIB
 const PRODUCT = "/teams/team-a/products/0123";
 const gloves = { code: "0123", name: "Nitrile gloves", price: 12.5, stock: 3, reorderAt: 5, reorderQty: 24, ackedAtStock: 3 };
 
-function seed(product: Record<string, unknown> = gloves, sheet: Record<string, unknown> = {}) {
+function seed(product: Record<string, unknown> = gloves, project: Record<string, unknown> = {}) {
   table.put({ PK: "TEAM#team-a", SK: "PRODUCT#0123", type: "product", key: "0123", version: 3, ...product });
-  table.put({ PK: "TEAM#team-a", SK: "SHEET#s1", type: "sheet", id: "s1", version: 1, client: "Echo", date: "2026-10-06", status: "open", items: {}, ...sheet });
+  table.put({ PK: "TEAM#team-a", SK: "PROJECT#s1", type: "project", id: "s1", version: 1, client: "Echo", date: "2026-10-06", status: "open", items: {}, ...project });
 }
 const stored = () => table.get("TEAM#team-a", "PRODUCT#0123") as Record<string, unknown>;
 const op = () => randomUUID();
