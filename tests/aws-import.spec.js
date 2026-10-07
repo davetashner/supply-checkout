@@ -168,7 +168,7 @@ test("offers a template with a column guide, and the template goes through the p
   const guide = dialog(page).locator("details.import-guide");
   await guide.getByText("What goes in each column").click();
   for (const column of ["name", "price", "barcode", "kind", "cost", "stock", "pack_size"]) await expect(guide.locator("dt", { hasText: new RegExp(`^${column}$`) })).toBeVisible();
-  await expect(guide).toContainText("before tax. It isn't shown on client sheets.");
+  await expect(guide).toContainText("before tax. It isn't shown on client projects.");
   expect(await modalViolations(page)).toEqual([]);
 
   const download = page.waitForEvent("download");

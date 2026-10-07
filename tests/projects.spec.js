@@ -1,4 +1,4 @@
-import { test, expect, openApp, createSheet, enterBarcode, modal, lineRow } from "./helpers.js";
+import { test, expect, openApp, createProject, enterBarcode, modal, lineRow } from "./helpers.js";
 import { usedState } from "./fixtures.js";
 
 const openEcho = async (page, opts = {}) => {
@@ -8,23 +8,23 @@ const openEcho = async (page, opts = {}) => {
   await page.getByRole("button", { name: /Echo Studio/ }).click();
 };
 
-test("edits a sheet's client and date", { tag: ["@J4.1"] }, async ({ page }) => {
+test("edits a project's client and date", { tag: ["@J4.1"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Edit details" }).click();
-  await expect(modal(page).getByRole("heading", { name: "Edit sheet" })).toBeVisible();
+  await expect(modal(page).getByRole("heading", { name: "Edit project" })).toBeVisible();
   await expect(modal(page).getByLabel("Client", { exact: true })).toHaveValue("Echo Studio");
   await modal(page).getByLabel("Client", { exact: true }).fill("Echo Studios LLC");
   await modal(page).getByLabel("Date").fill("2026-09-26");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(page.getByRole("heading", { name: "Echo Studios LLC" })).toBeVisible();
-  await expect(page.locator(".sheet-head .meta")).toContainText("Sep 26, 2026");
+  await expect(page.locator(".project-head .meta")).toContainText("Sep 26, 2026");
 });
 
-test("a new sheet needs a client name, and can be cancelled", { tag: ["@J4.1"] }, async ({ page }) => {
+test("a new project needs a client name, and can be cancelled", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page);
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByRole("button", { name: "+ New project" }).click();
   await modal(page).getByLabel("Client", { exact: true }).fill("   ");
-  await modal(page).getByRole("button", { name: "Create sheet" }).click();
+  await modal(page).getByRole("button", { name: "Create project" }).click();
   await expect(page.locator("#overlay")).toBeVisible();
   await modal(page).getByRole("button", { name: "Cancel" }).click();
   await expect(page.locator("#overlay")).toBeHidden();
@@ -32,35 +32,35 @@ test("a new sheet needs a client name, and can be cancelled", { tag: ["@J4.1"] }
 
 test("modals close with Escape or a tap outside", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page);
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByRole("button", { name: "+ New project" }).click();
   await page.keyboard.press("Escape");
   await expect(page.locator("#overlay")).toBeHidden();
   await page.keyboard.press("Escape");
 
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByRole("button", { name: "+ New project" }).click();
   await modal(page).click();
   await expect(page.locator("#overlay")).toBeVisible();
   await page.locator("#overlay").click({ position: { x: 5, y: 5 } });
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("filters sheets by open and returned, and shows what each is worth", { tag: ["@J4.1"] }, async ({ page }) => {
+test("filters projects by open and returned, and shows what each is worth", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page, {
     seed: {
       ...usedState.seed,
-      "sheets/s2": {
+      "projects/s2": {
         client: "", date: "2026-09-20", createdBy: "u_other", status: "closed",
         items: { A: { code: "A", name: "Mop heads", price: 3, out: 1, returned: 0 } },
       },
     },
   });
   const list = page.locator("#main");
-  await expect(list.locator(".sheet-card")).toHaveCount(1);
+  await expect(list.locator(".project-card")).toHaveCount(1);
   await expect(list).toContainText("2 items · 5 taken · 1 back");
   await expect(list).toContainText("$35.50");
 
   await page.getByRole("button", { name: "Returned" }).click();
-  await expect(list.locator(".sheet-card")).toHaveCount(1);
+  await expect(list.locator(".project-card")).toHaveCount(1);
   await expect(list).toContainText("Untitled");
   await expect(list).toContainText("1 item · 1 taken");
   await expect(list).toContainText("Someone");
@@ -68,28 +68,28 @@ test("filters sheets by open and returned, and shows what each is worth", { tag:
   await expect(list).toContainText("$3.00");
 
   await page.getByRole("button", { name: "All" }).click();
-  await expect(list.locator(".sheet-card")).toHaveCount(2);
+  await expect(list.locator(".project-card")).toHaveCount(2);
 });
 
-test("shows an empty state for filters with no sheets", { tag: ["@J4"] }, async ({ page }) => {
+test("shows an empty state for filters with no projects", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page);
   await page.getByRole("button", { name: "Returned" }).click();
-  await expect(page.getByText("No sheets here yet.")).toBeVisible();
+  await expect(page.getByText("No projects here yet.")).toBeVisible();
 });
 
-test("reopens a finished sheet", { tag: ["@J4"] }, async ({ page }) => {
+test("reopens a finished project", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Finished Return" }).click();
-  await expect(page.locator(".sheet-head .pill")).toHaveText("Returned");
+  await expect(page.locator(".project-head .pill")).toHaveText("Returned");
   await page.getByRole("button", { name: "Reopen" }).click();
-  await expect(page.locator(".sheet-head .pill")).toHaveText("Checked out");
-  await expect(page.locator("#toast")).toHaveText("Sheet reopened");
+  await expect(page.locator(".project-head .pill")).toHaveText("Checked out");
+  await expect(page.locator("#toast")).toHaveText("Project reopened");
 });
 
-test("deleting a sheet takes two taps, and the first tap wears off", { tag: ["@J4"] }, async ({ page }) => {
+test("deleting a project takes two taps, and the first tap wears off", { tag: ["@J4"] }, async ({ page }) => {
   await page.clock.install();
   await openEcho(page);
-  const del = page.getByRole("button", { name: "Delete sheet" });
+  const del = page.getByRole("button", { name: "Delete project" });
   await del.click();
   await expect(page.getByRole("button", { name: "Tap again to delete" })).toBeVisible();
   await page.clock.runFor(4000);
@@ -97,7 +97,7 @@ test("deleting a sheet takes two taps, and the first tap wears off", { tag: ["@J
 
   await del.click();
   await page.getByRole("button", { name: "Tap again to delete" }).click();
-  await expect(page.locator("#toast")).toHaveText("Sheet deleted");
+  await expect(page.locator("#toast")).toHaveText("Project deleted");
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
   await page.clock.runFor(4000);
   await expect(page.locator("#toast")).toBeHidden();
@@ -105,21 +105,21 @@ test("deleting a sheet takes two taps, and the first tap wears off", { tag: ["@J
 
 test("the back button returns to the list", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "← All sheets" }).first().click();
+  await page.getByRole("button", { name: "← All projects" }).first().click();
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
 });
 
-test("an empty sheet explains how to start", { tag: ["@J4.1"] }, async ({ page }) => {
+test("an empty project explains how to start", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page);
-  await createSheet(page, "India Inc");
-  await expect(page.getByText("No supplies on this sheet yet.")).toBeVisible();
+  await createProject(page, "India Inc");
+  await expect(page.getByText("No supplies on this project yet.")).toBeVisible();
 });
 
-test("edits the price and counts on a sheet line", { tag: ["@J4"] }, async ({ page }) => {
+test("edits the price and counts on a project line", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Paper towels").click();
   await expect(modal(page).getByRole("heading", { name: "Paper towels, 6 roll" })).toBeVisible();
-  await modal(page).getByLabel("Price each on this sheet ($)").fill("9");
+  await modal(page).getByLabel("Price each on this project ($)").fill("9");
   await modal(page).getByLabel("Taken").fill("4");
   await modal(page).getByLabel("Returned").fill("9");
   await modal(page).getByRole("button", { name: "Save" }).click();
@@ -141,35 +141,35 @@ test("a new item's modal focuses the name without an autofocus attribute", { tag
 // browser that validates forms refuse 1.005, so the test lifts it to check the save itself.
 const anyStep = (field) => field.evaluate((el) => { el.step = "any"; });
 
-test("a typed price on a sheet line or a new item is saved rounded to cents", { tag: ["@J4.2"] }, async ({ page }) => {
+test("a typed price on a project line or a new item is saved rounded to cents", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Paper towels").click();
-  await anyStep(modal(page).getByLabel("Price each on this sheet ($)"));
-  await modal(page).getByLabel("Price each on this sheet ($)").fill("1.005");
+  await anyStep(modal(page).getByLabel("Price each on this project ($)"));
+  await modal(page).getByLabel("Price each on this project ($)").fill("1.005");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(lineRow(page, "Paper towels")).toContainText("$1.01");
-  expect(await page.evaluate(() => window.__mock.docs.get("sheets/s1").items.SKU1.price)).toBe(1.01);
+  expect(await page.evaluate(() => window.__mock.docs.get("projects/s1").items.SKU1.price)).toBe(1.01);
 
   await enterBarcode(page, "NEW3");
   await modal(page).getByLabel("Item name").fill("Sponges");
   await anyStep(modal(page).getByLabel("Price each ($)"));
   await modal(page).getByLabel("Price each ($)").fill("1.005");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(lineRow(page, "Sponges")).toContainText("$1.01");
-  const saved = await page.evaluate(() => [window.__mock.docs.get("products/NEW3").price, window.__mock.docs.get("sheets/s1").items.NEW3.price]);
+  const saved = await page.evaluate(() => [window.__mock.docs.get("products/NEW3").price, window.__mock.docs.get("projects/s1").items.NEW3.price]);
   expect(saved).toEqual([1.01, 1.01]);
 });
 
-test("a price over the API's limit on a sheet line or a new item says so, and isn't saved", { tag: ["@J4.2"] }, async ({ page }) => {
+test("a price over the API's limit on a project line or a new item says so, and isn't saved", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   const message = (field) => field.evaluate((el) => el.validationMessage);
   await lineRow(page, "Paper towels").click();
-  const linePrice = modal(page).getByLabel("Price each on this sheet ($)");
+  const linePrice = modal(page).getByLabel("Price each on this project ($)");
   await linePrice.fill("2000000");
   expect(await message(linePrice)).toBe("Prices and costs go up to $1,000,000.00.");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(linePrice).toBeVisible();
-  expect(await page.evaluate(() => window.__mock.docs.get("sheets/s1").items.SKU1.price)).not.toBe(2000000);
+  expect(await page.evaluate(() => window.__mock.docs.get("projects/s1").items.SKU1.price)).not.toBe(2000000);
   await modal(page).getByRole("button", { name: "Cancel" }).click();
 
   await enterBarcode(page, "NEW3");
@@ -177,16 +177,16 @@ test("a price over the API's limit on a sheet line or a new item says so, and is
   const price = modal(page).getByLabel("Price each ($)");
   await price.fill("1000000.5");
   expect(await message(price)).toBe("Prices and costs go up to $1,000,000.00.");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(price).toBeVisible();
   expect(await page.evaluate(() => window.__mock.docs.has("products/NEW3"))).toBe(false);
   await price.fill("999999.99");
   expect(await message(price)).toBe("");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(lineRow(page, "Sponges")).toContainText("$999,999.99");
 });
 
-test("removes a line from a sheet with two taps", { tag: ["@J4"] }, async ({ page }) => {
+test("removes a line from a project with two taps", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Storage bins").click();
   await modal(page).getByRole("button", { name: "Remove" }).click();
@@ -219,16 +219,16 @@ test("picks an inventory item without a barcode, with search", { tag: ["@J4.2"] 
   await pick.getByRole("button", { name: /Mop heads/ }).click();
   await expect(modal(page).getByRole("heading", { name: "Check out" })).toBeVisible();
   await expect(modal(page)).toContainText("No barcode");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(lineRow(page, "Mop heads")).toBeVisible();
   // A new line copies the item's cost as well as its price (ADR 0014)
-  const line = await page.evaluate(() => window.__mock.docs.get("sheets/s1").items["nb-mop"]);
+  const line = await page.evaluate(() => window.__mock.docs.get("projects/s1").items["nb-mop"]);
   expect(line).toMatchObject({ name: "Mop heads", price: 3, cost: 2, out: 1 });
 });
 
-test("a sheet's total is the sum of its rows rounded to cents", { tag: ["@J4"] }, async ({ page }) => {
+test("a project's total is the sum of its rows rounded to cents", { tag: ["@J4"] }, async ({ page }) => {
   // Prices with more than two decimals (typed before rounding existed) round when shown
-  await openApp(page, { seed: { "sheets/r": { client: "Round Co", date: "2026-09-01", status: "open", items: {
+  await openApp(page, { seed: { "projects/r": { client: "Round Co", date: "2026-09-01", status: "open", items: {
     a: { code: "", name: "Wipes", price: 0.335, out: 3, returned: 0 },
     b: { code: "", name: "Xylene", price: 1.005, out: 1, returned: 0 },
     c: { code: "", name: "Zip ties", price: 0.1, out: 3, returned: 0 },
@@ -238,7 +238,7 @@ test("a sheet's total is the sum of its rows rounded to cents", { tag: ["@J4"] }
   await expect(lineRow(page, "Wipes").locator(".charge")).toHaveText("$1.02");
   await expect(lineRow(page, "Xylene").locator(".charge")).toHaveText("$1.01");
   await expect(lineRow(page, "Zip ties").locator(".charge")).toHaveText("$0.30");
-  await expect(page.locator("#sheetBody tfoot")).toContainText("$2.33");
+  await expect(page.locator("#projectBody tfoot")).toContainText("$2.33");
   await page.getByRole("button", { name: "Download CSV" }).click();
   await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
   const { data } = await page.evaluate(() => window.__mock.saves[0]);
@@ -247,7 +247,7 @@ test("a sheet's total is the sum of its rows rounded to cents", { tag: ["@J4"] }
 
 test("picking with an empty inventory goes straight to a new item", { tag: ["@J4.2"] }, async ({ page }) => {
   await openApp(page);
-  await createSheet(page, "Juliet Co");
+  await createProject(page, "Juliet Co");
   await page.getByRole("button", { name: "Add item without a barcode" }).click();
   await expect(modal(page).locator("#pick")).toHaveCount(0);
   await modal(page).getByRole("button", { name: "Cancel" }).click();
@@ -256,14 +256,14 @@ test("picking with an empty inventory goes straight to a new item", { tag: ["@J4
 
 test("a new item without a barcode can skip saving to inventory", { tag: ["@J4.2"] }, async ({ page }) => {
   await openApp(page);
-  await createSheet(page, "Kilo Co");
+  await createProject(page, "Kilo Co");
   await page.getByRole("button", { name: "Add item without a barcode" }).click();
   await modal(page).getByRole("button", { name: "+ New item" }).click();
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(page.locator("#overlay")).toBeVisible();
   await modal(page).getByLabel("Item name").fill("One-off ladder rental");
   await modal(page).getByLabel("Save to inventory for next time").uncheck();
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(lineRow(page, "One-off ladder rental")).toContainText("$0.00");
   const saved = await page.evaluate(() => [...window.__mock.docs.keys()].filter((k) => k.startsWith("products/")));
   expect(saved).toEqual([]);
@@ -273,28 +273,28 @@ test("a new item's name can't be only spaces", { tag: ["@J4.2"] }, async ({ page
   await openEcho(page);
   await enterBarcode(page, "NEW2");
   await modal(page).getByLabel("Item name").fill("   ");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(modal(page).getByRole("heading", { name: "Check out" })).toBeVisible();
   expect(await page.evaluate(() => window.__mock.docs.has("products/NEW2"))).toBe(false);
 });
 
-test("a sheet created while updates arrive instantly appears once", { tag: ["@J4.1"] }, async ({ page }) => {
+test("a project created while updates arrive instantly appears once", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page, { instantUpdates: true });
-  await createSheet(page, "Oscar Two");
-  await page.getByRole("button", { name: "← All sheets" }).first().click();
+  await createProject(page, "Oscar Two");
+  await page.getByRole("button", { name: "← All projects" }).first().click();
   await expect(page.getByRole("button", { name: /Oscar Two/ })).toHaveCount(1);
 });
 
 test("the quantity stepper counts up and down and won't check out zero", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
-  await expect(modal(page)).toContainText("Already on this sheet");
+  await expect(modal(page)).toContainText("Already on this project");
   await expect(modal(page)).toContainText("3 taken");
   await modal(page).getByRole("button", { name: "More" }).click();
-  await expect(modal(page).getByRole("button", { name: "Add 2 to sheet" })).toBeVisible();
+  await expect(modal(page).getByRole("button", { name: "Add 2 to project" })).toBeVisible();
   await modal(page).getByRole("button", { name: "Fewer" }).click();
   await modal(page).getByRole("button", { name: "Fewer" }).click();
-  await modal(page).getByRole("button", { name: "Add 0 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 0 to project" }).click();
   await expect(page.locator("#toast")).toHaveText("Choose at least 1.");
   await modal(page).getByRole("button", { name: "Cancel" }).click();
 });
@@ -306,7 +306,7 @@ test("scanning a barcode stored under a different key finds the item", { tag: ["
   await page.getByRole("button", { name: /Echo Studio/ }).click();
   await enterBarcode(page, "0042");
   await expect(modal(page)).toContainText("Sponges");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(lineRow(page, "Sponges")).toBeVisible();
   // Items without a storage count stay uncounted
   expect(await page.evaluate(() => window.__mock.docs.get("products/legacy-1").stock)).toBeUndefined();
@@ -330,12 +330,12 @@ test("returns an item without a barcode by picking it", { tag: ["@J4.3"] }, asyn
   await expect(lineRow(page, "Storage bins").locator("td").nth(3)).toHaveText("1");
 });
 
-test("returning from an empty sheet says nothing was taken", { tag: ["@J4.3"] }, async ({ page }) => {
+test("returning from an empty project says nothing was taken", { tag: ["@J4.3"] }, async ({ page }) => {
   await openApp(page);
-  await createSheet(page, "Lima Ltd");
+  await createProject(page, "Lima Ltd");
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await page.getByRole("button", { name: "Return item without a barcode" }).click();
-  await expect(modal(page)).toContainText("Nothing has been checked out on this sheet yet.");
+  await expect(modal(page)).toContainText("Nothing has been checked out on this project yet.");
   await modal(page).getByRole("button", { name: "Cancel" }).click();
 });
 
@@ -351,13 +351,13 @@ test("a return needs at least one, and can be cancelled", { tag: ["@J4.3"] }, as
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("returning an item that isn't on the sheet offers to check it out", { tag: ["@J4.3"] }, async ({ page }) => {
+test("returning an item that isn't on the project offers to check it out", { tag: ["@J4.3"] }, async ({ page }) => {
   await openApp(page, { seed: { ...usedState.seed, "products/SKU9": { code: "SKU9", name: "Bleach", price: 4, stock: 3 } } });
   await page.getByRole("button", { name: /Echo Studio/ }).click();
   await page.getByRole("button", { name: "Return", exact: true }).click();
 
   await enterBarcode(page, "UNKNOWN");
-  await expect(modal(page).getByRole("heading", { name: "Not on this sheet" })).toBeVisible();
+  await expect(modal(page).getByRole("heading", { name: "Not on this project" })).toBeVisible();
   await expect(modal(page)).toContainText("This item wasn't checked out");
   await modal(page).getByRole("button", { name: "Close" }).click();
 
@@ -366,27 +366,27 @@ test("returning an item that isn't on the sheet offers to check it out", { tag: 
   await modal(page).getByRole("button", { name: "Check it out instead" }).click();
   await expect(modal(page).getByRole("heading", { name: "Check out" })).toBeVisible();
   await expect(page.locator("#scanLabel")).toHaveText("Scan to check out");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(lineRow(page, "Bleach")).toBeVisible();
 });
 
-test("a sheet made without a signed-in user records who prepared it", { tag: ["@J4.1"] }, async ({ page }) => {
+test("a project made without a signed-in user records who prepared it", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page, { unavailable: ["user"] });
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByRole("button", { name: "+ New project" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Mike's Diner");
   await page.getByLabel("Prepared by").fill("Sam");
-  await page.getByRole("button", { name: "Create sheet" }).click();
-  await expect(page.locator(".sheet-head")).toContainText("Prepared by Sam");
+  await page.getByRole("button", { name: "Create project" }).click();
+  await expect(page.locator(".project-head")).toContainText("Prepared by Sam");
   await page.getByRole("button", { name: "Download CSV" }).click();
   expect(await page.evaluate(() => window.__mock.saves[0].data)).toContain("Prepared by,Sam");
 });
 
-test("sheets from before sign-in show who prepared them, or Unknown", { tag: ["@J4"] }, async ({ page }) => {
+test("projects from before sign-in show who prepared them, or Unknown", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, {
     unavailable: ["user"],
     seed: {
-      "sheets/a": { client: "Named", date: "2026-09-01", createdByName: "Pat", status: "open", items: {} },
-      "sheets/b": { client: "Anon", date: "2026-09-02", status: "open", items: {} },
+      "projects/a": { client: "Named", date: "2026-09-01", createdByName: "Pat", status: "open", items: {} },
+      "projects/b": { client: "Anon", date: "2026-09-02", status: "open", items: {} },
     },
   });
   await expect(page.getByRole("button", { name: /Named/ })).toContainText("Pat");
@@ -402,7 +402,7 @@ test("any other failed save asks the user to check their connection", { tag: ["@
   await expect(page.locator("#toast")).toHaveText("That didn't save. Check your connection and try again.");
 });
 
-test("view-only users can open a sheet but not change it", { tag: ["@J9.1"] }, async ({ page }) => {
+test("view-only users can open a project but not change it", { tag: ["@J9.1"] }, async ({ page }) => {
   await openEcho(page, { canWrite: false });
   await expect(page.locator("#scanbar")).toBeHidden();
   await expect(page.getByRole("button", { name: "Edit details" })).toHaveCount(0);
@@ -428,15 +428,15 @@ test("barcodes that are built-in object keys check out and return like any other
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "constructor");
-  await expect(modal(page).getByRole("heading", { name: "Not on this sheet" })).toBeVisible();
+  await expect(modal(page).getByRole("heading", { name: "Not on this project" })).toBeVisible();
   await expect(modal(page)).toContainText("This item wasn't checked out");
   await modal(page).getByRole("button", { name: "Check it out instead" }).click();
 
   await expect(modal(page)).toContainText("New barcode.");
-  await expect(modal(page)).not.toContainText("Already on this sheet");
+  await expect(modal(page)).not.toContainText("Already on this project");
   await modal(page).getByLabel("Item name").fill("Widget A");
   await modal(page).getByLabel("Price each ($)").fill("2");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(lineRow(page, "Widget A")).toBeVisible();
 
   await page.getByRole("button", { name: "Return", exact: true }).click();
@@ -444,7 +444,7 @@ test("barcodes that are built-in object keys check out and return like any other
   await expect(modal(page).getByRole("heading", { name: "Return" })).toBeVisible();
   await modal(page).getByRole("button", { name: "Save return" }).click();
   await expect(lineRow(page, "Widget A").locator("td").nth(3)).toHaveText("1");
-  const doc = await page.evaluate(() => window.__mock.docs.get("sheets/s1").items.constructor);
+  const doc = await page.evaluate(() => window.__mock.docs.get("projects/s1").items.constructor);
   expect(doc).toMatchObject({ code: "constructor", name: "Widget A", price: 2, out: 1, returned: 1 });
   expect(await page.evaluate(() => [Object.prototype.out, Object.out])).toEqual([undefined, undefined]);
 });
@@ -456,12 +456,12 @@ test("a tap on the list survives a redraw, and a snapshot with no changes leaves
   await expect(echo).toBeVisible();
   const card = await echo.elementHandle();
 
-  // Press + New sheet; another user adds a sheet, which redraws the list mid-tap
-  const box = await page.getByRole("button", { name: "+ New sheet" }).boundingBox();
+  // Press + New project; another user adds a project, which redraws the list mid-tap
+  const box = await page.getByRole("button", { name: "+ New project" }).boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.evaluate(() => {
-    window.__mock.docs.set("sheets/late", { client: "Late job", date: "2026-08-01", status: "open", items: {} });
+    window.__mock.docs.set("projects/late", { client: "Late job", date: "2026-08-01", status: "open", items: {} });
     window.__mock.notify();
   });
   await expect(page.getByRole("button", { name: /Late job/ })).toBeVisible();
@@ -469,7 +469,7 @@ test("a tap on the list survives a redraw, and a snapshot with no changes leaves
   // The cards that didn't change are the same elements
   expect(await card.evaluate((el) => el.isConnected)).toBe(true);
   await page.mouse.up();
-  await expect(modal(page).getByRole("heading", { name: "New sheet" })).toBeVisible();
+  await expect(modal(page).getByRole("heading", { name: "New project" })).toBeVisible();
   await modal(page).getByRole("button", { name: "Cancel" }).click();
 
   // A snapshot with nothing new doesn't touch the list
@@ -486,20 +486,20 @@ test("a tap on the list survives a redraw, and a snapshot with no changes leaves
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("a tap on a line survives a redraw, and a snapshot with no changes leaves the sheet alone", { tag: ["@J4"] }, async ({ page }) => {
+test("a tap on a line survives a redraw, and a snapshot with no changes leaves the project alone", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   const row = lineRow(page, "Paper towels");
   await expect(row).toBeVisible();
   const tapped = await row.elementHandle();
   const head = await page.getByRole("button", { name: "Finished Return" }).elementHandle();
 
-  // Press a line; another user checks out more of the other line, which redraws the sheet mid-tap
+  // Press a line; another user checks out more of the other line, which redraws the project mid-tap
   await row.scrollIntoViewIfNeeded();
   const box = await row.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.evaluate(() => {
-    window.__mock.docs.get("sheets/s1").items["nb-bins"].out = 5;
+    window.__mock.docs.get("projects/s1").items["nb-bins"].out = 5;
     window.__mock.notify();
   });
   await expect(page.locator(".totals")).toContainText("Taken8");
@@ -510,25 +510,25 @@ test("a tap on a line survives a redraw, and a snapshot with no changes leaves t
   await expect(modal(page).getByRole("heading", { name: "Paper towels, 6 roll" })).toBeVisible();
   await modal(page).getByRole("button", { name: "Cancel" }).click();
 
-  // A snapshot with nothing new doesn't touch the sheet view
+  // A snapshot with nothing new doesn't touch the project view
   await page.evaluate(() => {
     window.__mutations = 0;
-    new MutationObserver((m) => { window.__mutations += m.length; }).observe(document.getElementById("sheetView"), { subtree: true, childList: true, attributes: true, characterData: true });
+    new MutationObserver((m) => { window.__mutations += m.length; }).observe(document.getElementById("projectView"), { subtree: true, childList: true, attributes: true, characterData: true });
     window.__mock.notify();
   });
   await page.evaluate(() => new Promise((r) => setTimeout(r, 50)));
   expect(await page.evaluate(() => window.__mutations)).toBe(0);
 
-  // Clicks on the sheet outside its buttons and lines do nothing
-  await page.locator("#sheetHead h2").click();
-  await page.locator("#sheetBody .totals").click();
+  // Clicks on the project outside its buttons and lines do nothing
+  await page.locator("#projectHead h2").click();
+  await page.locator("#projectBody .totals").click();
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("the sheet's buttons act on the latest copy of the sheet", { tag: ["@J4"] }, async ({ page }) => {
+test("the project's buttons act on the latest copy of the project", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await page.evaluate(() => {
-    window.__mock.docs.get("sheets/s1").client = "Echo Studio West";
+    window.__mock.docs.get("projects/s1").client = "Echo Studio West";
     window.__mock.notify();
   });
   await expect(page.getByRole("heading", { name: "Echo Studio West" })).toBeVisible();
@@ -536,7 +536,7 @@ test("the sheet's buttons act on the latest copy of the sheet", { tag: ["@J4"] }
   await expect(modal(page).getByLabel("Client", { exact: true })).toHaveValue("Echo Studio West");
 });
 
-test("a refused write to a sheet that's still there switches the page to view-only", { tag: ["@J9"] }, async ({ page }) => {
+test("a refused write to a project that's still there switches the page to view-only", { tag: ["@J9"] }, async ({ page }) => {
   await openEcho(page, { writeError: "invalid_argument" });
   await page.getByRole("button", { name: "Finished Return" }).click();
   await expect(page.locator("#notice")).toContainText("view-only access");

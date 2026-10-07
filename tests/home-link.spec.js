@@ -1,4 +1,4 @@
-// The logo in the header goes home: the sheet list on Out now, with no sheet or dialog open,
+// The logo in the header goes home: the project list on Out now, with no project or dialog open,
 // as the app opens (supplycheckout.com redirects to it). It's a link to the app's root, so in
 // the web build a Ctrl/Cmd click opens the app in a new tab. A dialog that's saving stays open.
 import { test, expect, openApp, enterBarcode, modal } from "./helpers.js";
@@ -14,10 +14,10 @@ async function openEcho(page) {
 }
 
 async function expectHome(page) {
-  await expect(pressed(page, "Sheets")).toHaveAttribute("aria-pressed", "true");
+  await expect(pressed(page, "Projects")).toHaveAttribute("aria-pressed", "true");
   await expect(pressed(page, "Inventory")).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByRole("button", { name: /^Out now/ })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator("#sheetView")).toBeHidden();
+  await expect(page.locator("#projectView")).toBeHidden();
   await expect(page.locator("#overlay")).toBeHidden();
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
 }
@@ -39,7 +39,7 @@ test("the logo is a link to the app's root that keeps the heading", async ({ pag
   expect(await logo(page).evaluate((a) => getComputedStyle(a).outlineStyle)).toBe("solid");
 });
 
-test("a click on the logo goes from another view back to Sheets on Out now", async ({ page }) => {
+test("a click on the logo goes from another view back to Projects on Out now", async ({ page }) => {
   await openApp(page, usedState);
   await page.getByRole("button", { name: "Returned", exact: true }).click();
   await expect(page.getByRole("button", { name: "Returned", exact: true })).toHaveAttribute("aria-pressed", "true");
@@ -48,14 +48,14 @@ test("a click on the logo goes from another view back to Sheets on Out now", asy
   await expectHome(page);
   await expect(page).toHaveURL(/\/$/);
 
-  // And from an open sheet
+  // And from an open project
   await page.getByRole("button", { name: /Echo Studio/ }).click();
-  await expect(page.locator("#sheetView")).toBeVisible();
+  await expect(page.locator("#projectView")).toBeVisible();
   await logo(page).click();
   await expectHome(page);
 });
 
-test("the keyboard on the logo closes an open dialog and the sheet behind it", async ({ page }) => {
+test("the keyboard on the logo closes an open dialog and the project behind it", async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await expect(page.locator("#overlay")).toBeVisible();
@@ -69,12 +69,12 @@ test("the logo leaves a dialog that's saving open, so what was entered isn't los
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await page.evaluate(() => window.__mock.hold());
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(modal(page).getByRole("button", { name: "Saving…" })).toBeDisabled();
   await logo(page).focus();
   await page.keyboard.press("Enter");
   await expect(modal(page).getByRole("button", { name: "Saving…" })).toBeVisible();
-  await expect(page.locator("#sheetView")).toBeVisible();
+  await expect(page.locator("#projectView")).toBeVisible();
 
   await page.evaluate(() => window.__mock.release());
   await expect(modal(page)).toBeEmpty();
@@ -92,7 +92,7 @@ test("in the web build, a Ctrl, Cmd or Shift click on the logo is left to the br
   expect(await left({ ctrlKey: true })).toBe(true);
   expect(await left({ metaKey: true })).toBe(true);
   expect(await left({ shiftKey: true })).toBe(true);
-  await expect(page.locator("#sheetView")).toBeVisible();
+  await expect(page.locator("#projectView")).toBeVisible();
   expect(await left({})).toBe(false);
   await expectHome(page);
 });
@@ -105,5 +105,5 @@ test("in the web build, a Ctrl or Cmd click on the logo opens the app in a new t
   const [tab] = await Promise.all([context.waitForEvent("page"), logo(page).click({ modifiers: ["ControlOrMeta"] })]);
   await tab.close();
   // This tab stays where it was
-  await expect(page.locator("#sheetView")).toBeVisible();
+  await expect(page.locator("#projectView")).toBeVisible();
 });

@@ -2,7 +2,7 @@
 // closed meanwhile, nothing shows as saved before it is, a failed save keeps what was entered
 // and offers Try again, and going offline and back says so (saving() in src/main.js). The web
 // build's operation IDs and lost answers are in tests/aws-save-states.spec.js.
-import { test, expect, openApp, enterBarcode, modal, lineRow, createSheet } from "./helpers.js";
+import { test, expect, openApp, enterBarcode, modal, lineRow, createProject } from "./helpers.js";
 import { usedState } from "./fixtures.js";
 
 const toast = (page) => page.locator("#toast");
@@ -25,7 +25,7 @@ test("a slow checkout says it's saving, can't be sent twice or closed, and shows
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await hold(page);
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   const go = modal(page).getByRole("button", { name: "Saving…" });
   await expect(go).toBeDisabled();
   await expect(modal(page).getByRole("button", { name: "Cancel" })).toBeDisabled();
@@ -48,7 +48,7 @@ test("a slow checkout says it's saving, can't be sent twice or closed, and shows
   await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("4");
   // The line once, and the storage count once
   await expect.poll(() => doc(page, "products/SKU1").then((p) => p.stock)).toBe(9);
-  expect((await doc(page, "sheets/s1")).items.SKU1.out).toBe(4);
+  expect((await doc(page, "projects/s1")).items.SKU1.out).toBe(4);
   expect(await writes(page)).toBe(2);
 });
 
@@ -64,7 +64,7 @@ test("a slow return says it's saving and counts once", { tag: ["@J4.3"] }, async
   await release(page);
   await expect(toast(page)).toHaveText("1 returned · 2 of 3 back");
   await expect.poll(() => doc(page, "products/SKU1").then((p) => p.stock)).toBe(11);
-  expect((await doc(page, "sheets/s1")).items.SKU1.returned).toBe(2);
+  expect((await doc(page, "projects/s1")).items.SKU1.returned).toBe(2);
 });
 
 test("a checkout that didn't save keeps what was entered, says so, and saves once on Try again", { tag: ["@J4.2"] }, async ({ page }) => {
@@ -75,7 +75,7 @@ test("a checkout that didn't save keeps what was entered, says so, and saves onc
   await modal(page).getByRole("button", { name: "More" }).click();
   await modal(page).getByRole("button", { name: "More" }).click();
   await failWrites(page, "unavailable");
-  await modal(page).getByRole("button", { name: "Add 3 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 3 to project" }).click();
   await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
   await expect(failedNote(page)).toHaveText("Not saved. Check your connection, then tap Try again.");
   const again = modal(page).getByRole("button", { name: "Try again" });
@@ -98,7 +98,7 @@ test("a checkout that didn't save keeps what was entered, says so, and saves onc
   await again.click();
   await expect(toast(page)).toHaveText("Checked out 3 × Wax");
   await expect(lineRow(page, "Wax").locator("td").nth(2)).toHaveText("3");
-  expect((await doc(page, "sheets/s1")).items.NEW1).toMatchObject({ name: "Wax", price: 4.25, out: 3 });
+  expect((await doc(page, "projects/s1")).items.NEW1).toMatchObject({ name: "Wax", price: 4.25, out: 3 });
 });
 
 // A save whose answer was lost: the artifact's write carries a mark for the action, which Try
@@ -108,13 +108,13 @@ const loseWrites = (page, prefix) => mock(page, (p) => { window.__mock.loseWrite
 test("a checkout whose answer was lost counts once on Try again, on the line and in storage", { tag: ["@J4.2"] }, async ({ page }) => {
   // The line already has as many marks as it keeps: the oldest goes
   const old = Array.from({ length: 10 }, (_, i) => `o${i}`);
-  const s1 = usedState.seed["sheets/s1"];
-  await openEcho(page, { ...usedState, seed: { ...usedState.seed, "sheets/s1": { ...s1, items: { ...s1.items, SKU1: { ...s1.items.SKU1, ops: old } } } } });
+  const s1 = usedState.seed["projects/s1"];
+  await openEcho(page, { ...usedState, seed: { ...usedState.seed, "projects/s1": { ...s1, items: { ...s1.items, SKU1: { ...s1.items.SKU1, ops: old } } } } });
   await enterBarcode(page, "SKU1");
-  await loseWrites(page, "sheets/");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await loseWrites(page, "projects/");
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
-  const lost = (await doc(page, "sheets/s1")).items.SKU1;
+  const lost = (await doc(page, "projects/s1")).items.SKU1;
   expect(lost.out).toBe(4);
   expect(lost.ops).toEqual([...old.slice(1), expect.any(String)]);
   await loseWrites(page, null);
@@ -123,29 +123,29 @@ test("a checkout whose answer was lost counts once on Try again, on the line and
   await expect(toast(page)).toHaveText("Checked out 1 × Paper towels, 6 roll");
   await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("4");
   await expect.poll(() => doc(page, "products/SKU1").then((p) => p.stock)).toBe(9);
-  expect((await doc(page, "sheets/s1")).items.SKU1).toEqual(lost);
+  expect((await doc(page, "projects/s1")).items.SKU1).toEqual(lost);
 });
 
 test("a return whose answer was lost counts once on Try again", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
-  await loseWrites(page, "sheets/");
+  await loseWrites(page, "projects/");
   await modal(page).getByRole("button", { name: "Save return" }).click();
   await expect(modal(page).getByRole("button", { name: "Try again" })).toBeVisible();
-  expect((await doc(page, "sheets/s1")).items.SKU1.returned).toBe(2);
+  expect((await doc(page, "projects/s1")).items.SKU1.returned).toBe(2);
   await loseWrites(page, null);
   await hideToast(page);
   await modal(page).getByRole("button", { name: "Try again" }).click();
   await expect(toast(page)).toHaveText("1 returned · 2 of 3 back");
   await expect.poll(() => doc(page, "products/SKU1").then((p) => p.stock)).toBe(11);
-  expect((await doc(page, "sheets/s1")).items.SKU1.returned).toBe(2);
+  expect((await doc(page, "projects/s1")).items.SKU1.returned).toBe(2);
 });
 
-// The artifact writes the sheet line, then the storage count. If the storage count fails, the
+// The artifact writes the project line, then the storage count. If the storage count fails, the
 // form stays open with its quantity fixed, and Try again writes only the storage count, with a
 // mark on the item so it counts once (src/moves.js). (In the web build's mock runtime too.)
-const OWING = "Saved on the sheet, but the storage count didn't save. Tap Try again to finish; nothing is counted twice. Cancel leaves storage as it is.";
+const OWING = "Saved on the project, but the storage count didn't save. Tap Try again to finish; nothing is counted twice. Cancel leaves storage as it is.";
 const qtyLocked = async (page, id) => {
   await expect(modal(page).locator("#" + id)).toBeDisabled();
   await expect(modal(page).getByRole("button", { name: "More" })).toBeDisabled();
@@ -155,11 +155,11 @@ test("a checkout whose storage count didn't save keeps the form open, and Try ag
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await failWrites(page, { prefix: "products/", code: "unavailable" });
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(failedNote(page)).toHaveText(OWING);
   await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
   await qtyLocked(page, "fQty");
-  const line = (await doc(page, "sheets/s1")).items.SKU1;
+  const line = (await doc(page, "projects/s1")).items.SKU1;
   expect(line.out).toBe(4);
   expect((await doc(page, "products/SKU1")).stock).toBe(10);
   await failWrites(page, null);
@@ -173,7 +173,7 @@ test("a checkout whose storage count didn't save keeps the form open, and Try ag
   expect(item.ops).toEqual([line.ops.at(-1)]);
   // Only the storage count was written again; the line is as it was
   expect(await writes(page)).toBe(before + 1);
-  expect((await doc(page, "sheets/s1")).items.SKU1).toEqual(line);
+  expect((await doc(page, "projects/s1")).items.SKU1).toEqual(line);
 });
 
 // Closing the form then would leave storage uncounted, so only Cancel closes it, on a second tap
@@ -181,7 +181,7 @@ test("a checkout whose storage count is owed warns before Cancel closes it", { t
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await failWrites(page, { prefix: "products/", code: "unavailable" });
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(failedNote(page)).toHaveText(OWING);
   // Escape and a tap outside don't close it
   await page.keyboard.press("Escape");
@@ -193,8 +193,8 @@ test("a checkout whose storage count is owed warns before Cancel closes it", { t
   await expect(failedNote(page)).toBeVisible();
   await cancel.click();
   await expect(page.locator("#overlay")).toBeHidden();
-  // On the sheet, and storage as it was
-  expect((await doc(page, "sheets/s1")).items.SKU1.out).toBe(4);
+  // On the project, and storage as it was
+  expect((await doc(page, "projects/s1")).items.SKU1.out).toBe(4);
   expect((await doc(page, "products/SKU1")).stock).toBe(10);
 });
 
@@ -222,10 +222,10 @@ test("a return whose storage count was refused or lost is finished once by tryin
   // Refused for a reason trying again won't fix: no Try again note, but the quantity is fixed
   await failWrites(page, { prefix: "products/", code: "quota_exceeded" });
   await modal(page).getByRole("button", { name: "Save return" }).click();
-  await expect(toast(page)).toHaveText("Storage is full. Delete old sheets or items to make room.");
+  await expect(toast(page)).toHaveText("Storage is full. Delete old projects or items to make room.");
   await expect(failedNote(page)).toHaveCount(0);
   await qtyLocked(page, "fRet");
-  expect((await doc(page, "sheets/s1")).items.SKU1.returned).toBe(2);
+  expect((await doc(page, "projects/s1")).items.SKU1.returned).toBe(2);
   // Saved, but the answer is lost
   await failWrites(page, null);
   await loseWrites(page, "products/");
@@ -241,22 +241,22 @@ test("a return whose storage count was refused or lost is finished once by tryin
   // Found the mark: nothing written again
   expect(await writes(page)).toBe(before);
   expect((await doc(page, "products/SKU1")).stock).toBe(11);
-  expect((await doc(page, "sheets/s1")).items.SKU1.returned).toBe(2);
+  expect((await doc(page, "projects/s1")).items.SKU1.returned).toBe(2);
 });
 
 test("changing the quantity after a failure names the new request on the button", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await failWrites(page, "unavailable");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(modal(page).getByRole("button", { name: "Try again" })).toBeVisible();
   await modal(page).getByRole("button", { name: "More" }).click();
   await failWrites(page, "quota_exceeded");
-  await modal(page).getByRole("button", { name: "Add 2 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 2 to project" }).click();
   // Storage is full: trying again won't help, so no Try again, and the form is as it was
-  await expect(toast(page)).toHaveText("Storage is full. Delete old sheets or items to make room.");
+  await expect(toast(page)).toHaveText("Storage is full. Delete old projects or items to make room.");
   await expect(failedNote(page)).toHaveCount(0);
-  await expect(modal(page).getByRole("button", { name: "Add 2 to sheet" })).toBeEnabled();
+  await expect(modal(page).getByRole("button", { name: "Add 2 to project" })).toBeEnabled();
   await expect(modal(page).locator("#fQty")).toHaveValue("2");
 });
 
@@ -268,7 +268,7 @@ test("a failure after a Try again that trying again won't fix goes back to the f
   await modal(page).getByRole("button", { name: "Save return" }).click();
   await failWrites(page, "quota_exceeded");
   await modal(page).getByRole("button", { name: "Try again" }).click();
-  await expect(toast(page)).toHaveText("Storage is full. Delete old sheets or items to make room.");
+  await expect(toast(page)).toHaveText("Storage is full. Delete old projects or items to make room.");
   await expect(modal(page).getByRole("button", { name: "Save return" })).toBeEnabled();
   await expect(failedNote(page)).toHaveCount(0);
 });
@@ -297,16 +297,16 @@ test("offline, nothing is sent and the form says so; back online, Try again save
   await expect(modal(page).locator("#fRet")).toHaveValue("2");
   await modal(page).getByRole("button", { name: "Try again" }).click();
   await expect(toast(page)).toHaveText("2 returned · 3 of 3 back");
-  expect((await doc(page, "sheets/s1")).items.SKU1.returned).toBe(3);
+  expect((await doc(page, "projects/s1")).items.SKU1.returned).toBe(3);
   await expect.poll(() => doc(page, "products/SKU1").then((p) => p.stock)).toBe(12);
 });
 
-test("a new sheet that didn't save is the same sheet on Try again", { tag: ["@J4.1"] }, async ({ page }) => {
+test("a new project that didn't save is the same project on Try again", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page, usedState);
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByRole("button", { name: "+ New project" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Golf Clinic");
   await failWrites(page, "unavailable");
-  await page.getByRole("button", { name: "Create sheet" }).click();
+  await page.getByRole("button", { name: "Create project" }).click();
   await expect(failedNote(page)).toBeVisible();
   await failWrites(page, null);
   await hold(page);
@@ -315,11 +315,11 @@ test("a new sheet that didn't save is the same sheet on Try again", { tag: ["@J4
   await expect(modal(page).getByLabel("Client", { exact: true })).toBeDisabled();
   await release(page);
   await expect(page.getByRole("heading", { name: "Golf Clinic" })).toBeVisible();
-  const sheets = await mock(page, () => [...window.__mock.docs.keys()].filter((k) => k.startsWith("sheets/")));
-  expect(sheets).toHaveLength(2);
+  const projects = await mock(page, () => [...window.__mock.docs.keys()].filter((k) => k.startsWith("projects/")));
+  expect(projects).toHaveLength(2);
 });
 
-test("editing a sheet, a line or an item says it's saving", { tag: ["@J4"] }, async ({ page }) => {
+test("editing a project, a line or an item says it's saving", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await hold(page);
   await page.getByRole("button", { name: "Edit details" }).click();
@@ -336,8 +336,8 @@ test("editing a sheet, a line or an item says it's saving", { tag: ["@J4"] }, as
   await release(page);
   await expect(modal(page)).toBeEmpty();
 
-  await page.getByRole("button", { name: "← All sheets" }).click();
-  await createSheet(page, "Hotel Nine");
+  await page.getByRole("button", { name: "← All projects" }).click();
+  await createProject(page, "Hotel Nine");
   await page.getByRole("button", { name: "Inventory" }).click();
   await page.getByRole("button", { name: "+ Add item" }).click();
   await modal(page).getByLabel("Item name").fill("Sponges");
@@ -352,26 +352,26 @@ test("editing a sheet, a line or an item says it's saving", { tag: ["@J4"] }, as
   expect(items).toHaveLength(1);
 });
 
-// Finishing, reopening and deleting a sheet, and removing a line or deleting an item, send one
+// Finishing, reopening and deleting a project, and removing a line or deleting an item, send one
 // write however they're tapped, and say they're saving meanwhile (once() and busy() in src/main.js)
-test("finishing and reopening a sheet say they're saving, and a second tap sends nothing", { tag: ["@J4.3"] }, async ({ page }) => {
+test("finishing and reopening a project say they're saving, and a second tap sends nothing", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await hold(page);
   await page.getByRole("button", { name: "Finished Return" }).click();
   const saving = page.getByRole("button", { name: "Saving…" });
   await expect(saving).toBeDisabled();
   await expect(saving).toHaveAttribute("aria-busy", "true");
-  await expect(page.getByRole("button", { name: "Delete sheet" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Delete project" })).toBeDisabled();
   await saving.dispatchEvent("click");
-  await page.locator("#delSheet").dispatchEvent("click");
+  await page.locator("#delProject").dispatchEvent("click");
   // A redraw meanwhile (another user's change) keeps it saving
-  await mock(page, () => { window.__mock.docs.get("sheets/s1").client = "Echo Studio 2"; window.__mock.notify(); });
+  await mock(page, () => { window.__mock.docs.get("projects/s1").client = "Echo Studio 2"; window.__mock.notify(); });
   await expect(page.getByRole("heading", { name: "Echo Studio 2" })).toBeVisible();
   await expect(saving).toBeDisabled();
   expect(await writes(page)).toBe(1);
   await release(page);
   await expect(toast(page)).toHaveText("Return finished");
-  await expect(page.getByRole("button", { name: "Delete sheet" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Delete project" })).toBeEnabled();
 
   await hideToast(page);
   await hold(page);
@@ -380,19 +380,19 @@ test("finishing and reopening a sheet say they're saving, and a second tap sends
   await saving.dispatchEvent("click");
   expect(await writes(page)).toBe(2);
   await release(page);
-  await expect(toast(page)).toHaveText("Sheet reopened");
+  await expect(toast(page)).toHaveText("Project reopened");
   await expect(page.getByRole("button", { name: "Finished Return" })).toBeEnabled();
-  expect((await doc(page, "sheets/s1")).status).toBe("open");
+  expect((await doc(page, "projects/s1")).status).toBe("open");
 });
 
-test("deleting a sheet sends one delete, and a tap after a failed one arms it again", { tag: ["@J4"] }, async ({ page }) => {
+test("deleting a project sends one delete, and a tap after a failed one arms it again", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await failWrites(page, "unavailable");
-  await page.getByRole("button", { name: "Delete sheet" }).click();
+  await page.getByRole("button", { name: "Delete project" }).click();
   await page.getByRole("button", { name: "Tap again to delete" }).click();
   await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
   // The second tap disarmed it: another tap asks again rather than deleting
-  const del = page.getByRole("button", { name: "Delete sheet" });
+  const del = page.getByRole("button", { name: "Delete project" });
   await expect(del).toBeEnabled();
   await failWrites(page, null);
   // The toast would be over the button on a phone
@@ -401,13 +401,13 @@ test("deleting a sheet sends one delete, and a tap after a failed one arms it ag
   await hold(page);
   await page.getByRole("button", { name: "Tap again to delete" }).click();
   await expect(page.getByRole("button", { name: "Saving…" })).toBeDisabled();
-  await page.locator("#delSheet").dispatchEvent("click");
-  await page.locator("#delSheet").dispatchEvent("click");
+  await page.locator("#delProject").dispatchEvent("click");
+  await page.locator("#delProject").dispatchEvent("click");
   expect(await writes(page)).toBe(2);
   await release(page);
-  await expect(toast(page)).toHaveText("Sheet deleted");
+  await expect(toast(page)).toHaveText("Project deleted");
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
-  expect(await doc(page, "sheets/s1")).toBeUndefined();
+  expect(await doc(page, "projects/s1")).toBeUndefined();
   expect(await writes(page)).toBe(2);
 });
 

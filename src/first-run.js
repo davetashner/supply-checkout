@@ -1,12 +1,12 @@
 // The first-run checklist (web build only; src/main.js creates it when the runtime has one). After an owner
-// names a new team (src/aws/account.js), a short list above the sheets and inventory gets the
+// names a new team (src/aws/account.js), a short list above the projects and inventory gets the
 // empty team ready: add supplies (by hand, or a CSV from the import's template), invite the
-// crew, and create a first sheet. Each step ticks itself off from what's saved: the team has
-// an item, someone was invited from the members screen, the team has a sheet. It shows until
+// crew, and create a first project. Each step ticks itself off from what's saved: the team has
+// an item, someone was invited from the members screen, the team has a project. It shows until
 // every step is done or the owner dismisses it, and that's remembered for the team.
 //
 // cap is the runtime's use("firstRun") (account.js): { state, save(), invite(), importCsv(),
-// onChange }. act is the app's side: { addItem(), newSheet(), redraw() }.
+// onChange }. act is the app's side: { addItem(), newProject(), redraw() }.
 import { morph } from "./dom.js";
 
 const STEPS = [
@@ -14,13 +14,13 @@ const STEPS = [
     actions: [["addItem", "Add an item", "primary"], ["importCsv", "Import a CSV file", ""]] },
   { id: "crew", title: "Invite your crew", text: "Invite the people who take supplies to jobs. They get an email with a link to join.",
     actions: [["invite", "Invite people", ""]] },
-  { id: "sheet", title: "Create your first sheet", text: "A sheet is one client job: scan what goes out, then what comes back.",
-    actions: [["newSheet", "Create a sheet", ""]] },
+  { id: "project", title: "Create your first project", text: "A project is one client job: scan what goes out, then what comes back.",
+    actions: [["newProject", "Create a project", ""]] },
 ];
 
 export function createFirstRun(cap, act) {
   const { state } = cap;
-  let done = { items: false, crew: false, sheet: false }, closed = false;
+  let done = { items: false, crew: false, project: false }, closed = false;
   // Kept from the start, so a reload before any step is done still shows it
   cap.save();
   cap.onChange = act.redraw;
@@ -51,10 +51,10 @@ export function createFirstRun(cap, act) {
       </div>
     </li>`;
 
-  // visible: the sheet list or inventory is showing, with the team's data loaded
+  // visible: the project list or inventory is showing, with the team's data loaded
   return {
-    draw(visible, items, sheets) {
-      done = { items: items > 0, crew: !!state.invited, sheet: sheets > 0 };
+    draw(visible, items, projects) {
+      done = { items: items > 0, crew: !!state.invited, project: projects > 0 };
       const count = Object.values(done).filter(Boolean).length;
       const all = count === STEPS.length;
       if (all && !state.done) finish();
@@ -62,7 +62,7 @@ export function createFirstRun(cap, act) {
       if (box.hidden) return;
       morph(box, all
         ? `<div class="first-run-head"><h2 id="firstRunTitle">You're all set</h2></div>
-          <p>Your team has supplies, a crew and a first sheet. Scan items onto a sheet as they go out, and back in when they return.</p>
+          <p>Your team has supplies, a crew and a first project. Scan items onto a project as they go out, and back in when they return.</p>
           <div class="chips"><button type="button" class="btn primary" data-act="dismiss">Close</button></div>`
         : `<div class="first-run-head"><h2 id="firstRunTitle">Get your team started</h2>
           <button type="button" class="btn ghost" data-act="dismiss" aria-label="Dismiss the getting started checklist">Dismiss</button></div>

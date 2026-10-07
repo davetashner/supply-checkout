@@ -427,7 +427,7 @@ before answering `409`, so `409` from contention is rare.
   no checkouts and **no returns**: to record a late return, reopen the sheet,
   return, and finish the return again, or correct the line's counts with a
   line edit (which doesn't move stock). This matches the app, which hides the
-  scan bar on a closed sheet ([section 4a](../architecture/README.md#4a-sheet-states)).
+  scan bar on a closed sheet ([section 4a](../architecture/README.md#4a-project-states)).
 - **Returned never exceeds out**, checked inside the transaction. With
   equipment lost or broken, `returned + lost` never exceeds `out`.
 - **No sheet closes with equipment out.** A `PUT` or `PATCH` that sets

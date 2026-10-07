@@ -68,11 +68,11 @@ Each check is tried 3 times, 5 seconds apart, with a 15-second timeout per reque
 
 Playwright can't open a phone's camera, so before publishing a release, check scanning on a real iPhone and a real Android phone: your own phones, or a real-device cloud such as BrowserStack Live. Scanning takes a photo through the file input (`capture="environment"`), then decodes it with the browser's `BarcodeDetector` where there is one (Chrome and Samsung Internet on Android) or ZXing otherwise (Safari on iPhone and iPad, Firefox).
 
-1. **iPhone, Safari** (current iOS): open a sheet, tap **Scan to check out**, and photograph a real barcode with the rear camera. The checkout dialog opens with the right item. Then, on the sheet list, tap **Scan receipt**, photograph a paper receipt, and check the review screen lists its lines.
+1. **iPhone, Safari** (current iOS): open a project, tap **Scan to check out**, and photograph a real barcode with the rear camera. The checkout dialog opens with the right item. Then, on the project list, tap **Scan receipt**, photograph a paper receipt, and check the review screen lists its lines.
 2. **Android phone, Chrome** (current Android): repeat step 1.
-3. **Android phone, Samsung Internet** and **Firefox for Android**: open a sheet and scan one barcode in each.
+3. **Android phone, Samsung Internet** and **Firefox for Android**: open a project and scan one barcode in each.
 4. On both phones, photograph something that isn't a barcode: the app says no barcode was found and suggests typing the number.
-5. On both phones, turn to landscape and back on the sheet and receipt screens: nothing scrolls sideways and no button is cut off.
+5. On both phones, turn to landscape and back on the project and receipt screens: nothing scrolls sideways and no button is cut off.
 
 Note the devices and OS versions in the release PR before merging it.
 

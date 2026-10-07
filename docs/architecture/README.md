@@ -13,7 +13,7 @@ The design below is partly built. This table says which parts are on `main` toda
 | Route 53 zone, ACM certificates, SES domain identity | Built | PR #33 |
 | Web hosting: S3, CloudFront, WAF, versioned releases (serves the demo today) | Built | PR #35 |
 | Cognito user pool, `auth.` domain, web app client | Built | PR #36 |
-| HTTP API with JWT authorizer, data Lambda for products and sheets, sign-in session routes | Built | PR #37 |
+| HTTP API with JWT authorizer, data Lambda for products and projects, sign-in session routes | Built | PR #37 |
 | Onboarding: `GET /me`, create a team, accept an invite | Built | PR #40 |
 | Live updates: AppSync Events, subscribe authorizer, stream consumer with a dead-letter queue | Built | PR #41 |
 | CI gates (lint, tests, cdk-nag synth, CodeQL, audit, secret scan) and release-please | Built | `.github/workflows/` |
@@ -157,9 +157,9 @@ sequenceDiagram
     B-->>L: JSON: store, date, items[], totals
     L->>L: Check the reply, map inventory ids to keys,<br/>log sizes, timings and token counts only
     L-->>App: Parsed receipt
-    App->>U: Review screen (edit, match, assign to sheets)
+    App->>U: Review screen (edit, match, assign to projects)
     U->>App: Confirm
-    App->>API: Write products and sheet lines (conditional updates)
+    App->>API: Write products and project lines (conditional updates)
     API->>DB: Save
     DB-->>App: Live update to other crew devices (AppSync Events)
   end
@@ -167,7 +167,7 @@ sequenceDiagram
 
 ## 4. Checking out and returning
 
-Built in bead `supply-checkout-1dg.1`; the web build uses it for every checkout and return (bead `supply-checkout-1dg.6`, `src/moves.js`). The old artifact build saved the sheet line and then changes stock in a second, separate read-then-write (`bumpStock` in `src/main.js`), so a retry or a double tap can take stock down twice and two people checking out the same line at once can lose a count. The commands make each checkout, return or stock adjustment one DynamoDB transaction with an operation ID, so a retry is safe. They sit next to the generic document routes, which the edit screens keep using. The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-runtime-adapter.md)); the commands extend [ADR 0006](../adr/0006-api-and-realtime-sync.md). The client contract is [docs/api/commands.md](../api/commands.md); the code is `backend/src/data/commands.ts`.
+Built in bead `supply-checkout-1dg.1`; the web build uses it for every checkout and return (bead `supply-checkout-1dg.6`, `src/moves.js`). The old artifact build saved the project line and then changes stock in a second, separate read-then-write (`bumpStock` in `src/main.js`), so a retry or a double tap can take stock down twice and two people checking out the same line at once can lose a count. The commands make each checkout, return or stock adjustment one DynamoDB transaction with an operation ID, so a retry is safe. They sit next to the generic document routes, which the edit screens keep using. The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-runtime-adapter.md)); the commands extend [ADR 0006](../adr/0006-api-and-realtime-sync.md). The client contract is [docs/api/commands.md](../api/commands.md); the code is `backend/src/data/commands.ts`.
 
 ```mermaid
 sequenceDiagram
@@ -180,22 +180,22 @@ sequenceDiagram
 
   U->>App: Scan item, choose how many
   App->>App: New operation ID, kept until the call settles
-  App->>API: POST /teams/{teamId}/sheets/{sheetId}/checkout:<br/>product key, quantity, operation ID
+  App->>API: POST /teams/{teamId}/projects/{projectId}/checkout:<br/>product key, quantity, operation ID
   API->>API: Verify JWT, check membership (contributor or owner),<br/>validate a whole-number quantity and any prices
   API->>DB: Read the operation record
   alt Operation ID already used (a retry)
     DB-->>API: The first call's result
     API-->>App: 200, replayed: the first result, nothing changed again
   else New operation ID
-    API->>DB: Read the sheet and the product (strongly consistent)
-    API->>API: Sheet open? Line new or existing?<br/>New line: copy code, name, price, cost from the product
+    API->>DB: Read the project and the product (strongly consistent)
+    API->>API: Project open? Line new or existing?<br/>New line: copy code, name, price, cost from the product
     API->>DB: TransactWriteItems, all or nothing
-    Note over API,DB: 1. Put the operation record, only if the ID is new<br/>2. Sheet: out = out + quantity (or add the new line), version + 1,<br/>only if the sheet is open and the line is as read<br/>3. Product: ADD stock minus the quantity if it tracks stock,<br/>else check it still doesn't; a new line also checks the product's version<br/>4. Put a movement record: product, sheet, change, reason, user, time, operation ID
+    Note over API,DB: 1. Put the operation record, only if the ID is new<br/>2. Project: out = out + quantity (or add the new line), version + 1,<br/>only if the project is open and the line is as read<br/>3. Product: ADD stock minus the quantity if it tracks stock,<br/>else check it still doesn't; a new line also checks the product's version<br/>4. Put a movement record: product, project, change, reason, user, time, operation ID
     alt All four written
       DB-->>API: OK
-      API->>DB: Read the sheet and product
-      API-->>App: 200: the result, and the sheet and product as they are now
-      DB-->>RT: Stream records for the sheet and product
+      API->>DB: Read the project and product
+      API-->>App: 200: the result, and the project and product as they are now
+      DB-->>RT: Stream records for the project and product
       RT-->>App: Change notices to the team's other devices
     else Operation record exists (a concurrent retry got in first)
       DB-->>API: Canceled on the operation record, nothing written
@@ -204,38 +204,38 @@ sequenceDiagram
       DB-->>API: Canceled, nothing written
       API->>API: Read again and retry (up to 6 attempts)
     else A rule fails on the fresh read
-      API-->>App: 400 (more returned than out, bad input), 404 (no sheet)<br/>or 409 (sheet closed, still busy after every retry)
+      API-->>App: 400 (more returned than out, bad input), 404 (no project)<br/>or 409 (project closed, still busy after every retry)
     end
   end
   Note over App,API: After a timeout or a dropped connection the app<br/>retries with the same operation ID
 ```
 
 - **Return** is the same transaction with `returned = returned + quantity` on the line, only while the returned total stays at or below `out` (the condition checks `out` against the target and `returned` against the value read), and stock going up by the quantity.
-- **Stock adjust** (a receipt stock-in with its unit cost, or a count) has no sheet line: operation record, stock and movement record. A count sets stock from the level just read, so its movement's change is exact.
-- The line's counts are added on the server (`SET out = out + :qty`; DynamoDB's `ADD` works only on top-level attributes, and a line is nested in the sheet's `items` map), never written as a value computed on the client, so concurrent checkouts on one line never lose a count. Stock uses `ADD`.
+- **Stock adjust** (a receipt stock-in with its unit cost, or a count) has no project line: operation record, stock and movement record. A count sets stock from the level just read, so its movement's change is exact.
+- The line's counts are added on the server (`SET out = out + :qty`; DynamoDB's `ADD` works only on top-level attributes, and a line is nested in the project's `items` map), never written as a value computed on the client, so concurrent checkouts on one line never lose a count. Stock uses `ADD`.
 - Operation records (`OP#<operationId>`) keep the result for replay and expire after 7 days (the table's TTL). A retry with the same ID and a different request is refused.
 - The movement records (`MOVE#<product key>#<time>#<operationId>`) are the inventory history: `GET /teams/{teamId}/products/{key}/movements` pages them newest first, and the nightly stock-drift check ([docs/journeys.md](../journeys.md), J4) reconciles stock against them ([how](../api/commands.md#reconciling-stock)).
-- A closed sheet takes no checkouts or returns ([section 4a](#4a-sheet-states)); the server answers 409 and the person reopens it first.
+- A closed project takes no checkouts or returns ([section 4a](#4a-project-states)); the server answers 409 and the person reopens it first.
 - IAM: the data Lambda's per-team role has `UpdateItem` and `ConditionCheckItem` as well as `GetItem`, `PutItem`, `DeleteItem` and `Query`, all under the same `dynamodb:LeadingKeys` condition. Every item in a command's transaction is in the team's partition.
 
-### 4a. Sheet states
+### 4a. Project states
 
-As built in `src/main.js`. A sheet's `status` is `open` or `closed`; the app labels them "Checked out" and "Returned". Owners and contributors change it; viewers can't.
+As built in `src/main.js`. A project's `status` is `open` or `closed`; the app labels them "Checked out" and "Returned". Owners and contributors change it; viewers can't.
 
 ```mermaid
 stateDiagram-v2
   state "Open, shown as Checked out" as open
   state "Closed, shown as Returned" as closed
-  [*] --> open : New sheet
+  [*] --> open : New project
   open --> closed : Finished Return, sets closedAt
   closed --> open : Reopen
-  open --> [*] : Delete sheet
-  closed --> [*] : Delete sheet
+  open --> [*] : Delete project
+  closed --> [*] : Delete project
 ```
 
-- A reopened sheet is simply `open` again; `closedAt` keeps the time it was last closed.
+- A reopened project is simply `open` again; `closedAt` keeps the time it was last closed.
 - Closing or reopening doesn't change stock. Only checkouts and returns do.
-- A closed sheet hides the scan bar, so nothing new is checked out or returned on it. Owners and contributors can still correct a line's counts and price, edit the sheet's details, or delete it. The checkout and return commands (section 4) enforce this on the server: they refuse a closed sheet with 409, so a late return means reopening the sheet (or correcting the line, which doesn't move stock).
+- A closed project hides the scan bar, so nothing new is checked out or returned on it. Owners and contributors can still correct a line's counts and price, edit the project's details, or delete it. The checkout and return commands (section 4) enforce this on the server: they refuse a closed project with 409, so a late return means reopening the project (or correcting the line, which doesn't move stock).
 
 ## 5. Live updates: authorization and revocation
 
@@ -259,9 +259,9 @@ sequenceDiagram
   Au->>DB: Read the caller's MEMBER item
   Au-->>RT: Allow only a member, only that exact channel
   RT-->>App: subscribe_success
-  App->>API: Re-list products and sheets
-  Note over DB,P: Someone on the team changes a sheet
-  DB->>P: Stream record, products and sheets only
+  App->>API: Re-list products and projects
+  Note over DB,P: Someone on the team changes a project
+  DB->>P: Stream record, products and projects only
   P->>RT: Publish collection, id, op, version (IAM only)
   RT-->>App: Change notice, no document data
   App->>API: GET the document
@@ -315,7 +315,7 @@ sequenceDiagram
 - **Order matters.** The webhook only verifies, enqueues and answers; it records nothing. The worker records the event ID only after the team is updated. Recording first could lose an event if the queue write or the worker then failed. If the worker fails after the update but before recording, the retry applies the same update again, which is harmless because the worker always applies the latest subscription it fetched from Stripe.
 - **One subscription at a time.** Updates for one customer (one team, one customer) are serialized by an SQS FIFO message group per Stripe customer, so an older event can't overwrite a newer one; and the worker always applies the subscription's latest state from Stripe, whatever the event.
 - **Failures.** A message that keeps failing goes to a dead-letter queue, which alarms. A nightly job reconciles every team's entitlements with Stripe (bead `8jc.9`).
-- Live updates carry products and sheets only, so the app sees a new plan or status on its next `GET /me`.
+- Live updates carry products and projects only, so the app sees a new plan or status on its next `GET /me`.
 
 ### 6a. Subscription and access states
 
@@ -416,9 +416,9 @@ erDiagram
   USER ||--o{ MEMBER : "belongs via"
   TEAM ||--o{ INVITE : sends
   TEAM ||--o{ PRODUCT : stocks
-  TEAM ||--o{ SHEET : records
-  SHEET ||--o{ SHEET_LINE : "items map"
-  PRODUCT ||--o{ SHEET_LINE : "checked out as"
+  TEAM ||--o{ PROJECT : records
+  PROJECT ||--o{ PROJECT_LINE : "items map"
+  PRODUCT ||--o{ PROJECT_LINE : "checked out as"
   PRODUCT ||--o{ MOVEMENT : "stock history"
   TEAM ||--o{ OPERATION : "replays retries"
   TEAM ||--o{ USAGE : "counts receipts"
@@ -457,7 +457,7 @@ erDiagram
     int stock
     int version
   }
-  SHEET {
+  PROJECT {
     string id
     string client
     string date
@@ -466,7 +466,7 @@ erDiagram
     string status
     int version
   }
-  SHEET_LINE {
+  PROJECT_LINE {
     string productKey
     string code
     string name
@@ -480,7 +480,7 @@ erDiagram
     string at "sort key with operationId"
     string reason
     int delta
-    string sheetId
+    string projectId
     number unitCost
     string userId
   }

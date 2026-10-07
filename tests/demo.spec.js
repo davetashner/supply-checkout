@@ -48,14 +48,14 @@ test("says it's a demo, checks out, reads a receipt and downloads, without leavi
   const banner = page.getByRole("complementary", { name: "Demo" });
   await expect(banner).toHaveText("Demo: nothing you enter is saved. Data resets when you reload.");
 
-  // Check out two more boxes of gloves on the open sheet
+  // Check out two more boxes of gloves on the open project
   await page.getByRole("button", { name: /Acme Offices/ }).click();
   await expect(page.getByRole("heading", { name: "Acme Offices" })).toBeVisible();
   await expect(page.getByText("Prepared by Demo user")).toBeVisible();
   await page.getByPlaceholder("Or type the barcode").fill("012345678905");
   await page.getByPlaceholder("Or type the barcode").press("Enter");
   await modal(page).locator("#fQty").fill("2");
-  await modal(page).getByRole("button", { name: "Add 2 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 2 to project" }).click();
   await expect(lineRow(page, "Nitrile gloves")).toContainText("4");
   await expect(page.locator(".totals .charge")).toHaveText("$67.00");
 
@@ -65,7 +65,7 @@ test("says it's a demo, checks out, reads a receipt and downloads, without leavi
   expect((await download).suggestedFilename()).toMatch(/^Acme Offices \d{4}-\d{2}-\d{2}\.csv$/);
 
   // Receipt reading answers with the demo receipt after a pause
-  await page.getByRole("button", { name: "← All sheets" }).click();
+  await page.getByRole("button", { name: "← All projects" }).click();
   await page.setInputFiles("#receiptFile", fakeImage);
   await expect(page.locator(".rline")).toHaveCount(3);
   await expect(page.locator(".rline").first()).toContainText("Suggested match");
@@ -77,7 +77,7 @@ test("says it's a demo, checks out, reads a receipt and downloads, without leavi
 test("a reload starts over with the demo data", async ({ page }) => {
   await openDemo(page);
   await page.getByRole("button", { name: /Acme Offices/ }).click();
-  await page.getByRole("button", { name: "Delete sheet" }).click();
+  await page.getByRole("button", { name: "Delete project" }).click();
   await page.getByRole("button", { name: "Tap again to delete" }).click();
   await expect(page.getByRole("button", { name: /Acme Offices/ })).toHaveCount(0);
   await page.reload();

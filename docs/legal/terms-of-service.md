@@ -98,7 +98,7 @@ If a payment fails, we email the owner and show a banner in the app. The team ke
 
 ## 8. Your data
 
-- **You own your data.** "Your data" means everything your team puts into the Service: inventory, sheets, client names, prices, receipt photos, and receipt results after you save them.
+- **You own your data.** "Your data" means everything your team puts into the Service: inventory, projects, client names, prices, receipt photos, and receipt results after you save them.
 - You give us permission to store, copy, process and display your data only as needed to run, secure, back up and support the Service for you, and as the Privacy Policy describes. We don't sell your data. We don't use it to train AI models.
 - **Export**: owners can export the team's data as CSV and JSON at any time, including during the 30-day read-only period after cancellation.
 - **Deletion**: owners can close the team and delete its data. A closed team's data is deleted 30 days after it's closed, or up to 44 days in rare cases where its subscription can't be ended. When a member deletes their own account, we delete it straight away; what they added to a team stays with the team.

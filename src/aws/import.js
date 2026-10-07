@@ -53,7 +53,7 @@ const GUIDE = [
   ["price", "Required for supplies. What a client is charged for one each, before tax. Blank for equipment."],
   ["barcode", "Matches items already in inventory. Leave blank if the item has none."],
   ["kind", "supply (used up and charged, the default when blank) or equipment (company equipment that goes to jobs and comes back, not charged)."],
-  ["cost", "What you paid for one each, before tax. It isn't shown on client sheets. For equipment, what one is worth."],
+  ["cost", "What you paid for one each, before tax. It isn't shown on client projects. For equipment, what one is worth."],
   ["stock", "How many eaches you have, as a whole number (not cases)."],
   ["pack_size", "How many eaches come in one case or pack you buy. Blank means 1."],
 ];

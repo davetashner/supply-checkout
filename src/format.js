@@ -4,7 +4,7 @@ const usd = new Intl.NumberFormat("en-US", {style:"currency", currency:"USD"});
 export const money = n => usd.format(Number(n) || 0);
 export const todayISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0,10); };
 export const fmtDate = iso => { if (!iso) return ""; const [y,m,d] = iso.split("-").map(Number); return new Date(y, m-1, d).toLocaleDateString("en-US", {month:"short", day:"numeric", year:"numeric"}); };
-// A barcode's product key: also its line's key in a sheet's items. "__proto__" gets an "x"
+// A barcode's product key: also its line's key in a project's items. "__proto__" gets an "x"
 // like a dots-only key, because as a field name it would be the items map's prototype
 // (the API refuses it). Other built-in names, like "constructor", are ordinary keys, so
 // code that reads a line or product by key uses own() or a null-prototype map. Never a key

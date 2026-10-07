@@ -16,9 +16,9 @@ const registry = () => ({
     {
       id: "J0", name: "Check out", persona: "Crew member", critical: true,
       steps: [
-        { id: "J0.1", text: "Open a sheet.", status: "built" },
+        { id: "J0.1", text: "Open a project.", status: "built" },
         { id: "J0.2", text: "Scan an item.", status: "built", tests: ["backend/test/commands.test.ts"] },
-        { id: "J0.3", text: "Sign the sheet.", status: "planned", beads: ["supply-checkout-sig"] },
+        { id: "J0.3", text: "Sign the project.", status: "planned", beads: ["supply-checkout-sig"] },
       ],
     },
     {
@@ -141,7 +141,7 @@ test("test.step names are read for their step IDs and lines, and the test whose 
     `const helper = () => test.step("J0.9 in a helper above", f);`,
     `test("one", { tag: ["@J0.1"] }, async () => {`,
     `  const s = "a ) in a string", t = \`and \${"a ( in a template"} here\`; // a ) in a comment`,
-    `  /* a ( in another */ await test.step("J0.1 Open a sheet", async () => {});`,
+    `  /* a ( in another */ await test.step("J0.1 Open a project", async () => {});`,
     `});`,
     `test.describe("group", () => {`,
     `  test.skip(\`two \${x}\`, async () => { await test.step('J4.12 x', f); });`,
@@ -261,7 +261,7 @@ test("the doc's table and step lists are generated between their markers", () =>
   assert.deepEqual(problems, []);
   assert.match(md, /\| \[J0\]\(#j0-check-out\) \| Check out \| Crew member \| Yes \| Partly built \|/);
   assert.match(md, /\| \[J1\]\(#j1-use-the-app\) \| Use the app \| Owner \| No \| Planned \(phase 2\) \|/);
-  assert.match(md, /<!-- journeys:steps J0 -->\n- \*\*J0\.1\*\* Open a sheet\.\n- \*\*J0\.2\*\* Scan an item\.\n- \*\*J0\.3\*\* Sign the sheet\. \*Planned: `supply-checkout-sig`\.\*\n<!-- \/journeys:steps J0 -->/);
+  assert.match(md, /<!-- journeys:steps J0 -->\n- \*\*J0\.1\*\* Open a project\.\n- \*\*J0\.2\*\* Scan an item\.\n- \*\*J0\.3\*\* Sign the project\. \*Planned: `supply-checkout-sig`\.\*\n<!-- \/journeys:steps J0 -->/);
   assert.match(md, /- \*\*J1\.1\*\* Open the app\. \*Planned\.\*/);
   assert.doesNotMatch(md, /old steps/);
   // Generating again changes nothing
@@ -374,7 +374,7 @@ function repo({ reg = registry(), md = doc(), tags = [["J0.1"]] } = {}) {
   for (const dir of ["journeys", "docs", "tests", "backend/test", "infra/lib/observability", ".beads"]) mkdirSync(join(root, dir), { recursive: true });
   writeFileSync(join(root, "journeys/registry.json"), JSON.stringify(reg));
   writeFileSync(join(root, "docs/journeys.md"), md);
-  writeFileSync(join(root, "tests/a.spec.js"), `test("opens", { tag: ["@J0.1"] }, async () => { await test.step("J0.1 Open a sheet", f); });\n`);
+  writeFileSync(join(root, "tests/a.spec.js"), `test("opens", { tag: ["@J0.1"] }, async () => { await test.step("J0.1 Open a project", f); });\n`);
   writeFileSync(join(root, "backend/test/commands.test.ts"), "");
   writeFileSync(join(root, "infra/lib/observability/alarms.ts"), `alarmName: \`supply-checkout-\${env}-p1-api-errors\``);
   writeFileSync(join(root, ".beads/issues.jsonl"), `${JSON.stringify({ id: "supply-checkout-sig", status: "closed" })}\n\nnot json\n`);

@@ -8,8 +8,8 @@
 // one re-list) and after every re-list. Documents are sent through as the app wrote them,
 // whatever their fields.
 //
-// Sheets are listed by ID and sorted here, not with ?orderBy=date: that route reads an
-// index that can lag a write, and a full re-list must not drop a sheet just created.
+// Projects are listed by ID and sorted here, not with ?orderBy=date: that route reads an
+// index that can lag a write, and a full re-list must not drop a project just created.
 import { createLive } from "./live.js";
 import { COUNT_NOT_SAVED } from "../moves.js";
 
@@ -31,7 +31,7 @@ const snap = (id, doc) => ({ id, exists: !!doc, data: () => (doc ? structuredClo
 function querySnap(docs, order) {
   const list = [...docs.values()].sort((a, b) => cmp(a.id, b.id));
   if (order) {
-    // Missing or non-text values sort as "", so undated sheets come last when newest-first
+    // Missing or non-text values sort as "", so undated projects come last when newest-first
     const val = (d) => (typeof d.data[order.field] === "string" ? d.data[order.field] : "");
     const dir = order.dir === "desc" ? -1 : 1;
     list.sort((a, b) => cmp(val(a), val(b)) * dir || cmp(a.id, b.id));
@@ -56,7 +56,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   const docPath = (name, id) => `${base}/${name}/${encodeURIComponent(id)}`;
 
   // Runs fn once every write to the same document sent before it has answered, so a write names
-  // the version the one before it made: two quick edits from this page (finishing a sheet, then
+  // the version the one before it made: two quick edits from this page (finishing a project, then
   // saving its details) don't conflict with each other. Someone else's change still does.
   function queued(key, fn) {
     const next = (queues.get(key) || Promise.resolve()).then(fn, fn);
@@ -205,10 +205,10 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     }
     if (ev.op === "delete") { put(ev.collection, ev.id, null); return; }
     const held = c.docs.get(ev.id);
-    // Skip what's already here: an older version, or (for sheets) the same one, such as
+    // Skip what's already here: an older version, or (for projects) the same one, such as
     // the echo of this user's own write. A product's is fetched again on the same version,
     // for data stored before every stock change gave the product a new version.
-    if (held && (ev.version < held.version || (ev.version === held.version && ev.collection === "sheets"))) return;
+    if (held && (ev.version < held.version || (ev.version === held.version && ev.collection === "projects"))) return;
     changed(ev.collection, ev.id);
   }
 
@@ -232,7 +232,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     // fetch the latest so the app redraws with it, and pass the error on for the app to say so.
     // If what changed is that someone deleted it, that's the error: not_found. A set that finds
     // the document already as it was sent is this page's own earlier attempt, whose answer was
-    // lost (a new sheet saved again after a timeout): it's saved, so it isn't made twice.
+    // lost (a new project saved again after a timeout): it's saved, so it isn't made twice.
     const write = (method, body) => queued(name + "/" + id, async () => {
       const held = coll(name).docs.get(id), expectedVersion = held ? held.version : 0;
       try {
@@ -260,13 +260,13 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     };
   }
 
-  // Checkout and return (docs/api/commands.md): one POST that changes the sheet line and the
-  // stock together. The answer has the sheet and the product as they are now (null if gone),
+  // Checkout and return (docs/api/commands.md): one POST that changes the project line and the
+  // stock together. The answer has the project and the product as they are now (null if gone),
   // so the screen updates before the live events arrive. Resolves to how many the command
-  // moved and the line as it is now. A 409 (the line or item busy on the server, or the sheet
+  // moved and the line as it is now. A 409 (the line or item busy on the server, or the project
   // closed) is sent again once, as it is: the server adds the quantity to the line as it is then,
   // so someone else's change meanwhile doesn't make it a conflict. If that's refused too, it
-  // fetches both, as a document write's 409 does, and passes the error on. So does a 400 or 404, which the command refuses for what the sheet
+  // fetches both, as a document write's 409 does, and passes the error on. So does a 400 or 404, which the command refuses for what the project
   // holds now; it rejects as `refused` (a code only this adapter uses) with the server's message, for the app to show.
   //
   // `action` stands for one action the person confirmed. It keeps one operation ID for as long
@@ -280,82 +280,82 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     action.operation = { key, id: crypto.randomUUID() };
     return action.operation.id;
   }
-  // A command refused for what the sheet holds now: the server's message says why, with the
+  // A command refused for what the project holds now: the server's message says why, with the
   // latest now showing. `refused` is a code only this adapter uses, for the app to show.
   const refused = (e) => ({ code: "refused", message: `${String(e.message).replace(/\.$/, "")}. The latest is showing.`, status: e.status });
-  const command = (name, sheetId, body, action) => queued("sheets/" + sheetId, async () => {
-    const operation = operationId(action, [name, sheetId, body]);
-    const send = () => api("POST", `${docPath("sheets", sheetId)}/${name}`, { operationId: operation, ...body });
+  const command = (name, projectId, body, action) => queued("projects/" + projectId, async () => {
+    const operation = operationId(action, [name, projectId, body]);
+    const send = () => api("POST", `${docPath("projects", projectId)}/${name}`, { operationId: operation, ...body });
     try {
       // The same operation ID, so it's applied once whichever attempt the server saw
       const res = await send().catch((e) => { if (e.code !== "aborted") throw e; return send(); });
-      put("sheets", sheetId, res.sheet);
+      put("projects", projectId, res.project);
       put("products", body.productKey, res.product);
-      // The line as the sheet has it now; {} if the sheet or the line is gone (or has no items)
-      const items = res.sheet?.data.items;
+      // The line as the project has it now; {} if the project or the line is gone (or has no items)
+      const items = res.project?.data.items;
       return { quantity: res.result.quantity, line: (items && Object.hasOwn(items, body.productKey) && items[body.productKey]) || {} };
     } catch (e) {
       const bad = e.code === "bad_request" || e.code === "not_found";
-      if (bad || e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
-      // Refused for what the sheet holds now (only so many left to return, the line or the sheet gone)
+      if (bad || e.code === "aborted") await Promise.all([fetchDoc("projects", projectId), fetchDoc("products", body.productKey)]);
+      // Refused for what the project holds now (only so many left to return, the line or the project gone)
       if (bad) throw refused(e);
       throw denied(e);
     }
   });
 
-  // Quick take (ADR 0017, docs/api/commands.md): a checkout onto the team's ad hoc sheet, which
+  // Quick take (ADR 0017, docs/api/commands.md): a checkout onto the team's General Use project, which
   // the server picks (or starts) in the checkout's transaction. Answers, retries and refusals as
-  // command() above; resolves to the checkout's answer and the sheet it went on (sheetId).
+  // command() above; resolves to the checkout's answer and the project it went on (projectId).
   const quickTake = (body, action) => queued("adhoc", async () => {
     const operation = operationId(action, ["quickTake", body]);
     const send = () => api("POST", `${base}/adhoc/checkout`, { operationId: operation, ...body });
     try {
       const res = await send().catch((e) => { if (e.code !== "aborted") throw e; return send(); });
-      const sheetId = res.result.sheetId;
-      put("sheets", sheetId, res.sheet);
+      const projectId = res.result.projectId;
+      put("projects", projectId, res.project);
       put("products", body.productKey, res.product);
-      return { quantity: res.result.quantity, sheetId };
+      return { quantity: res.result.quantity, projectId };
     } catch (e) {
       if (e.code === "bad_request") throw refused(e);
       throw denied(e);
     }
   });
 
-  // Moving a whole ad hoc line to a job sheet (ADR 0017, docs/api/commands.md): one POST that
-  // changes both sheets together. Answers, retries and refusals as command() above, fetching both
-  // sheets when it's refused.
-  const moveLine = (fromId, key, toId, action) => queued("sheets/" + fromId, async () => {
+  // Moving a whole ad hoc line to a client project (ADR 0017, docs/api/commands.md): one POST that
+  // changes both projects together. Answers, retries and refusals as command() above, fetching both
+  // projects when it's refused.
+  const moveLine = (fromId, key, toId, action) => queued("projects/" + fromId, async () => {
     const operation = operationId(action, ["move", fromId, key, toId]);
-    const send = () => api("POST", `${docPath("sheets", fromId)}/move`, { operationId: operation, productKey: key, toSheetId: toId });
+    const send = () => api("POST", `${docPath("projects", fromId)}/move`, { operationId: operation, productKey: key, toProjectId: toId });
     try {
       const res = await send().catch((e) => { if (e.code !== "aborted") throw e; return send(); });
-      put("sheets", fromId, res.sheet);
-      put("sheets", toId, res.toSheet);
+      put("projects", fromId, res.project);
+      put("projects", toId, res.toProject);
     } catch (e) {
       const bad = e.code === "bad_request" || e.code === "not_found";
-      if (bad || e.code === "aborted") await Promise.all([fetchDoc("sheets", fromId), fetchDoc("sheets", toId)]);
+      if (bad || e.code === "aborted") await Promise.all([fetchDoc("projects", fromId), fetchDoc("projects", toId)]);
       if (bad) throw refused(e);
       throw denied(e);
     }
   });
 
-  // A receipt's lines for a client, added to an existing sheet (docs/api/commands.md): one POST
+  // A receipt's lines for a client, added to an existing project (docs/api/commands.md): one POST
   // that adds them all or none, without moving stock. lines: [{ productKey, quantity, code,
-  // name, price, cost }], at most 40. Idempotent by operation ID, as command() is. A sheet
+  // name, price, cost }], at most 40. Idempotent by operation ID, as command() is. A project
   // someone deleted rejects as not_found, for the app to say so; a 400 as `refused`.
-  const addLines = (sheetId, lines, action) => queued("sheets/" + sheetId, async () => {
-    const operation = operationId(action, ["lines", sheetId, lines]);
+  const addLines = (projectId, lines, action) => queued("projects/" + projectId, async () => {
+    const operation = operationId(action, ["lines", projectId, lines]);
     try {
-      put("sheets", sheetId, (await api("POST", `${docPath("sheets", sheetId)}/lines`, { operationId: operation, lines })).sheet);
+      put("projects", projectId, (await api("POST", `${docPath("projects", projectId)}/lines`, { operationId: operation, lines })).project);
     } catch (e) {
       const bad = e.code === "bad_request";
-      if (bad || e.code === "not_found" || e.code === "aborted") await fetchDoc("sheets", sheetId);
+      if (bad || e.code === "not_found" || e.code === "aborted") await fetchDoc("projects", projectId);
       if (bad) throw refused(e);
       throw denied(e);
     }
   });
 
-  // Stock outside a sheet (docs/api/commands.md): POST products/<key>/stock, one transaction
+  // Stock outside a project (docs/api/commands.md): POST products/<key>/stock, one transaction
   // that changes the stock and records a movement saying why. A 409 fetches the item, as a
   // document write's does, and passes the error on.
   const adjustStock = (key, body, action) => queued("products/" + key, async () => {
@@ -409,7 +409,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   }
 
   return {
-    // Sheet IDs are made here, as the app expects; the first set() creates the document
+    // Project IDs are made here, as the app expects; the first set() creates the document
     collection: (name) => {
       const ref = {
         ...query(name, null),

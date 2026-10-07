@@ -71,7 +71,7 @@ function judge() {
 const TILE_PASSES = [{ max: 1000, t: 400, div: 4 }, { max: 0, t: 1000, div: 2 }, { max: 1400, t: 560, div: 4 }, { max: 700, t: 250, div: 4 }];
 const BUDGET_MS = 6000;
 const pause = () => new Promise((r) => setTimeout(r));
-const sheet = (w, h) => {
+const blankCanvas = (w, h) => {
   const c = Object.assign(document.createElement("canvas"), { width: w, height: h }), g = c.getContext("2d", { willReadFrequently: true });
   g.fillStyle = "#fff"; g.fillRect(0, 0, w, h); // a transparent photo reads as white, not black
   return c;
@@ -94,7 +94,7 @@ async function decodeImage(file) {
   const w = bmp.width, h = bmp.height, long = Math.max(w, h);
   for (const max of [1280, 900, 1800, 2600]) {
     const k = Math.min(1, max / long);
-    const c = sheet(Math.round(w * k), Math.round(h * k));
+    const c = blankCanvas(Math.round(w * k), Math.round(h * k));
     c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
     const txt = read(c); if (txt) return txt;
     if (k === 1) break;
@@ -104,12 +104,12 @@ async function decodeImage(file) {
     const k = max ? Math.min(1, max / long) : 1, bw = Math.round(w * k), bh = Math.round(h * k);
     const tw = Math.min(t, bw), th = Math.min(t, bh);
     if (tw === bw && th === bh) continue; // the whole photo again
-    const base = sheet(bw, bh);
+    const base = blankCanvas(bw, bh);
     base.getContext("2d").drawImage(bmp, 0, 0, w, h, 0, 0, bw, bh);
     for (const y of starts(bh, th, div)) for (const x of starts(bw, tw, div)) {
       if (performance.now() > deadline) return null;
       await pause(); // keep the page responsive
-      const c = sheet(tw, th);
+      const c = blankCanvas(tw, th);
       c.getContext("2d").drawImage(base, x, y, tw, th, 0, 0, tw, th);
       const txt = read(c); if (txt) return txt;
     }

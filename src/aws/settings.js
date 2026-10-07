@@ -24,7 +24,7 @@ export function openSettings(settings) {
     <form id="settingsForm" style="display:grid;gap:14px">
       <div class="field"><label for="markup">Markup on company equipment bought for a client (%)</label>
         <input type="number" id="markup" min="0" max="1000" step="0.01" inputmode="decimal" disabled aria-describedby="markupHint">
-        <p class="hint" id="markupHint">When a receipt has company equipment you bought for a client, their sheet charges the receipt price plus this much. Only owners see this percentage; everyone who can see the sheet sees the price. 0 charges the receipt price.</p></div>
+        <p class="hint" id="markupHint">When a receipt has company equipment you bought for a client, their project charges the receipt price plus this much. Only owners see this percentage; everyone who can see the project sees the price. 0 charges the receipt price.</p></div>
       <div class="field"><p class="hint" id="receiptUsage">Receipt scans: loading…</p></div>
       <p class="error" role="alert" id="settingsFail" hidden></p>
       <div class="modal-actions"><button type="button" class="btn" id="settingsCancel">Cancel</button><button type="submit" class="btn primary" id="settingsSave" disabled>Save</button></div>

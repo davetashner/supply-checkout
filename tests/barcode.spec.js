@@ -1,4 +1,4 @@
-import { test, expect, openApp, createSheet, modal, lineRow } from "./helpers.js";
+import { test, expect, openApp, createProject, modal, lineRow } from "./helpers.js";
 import { crc32, deflateSync } from "node:zlib";
 import { BarcodeFormat, QRCodeWriter } from "@zxing/library";
 import { usedState } from "./fixtures.js";
@@ -104,7 +104,7 @@ function installScanner({ detector = "none", bitmap = "real", held = false, slow
   }
 }
 
-const openSheet = async (page, scanner) => {
+const openProject = async (page, scanner) => {
   await page.addInitScript(installScanner, scanner);
   await openApp(page, usedState);
   await page.getByRole("button", { name: /Echo Studio/ }).click();
@@ -113,7 +113,7 @@ const openSheet = async (page, scanner) => {
 const noBarcode = (page) => expect(page.locator("#toast")).toContainText("No barcode found", { timeout: 15000 });
 
 test("reads a barcode photo with the browser's built-in detector", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: " SKU1 " });
+  await openProject(page, { detector: " SKU1 " });
   await page.setInputFiles("#scanFile", png);
   await expect(modal(page).getByRole("heading", { name: "Check out" })).toBeVisible();
   await expect(modal(page)).toContainText("Paper towels, 6 roll");
@@ -123,14 +123,14 @@ test("reads a barcode photo with the browser's built-in detector", { tag: ["@J4.
 const tries = (page) => page.evaluate(() => window.__zxingTries);
 
 test("without a built-in detector, reads the photo with ZXing", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, {});
+  await openProject(page, {});
   await page.setInputFiles("#scanFile", qrPng("0789"));
   await expect(modal(page)).toContainText("Barcode 0789");
   expect(await tries(page)).toBe(1);
 });
 
 test("falls back to ZXing when the detector finds nothing", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: "empty" });
+  await openProject(page, { detector: "empty" });
   await page.setInputFiles("#scanFile", qrPng("0123"));
   await expect(modal(page)).toContainText("Barcode 0123");
   await page.keyboard.press("Escape");
@@ -142,63 +142,63 @@ test("falls back to ZXing when the detector finds nothing", { tag: ["@J4.2"] }, 
 });
 
 test("a detector error also falls back to ZXing", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: "throws" });
+  await openProject(page, { detector: "throws" });
   await page.setInputFiles("#scanFile", qrPng("0456"));
   await expect(modal(page)).toContainText("Barcode 0456");
 });
 
 test("a large photo is read at a smaller size", { tag: ["@J4.2"] }, async ({ page }) => {
   // 2,088 pixels square (29 modules of 72), read at 1,280
-  await openSheet(page, {});
+  await openProject(page, {});
   await page.setInputFiles("#scanFile", qrPng("0321", 72));
   await expect(modal(page)).toContainText("Barcode 0321");
   expect(await tries(page)).toBe(1);
 });
 
 test("tries several sizes of a large photo before giving up", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { bitmap: "big" });
+  await openProject(page, { bitmap: "big" });
   await page.setInputFiles("#scanFile", png);
   await noBarcode(page);
   expect(await tries(page)).toBe(4);
 });
 
 test("a small photo without a barcode is tried once at full size", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, {});
+  await openProject(page, {});
   await page.setInputFiles("#scanFile", png);
   await noBarcode(page);
   expect(await tries(page)).toBe(1);
 });
 
 test("loads the photo another way when createImageBitmap fails", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: "SKU1", bitmap: "throws" });
+  await openProject(page, { detector: "SKU1", bitmap: "throws" });
   await page.setInputFiles("#scanFile", png);
   await expect(modal(page)).toContainText("Paper towels, 6 roll");
 });
 
 test("loads the photo another way when createImageBitmap is missing", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: "SKU1", bitmap: "missing" });
+  await openProject(page, { detector: "SKU1", bitmap: "missing" });
   await page.setInputFiles("#scanFile", png);
   await expect(modal(page)).toContainText("Paper towels, 6 roll");
 });
 
 test("a file that isn't an image says no barcode was found", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: "SKU1", bitmap: "missing" });
+  await openProject(page, { detector: "SKU1", bitmap: "missing" });
   await page.setInputFiles("#scanFile", notAnImage);
   await noBarcode(page);
 });
 
 test("cancelling the camera does nothing", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: "SKU1" });
+  await openProject(page, { detector: "SKU1" });
   await page.setInputFiles("#scanFile", []);
   await expect(page.locator("#overlay")).toBeHidden();
   await expect(page.locator("#toast")).toBeHidden();
 });
 
-test("a photo read while someone else deletes the sheet opens nothing", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: "SKU1", held: true });
+test("a photo read while someone else deletes the project opens nothing", { tag: ["@J4.2"] }, async ({ page }) => {
+  await openProject(page, { detector: "SKU1", held: true });
   await page.setInputFiles("#scanFile", png);
   await page.waitForFunction(() => window.__releaseDetect);
-  await page.evaluate(() => { window.__mock.docs.delete("sheets/s1"); window.__mock.notify(); });
+  await page.evaluate(() => { window.__mock.docs.delete("projects/s1"); window.__mock.notify(); });
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
   await expect(page.locator("#toast")).toHaveText("Reading barcode…");
   await page.evaluate(() => window.__releaseDetect());
@@ -209,7 +209,7 @@ test("a photo read while someone else deletes the sheet opens nothing", { tag: [
 });
 
 test("scanning in return mode opens the return for that item", { tag: ["@J4.3"] }, async ({ page }) => {
-  await openSheet(page, { detector: "SKU1" });
+  await openProject(page, { detector: "SKU1" });
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await page.setInputFiles("#scanFile", png);
   await expect(modal(page).getByRole("heading", { name: "Return" })).toBeVisible();
@@ -230,20 +230,20 @@ test("an item's barcode can be scanned when adding it to inventory", { tag: ["@J
   await expect(modal(page).getByPlaceholder("Type, scan, or leave blank")).toHaveValue("5550001");
 });
 
-test("a scanned item can be checked out on a new sheet", { tag: ["@J4.2"] }, async ({ page }) => {
+test("a scanned item can be checked out on a new project", { tag: ["@J4.2"] }, async ({ page }) => {
   await page.addInitScript(installScanner, { detector: "7770001" });
   await openApp(page);
-  await createSheet(page, "November Co");
+  await createProject(page, "November Co");
   await page.setInputFiles("#scanFile", png);
   await modal(page).getByLabel("Item name").fill("Degreaser");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(lineRow(page, "Degreaser")).toContainText("Barcode 7770001");
 });
 
 const tiles = (page) => page.evaluate(() => window.__tiles);
 
 test("reads a small barcode in a big photo from a tile of it", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { bitmap: "tiny", modules: code39("AB12345678") });
+  await openProject(page, { bitmap: "tiny", modules: code39("AB12345678") });
   await page.setInputFiles("#scanFile", png);
   await expect(modal(page)).toContainText("Barcode AB12345678");
   expect(await tries(page)).toBe(4);
@@ -251,39 +251,39 @@ test("reads a small barcode in a big photo from a tile of it", { tag: ["@J4.2"] 
 });
 
 test("stops looking through tiles when the time budget is spent", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { bitmap: "tiny", modules: code39("AB12345678"), slowClock: true });
+  await openProject(page, { bitmap: "tiny", modules: code39("AB12345678"), slowClock: true });
   await page.setInputFiles("#scanFile", png);
   await noBarcode(page);
   expect(await tiles(page)).toBeLessThan(4);
 });
 
 test("a photo with no barcode in it is read in every tile before giving up", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { bitmap: "big" });
+  await openProject(page, { bitmap: "big" });
   await page.setInputFiles("#scanFile", png);
   await noBarcode(page);
   expect(await tiles(page)).toBeGreaterThan(10);
 });
 
 test("a retail code with a bad check digit is not trusted: ZXing reads the photo instead", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: [{ rawValue: "4006381333932", format: "ean_13" }] });
+  await openProject(page, { detector: [{ rawValue: "4006381333932", format: "ean_13" }] });
   await page.setInputFiles("#scanFile", qrPng("0789"));
   await expect(modal(page)).toContainText("Barcode 0789");
 });
 
 test("a retail code of the wrong length or with letters is not trusted either", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: [{ rawValue: "40063813", format: "upc_a" }, { rawValue: "4006X81333931", format: "ean_13" }] });
+  await openProject(page, { detector: [{ rawValue: "40063813", format: "upc_a" }, { rawValue: "4006X81333931", format: "ean_13" }] });
   await page.setInputFiles("#scanFile", png);
   await noBarcode(page);
 });
 
 test("a retail code with the right check digit is accepted", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: [{ rawValue: "012345678905", format: "upc_a" }] });
+  await openProject(page, { detector: [{ rawValue: "012345678905", format: "upc_a" }] });
   await page.setInputFiles("#scanFile", png);
   await expect(modal(page)).toContainText("Barcode 012345678905");
 });
 
 test("with several codes in the photo, the biggest one is used", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, {
+  await openProject(page, {
     detector: [
       { rawValue: "NOBOX" },
       { rawValue: "SMALL1", boundingBox: { width: 10, height: 10 } },
@@ -295,7 +295,7 @@ test("with several codes in the photo, the biggest one is used", { tag: ["@J4.2"
 });
 
 test("a bad code among several is skipped for the next best", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, {
+  await openProject(page, {
     detector: [
       { rawValue: "4006381333932", format: "ean_13", boundingBox: { width: 100, height: 50 } },
       { rawValue: "SMALL1", format: "code_128", boundingBox: { width: 10, height: 10 } },
@@ -306,31 +306,31 @@ test("a bad code among several is skipped for the next best", { tag: ["@J4.2"] }
 });
 
 test("a short Code 39 from the detector alone is not trusted", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: [{ rawValue: "AB12", format: "code_39" }] });
+  await openProject(page, { detector: [{ rawValue: "AB12", format: "code_39" }] });
   await page.setInputFiles("#scanFile", png);
   await noBarcode(page);
 });
 
 test("a short Code 39 that ZXing reads too is trusted", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: [{ rawValue: "AB12", format: "code_39" }], bitmap: "tiny", modules: code39("AB12") });
+  await openProject(page, { detector: [{ rawValue: "AB12", format: "code_39" }], bitmap: "tiny", modules: code39("AB12") });
   await page.setInputFiles("#scanFile", png);
   await expect(modal(page)).toContainText("Barcode AB12");
 });
 
 test("a short Codabar from the detector alone is not trusted", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: [{ rawValue: "A123B", format: "codabar" }] });
+  await openProject(page, { detector: [{ rawValue: "A123B", format: "codabar" }] });
   await page.setInputFiles("#scanFile", png);
   await noBarcode(page);
 });
 
 test("a long Code 39 is trusted on its own", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: [{ rawValue: "AB12345", format: "code_39" }] });
+  await openProject(page, { detector: [{ rawValue: "AB12345", format: "code_39" }] });
   await page.setInputFiles("#scanFile", png);
   await expect(modal(page)).toContainText("Barcode AB12345");
 });
 
 test("a blank code from the detector is ignored", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openSheet(page, { detector: [{ rawValue: "  " }] });
+  await openProject(page, { detector: [{ rawValue: "  " }] });
   await page.setInputFiles("#scanFile", png);
   await noBarcode(page);
 });

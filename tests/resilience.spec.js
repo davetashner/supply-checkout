@@ -10,13 +10,13 @@ test("hides receipt scanning when Claude can't be used from the page", { tag: ["
   await openApp(page, { ...usedState, unavailable: ["sample"] });
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
   await expect(page.getByText("Scan receipt")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "+ New sheet" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "+ New project" })).toBeVisible();
 });
 
 test("hides CSV download when downloads aren't available", { tag: ["@J6"] }, async ({ page }) => {
   await openApp(page, { ...usedState, unavailable: ["downloads"] });
   await page.getByRole("button", { name: /Echo Studio/ }).click();
-  await expect(page.locator("#sheetBody tbody tr")).toHaveCount(2);
+  await expect(page.locator("#projectBody tbody tr")).toHaveCount(2);
   await expect(page.getByRole("button", { name: "Download CSV" })).toHaveCount(0);
 });
 
@@ -49,18 +49,18 @@ test("an unfinished receipt review survives a reload", { tag: ["@J5.2"] }, async
 
 test("a full database is reported and nothing is lost from the form", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, { writeError: "quota_exceeded" });
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByRole("button", { name: "+ New project" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Golf Club");
-  await page.getByRole("button", { name: "Create sheet" }).click();
+  await page.getByRole("button", { name: "Create project" }).click();
   await expect(page.locator("#toast")).toContainText("Storage is full");
   await expect(modal(page).getByLabel("Client", { exact: true })).toHaveValue("Golf Club");
 });
 
 test("a permission failure switches the page to view-only", { tag: ["@J9.1"] }, async ({ page }) => {
   await openApp(page, { writeError: "invalid_argument" });
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByRole("button", { name: "+ New project" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Hotel Group");
-  await page.getByRole("button", { name: "Create sheet" }).click();
+  await page.getByRole("button", { name: "Create project" }).click();
   await expect(page.locator("#toast")).toHaveText("You have view-only access. Ask the owner for Contributor access to make changes.");
   await expect(page.locator("#notice")).toContainText("view-only access");
 });

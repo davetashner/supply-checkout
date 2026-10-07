@@ -2,9 +2,9 @@
 
 A shared supply tracker for taking supplies from storage to client jobs and bringing back what wasn't used.
 
-- **Sheets** – one per client and date, recording who prepared it. Scan a barcode (or pick an item without one) to check supplies out, scan again on return to record what came back unused, then tap **Finished Return**. Each sheet totals what was used and what to charge, and downloads as CSV. Owners can export every sheet and the inventory at once, as CSV or JSON (**Export data**). A team moving from the artifact to the web app sends us the JSON file ([Moving to the web app](docs/moving-to-the-web-app.md)).
+- **Projects** – one per client and date, recording who prepared it. Scan a barcode (or pick an item without one) to check supplies out, scan again on return to record what came back unused, then tap **Finished Return**. Each project totals what was used and what to charge, and downloads as CSV. Owners can export every project and the inventory at once, as CSV or JSON (**Export data**). A team moving from the artifact to the web app sends us the JSON file ([Moving to the web app](docs/moving-to-the-web-app.md)).
 - **Inventory** – items, prices and how many are in storage. Checkouts subtract from storage; returns add back.
-- **Receipts** – photograph a store receipt and Claude reads the line items and prices, suggests matches against existing inventory, and lets you assign each item to a client's sheet or to general inventory before anything is saved.
+- **Receipts** – photograph a store receipt and Claude reads the line items and prices, suggests matches against existing inventory, and lets you assign each item to a client's project or to general inventory before anything is saved.
 
 The app is a static web page on AWS, with sign-in, a shared database, file downloads and receipt reading behind a small runtime interface (`window.claude`, [ADR 0004](docs/adr/0004-runtime-adapter.md)). It started as a claude.ai artifact; that build and its publishing are retired.
 
@@ -21,7 +21,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `src/runtime.js` | `use()`, the one place the app reaches its runtime (`window.claude`). |
 | `src/aws/` | The web build's runtime ([ADR 0004](docs/adr/0004-runtime-adapter.md)): `window.claude` on the AWS backend. `main.js` loads `config.json` and installs it; `session.js` is sign-in (Managed Login, PKCE, tokens in memory); `account.js` is first sign-in, invites, the team bar and the `user` and `downloads` capabilities; `db.js` maps the app's `db` calls onto the data API; `live.js` is live updates over AppSync Events, with the polling fallback. See [The web app on AWS](docs/web-app.md#the-web-app-on-aws). |
 | `src/moves.js` | Checkout and return writes, in one place so the web build can switch to atomic commands (`supply-checkout-1dg.1`). |
-| `src/format.js`, `src/sheet-math.js` | Formatting helpers and sheet totals, with no app state. |
+| `src/format.js`, `src/project-math.js` | Formatting helpers and project totals, with no app state. |
 | `src/dom.js` | `$`, toast, modals, two-tap confirm buttons and number steppers. |
 | `src/barcode.js` | Reading barcodes from photos (the browser's detector, or ZXing, loaded the first time it's needed). |
 | `src/zxing.js` | The parts of ZXing (`@zxing/library`, from npm) the barcode reader uses. |
@@ -72,7 +72,7 @@ npm run check
 
 Microsoft Edge is a system install rather than one of Playwright's own browsers. `npx playwright install msedge` installs it (it asks for admin rights). The Edge tests run whenever Edge is installed, and always in CI.
 
-`npm run dev` serves `src/` with Vite's dev server at http://localhost:5173, against the same in-memory runtime the tests use, with demo sheets, inventory and a receipt, so it can be tried in a browser without signing in. Add `?seed=empty`, `?viewer`, `?nouser`, or `?mock={...}` with any `tests/mock-claude.js` option. Data resets on reload, and the page reloads when a file in `src/` changes.
+`npm run dev` serves `src/` with Vite's dev server at http://localhost:5173, against the same in-memory runtime the tests use, with demo projects, inventory and a receipt, so it can be tried in a browser without signing in. Add `?seed=empty`, `?viewer`, `?nouser`, or `?mock={...}` with any `tests/mock-claude.js` option. Data resets on reload, and the page reloads when a file in `src/` changes.
 
 ### Builds
 

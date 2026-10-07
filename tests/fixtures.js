@@ -3,7 +3,7 @@ export const usedState = {
   seed: {
     "products/SKU1": { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, stock: 10 },
     "products/nb-bins": { code: "", name: "Storage bins, 12 qt", price: 5, stock: 2 },
-    "sheets/s1": {
+    "projects/s1": {
       client: "Echo Studio",
       date: "2026-09-24",
       createdBy: "u_test",

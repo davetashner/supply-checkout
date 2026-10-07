@@ -2,7 +2,7 @@
 // must not break the app or the demo. Each build is served with that header, and a test
 // fails on any violation: the page fixture already fails on the console error a browser
 // logs, and each test also collects securitypolicyviolation events.
-import { test, expect, createSheet, enterBarcode, modal } from "./helpers.js";
+import { test, expect, createProject, enterBarcode, modal } from "./helpers.js";
 import { DEMO, builtFiles } from "../scripts/builds.mjs";
 import { installMockClaude } from "./mock-claude.js";
 import { fakeImage } from "./fixtures.js";
@@ -64,7 +64,7 @@ test("the web app runs under the policy", async ({ page }) => {
   await expect(page.getByText("Connecting…")).toBeHidden();
 
   // A blob: image (the barcode photo), then markup with inline style attributes in a modal
-  await createSheet(page, "Policy Test");
+  await createProject(page, "Policy Test");
   await page.setInputFiles("#scanFile", png);
   // No barcode in the photo, so ZXing was loaded: its own chunk, from the app's origin (script-src 'self')
   await expect(page.locator("#toast")).toContainText("No barcode found");
@@ -88,7 +88,7 @@ test("the web app signs in, loads its data from the API and reports to RUM under
   // The RUM client's Cognito guest credentials and its events, from their AWS hosts
   const rum = new FakeRum();
   await rum.install(page);
-  const backend = new FakeBackend({ config, docs: { "t1/sheets/s1": { client: "Policy Co", date: "2026-09-26", status: "open", items: {} } } });
+  const backend = new FakeBackend({ config, docs: { "t1/projects/s1": { client: "Policy Co", date: "2026-09-26", status: "open", items: {} } } });
   backend.cors = APP;
   await serve(page, APP, builtFiles("web"));
   await page.route(APP + "/config.json", (r) => r.fulfill({ contentType: "application/json", body: JSON.stringify(config) }));
@@ -120,7 +120,7 @@ test("the demo runs under the policy at /demo/, including its barcode reader, CS
   await page.getByRole("button", { name: /Download CSV/ }).click();
   await download;
 
-  await page.getByRole("button", { name: "← All sheets" }).click();
+  await page.getByRole("button", { name: "← All projects" }).click();
   await page.setInputFiles("#receiptFile", fakeImage);
   await expect(page.locator(".rline")).toHaveCount(3);
 

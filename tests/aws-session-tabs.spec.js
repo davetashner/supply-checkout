@@ -10,7 +10,7 @@ const seeded = () => Object.fromEntries(Object.entries(usedState.seed).map(([k, 
 const SAM = { id: "u-sam", email: "sam@example.com", emailVerified: true };
 const account = (page) => page.locator("#account");
 const changedScreen = (page) => account(page).getByRole("heading", { name: "Your account changed" });
-const lists = (backend) => backend.requests("GET", "/teams/t1/sheets").filter((r) => !r.query.cursor).length;
+const lists = (backend) => backend.requests("GET", "/teams/t1/projects").filter((r) => !r.query.cursor).length;
 const bearer = (backend, token) => backend.calls.filter((c) => c.headers.authorization === "Bearer " + token);
 
 // The app in another tab of the same browser: the same localStorage and refresh cookie
@@ -31,12 +31,12 @@ async function openPat(page, backend = new FakeBackend({ docs: seeded() })) {
 test.describe("another tab", { tag: ["@J0"] }, () => {
   test("someone else signing in stops this tab before it writes anything, then reloads it", async ({ page }) => {
     const backend = await openPat(page);
-    // Pat is creating a sheet; the save is on its way when Sam signs in in another tab
-    const release = backend.hold("PUT", /^\/teams\/t1\/sheets\//);
-    await page.getByRole("button", { name: "+ New sheet" }).click();
+    // Pat is creating a project; the save is on its way when Sam signs in in another tab
+    const release = backend.hold("PUT", /^\/teams\/t1\/projects\//);
+    await page.getByRole("button", { name: "+ New project" }).click();
     await page.getByLabel("Client", { exact: true }).fill("Pat's job");
-    await page.getByRole("button", { name: "Create sheet" }).click();
-    await expect.poll(() => backend.requests("PUT", /^\/teams\/t1\/sheets\//).length).toBe(1);
+    await page.getByRole("button", { name: "Create project" }).click();
+    await expect.poll(() => backend.requests("PUT", /^\/teams\/t1\/projects\//).length).toBe(1);
 
     backend.user = SAM;
     const other = await otherTab(page, backend);
@@ -55,7 +55,7 @@ test.describe("another tab", { tag: ["@J0"] }, () => {
     release();
     await expect(page.locator("#toast")).toBeVisible();
     expect(backend.requests("POST", "/auth/refresh")).toHaveLength(refreshes);
-    expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//)).toHaveLength(1);
+    expect(backend.requests("PUT", /^\/teams\/t1\/projects\//)).toHaveLength(1);
     expect(backend.docs.size).toBe(Object.keys(seeded()).length);
     // Nothing after the change went out with Pat's token
     const patCalls = bearer(backend, "at-1").length;
@@ -89,7 +89,7 @@ test.describe("another tab", { tag: ["@J0"] }, () => {
   test("a refresh that answers after another tab signed someone else in is dropped", async ({ page }) => {
     const backend = await openPat(page);
     // A re-list's 401 starts a refresh, whose answer is held
-    backend.on("GET", "/teams/t1/sheets", { status: 401, body: { message: "Unauthorized" } });
+    backend.on("GET", "/teams/t1/projects", { status: 401, body: { message: "Unauthorized" } });
     const release = backend.delay("POST", "/auth/refresh");
     await setVisible(page, true);
     await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBe(2);
@@ -169,7 +169,7 @@ test.describe("another tab", { tag: ["@J0"] }, () => {
 
   test("a receipt save that fails as someone else signs in doesn't write the draft back", async ({ page }) => {
     const line = { id: "l1", name: "Paper towels", raw: "", qty: 2, price: 8, dest: "stock", code: "", match: "SKU1", suggested: false, useName: "inv", usePrice: "receipt" };
-    const draft = { store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines: [line] };
+    const draft = { store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", projectId: "", client: "" }], lines: [line] };
     const backend = new FakeBackend({ docs: seeded() });
     await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.receiptDraft.t1": JSON.stringify(draft) } } });
     await connected(page);
@@ -208,7 +208,7 @@ test.describe("another tab", { tag: ["@J0"] }, () => {
     expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.owner"))).toBe(USER.id);
     await expect(page.locator(".teambar")).toBeVisible();
     // ...until a refresh (after a re-list's 401) answers with Sam's tokens
-    backend.on("GET", "/teams/t1/sheets", { status: 401, body: { message: "Unauthorized" } });
+    backend.on("GET", "/teams/t1/projects", { status: 401, body: { message: "Unauthorized" } });
     const tokens = backend.tokens;
     await setVisible(page, true);
     await expect(changedScreen(page)).toBeVisible();
@@ -281,7 +281,7 @@ test.describe("signing out or deleting the account here", { tag: ["@J0"] }, () =
 test.describe("a receipt draft", { tag: ["@J0"] }, () => {
   test("isn't kept once the owner mark isn't this user's, even before this tab has heard", async ({ page }) => {
     const line = { id: "l1", name: "Paper towels", raw: "", qty: 2, price: 8, dest: "stock", code: "", match: "SKU1", suggested: false, useName: "inv", usePrice: "receipt" };
-    const draft = JSON.stringify({ store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines: [line] });
+    const draft = JSON.stringify({ store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", projectId: "", client: "" }], lines: [line] });
     const backend = new FakeBackend({ docs: seeded() });
     await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.receiptDraft.t1": draft } } });
     await connected(page);
@@ -326,9 +326,9 @@ test.describe("after the session ends", { tag: ["@J0"] }, () => {
     const backend = await openPat(page);
     backend.token = "expired";
     backend.signedIn = false;
-    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByRole("button", { name: "+ New project" }).click();
     await page.getByLabel("Client", { exact: true }).fill("Too late");
-    await page.getByRole("button", { name: "Create sheet" }).click();
+    await page.getByRole("button", { name: "Create project" }).click();
     await expect(page.locator("#toast")).toHaveText("You're signed out, so that wasn't saved. Sign in, then make your change again.");
     await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
     await expect(modal(page).locator(".save-failed")).toHaveCount(0);

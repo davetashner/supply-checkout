@@ -27,7 +27,7 @@ const seedDraft = async (page, draft, opts = {}) => {
     localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify(d));
   }, {
     store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null,
-    savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines: [], ...draft,
+    savePrices: true, by: "", dests: [{ id: "d1", projectId: "", client: "" }], lines: [], ...draft,
   });
   await openApp(page, { ...usedState, ...opts });
   await page.getByRole("button", { name: "Continue review" }).click();
@@ -45,7 +45,7 @@ test("fills in sensible defaults when parts of the receipt can't be read", { tag
   await expect(line(page, 0)).not.toContainText("Receipt:");
   await expect(page.locator("#rSum")).not.toContainText("Receipt subtotal");
   await expect(page.locator("#rSum")).not.toContainText("Tax on receipt");
-  await expect(page.locator("#rBody .sheet-head .meta span")).toHaveCount(1);
+  await expect(page.locator("#rBody .project-head .meta span")).toHaveCount(1);
 });
 
 test("a reply without a list of items asks for a better photo", { tag: ["@J5.1"] }, async ({ page }) => {
@@ -96,7 +96,7 @@ async function seedDraftOnly(page) {
   await page.addInitScript(() => localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify({ dests: [], lines: [] })));
 }
 
-test("splits a trip between two new clients and saves both sheets", { tag: ["@J5.3"] }, async ({ page }) => {
+test("splits a trip between two new clients and saves both projects", { tag: ["@J5.3"] }, async ({ page }) => {
   await scanReceipt(page);
   await expect(line(page, 1).locator('[data-f="dest"] option').first()).toHaveText("Client 1");
   await page.getByRole("button", { name: "+ Add another client" }).click();
@@ -108,10 +108,10 @@ test("splits a trip between two new clients and saves both sheets", { tag: ["@J5
   await expect(page.locator("#rSum")).toContainText("Papa Inc");
 
   await saveBtn(page).click();
-  await expect(toast(page)).toHaveText("Saved to 2 sheets");
+  await expect(toast(page)).toHaveText("Saved to 2 projects");
   await expect(page.getByRole("button", { name: /Oscar Co/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Papa Inc/ })).toBeVisible();
-  const saved = Object.values(await docs(page, "sheets/")).filter((s) => s.source);
+  const saved = Object.values(await docs(page, "projects/")).filter((s) => s.source);
   expect(saved.map((s) => s.source.store)).toEqual(["Hardware Co", "Hardware Co"]);
 });
 
@@ -126,32 +126,32 @@ test("removing a client moves its items to the first client", { tag: ["@J5.3"] }
   await expect(line(page, 0).locator('[data-f="dest"] option:checked')).toHaveText("Client 1");
 });
 
-test("adds receipt items to an existing sheet, merging with what's already there", { tag: ["@J5.3"] }, async ({ page }) => {
+test("adds receipt items to an existing project, merging with what's already there", { tag: ["@J5.3"] }, async ({ page }) => {
   await scanReceipt(page);
   await page.locator("[data-dsel]").selectOption({ label: "Add to Echo Studio (Sep 24, 2026)" });
   await expect(page.locator("[data-dname]")).toHaveCount(0);
-  await expect(line(page, 0).locator('[data-f="dest"] option').first()).toHaveText("Echo Studio (existing sheet)");
+  await expect(line(page, 0).locator('[data-f="dest"] option').first()).toHaveText("Echo Studio (existing project)");
   await saveBtn(page).click();
-  await expect(toast(page)).toHaveText("Saved to 1 sheet");
+  await expect(toast(page)).toHaveText("Saved to 1 project");
   await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
-  // 2 already taken + 4 from the receipt, keeping the sheet's name and price
+  // 2 already taken + 4 from the receipt, keeping the project's name and price
   await expect(lineRow(page, "Storage bins, 12 qt").locator("td").nth(2)).toHaveText("6");
   await expect(lineRow(page, "Storage bins, 12 qt").locator("td").nth(1)).toHaveText("$5.00");
   await expect(lineRow(page, "Painter's tape")).toContainText("$6.25");
   // A line from before costs were kept stays without one; a new line gets the receipt's cost
-  const items = (await docs(page, "sheets/s1"))["sheets/s1"].items;
+  const items = (await docs(page, "projects/s1"))["projects/s1"].items;
   expect(items["nb-bins"]).not.toHaveProperty("cost");
   expect(Object.values(items).find((it) => it.name.startsWith("Painter")).cost).toBe(6.25);
 });
 
-test("a sheet deleted during the review is reported on save", { tag: ["@J5.3"] }, async ({ page }) => {
+test("a project deleted during the review is reported on save", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
-    dests: [{ id: "d1", sheetId: "gone", client: "" }],
+    dests: [{ id: "d1", projectId: "gone", client: "" }],
     lines: [draftLine({ name: "Mop", qty: 1, price: 2 })],
   });
-  await expect(line(page, 0).locator('[data-f="dest"] option').first()).toHaveText("Missing sheet");
+  await expect(line(page, 0).locator('[data-f="dest"] option').first()).toHaveText("Missing project");
   await saveBtn(page).click();
-  await expect(toast(page)).toHaveText("One of the chosen sheets was deleted. Pick another and save again.");
+  await expect(toast(page)).toHaveText("One of the chosen projects was deleted. Pick another and save again.");
   await expect(saveBtn(page)).toBeEnabled();
 });
 
@@ -301,22 +301,22 @@ test("save checks for items, client names, a date and who prepared it", { tag: [
 
   await line(page, 1).locator('[data-f="qty"]').fill("2");
   await saveBtn(page).click();
-  await expect(toast(page)).toHaveText("Enter a client name for each new sheet.");
+  await expect(toast(page)).toHaveText("Enter a client name for each new project.");
   await expect(page.getByLabel("Client name")).toBeFocused();
 
   await page.getByLabel("Client name").fill("Victor Co");
   await page.locator("#rDate").fill("");
   await saveBtn(page).click();
-  await expect(toast(page)).toHaveText("Choose a date for the new sheets.");
+  await expect(toast(page)).toHaveText("Choose a date for the new projects.");
 
   await page.locator("#rDate").fill("2026-09-22");
   await saveBtn(page).click();
-  await expect(toast(page)).toHaveText("Enter who prepared these sheets.");
+  await expect(toast(page)).toHaveText("Enter who prepared these projects.");
   await expect(page.getByLabel("Prepared by")).toBeFocused();
 
   await page.getByLabel("Prepared by").fill("Robin");
   await saveBtn(page).click();
-  await expect(page.locator("#sheetHead")).toContainText("Prepared by Robin");
+  await expect(page.locator("#projectHead")).toContainText("Prepared by Robin");
 });
 
 test("says there's nothing to save when no item is assigned anywhere", { tag: ["@J5.3"] }, async ({ page }) => {
@@ -348,7 +348,7 @@ test("client items can be kept out of inventory", { tag: ["@J5.3"] }, async ({ p
 
 test("reuses inventory items by barcode or name, and doesn't duplicate new ones", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
-    dests: [{ id: "d1", sheetId: "", client: "X-ray Co" }],
+    dests: [{ id: "d1", projectId: "", client: "X-ray Co" }],
     lines: [
       draftLine({ name: "Towels", code: "SKU1", qty: 1, price: 9 }),
       draftLine({ name: "storage bins, 12 qt", qty: 1, price: 5 }),
@@ -357,7 +357,7 @@ test("reuses inventory items by barcode or name, and doesn't duplicate new ones"
     ],
   });
   await saveBtn(page).click();
-  await expect(toast(page)).toHaveText("Saved to 1 sheet · 3 added to storage");
+  await expect(toast(page)).toHaveText("Saved to 1 project · 3 added to storage");
   const products = await docs(page, "products/");
   expect(Object.keys(products)).toHaveLength(3);
   expect(products["products/SKU1"].price).toBe(9);
@@ -369,7 +369,7 @@ test("barcodes and names that are built-in object keys save as ordinary items", 
   // A product saved as "__proto__" by an older version stays out of the way
   const seed = { ...usedState.seed, "products/__proto__": { code: "__proto__", name: "Old proto item", price: 1 } };
   await seedDraft(page, {
-    dests: [{ id: "d1", sheetId: "", client: "Built-ins Co" }, { id: "d2", sheetId: "s1", client: "" }],
+    dests: [{ id: "d1", projectId: "", client: "Built-ins Co" }, { id: "d2", projectId: "s1", client: "" }],
     lines: [
       draftLine({ name: "Widget A", code: "constructor", qty: 2, price: 1 }),
       draftLine({ name: "Widget B", code: "toString", qty: 1, price: 2 }),
@@ -380,7 +380,7 @@ test("barcodes and names that are built-in object keys save as ordinary items", 
     ],
   }, { seed });
   await saveBtn(page).click();
-  await expect(toast(page)).toHaveText("Saved to 2 sheets · 5 added to storage");
+  await expect(toast(page)).toHaveText("Saved to 2 projects · 5 added to storage");
 
   const products = await docs(page, "products/");
   expect(products["products/constructor"]).toMatchObject({ code: "constructor", name: "Widget A", price: 1 });
@@ -392,16 +392,16 @@ test("barcodes and names that are built-in object keys save as ordinary items", 
   const named = Object.entries(products).find(([, p]) => p.name === "constructor");
   expect(named[0]).toMatch(/^products\/nb-/);
 
-  const sheets = await docs(page, "sheets/");
-  const [, fresh] = Object.entries(sheets).find(([, s]) => s.client === "Built-ins Co");
+  const projects = await docs(page, "projects/");
+  const [, fresh] = Object.entries(projects).find(([, s]) => s.client === "Built-ins Co");
   expect(Object.fromEntries(Object.entries(fresh.items).map(([k, it]) => [k.startsWith("nb-") ? "nb" : k, [it.code, it.name, it.out]]))).toEqual({
     constructor: ["constructor", "Widget A", 2],
     toString: ["toString", "Widget B", 1],
     x__proto__: ["__proto__", "Widget C", 3],
     nb: ["", "constructor", 1],
   });
-  expect(sheets["sheets/s1"].items.constructor).toMatchObject({ code: "constructor", name: "Widget A", out: 1, returned: 0 });
-  expect(Object.keys(sheets["sheets/s1"].items)).toEqual(["SKU1", "nb-bins", "constructor"]);
+  expect(projects["projects/s1"].items.constructor).toMatchObject({ code: "constructor", name: "Widget A", out: 1, returned: 0 });
+  expect(Object.keys(projects["projects/s1"].items)).toEqual(["SKU1", "nb-bins", "constructor"]);
 
   // No built-in object was changed
   expect(await page.evaluate(() => [Object.prototype.out, Object.out, Object.prototype.toString.out, Object.prototype.hasOwnProperty.out, Function.prototype.out, Object.getPrototypeOf({}) === Object.prototype])).toEqual([undefined, undefined, undefined, undefined, undefined, true]);
@@ -424,12 +424,12 @@ test("a failed inventory write stops the save so it can be retried", { tag: ["@J
   await expect(page.locator(".rline")).toHaveCount(2);
 });
 
-test("if one sheet fails to save, only its items stay in the review", { tag: ["@J5.3"] }, async ({ page }) => {
-  await scanReceipt(page, { writeErrorFor: { prefix: "sheets/s1", code: "unavailable" } });
+test("if one project fails to save, only its items stay in the review", { tag: ["@J5.3"] }, async ({ page }) => {
+  await scanReceipt(page, { writeErrorFor: { prefix: "projects/s1", code: "unavailable" } });
   await page.getByLabel("Client name").fill("Zulu Co");
   await page.getByRole("button", { name: "+ Add another client" }).click();
   await page.locator("[data-dsel]").nth(1).selectOption({ label: "Add to Echo Studio (Sep 24, 2026)" });
-  await line(page, 1).locator('[data-f="dest"]').selectOption({ label: "Echo Studio (existing sheet)" });
+  await line(page, 1).locator('[data-f="dest"]').selectOption({ label: "Echo Studio (existing project)" });
   await saveBtn(page).click();
   await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
   await expect(page.locator(".rline")).toHaveCount(1);
@@ -438,24 +438,24 @@ test("if one sheet fails to save, only its items stay in the review", { tag: ["@
 });
 
 // Saving again after a save whose answer was lost adds each line once (src/moves.js addLines)
-test("a receipt saved to an existing sheet again after a lost answer adds each line once", { tag: ["@J5.3"] }, async ({ page }) => {
+test("a receipt saved to an existing project again after a lost answer adds each line once", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
     savePrices: false,
-    dests: [{ id: "d1", sheetId: "s1", client: "" }],
+    dests: [{ id: "d1", projectId: "s1", client: "" }],
     lines: [draftLine({ name: "Paper towels", match: "SKU1", qty: 2, price: 8.5 }), draftLine({ name: "Mop heads", qty: 1, price: 4 })],
   });
-  // The sheet saves, but the answer never comes back
-  await mock(page, () => { window.__mock.loseWrites = "sheets/"; });
+  // The project saves, but the answer never comes back
+  await mock(page, () => { window.__mock.loseWrites = "projects/"; });
   await saveBtn(page).click();
   await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
   await expect(page.locator(".rline")).toHaveCount(2);
-  const lost = (await docs(page, "sheets/s1"))["sheets/s1"];
+  const lost = (await docs(page, "projects/s1"))["projects/s1"];
   expect(lost.items.SKU1.out).toBe(5);
   await mock(page, () => { window.__mock.loseWrites = null; });
   await hideToast(page);
   await tryAgain(page).click();
-  await expect(toast(page)).toHaveText("Saved to 1 sheet");
-  const s1 = (await docs(page, "sheets/s1"))["sheets/s1"];
+  await expect(toast(page)).toHaveText("Saved to 1 project");
+  const s1 = (await docs(page, "projects/s1"))["projects/s1"];
   // Found this receipt's mark from the lost attempt: nothing added twice
   expect(s1).toEqual(lost);
   const mark = s1.items.SKU1.ops.at(-1);
@@ -463,15 +463,15 @@ test("a receipt saved to an existing sheet again after a lost answer adds each l
   expect(s1.savedReceipts).toBeUndefined();
 });
 
-test("a new sheet from a receipt is saved once, however many tries it takes", { tag: ["@J5.3"] }, async ({ page }) => {
-  await seedDraft(page, { savePrices: false, dests: [{ id: "d1", sheetId: "", client: "Kilo Co" }], lines: [draftLine({ name: "Mop heads", qty: 1, price: 4 })] });
-  const kilos = async () => Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Kilo Co");
+test("a new project from a receipt is saved once, however many tries it takes", { tag: ["@J5.3"] }, async ({ page }) => {
+  await seedDraft(page, { savePrices: false, dests: [{ id: "d1", projectId: "", client: "Kilo Co" }], lines: [draftLine({ name: "Mop heads", qty: 1, price: 4 })] });
+  const kilos = async () => Object.values(await docs(page, "projects/")).filter((s) => s.client === "Kilo Co");
   // Not saved at all, then saved with the answer lost, then found already saved
   await mock(page, () => { window.__mock.failWrites = "unavailable"; });
   await saveBtn(page).click();
   await expect(tryAgain(page)).toBeEnabled();
   expect(await kilos()).toEqual([]);
-  await mock(page, () => { window.__mock.failWrites = null; window.__mock.loseWrites = "sheets/"; });
+  await mock(page, () => { window.__mock.failWrites = null; window.__mock.loseWrites = "projects/"; });
   await hideToast(page);
   await tryAgain(page).click();
   await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
@@ -479,17 +479,17 @@ test("a new sheet from a receipt is saved once, however many tries it takes", { 
   await mock(page, () => { window.__mock.loseWrites = null; });
   await hideToast(page);
   await tryAgain(page).click();
-  await expect(toast(page)).toHaveText("Saved to 1 sheet");
+  await expect(toast(page)).toHaveText("Saved to 1 project");
   await expect(page.getByRole("heading", { name: "Kilo Co" })).toBeVisible();
   expect(await kilos()).toHaveLength(1);
 });
 
-test("a sheet deleted just before a receipt is saved to it says so, and keeps the receipt", { tag: ["@J5.3"] }, async ({ page }) => {
-  await seedDraft(page, { savePrices: false, dests: [{ id: "d1", sheetId: "s1", client: "" }], lines: [draftLine({ name: "Mop heads", qty: 1, price: 4 })] });
+test("a project deleted just before a receipt is saved to it says so, and keeps the receipt", { tag: ["@J5.3"] }, async ({ page }) => {
+  await seedDraft(page, { savePrices: false, dests: [{ id: "d1", projectId: "s1", client: "" }], lines: [draftLine({ name: "Mop heads", qty: 1, price: 4 })] });
   // Someone deletes it, and this page hasn't heard yet
-  await mock(page, () => window.__mock.docs.delete("sheets/s1"));
+  await mock(page, () => window.__mock.docs.delete("projects/s1"));
   await saveBtn(page).click();
-  await expect(toast(page)).toHaveText("Someone else deleted this sheet, so your change wasn't saved.");
+  await expect(toast(page)).toHaveText("Someone else deleted this project, so your change wasn't saved.");
   await expect(saveBtn(page)).toBeEnabled();
   await expect(page.locator(".rline")).toHaveCount(1);
   // Refused, so nothing was saved: the review can be changed again
@@ -546,32 +546,32 @@ test("general-inventory lines saved again after a lost answer add to storage onc
   expect(Object.values(products).find((p) => p.name === "Sponges")).toMatchObject({ stock: 4 });
 });
 
-test("a sheet deleted after a lost answer unlocks the review, keeping only what wasn't saved", { tag: ["@J5.3"] }, async ({ page }) => {
+test("a project deleted after a lost answer unlocks the review, keeping only what wasn't saved", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
     savePrices: false,
-    dests: [{ id: "d1", sheetId: "", client: "Lima Co" }, { id: "d2", sheetId: "s1", client: "" }],
+    dests: [{ id: "d1", projectId: "", client: "Lima Co" }, { id: "d2", projectId: "s1", client: "" }],
     lines: [draftLine({ name: "Mop heads", qty: 1, price: 4, dest: "d1" }), draftLine({ name: "Paper towels", match: "SKU1", qty: 2, price: 8.5, dest: "d2" })],
   });
-  await mock(page, () => { window.__mock.loseWrites = "sheets/"; });
+  await mock(page, () => { window.__mock.loseWrites = "projects/"; });
   await saveBtn(page).click();
   await expect(tryAgain(page)).toBeEnabled();
   await expect(locked(page)).toBeVisible();
   // Someone deletes Echo Studio, and this page hears of it
-  await mock(page, () => { window.__mock.loseWrites = null; window.__mock.docs.delete("sheets/s1"); window.__mock.notify(); });
+  await mock(page, () => { window.__mock.loseWrites = null; window.__mock.docs.delete("projects/s1"); window.__mock.notify(); });
   await hideToast(page);
   await tryAgain(page).click();
-  await expect(toast(page)).toHaveText("One of the chosen sheets was deleted. Pick another and save again.");
-  // Lima Co's sheet is saved (once) and out of the review; Echo Studio's line can go elsewhere
+  await expect(toast(page)).toHaveText("One of the chosen projects was deleted. Pick another and save again.");
+  // Lima Co's project is saved (once) and out of the review; Echo Studio's line can go elsewhere
   await expect(page.locator(".rline")).toHaveCount(1);
   await expect(line(page, 0)).toContainText("Paper towels");
   await expect(locked(page)).toHaveCount(0);
   await expect(saveBtn(page)).toBeEnabled();
-  expect(Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Lima Co")).toHaveLength(1);
+  expect(Object.values(await docs(page, "projects/")).filter((s) => s.client === "Lima Co")).toHaveLength(1);
   await page.locator("[data-dsel]").nth(1).selectOption("");
   await page.locator("[data-dname]").nth(1).fill("Mike Co");
   await saveBtn(page).click();
   await expect(page.getByRole("heading", { name: "Mike Co" })).toBeVisible();
-  expect(Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Lima Co")).toHaveLength(1);
+  expect(Object.values(await docs(page, "projects/")).filter((s) => s.client === "Lima Co")).toHaveLength(1);
 });
 
 // ADR 0014: cost and client price, and packs converted to eaches (J5)
@@ -580,7 +580,7 @@ const gloves = { code: "GL", name: "Gloves, box", price: 2, cost: 1, packSize: 1
 test("keeps the client price by default when the item is marked up, and saves the receipt price as its cost", { tag: ["@J5.2"] }, async ({ page }) => {
   const seed = { ...usedState.seed, "products/nb-bins": { code: "", name: "Storage bins, 12 qt", price: 5, cost: 4, packSize: 1, stock: 2 }, "products/SKU1": { ...usedState.seed["products/SKU1"], cost: 9 } };
   await seedDraft(page, {
-    dests: [{ id: "d1", sheetId: "", client: "Markup Co" }],
+    dests: [{ id: "d1", projectId: "", client: "Markup Co" }],
     lines: [draftLine({ name: "Bins", match: "nb-bins", qty: 2, price: 4.5, usePrice: "" }), draftLine({ name: "Towels", match: "SKU1", qty: 1, price: 9.5, usePrice: "" })],
   }, { seed });
   // A cost below the price is a markup, so it's kept
@@ -596,9 +596,9 @@ test("keeps the client price by default when the item is marked up, and saves th
   const products = await docs(page, "products/");
   expect(products["products/nb-bins"]).toMatchObject({ price: 5, cost: 4.5, stock: 2 });
   expect(products["products/SKU1"]).toMatchObject({ price: 9.5, cost: 9.5 });
-  const [sheet] = Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Markup Co");
-  expect(sheet.items["nb-bins"]).toMatchObject({ price: 5, cost: 4.5, out: 2 });
-  expect(sheet.items.SKU1).toMatchObject({ price: 9.5, cost: 9.5, out: 1 });
+  const [project] = Object.values(await docs(page, "projects/")).filter((s) => s.client === "Markup Co");
+  expect(project.items["nb-bins"]).toMatchObject({ price: 5, cost: 4.5, out: 2 });
+  expect(project.items.SKU1).toMatchObject({ price: 9.5, cost: 9.5, out: 1 });
 });
 
 test("a case on a receipt goes into storage as eaches, at the case price divided by its pack size", { tag: ["@J5.3"] }, async ({ page }) => {
@@ -627,7 +627,7 @@ test("a case on a receipt goes into storage as eaches, at the case price divided
 
 test("a pack item priced per each isn't converted", { tag: ["@J5.2"] }, async ({ page }) => {
   await seedDraft(page, {
-    dests: [{ id: "d1", sheetId: "", client: "Singles Co" }],
+    dests: [{ id: "d1", projectId: "", client: "Singles Co" }],
     lines: [draftLine({ name: "Gloves", match: "GL", qty: 3, price: 1.5, usePrice: "" })],
   }, { seed: { ...usedState.seed, "products/GL": gloves } });
   await line(page, 0).getByLabel("Priced per each").check();
@@ -640,22 +640,22 @@ test("a pack item priced per each isn't converted", { tag: ["@J5.2"] }, async ({
   await expect(line(page, 0).locator("[data-total]")).toHaveText("$4.50");
   await saveBtn(page).click();
   await expect(page.getByRole("heading", { name: "Singles Co" })).toBeVisible();
-  const [sheet] = Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Singles Co");
-  expect(sheet.items.GL).toMatchObject({ code: "GL", price: 1.5, cost: 1.5, out: 3, returned: 0 });
+  const [project] = Object.values(await docs(page, "projects/")).filter((s) => s.client === "Singles Co");
+  expect(project.items.GL).toMatchObject({ code: "GL", price: 1.5, cost: 1.5, out: 3, returned: 0 });
   expect((await docs(page, "products/"))["products/GL"]).toMatchObject({ price: 1.5, cost: 1.5, stock: 5 });
 });
 
-test("cases added to an existing sheet line add eaches and keep the line's price and cost", { tag: ["@J5.3"] }, async ({ page }) => {
-  const s1 = usedState.seed["sheets/s1"];
-  const seed = { ...usedState.seed, "products/GL": gloves, "sheets/s1": { ...s1, items: { ...s1.items, GL: { code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 4, returned: 1 } } } };
+test("cases added to an existing project line add eaches and keep the line's price and cost", { tag: ["@J5.3"] }, async ({ page }) => {
+  const s1 = usedState.seed["projects/s1"];
+  const seed = { ...usedState.seed, "products/GL": gloves, "projects/s1": { ...s1, items: { ...s1.items, GL: { code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 4, returned: 1 } } } };
   await seedDraft(page, {
-    dests: [{ id: "d1", sheetId: "s1", client: "" }],
+    dests: [{ id: "d1", projectId: "s1", client: "" }],
     lines: [draftLine({ name: "Gloves", match: "GL", qty: 1, price: 18 })],
   }, { seed });
   await saveBtn(page).click();
-  await expect(toast(page)).toHaveText("Saved to 1 sheet");
-  const sheets = await docs(page, "sheets/");
-  expect(sheets["sheets/s1"].items.GL).toEqual({ code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 16, returned: 1, ops: [expect.any(String)] });
+  await expect(toast(page)).toHaveText("Saved to 1 project");
+  const projects = await docs(page, "projects/");
+  expect(projects["projects/s1"].items.GL).toEqual({ code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 16, returned: 1, ops: [expect.any(String)] });
 });
 
 // Receipt photos are shrunk before they're read (src/photo.js). Test photos are drawn in the
@@ -779,7 +779,7 @@ test("a file the browser can't decode is sent as it is", { tag: ["@J5.1"] }, asy
 // other price fields, and the receipt isn't saved until it's fixed
 test("a receipt line price over the limit says so, and the receipt isn't saved until it's fixed", { tag: ["@J5.2"] }, async ({ page }) => {
   await seedDraft(page, {
-    dests: [{ id: "d1", sheetId: "", client: "Limit Co" }],
+    dests: [{ id: "d1", projectId: "", client: "Limit Co" }],
     lines: [draftLine({ name: "Chandelier", qty: 1, price: 1000000.01 })],
   });
   const price = line(page, 0).getByLabel("Each ($)");
@@ -801,6 +801,6 @@ test("a receipt line price over the limit says so, and the receipt isn't saved u
   expect(await message()).toBe("");
   await saveBtn(page).click();
   await expect(page.getByRole("heading", { name: "Limit Co" })).toBeVisible();
-  const [sheet] = Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Limit Co");
-  expect(Object.values(sheet.items)[0]).toMatchObject({ name: "Chandelier", price: 1000000, cost: 1000000, out: 1 });
+  const [project] = Object.values(await docs(page, "projects/")).filter((s) => s.client === "Limit Co");
+  expect(Object.values(project.items)[0]).toMatchObject({ name: "Chandelier", price: 1000000, cost: 1000000, out: 1 });
 });

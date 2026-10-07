@@ -26,7 +26,7 @@ test("an owner sees why the team is read-only, and subscribes again through Stri
   await expect(bar(page).locator(".closed-note")).toHaveText("This team's subscription has ended, so it's read-only. Nothing has been deleted: everyone can still see it, and you can export it. Subscribe to make changes again.");
   await expect(page.locator("#notice")).toHaveText("This team's subscription ended, so nothing in it can be changed until an owner subscribes.");
   await expect(bar(page).getByRole("button", { name: "Import CSV" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "+ New sheet" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "+ New project" })).toHaveCount(0);
   await expect(page.locator("#firstRun")).toHaveCount(0);
   const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   expect(violations.map((v) => v.id)).toEqual([]);
@@ -76,10 +76,10 @@ test("a closed team whose subscription also ended shows only the closure", { tag
 
 test("a write refused because the subscription ended meanwhile switches the app to view-only", { tag: ["@J7"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend());
-  backend.on("PUT", /^\/teams\/t1\/sheets\//, error(403, "permission_denied", { reason: "subscription_ended" }));
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  backend.on("PUT", /^\/teams\/t1\/projects\//, error(403, "permission_denied", { reason: "subscription_ended" }));
+  await page.getByRole("button", { name: "+ New project" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Delta");
-  await page.getByRole("button", { name: "Create sheet" }).click();
+  await page.getByRole("button", { name: "Create project" }).click();
   const ended = "This team's subscription ended, so nothing in it can be changed now. An owner can subscribe again from the team bar.";
   await expect(page.locator("#toast")).toHaveText(ended);
   await expect(page.locator("#notice")).toHaveText(ended);
@@ -130,7 +130,7 @@ test("an owner whose subscription was canceled sees when it ends, and can renew 
   await expect(bar(page).locator("#cancelNote")).toHaveText("This team's subscription was canceled. Everything works until October 27, 2026; then the team becomes read-only. To keep it, renew it from Billing.");
   await expect(bar(page).getByRole("button", { name: "Billing" })).toBeVisible();
   // Still paid up: everything works
-  await expect(page.getByRole("button", { name: "+ New sheet" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "+ New project" })).toBeVisible();
 });
 
 test("a contributor sees a cancellation too, with no Billing", { tag: ["@J10"] }, async ({ page }) => {

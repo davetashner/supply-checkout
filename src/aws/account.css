@@ -61,7 +61,7 @@
 .verify-form{display:grid;gap:10px}
 .verify-form input{background:var(--ground);border:1px solid var(--line);border-radius:9px;padding:9px 12px;width:100%;max-width:12em;font-family:var(--mono);font-size:20px;letter-spacing:.2em}
 .verify-done{font-weight:600}
-/* The first-run checklist for an owner's new team (src/first-run.js), above the sheets and inventory */
+/* The first-run checklist for an owner's new team (src/first-run.js), above the projects and inventory */
 .first-run{display:grid;gap:10px;background:var(--surface);border:1px solid var(--accent);border-radius:14px;padding:16px 18px;margin-block:0 14px;overflow-wrap:anywhere}
 .first-run[hidden]{display:none}
 .first-run p{margin:0}

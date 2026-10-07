@@ -235,10 +235,10 @@ test.describe("a closed team", { tag: ["@J11"] }, () => {
     const MEANWHILE = "An owner closed this team, so nothing in it can be changed now. Reload the page to see when it will be deleted.";
     // A write the API refuses because the team is closed now
     async function refusedWrite(page, backend) {
-      backend.on("PUT", /^\/teams\/t1\/sheets\//, error(403, "permission_denied", { reason: "team_closed" }));
-      await page.getByRole("button", { name: "+ New sheet" }).click();
+      backend.on("PUT", /^\/teams\/t1\/projects\//, error(403, "permission_denied", { reason: "team_closed" }));
+      await page.getByRole("button", { name: "+ New project" }).click();
       await page.getByLabel("Client", { exact: true }).fill("Delta");
-      await page.getByRole("button", { name: "Create sheet" }).click();
+      await page.getByRole("button", { name: "Create project" }).click();
     }
 
     test("a refused write reloads /me and shows the team bar as a closed team's, without a page reload", async ({ page }) => {
@@ -258,7 +258,7 @@ test.describe("a closed team", { tag: ["@J11"] }, () => {
       await expect.poll(() => backend.requests("GET", "/me").length).toBe(before + 1);
       expect(backend.pageLoads).toBe(1);
       await expect(page.getByRole("heading", { name: /no longer in/ })).toHaveCount(0);
-      // The members screen is a closed team's now too (once the refused sheet's form is closed)
+      // The members screen is a closed team's now too (once the refused project's form is closed)
       await page.keyboard.press("Escape");
       await expect(page.locator("#overlay")).toBeHidden();
       await bar(page).getByRole("button", { name: "Members" }).click();

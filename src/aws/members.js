@@ -25,7 +25,7 @@ import { armButton, openModal, closeModal, toast } from "../dom.js";
 
 const ROLES = [
   ["owner", "Owner", "Everything, including members and billing"],
-  ["contributor", "Contributor", "Scans, and edits sheets and inventory"],
+  ["contributor", "Contributor", "Scans, and edits projects and inventory"],
   ["viewer", "Viewer", "Sees everything, changes nothing"],
 ];
 const AS = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };

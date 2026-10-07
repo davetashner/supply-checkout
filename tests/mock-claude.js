@@ -26,8 +26,8 @@ export function installMockClaude(opts) {
   window.__mock = mock;
 
   const denied = () => ({ code: "invalid_argument", message: "write not allowed" });
-  // A path prefix matches whole segments: "sheets/s1" is that sheet (and anything under it),
-  // never "sheets/s1x9..." (a new sheet's random ID can start with "s1"). "sheets/" or ""
+  // A path prefix matches whole segments: "projects/s1" is that project (and anything under it),
+  // never "projects/s1x9..." (a new project's random ID can start with "s1"). "projects/" or ""
   // matches everything under it.
   const under = (path, prefix) => path.startsWith(prefix) && (!prefix || prefix.endsWith("/") || path.length === prefix.length || path[prefix.length] === "/");
   const guard = (path) => {
@@ -51,7 +51,7 @@ export function installMockClaude(opts) {
   mock.hold = (prefix = "") => { let release; held = { wait: new Promise((r) => { release = r; }), release, prefix }; };
   mock.release = () => { const h = held; held = null; if (h) h.release(); };
   const arrive = async (path) => { mock.writes++; if (held && under(path, held.prefix)) await held.wait; };
-  // Set by a test to a path prefix ("sheets/"): writes there are saved, but then reject as if
+  // Set by a test to a path prefix ("projects/"): writes there are saved, but then reject as if
   // the answer was lost on the way back
   const lost = (path) => { if (mock.loseWrites !== null && under(path, mock.loseWrites)) throw { code: "unavailable", message: "simulated lost answer" }; };
   const merge = (target, src) => {

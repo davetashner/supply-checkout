@@ -23,7 +23,7 @@ The Service is for businesses in the United States. We store and process data in
 
 ## 1. Who is responsible for what
 
-- **Your team's data.** Everything a team puts into the Service (inventory, sheets, client names, prices, receipt results) belongs to the team (Terms, section 8). We handle it on the team's behalf and only to provide the Service. If you are a client of one of our customers, or a member of a team, and you have a question about data a team holds about you, please contact that business first. We will help them answer.
+- **Your team's data.** Everything a team puts into the Service (inventory, projects, client names, prices, receipt results) belongs to the team (Terms, section 8). We handle it on the team's behalf and only to provide the Service. If you are a client of one of our customers, or a member of a team, and you have a question about data a team holds about you, please contact that business first. We will help them answer.
 - **Account and billing data.** We are responsible for the data we collect to run accounts, bill customers, secure the Service and keep records the law requires.
 
 ## 2. What we collect
@@ -34,7 +34,7 @@ The Service is for businesses in the United States. We store and process data in
 | --- | --- | --- |
 | Account details | Email address, first and last name, sign-in method (email code, password, passkey, or Google or Apple sign-in), whether two-step sign-in is on | You, at sign-up and in Account settings. If you sign in with Google or Apple, they send us your email address, whether it is verified, and your name. |
 | Team details | Team name, members and their roles, invitations (the invited email address and role) | Owners |
-| Your team's data | Inventory items (names, barcodes, prices, costs, stock counts, pack sizes), checkout sheets, client or job names, dates, notes, stock history, CSV files you import | Owners and members |
+| Your team's data | Inventory items (names, barcodes, prices, costs, stock counts, pack sizes), checkout projects, client or job names, dates, notes, stock history, CSV files you import | Owners and members |
 | Receipts | Receipt photos you scan, and the lines, prices and totals read from them | Members who scan receipts |
 | Billing details | Billing contact name, email and address, tax ID, the plan and seats, invoices and payment status | Owners, entered on Stripe's pages. **We never see or store your full card number.** |
 | Messages to us | Support emails and what you tell us in them | You |
@@ -101,7 +101,7 @@ A current list of the service providers that handle customer data is at [SUBPROC
 ## 6. Support access
 
 - Our support staff sign in with a separate, protected account that requires two-step sign-in.
-- They can see a team's name, plan, seat count, subscription status and owners' email addresses, so they can help with accounts and billing. **They can't see your team's inventory, sheets, receipts or invitations.**
+- They can see a team's name, plan, seat count, subscription status and owners' email addresses, so they can help with accounts and billing. **They can't see your team's inventory, projects, receipts or invitations.**
 - Every action support takes on a team is recorded, and the team's owners can see those records under **Members → Support activity**.
 
 ## 7. How long we keep it
@@ -124,7 +124,7 @@ A current list of the service providers that handle customer data is at [SUBPROC
 | Billing records at Stripe | When a team's data is deleted, we delete its Stripe customer. Stripe keeps payment and invoice records it must keep by law, under its own privacy policy. [We keep our own tax and accounting records for [7] years.] |
 | Support emails | [PERIOD] |
 
-When you delete your account, what you added to a team (items, sheets, receipts) stays with the team, because it belongs to the team. If you were the only member of a team, deleting your account closes that team, and it's deleted 30 days later. If you are the only owner of a team that has other members, make someone else an owner first.
+When you delete your account, what you added to a team (items, projects, receipts) stays with the team, because it belongs to the team. If you were the only member of a team, deleting your account closes that team, and it's deleted 30 days later. If you are the only owner of a team that has other members, make someone else an owner first.
 
 ## 8. Cookies and storage on your device
 

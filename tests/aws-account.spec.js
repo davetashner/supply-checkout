@@ -15,7 +15,7 @@ const alert = (page) => page.locator("#accountError");
 // can meet the change first: an expired token refreshed before the write under test, or a
 // removal shown before the tab comes back.
 const relisted = (backend, team = "t1") =>
-  expect.poll(() => ["products", "sheets"].map((c) => backend.requests("GET", `/teams/${team}/${c}`).length)).toEqual([2, 2]);
+  expect.poll(() => ["products", "projects"].map((c) => backend.requests("GET", `/teams/${team}/${c}`).length)).toEqual([2, 2]);
 
 async function expectAccessible(page) {
   const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
@@ -39,7 +39,7 @@ test.describe("config", () => {
 
 test.describe("sign-in", { tag: ["@J0"] }, () => {
   test("resumes the session and opens the team", { tag: ["@J0.1"] }, async ({ page }) => {
-    const backend = new FakeBackend({ docs: { ...seeded(), "t1/sheets/mine": { client: "Mine", date: "2026-09-25", createdBy: USER.id, status: "open", items: {} } } });
+    const backend = new FakeBackend({ docs: { ...seeded(), "t1/projects/mine": { client: "Mine", date: "2026-09-25", createdBy: USER.id, status: "open", items: {} } } });
     await openAws(page, backend);
     await connected(page);
     await expect(page.getByRole("button", { name: /Echo Studio/ })).toContainText("Someone");
@@ -68,7 +68,7 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
     const backend = new FakeBackend({ signedIn: false });
     await openAws(page, backend);
     await expect(account(page).getByRole("heading", { name: "Sign in" })).toBeVisible();
-    await expect(account(page)).toContainText("Sign in to see your team's sheets and inventory.");
+    await expect(account(page)).toContainText("Sign in to see your team's projects and inventory.");
     await expect(alert(page)).toBeHidden();
     await expect(page.locator("#main")).toBeHidden();
     await expectAccessible(page);
@@ -215,11 +215,11 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
 
     // Later, a write with an expired token
     backend.token = "expired";
-    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByRole("button", { name: "+ New project" }).click();
     await page.getByLabel("Client", { exact: true }).fill("Refreshed");
-    await page.getByRole("button", { name: "Create sheet" }).click();
+    await page.getByRole("button", { name: "Create project" }).click();
     await expect(page.getByRole("heading", { name: "Refreshed" })).toBeVisible();
-    const puts = backend.requests("PUT", /^\/teams\/t1\/sheets\//);
+    const puts = backend.requests("PUT", /^\/teams\/t1\/projects\//);
     expect(puts.map((c) => c.headers.authorization)).toEqual(["Bearer at-2", "Bearer at-3"]);
     // Live updates reconnect with the new token
     await expect.poll(async () => (await lastSocket(page)).token).toBe("at-3");
@@ -234,9 +234,9 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
     await relisted(backend);
     backend.token = "expired";
     backend.signedIn = false;
-    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByRole("button", { name: "+ New project" }).click();
     await page.getByLabel("Client", { exact: true }).fill("Too late");
-    await page.getByRole("button", { name: "Create sheet" }).click();
+    await page.getByRole("button", { name: "Create project" }).click();
     await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
     await expect(page.locator("#main")).toBeHidden();
   });
@@ -297,9 +297,9 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
     expect(await sockets(page)).toHaveLength(socketCount);
     expect(backend.calls.slice(calls).map((c) => `${c.method} ${c.path}`)).toEqual([]);
     // A save now is refused without reaching the API
-    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByRole("button", { name: "+ New project" }).click();
     await page.getByLabel("Client", { exact: true }).fill("After sign-out");
-    await page.getByRole("button", { name: "Create sheet" }).click();
+    await page.getByRole("button", { name: "Create project" }).click();
     await page.clock.runFor(5e3);
     expect(backend.calls.slice(calls).map((c) => `${c.method} ${c.path}`)).toEqual([]);
 
@@ -351,7 +351,7 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
     await expect.poll(() => backend.authRequests).toEqual([`${AUTH}/logout?client_id=test-client&logout_uri=${encodeURIComponent(ORIGIN + "/")}`]);
     expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(2);
     // The chosen team and every receipt draft are forgotten too, so the next person to sign
-    // in here doesn't open the team or see the drafts' items, prices and sheets
+    // in here doesn't open the team or see the drafts' items, prices and projects
     expect(await saved()).toEqual([null, null, ...keys.map(() => null)]);
     // Not the theme, which isn't anyone's data
     expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.theme"))).toBe("dark");
@@ -369,8 +369,8 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
     await expect(signOut).toBeDisabled();
     await expect.poll(() => backend.requests("POST", "/auth/sign-out").length).toBe(1);
     backend.token = "expired";
-    await emit(page, { v: 1, eventId: "e1", collection: "sheets", id: "s1", op: "put", version: 9 });
-    await expect.poll(() => backend.requests("GET", "/teams/t1/sheets/s1").length).toBe(1);
+    await emit(page, { v: 1, eventId: "e1", collection: "projects", id: "s1", op: "put", version: 9 });
+    await expect.poll(() => backend.requests("GET", "/teams/t1/projects/s1").length).toBe(1);
     await page.waitForTimeout(200);
     expect(backend.requests("POST", "/auth/refresh")).toHaveLength(1);
 
@@ -430,11 +430,11 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
     await expect.poll(() => page.evaluate(() => window.__stalled)).toBe(true);
     await page.clock.fastForward(15e3);
     // Not read as an empty success: still signed in with the token it had, and writes work
-    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByRole("button", { name: "+ New project" }).click();
     await page.getByLabel("Client", { exact: true }).fill("Still here");
-    await page.getByRole("button", { name: "Create sheet" }).click();
+    await page.getByRole("button", { name: "Create project" }).click();
     await expect(page.getByRole("heading", { name: "Still here" })).toBeVisible();
-    expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//).map((c) => c.headers.authorization)).toEqual(["Bearer at-1"]);
+    expect(backend.requests("PUT", /^\/teams\/t1\/projects\//).map((c) => c.headers.authorization)).toEqual(["Bearer at-1"]);
     await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
   });
 
@@ -609,7 +609,7 @@ test.describe("first sign-in and teams", () => {
   const teams = [TEAM, { ...TEAM, id: "t2", name: "Bravo Co", role: "contributor" }];
 
   test("with several teams, opens the last one used and switches between them", { tag: ["@J0.3"] }, async ({ page }) => {
-    const backend = new FakeBackend({ teams, docs: { ...seeded(), "t2/sheets/b1": { client: "Bravo job", date: "2026-09-20", status: "open", items: {} } } });
+    const backend = new FakeBackend({ teams, docs: { ...seeded(), "t2/projects/b1": { client: "Bravo job", date: "2026-09-20", status: "open", items: {} } } });
     await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2" } } });
     await connected(page);
     await expect(page.getByRole("button", { name: /Bravo job/ })).toBeVisible();
@@ -637,7 +637,7 @@ test.describe("first sign-in and teams", () => {
     await openAws(page, backend);
     await connected(page);
     await expect(page.locator("#notice")).toHaveText("You have view-only access. Ask the owner to give you Contributor access to scan and edit.");
-    await expect(page.getByRole("button", { name: "+ New sheet" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "+ New project" })).toHaveCount(0);
   });
 
   test("the account screens and team bar fit a 320px phone", { tag: ["@J0"] }, async ({ page }) => {
@@ -674,7 +674,7 @@ test.describe("first sign-in and teams", () => {
     backend.teams = backend.teams.filter((t) => t.id !== "t3");
     // Within a minute of loading /me, a re-list doesn't ask again
     await setVisible(page, true);
-    await expect.poll(() => backend.requests("GET", "/teams/t1/sheets").length).toBeGreaterThan(1);
+    await expect.poll(() => backend.requests("GET", "/teams/t1/projects").length).toBeGreaterThan(1);
     expect(meCalls()).toBe(1);
     await page.clock.fastForward(61e3);
     await setVisible(page, true);
@@ -746,7 +746,7 @@ test.describe("first sign-in and teams", () => {
 test.describe("saved on this device", { tag: ["@J0"] }, () => {
   const teams = [TEAM, { ...TEAM, id: "t2", name: "Bravo Co", role: "contributor" }];
   const SAM = { id: "u-sam", email: "sam@example.com", emailVerified: true };
-  const draft = (store) => JSON.stringify({ store, receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines: [{ id: "l1", name: "Paper towels", raw: "", qty: 1, price: 8, dest: "stock", code: "", match: "", suggested: false, useName: "inv", usePrice: "receipt" }] });
+  const draft = (store) => JSON.stringify({ store, receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", projectId: "", client: "" }], lines: [{ id: "l1", name: "Paper towels", raw: "", qty: 1, price: 8, dest: "stock", code: "", match: "", suggested: false, useName: "inv", usePrice: "receipt" }] });
   const resume = (page) => page.getByText("You have a receipt that hasn't been saved yet.");
   const saved = (page) => page.evaluate(() => Object.fromEntries(Object.entries(localStorage).filter(([k]) => k.startsWith("supplyCheckout."))));
   // The app in another tab of the same browser, with the same storage
@@ -791,9 +791,9 @@ test.describe("saved on this device", { tag: ["@J0"] }, () => {
     await relisted(backend, "t2");
     backend.token = "expired";
     backend.signedIn = false;
-    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByRole("button", { name: "+ New project" }).click();
     await page.getByLabel("Client", { exact: true }).fill("Too late");
-    await page.getByRole("button", { name: "Create sheet" }).click();
+    await page.getByRole("button", { name: "Create project" }).click();
     await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
     expect(await saved(page)).toEqual({ "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2", "supplyCheckout.receiptDraft.t2": draft("Home Depot") });
 

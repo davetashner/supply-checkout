@@ -130,7 +130,7 @@ export async function start(config) {
     const url = await session.signInUrl();
     const invited = !!takeInvite();
     show(`<h2>Sign in</h2>
-      <p>${invited ? "Sign in with the email address your invite was sent to, and then you can join the team." : "Sign in to see your team's sheets and inventory."}</p>
+      <p>${invited ? "Sign in with the email address your invite was sent to, and then you can join the team." : "Sign in to see your team's projects and inventory."}</p>
       ${errorText(session.notice)}
       <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn">Sign in</a></div>`);
     return until(() => {});
@@ -205,7 +205,7 @@ export async function start(config) {
     const seen = me.invites.map((i) => `<p class="invite"><strong>${esc(i.teamName)}</strong> invited you as ${ROLE[i.role]}. Open the link in your invite email to join.</p>`).join("");
     let key = crypto.randomUUID(), keyName = null;
     show(`<h2>Name your team</h2>
-      <p>Your team shares one inventory and one set of sheets.</p>
+      <p>Your team shares one inventory and one set of projects.</p>
       ${seen}
       ${verifyPrompt(me)}
       <form id="teamForm">
