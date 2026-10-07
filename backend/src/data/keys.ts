@@ -3,7 +3,7 @@
 // into another key (for example, a project ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
-import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, INVITE_LIMIT_PREFIX, LAPSE_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, TOTP_ON_SK, VERIFIED_EMAIL_SK, WELCOME_SK } from "./schema.js";
+import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, INVITE_LIMIT_PREFIX, LAPSE_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, RECEIPT_TRIAL_CAP_PARTITION, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, TOTP_ON_SK, VERIFIED_EMAIL_SK, WELCOME_SK } from "./schema.js";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -172,6 +172,15 @@ export const keys = {
   receiptRate: (userId: string, window: "MINUTE" | "HOUR" | "DAY" | "TRIALDAY", stamp: string) => {
     if (!RATE_STAMP[window].test(stamp)) throw new InvalidInputError("Invalid rate window");
     return { PK: `${RECEIPT_RATE_PREFIX}${id(userId, "user ID")}`, SK: `RECEIPTS#${window}#${stamp}` };
+  },
+  /**
+   * Trial receipt reads in one UTC day (YYYY-MM-DD) across every trial team in
+   * the account: the account-wide trial cap (supply-checkout-i1d.3). Expires
+   * (TTL) 7 days after its day (TRIAL_DAY_GRACE_SECONDS in usage.ts).
+   */
+  receiptTrialDay: (day: string) => {
+    if (!RATE_STAMP.DAY.test(day)) throw new InvalidInputError("Invalid day");
+    return { PK: RECEIPT_TRIAL_CAP_PARTITION, SK: `DAY#${day}` };
   },
   audit: (teamId: string, ts: string, eventId: string) => ({
     PK: `TEAM#${id(teamId, "team ID")}`,

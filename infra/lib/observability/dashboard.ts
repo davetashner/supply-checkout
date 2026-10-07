@@ -1,3 +1,4 @@
+import { Duration } from "aws-cdk-lib";
 import {
   AlarmStatusWidget,
   Dashboard,
@@ -18,6 +19,7 @@ import {
   FIVE_MINUTES,
   lambda,
 } from "./metrics.js";
+import { bedrockSpend } from "./journey-alarms.js";
 import { cloudFront, routerFailures, SITE_DOWN_MIN_REQUESTS, siteErrorRate } from "./web-alarms.js";
 
 export interface OpsDashboardProps {
@@ -117,8 +119,10 @@ export class OpsDashboard extends Construct {
     );
     // The projects rename's old /sheets routes (supply-checkout-005.6): flat zero for a day means they can go
     this.dashboard.addWidgets(businessGraph("Old /sheets route calls", [BusinessMetric.LegacySheetsRouteCalls]));
-    this.dashboard.addWidgets(businessGraph("J5: receipt limits", [BusinessMetric.ReceiptRateLimited, BusinessMetric.ReceiptLimitReached, BusinessMetric.ReceiptTrialsNearLimit, BusinessMetric.ReceiptPaidTeamsNearLimit]));
+    this.dashboard.addWidgets(businessGraph("J5: receipt limits", [BusinessMetric.ReceiptRateLimited, BusinessMetric.ReceiptLimitReached, BusinessMetric.ReceiptTrialsNearLimit, BusinessMetric.ReceiptPaidTeamsNearLimit, BusinessMetric.ReceiptTrialCapReached]));
     this.dashboard.addWidgets(graph("J5: receipt model call p95 (ms)", each((r) => business(BusinessMetric.ReceiptReadLatency, r, FIVE_MINUTES, "p95")), WIDTH / 4));
+    // Estimated from Bedrock's token counts by the hour (Bedrock spend high alarms on the day's)
+    this.dashboard.addWidgets(graph("J5: receipt model spend per hour (USD, estimated)", each((r) => bedrockSpend(r, Duration.hours(1))), WIDTH / 4));
     this.dashboard.addWidgets(
       businessGraph("J1: sign-ups", [BusinessMetric.SignUps]),
       businessGraph("J3: invites", [BusinessMetric.InvitesSent, BusinessMetric.InvitesAccepted, BusinessMetric.InvitesFailed]),

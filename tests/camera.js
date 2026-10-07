@@ -1,7 +1,13 @@
 // A stand-in camera for the live barcode scanner (src/live-scan.js), for tests/live-scan.spec.js
 // and tests/content-security-policy.spec.js. installCamera runs in the page (addInitScript).
-// A stand-in camera: a 640×480 canvas streamed as the camera's video (redrawn every 40 ms, so
-// the stream keeps sending frames), and a stand-in BarcodeDetector.
+// A stand-in camera: a 640×480 canvas, streamed as the camera (so the scanner's <video> plays a
+// real stream, and stopping its tracks is real), and a stand-in BarcodeDetector. The picture the
+// scanner reads is the canvas itself: while the stream is on the video says it has a picture of
+// the canvas's size, and drawing the video draws the canvas. A real stream's frames can't be
+// relied on: WebKit's captureStream sends a frame only when the page renders, and a busy CI
+// runner can hold rendering off for seconds, so the video had no picture and nothing was read
+// (supply-checkout-005.7.1 flakes in #538, #540 and #553). Real camera pixels are checked on
+// real phones (docs/releases.md).
 //   camera:   "ok" | "denied" (permission refused) | "missing" (no camera found) | "held" (the
 //             browser is still asking until window.__answerCamera(ok)) | "unsupported" (no
 //             navigator.mediaDevices) | "none" (no camera in enumerateDevices) | "unlisted"
@@ -14,9 +20,19 @@
 // window.__camera counts cameras opened and stopped, detections, and frames drawn for ZXing (draws).
 export function installCamera({ camera = "ok", detector = "none", picture = null, torch = "no" }) {
   const cam = (window.__camera = { opened: 0, stopped: 0, torch: [], detects: 0, draws: 0 });
-  // The frames ZXing reads: the app draws them from the video
+  const canvas = Object.assign(document.createElement("canvas"), { width: 640, height: 480 }), g = canvas.getContext("2d");
+  // The video has the canvas's picture while a stream plays in it ("dark": never)
+  const showing = (video) => !!video.srcObject && camera !== "dark";
+  const getter = (proto, name, get) => Object.defineProperty(proto, name, { get, configurable: true });
+  getter(HTMLMediaElement.prototype, "readyState", function () { return showing(this) ? 4 : 0; });
+  getter(HTMLVideoElement.prototype, "videoWidth", function () { return showing(this) ? canvas.width : 0; });
+  getter(HTMLVideoElement.prototype, "videoHeight", function () { return showing(this) ? canvas.height : 0; });
+  // The frames ZXing reads: the app draws them from the video, which draws the canvas
   const draw = CanvasRenderingContext2D.prototype.drawImage;
-  CanvasRenderingContext2D.prototype.drawImage = function (...args) { if (args[0] instanceof HTMLVideoElement) cam.draws++; return draw.apply(this, args); };
+  CanvasRenderingContext2D.prototype.drawImage = function (...args) {
+    if (args[0] instanceof HTMLVideoElement) { cam.draws++; args[0] = canvas; }
+    return draw.apply(this, args);
+  };
   if (detector === "none") delete window.BarcodeDetector;
   else {
     window.BarcodeDetector = class {
@@ -28,7 +44,6 @@ export function installCamera({ camera = "ok", detector = "none", picture = null
     };
   }
   if (camera === "unsupported") { Object.defineProperty(Navigator.prototype, "mediaDevices", { get: () => undefined, configurable: true }); return; }
-  const canvas = Object.assign(document.createElement("canvas"), { width: 640, height: 480 }), g = canvas.getContext("2d");
   let tick = 0;
   const paint = () => {
     g.fillStyle = "#fff"; g.fillRect(0, 0, 640, 480);
@@ -41,21 +56,13 @@ export function installCamera({ camera = "ok", detector = "none", picture = null
   track.stop = function () { cam.stopped++; stop.call(this); };
   track.getCapabilities = torch === "unknown" ? undefined : () => (torch === "no" ? {} : { torch: true });
   track.applyConstraints = async (c) => { if (torch === "fails") throw new Error("no torch"); cam.torch.push(c.advanced[0].torch); };
-  // A camera sends a picture when the canvas changes: painted on a timer, not on animation
-  // frames, which WebKit can hold back on a busy runner (so the video never had a picture).
-  // "dark": a camera that sends no picture at all (captureStream(0) sends one only on request).
+  // The canvas changes every 40 ms, as a camera's picture would
   const answer = (ok) => {
     if (!ok) throw new DOMException("No camera", camera === "denied" ? "NotAllowedError" : "NotFoundError");
     cam.opened++;
-    if (camera === "dark") {
-      // WebKit sends a first frame even so: the video says it has no picture, as it would
-      Object.defineProperty(HTMLMediaElement.prototype, "readyState", { get: () => 0, configurable: true });
-      return canvas.captureStream(0);
-    }
-    const stream = canvas.captureStream();
     paint();
     setInterval(paint, 40);
-    return stream;
+    return canvas.captureStream();
   };
   const devices = {
     enumerateDevices: async () => { if (camera === "unlisted") throw new Error("not allowed"); return camera === "none" ? [] : [{ kind: "videoinput" }]; },

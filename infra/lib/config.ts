@@ -1,4 +1,5 @@
 import { STRIPE_MODES, type StripeMode, stripeOpsKeySecretName, stripeSecretName, stripeWebhookSecretName } from "../../backend/src/billing/names.js";
+import { MAX_RECEIPT_TRIAL_READS_PER_DAY, RECEIPT_TRIAL_READS_PER_DAY } from "../../backend/src/data/schema.js";
 
 // Where the app deploys. Nothing account-specific is committed: the account
 // comes from the CLI profile at synth time (CDK_DEFAULT_ACCOUNT), and the
@@ -46,6 +47,16 @@ export const DEFAULT_DOMAIN_NAME = "supplycheckout.com";
 
 /** The model receipt reading uses: Claude Haiku 4.5. */
 export const RECEIPT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+
+/**
+ * What the receipt model costs, in US dollars per million tokens, by kind:
+ * Claude Haiku 4.5 on Bedrock in the US. "Bedrock spend high" turns Bedrock's
+ * token counts into dollars with these (journey-alarms.ts). Update them with
+ * RECEIPT_MODEL_ID, or when AWS's prices change. OWNER: these are the base
+ * list prices; confirm whether calls through the `us.` cross-region inference
+ * profile are priced above them, and raise these if so.
+ */
+export const RECEIPT_MODEL_PRICES_PER_MILLION_TOKENS = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } as const;
 
 /**
  * The regions the US inference profiles route to (AWS's "Supported Regions
@@ -188,6 +199,24 @@ export function receiptsReservedConcurrencyFromContext(node: ContextReader): num
   const n = Number(text);
   if (!/^[1-9][0-9]*$/.test(text) || n > MAX_RECEIPTS_RESERVED_CONCURRENCY) {
     throw new Error(`receiptsReservedConcurrency must be a whole number from 1 to ${MAX_RECEIPTS_RESERVED_CONCURRENCY} (got "${text}")`);
+  }
+  return n;
+}
+
+/**
+ * The account-wide daily cap on trial receipt reads (supply-checkout-i1d.3),
+ * from `-c receiptTrialReadsPerDay=<n>`: the receipts function's
+ * RECEIPT_TRIAL_READS_PER_DAY. Unset, the backend's default
+ * (RECEIPT_TRIAL_READS_PER_DAY in backend/src/data/schema.ts). 0 stops every
+ * trial read; at most MAX_RECEIPT_TRIAL_READS_PER_DAY.
+ */
+export function receiptTrialReadsPerDayFromContext(node: ContextReader): number {
+  const value = node.tryGetContext("receiptTrialReadsPerDay");
+  if (value === undefined || value === "") return RECEIPT_TRIAL_READS_PER_DAY;
+  const text = String(value);
+  const n = Number(text);
+  if (!/^(0|[1-9][0-9]*)$/.test(text) || n > MAX_RECEIPT_TRIAL_READS_PER_DAY) {
+    throw new Error(`receiptTrialReadsPerDay must be a whole number from 0 to ${MAX_RECEIPT_TRIAL_READS_PER_DAY} (got "${text}")`);
   }
   return n;
 }

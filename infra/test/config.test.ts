@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { MAX_RECEIPT_TRIAL_READS_PER_DAY, RECEIPT_TRIAL_READS_PER_DAY } from "../../backend/src/data/schema.js";
 import {
   ALL_REGIONS,
   APPROVED_REGIONS,
@@ -11,6 +12,7 @@ import {
   configFromContext,
   MAX_RECEIPTS_RESERVED_CONCURRENCY,
   receiptsReservedConcurrencyFromContext,
+  receiptTrialReadsPerDayFromContext,
   stripeModeOf,
   stripeOpsKeySecretArn,
   stripeSecretArn,
@@ -36,6 +38,19 @@ describe("receipt reading models", () => {
     expect(RECEIPT_MODEL_ID).toBe("us.anthropic.claude-haiku-4-5-20251001-v1:0");
     expect(RECEIPT_BENCHMARK_MODEL_ID).toBe("us.anthropic.claude-sonnet-4-6");
     for (const id of [RECEIPT_MODEL_ID, RECEIPT_BENCHMARK_MODEL_ID]) expect(id).toMatch(/^us\.anthropic\./);
+  });
+});
+
+describe("receiptTrialReadsPerDayFromContext", () => {
+  it("is the backend's default unless set, a whole number from 0 to the maximum", () => {
+    expect(receiptTrialReadsPerDayFromContext(context({}))).toBe(RECEIPT_TRIAL_READS_PER_DAY);
+    expect(receiptTrialReadsPerDayFromContext(context({ receiptTrialReadsPerDay: "" }))).toBe(RECEIPT_TRIAL_READS_PER_DAY);
+    expect(receiptTrialReadsPerDayFromContext(context({ receiptTrialReadsPerDay: "0" }))).toBe(0);
+    expect(receiptTrialReadsPerDayFromContext(context({ receiptTrialReadsPerDay: 250 }))).toBe(250);
+    expect(receiptTrialReadsPerDayFromContext(context({ receiptTrialReadsPerDay: String(MAX_RECEIPT_TRIAL_READS_PER_DAY) }))).toBe(MAX_RECEIPT_TRIAL_READS_PER_DAY);
+    for (const bad of ["-1", "1.5", "01", "1e3", "abc", String(MAX_RECEIPT_TRIAL_READS_PER_DAY + 1)]) {
+      expect(() => receiptTrialReadsPerDayFromContext(context({ receiptTrialReadsPerDay: bad })), bad).toThrow("receiptTrialReadsPerDay must be a whole number");
+    }
   });
 });
 
