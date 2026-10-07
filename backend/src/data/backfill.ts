@@ -28,6 +28,12 @@
 // deleted in the meantime is never re-created as a stub. Closed teams stay in
 // the index until the purge deletes them, as a team made today does.
 //
+// - projects-rename (projects-rename.ts, supply-checkout-005.6.2): moves
+//   sheet items to project keys and renames the sheet attributes on
+//   movements, with --reverse for a rollback, and verifies afterwards. It has
+//   options of its own, so the CLI runs it with renameProjects, not
+//   runBackfill.
+//
 // A dry run reads the same items and writes nothing. The reports hold counts
 // and, for strays, only the item's partition type and team ID: never emails,
 // names or user IDs.
@@ -37,6 +43,8 @@ import { type Db, connection } from "./client.js";
 import { gsi3, keys, prefixes } from "./keys.js";
 import { GSI3PK, GSI3SK, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX } from "./schema.js";
 import { hasNoticeAddress, recordNoticeAddress } from "./security-notices.js";
+
+export { MAX_ATTEMPTS as RENAME_MAX_ATTEMPTS, renameProjects, type ExportedTeam, type ProjectsRenameOptions, type ProjectsRenameReport } from "./projects-rename.js";
 
 export const BACKFILL_MODES = ["members", "ops-index", "stray-ops-keys", "notice-address"] as const;
 export type BackfillMode = (typeof BACKFILL_MODES)[number];

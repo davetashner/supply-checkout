@@ -811,6 +811,7 @@ One-off migrations for items written before a change, in `backend/src/data/backf
 | `ops-index` | Sets GSI3 keys on every team `META` item and owner `MEMBER#` item without them, on the condition that they're still absent (and that the member is still an owner). Closed teams too: they stay in the index until the purge deletes them, as a team made today does. | Teams made before PR #99 aren't in the ops team list. |
 | `members` | Sets the `members` count on every team `META` item without one, from a strongly consistent count of its `MEMBER#` items, on the condition that it's still absent. A membership change that commits after the count sets the count itself (`teamCounts`), so the backfill's write fails and it leaves that team alone. | Teams made before PR #93 have no count, so the join-during-deletion guard (PR #103) can't protect them until their next membership change. |
 | `notice-address` | Doesn't scan the table: lists every user in the app pool of the table's environment (`ListUsers` with your credentials; the pool ID from SSM, `/supply-checkout/<env>/identity/user-pool-id`, `<env>` from the table name, and it stops before reading or writing unless `DescribeUserPool` names that pool `supply-checkout-<env>` in `--region`, so never another environment's; it also refuses a pool whose name ends in `-ops` or whose ID is `/supply-checkout/<env>/identity/ops-user-pool-id`'s, the operator pool. It won't run with `--endpoint`, since it would sign the pool calls with whatever ambient credentials there are and send addresses to that endpoint without printing the account), and for each whose verified address the account API trusts (GET /me's rule, `noticeAddressOf` in `backend/src/identity/notice-address.ts`) and who has no `NOTICE_ADDRESS`, records it with `recordNoticeAddress`: never over an address recorded meanwhile, never for an account being deleted (its `DELETING` mark is checked first and again in the write's transaction). Users without a trusted verified address (unconfirmed, unverified, a pending downgrade, a linked user's unproven address) are left alone. It reads only whether an address is recorded, never one, and prints counts only. | Accounts that haven't loaded the app since PR #278 have no address, so their first email change is recorded but nobody is told (`supply-checkout-8jc.31`). New accounts get one from the triggers ([Sign-in](#sign-in), "Recording the notice address"). |
+| `projects-rename` | Moves every sheet item (`SK=SHEET#<id>`, `GSI1PK=TEAM#<t>#SHEETS`, `type: "sheet"`) to its project key (`PROJECT#<id>`, `TEAM#<t>#PROJECTS`, `"project"`), every other attribute and the `version` unchanged, and renames `sheetId` and `fromSheetId` on movement items to `projectId` and `fromProjectId`. With `--reverse`, the same the other way. It has its own runbook, [Projects rename](#projects-rename). | Sheets are called projects now (`docs/projects-rename-plan.md`, `supply-checkout-005.6`). |
 
 Run them after the deploy that adds GSI3 is `ACTIVE`, in this order (`ops-index` after `stray-ops-keys`, so a team whose keys were wrong gets them back correctly), each as a dry run first:
 
@@ -842,6 +843,62 @@ npm run backfill -- notice-address $B            # finds 0 accounts with a trust
 It prints how many pool users it listed, how many it left alone (no verified address the API trusts, an address already recorded, being deleted) and how many it recorded. `changed by something else first, left alone` is an account whose address was recorded (by GET /me or a trigger), or whose deletion started, between the check and the write.
 
 A line such as `changed by something else first, left alone: 1` is a race the condition caught (a membership change, a promotion, a purge): the item already has a current value, or no longer exists. `keys that aren't valid IDs, left alone` shouldn't happen; such an item is worth a look. The tests (`backend/test/backfill.test.ts`) run every mode, its races and the CLI against DynamoDB Local.
+
+#### Projects rename
+
+`projects-rename` (`backend/src/data/projects-rename.ts`, `supply-checkout-005.6.2`) is section 2 of [the rename plan](projects-rename-plan.md). Run it after the server release that reads both `SHEET#` and `PROJECT#` is deployed (the plan's section 3), so the app works the whole time. Unlike the other modes it doesn't scan the whole table for one team:
+
+- `--team <teamId>` reads that team's partition with a `Query`. Without it, every team: a `Scan` that reads only keys, for teams with a `SHEET#` item or a movement with `sheetId` or `fromSheetId`.
+- For each sheet: a strongly consistent read, then one transaction that puts the copy (on the condition that the new key is free) and deletes the old item (on the condition that its `version` is still the one read). If someone edits the sheet in between, it reads it again and retries, up to 5 times, then reports it and moves on. A `PROJECT#` copy that's already there is never overwritten: if it's equal apart from the renamed attributes, only the old item is deleted; if not, both are left and it's counted as a conflict.
+- Movements get `sheetId` and `fromSheetId` renamed, on the condition that the old names are still there and the new ones aren't.
+- One write at a time, about 25 a second. `--limit <n>` stops after n sheets and leaves the movements for a full run.
+- `--reverse` does the same from `PROJECT#` back to `SHEET#`: the rollback. It's the same code, and it's tested both ways.
+- `--export-to <path>` writes the team's `SHEET#` and `MOVE#` items to a new JSON file (owner-only, never over an existing file) before anything is written. It refuses a path inside the repo: the file holds client names and prices.
+
+The output is counts and check names only: no team, sheet or user IDs, names or emails. A dry run (the default) counts the sheets it would move, the conflicts, the movements, and about how many bytes the sheets hold (the largest must stay well under DynamoDB's 400 KB). After `--apply` it checks, and prints `Done.` only when all of them hold (otherwise `Not done`, and it exits 1):
+
+- no `SHEET#` items are left, and GSI1's `TEAM#<t>#SHEETS` partition is empty;
+- the `PROJECT#` count is the count before plus the sheets moved, and GSI1's `TEAM#<t>#PROJECTS` count equals it (it waits up to 60 seconds for the index);
+- every moved item's attributes hash the same as before, the renamed ones left out, and its totals (counts and charge in cents, added as `src/sheet-math.js` adds them) are the same;
+- every product's `stock` is what it was;
+- no movement still has `sheetId` or `fromSheetId`.
+
+A user taking or returning stock during the run changes a stock count and fails that check; run it again (it finds nothing left to move and checks again) once things are quiet. Run it outside 8am to 8pm Eastern if you can, for the canary and the pilot's day.
+
+The runbook. `<profile>`, `<teamId>`, `<recovery point ARN>` and `<path>` are placeholders: keep the real values out of the repo, and put the recovery point in the bead.
+
+```bash
+aws sso login --profile <profile>
+cd backend && npm ci
+P="--profile <profile> --region us-east-1"
+B="--table supply-checkout-prod-app --region us-east-1 --profile <profile>"
+
+# 1. Backup: an on-demand AWS Backup recovery point (as in docs/backups.md, "Prove the copy path now"), and the PITR time
+TABLE_ARN=$(aws dynamodb describe-table --table-name supply-checkout-prod-app --query Table.TableArn --output text $P)
+ROLE_ARN=$(aws iam get-role --role-name supply-checkout-prod-backup --query Role.Arn --output text --profile <profile>)
+aws backup start-backup-job $P --backup-vault-name supply-checkout-prod-backups \
+  --resource-arn "$TABLE_ARN" --iam-role-arn "$ROLE_ARN" --lifecycle DeleteAfterDays=35
+aws backup describe-backup-job $P --backup-job-id <id>    # until COMPLETED; note the recovery point ARN in the bead
+date -u +%Y-%m-%dT%H:%M:%SZ                              # the PITR time to restore to, if it ever comes to that
+aws dynamodb describe-continuous-backups --table-name supply-checkout-prod-app $P   # PITR is ENABLED
+
+# 2. Export and dry run: read the counts (and the account on the first line)
+npm run backfill -- projects-rename $B --team <teamId> --export-to <path outside the repo>/rename-<teamId>.json
+
+# 3. Apply, then the final check: a second run finds nothing to move and prints Done.
+npm run backfill -- projects-rename $B --team <teamId> --apply
+npm run backfill -- projects-rename $B --team <teamId> --apply
+```
+
+Then sign in as one of the team's users: the list is there, one finished and one open project open, a checkout and a return work, and the production alarms stay clear ([journeys](journeys.md)). Later, once every team is done, a run without `--team` (dry run, then `--apply`) is the cleanup and should find nothing.
+
+**Rollback**, in order:
+
+1. Before `--apply` there's nothing to roll back.
+2. During or after: `npm run backfill -- projects-rename $B --team <teamId> --reverse` (dry run), then with `--apply`. It carries back anything written to a project since, which is why it comes before a restore. If the application is rolled back to a release that reads only `SHEET#`, run it first. While the dual-reading release is deployed, a part-moved team works as it is.
+3. Last resort: restore to the PITR time into a new table (`supply-checkout-<env>-app-restore-*`) and copy the team's partition back, as in [the restore drill](backups.md#restore-drill) and [Put a restored table back into service](backups.md#put-a-restored-table-back-into-service). This loses every write since that time. The export file is a smaller option for a few items: put them back with `aws dynamodb put-item` from it.
+
+The tests (`backend/test/projects-rename.test.ts`) run it against DynamoDB Local: an empty team, many sheets, a conflicting copy, a re-run, an edit mid-move and one that keeps changing, a round trip with `--reverse`, movements, `--limit`, the export and where it may go, every team by scan, and that the output holds no IDs or names.
 
 The role's IAM conditions (`dynamodb:Attributes`, `dynamodb:Select`, `dynamodb:LeadingKeys` patterns) aren't enforced by DynamoDB Local, so after the first deploy, and after any change to the role or to `backend/src/data/operator.ts`, list teams, read a test team, comp it and end the comp, and confirm the ops function's log group (the api stack's `OpsFunctionLogs`; [Finding a function's log group](journeys.md#finding-a-functions-log-group)) has no `AccessDeniedException`.
 
