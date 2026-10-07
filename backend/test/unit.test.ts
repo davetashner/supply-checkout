@@ -20,7 +20,7 @@ import { retryDelay } from "../src/data/documents.js";
 import { MAX_MONEY, money } from "../src/data/money.js";
 import { date, dateFormat, gsi1, isCalendarDay, keys, strip } from "../src/data/keys.js";
 import { legacy } from "../src/data/legacy-sheets.js";
-import { billingAccess, deletionLastDay, deletionTime, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, PAYMENT_GRACE_DAYS, READ_ONLY_RETENTION_DAYS, teamCounts } from "../src/data/model.js";
+import { billingAccess, deletionLastDay, deletionTime, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, PAYMENT_GRACE_DAYS, READ_ONLY_RETENTION_DAYS, teamCounts, teamName } from "../src/data/model.js";
 import { tableName } from "../src/data/schema.js";
 import { assertContext, writable } from "../src/data/team-context.js";
 import * as teamContextFile from "../src/data/team-context.js";
@@ -179,6 +179,24 @@ describe("TeamContext (ADR 0005)", () => {
     const contributor = await contextFor("contributor");
     await expect(updateProduct(offline, contributor, "p1", { code: "", name: "Glo\u202eves", price: 1 }, 1)).rejects.toThrow(new InvalidInputError("name has an invisible or control character in it"));
     await expect(updateProduct(offline, contributor, "p1", { code: "", name: "x".repeat(201), price: 1 }, 1)).rejects.toThrow(new InvalidInputError("Invalid product"));
+  });
+});
+
+describe("team names and project fields (supply-checkout-1dg.13)", () => {
+  it("refuses a team name with a control or invisible character, and keeps emoji and right-to-left text", () => {
+    for (const name of ["Echo \u202eCleaning", "Echo\u200bCleaning", "Echo\u2066", "Echo\ud83d", "Echo@tCleaning".replace("@t", "\u0009")]) {
+      expect(() => teamName(name), JSON.stringify(name)).toThrow(new InvalidInputError("Invalid team name"));
+    }
+    for (const name of ["Echo Cleaning \u{1f9f9}", "\u05e0\u05d9\u05e7\u05d9\u05d5\u05df", "\u{1f469}\u200d\u{1f527} Crew"]) expect(teamName(` ${name} `)).toBe(name);
+  });
+
+  it("refuses a new project's client, creator's name or store with one, and cleans its lines' names", async () => {
+    const contributor = await contextFor("contributor");
+    const project = { client: "Echo", date: "2026-09-01", items: {} };
+    await expect(data.createProject(offline, contributor, { ...project, client: "Echo \u202eniatnuoM" })).rejects.toThrow(new InvalidInputError("Invalid client"));
+    await expect(data.createProject(offline, contributor, { ...project, createdByName: "Sam\u200b" })).rejects.toThrow(new InvalidInputError("Invalid name"));
+    await expect(data.createProject(offline, contributor, { ...project, source: { store: "Shop\u2067", receiptDate: "" } })).rejects.toThrow(new InvalidInputError("Invalid store"));
+    await expect(data.updateProject(offline, contributor, "s1", { client: "Echo\u2066" }, 1)).rejects.toThrow(new InvalidInputError("Invalid client"));
   });
 });
 

@@ -25,7 +25,7 @@ import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aw
 import { type Db, connection, storable } from "./client.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
 import { brandOf } from "./brand.js";
-import { hiddenCharacterProblem } from "../text/hidden-characters.js";
+import { hiddenCharacterProblem, withoutHiddenCharacters } from "../text/hidden-characters.js";
 import { AdhocOpenError, ConflictError, EquipmentOutError, InvalidInputError, NotFoundError, TooLargeError, isCancelledAsTooLarge, isItemTooLarge } from "./errors.js";
 import { BOUGHT_SUFFIX, adhocNumber, barcode, id as checkId, isAdhocId, keys, prefixes, productKey, teamPartition } from "./keys.js";
 import { legacy } from "./legacy-sheets.js";
@@ -188,10 +188,7 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
     if ("code" in data) barcode(data.code);
     // The name and brand have no control or invisible characters (src/text/hidden-characters.ts). One a
     // product was stored with before they were refused doesn't block a write that leaves it as it is.
-    if (typeof data.name === "string" && data.name !== before?.data.name) {
-      const problem = hiddenCharacterProblem("name", data.name);
-      if (problem) throw new InvalidInputError(problem);
-    }
+    if (typeof data.name === "string" && data.name !== before?.data.name) visible("name", data.name);
     // An optional brand (brand.ts): stored trimmed, and blank or null removes it
     if (Object.hasOwn(data, "brand")) {
       const brand = brandOf(data.brand, before?.data.brand);
@@ -206,6 +203,13 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
   if (collection === "projects") {
     if ("date" in data && typeof data.date !== "string") throw new InvalidInputError("Invalid date");
     if ("items" in data && !isMap(data.items)) throw new InvalidInputError("Invalid items");
+    // The client, who made the project and the receipt's store have no control or invisible
+    // characters (src/text/hidden-characters.ts, supply-checkout-1dg.13), where the write changes them
+    for (const field of ["client", "createdByName"] as const) {
+      if (typeof data[field] === "string" && data[field] !== before?.data[field]) visible(field, data[field]);
+    }
+    const storedStore = isMap(before?.data.source) ? before.data.source.store : undefined;
+    if (isMap(data.source) && typeof data.source.store === "string" && data.source.store !== storedStore) visible("source.store", data.source.store);
     // Each line keeps its barcode (`code`), its price each and its cost each (`price`, `cost`,
     // ADR 0014), which the typed functions bound the same way
     const storedLines = isMap(before?.data.items) ? before.data.items : {};
@@ -213,11 +217,20 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
       if (!isMap(line)) continue;
       const stored = Object.hasOwn(storedLines, key) && isMap(storedLines[key]) ? storedLines[key] : undefined;
       if ("code" in line) barcode(line.code);
+      // A line's name is a copy of the item's: one the write changes loses its control and invisible
+      // characters, as the commands' copies do, rather than failing the write
+      if (typeof line.name === "string" && line.name !== stored?.name) line.name = withoutHiddenCharacters(line.name);
       for (const field of ["price", "cost"] as const) if (Object.hasOwn(line, field)) line[field] = writtenMoney(line[field], stored, field);
     }
   }
   checkSize(data);
   return data;
+}
+
+/** Refuses text with a control or invisible character in it, naming the field and never the text. */
+function visible(field: string, value: string): void {
+  const problem = hiddenCharacterProblem(field, value);
+  if (problem) throw new InvalidInputError(problem);
 }
 
 function checkSize(data: DocumentData): void {

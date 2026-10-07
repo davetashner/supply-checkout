@@ -2,7 +2,7 @@
 // and the ordinary text that uses some of them and must still pass.
 
 import { describe, expect, it } from "vitest";
-import { HIDDEN_TEXT, hasHiddenCharacter, hiddenCharacterProblem, withoutHiddenCharacters } from "../src/text/hidden-characters.js";
+import { HIDDEN_TEXT_FLAGS, HIDDEN_TEXT_SOURCE, hasHiddenCharacter, hiddenCharacterProblem, withoutHiddenCharacters } from "../src/text/hidden-characters.js";
 
 type Case = [string, string, string];
 const each = (what: string, chars: string[], left: string) => chars.map((c): Case => [`${what} U+${c.codePointAt(0)?.toString(16)}`, c, left]);
@@ -51,6 +51,18 @@ const ORDINARY = [
   "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}",
   "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}",
   "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}",
+  // Bengali ra-phala (a joiner before the virama), old-style Malayalam chillu (a joiner ending a word)
+  "\u09b0\u200d\u09cd\u09af\u09be\u0995",
+  "\u0d05\u0d35\u0d28\u0d4d\u200d",
+  "\u0d05\u0d35\u0d28\u0d4d\u200d \u0d35\u0d28\u0d4d\u200d",
+  // A Mongolian letter with a free variation selector, a Han character with an ideographic one (Japanese names)
+  "\u1820\u180b\u1821\u180c\u1822\u180d\u1823\u180f",
+  "\u845b\u{e0100}\u57ce",
+  "\u8fbb\u{e0101}",
+  // Emoji ZWJ sequences without the variation selector
+  "\u{1f469}\u200d\u2695",
+  "\u{1f3c3}\u200d\u2640",
+  "\u{1f9d1}\u200d\u2708\ufe0f",
   // Persian with a zero-width non-joiner, Hindi and Sinhala with a joiner, Arabic with marks before one
   "می\u200cخواهم",
   "क्\u200dष",
@@ -88,6 +100,13 @@ describe("hidden characters (supply-checkout-1dg.12)", () => {
       "\u200cمی", // a non-joiner with no letter before it
       "می\u200c", // or after it
       "a\u200cم", // after a Latin letter
+      "\u0915\u200d\u09cd", // before a letter or mark of another script
+      "\u0645\u200c\u0915",
+      "a\u0d4d\u200d", // a chillu's joiner after a Latin letter
+      "\u0d4d\u200d", // or with no letter
+      "1\ufe0f\u200d2\ufe0f", // digits, # and * aren't a ZWJ's emoji
+      "#\ufe0f\u200d\u{1f527}",
+      "\u{1f527}\u200d*\ufe0f",
       "\u061c\u200cم", // after the Arabic letter mark, a bidi control of the Arabic script
       "م\u200c\u061c",
       "\u180e\u200dᠠ", // after the Mongolian vowel separator
@@ -114,7 +133,7 @@ describe("hidden characters (supply-checkout-1dg.12)", () => {
   });
 
   it("allows one variation selector after an emoji or a symbol with an emoji form, and no other", () => {
-    for (const text of ["a\ufe0f", "手\ufe00", "❤\ufe0f\ufe0f", "❤\ufe0e\ufe0f", "\u{1f9e4}\u{e0100}", `❤${"\ufe0f".repeat(20)}`]) {
+    for (const text of ["a\ufe0f", "手\ufe00", "❤\ufe0f\ufe0f", "❤\ufe0e\ufe0f", "\u{1f9e4}\u{e0100}", `❤${"\ufe0f".repeat(20)}`, "a\u{e0100}", "\u845b\u{e0100}\u{e0101}", "\u845b\u180b", "a\u180b", "\u1820\u180b\u180c", "\u1820\u{e0100}"]) {
       expect(hasHiddenCharacter(text), JSON.stringify(text)).toBe(true);
     }
     // A run of selectors hiding data after an emoji leaves the emoji with its one selector
@@ -168,6 +187,11 @@ describe("hidden characters (supply-checkout-1dg.12)", () => {
       "flags": (n) => "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}".repeat(n / 14),
       "selectors": (n) => "❤" + "\ufe0f".repeat(n),
       "lone surrogates": (n) => "\ud83d".repeat(n),
+      "Bengali joiners before marks": (n) => "\u09b0\u200d\u09cd".repeat(n / 3),
+      "Malayalam chillus": (n) => "\u0d28\u0d4d\u200d".repeat(n / 3),
+      "Han and selectors": (n) => "\u845b" + "\u{e0100}".repeat(n / 2),
+      "Mongolian and selectors": (n) => "\u1820" + "\u180b".repeat(n),
+      "emoji ZWJ chains without selectors": (n) => "\u2695\u200d".repeat(n / 2),
       "plain text": (n) => "Gloves ".repeat(n / 7),
     };
     const time = (text: string) =>
@@ -183,9 +207,9 @@ describe("hidden characters (supply-checkout-1dg.12)", () => {
   });
 
   it("is the rule the app cleans pasted text by (visibleText in src/format.js), pattern for pattern", async () => {
-    const app = (await import(new URL("../../src/format.js", import.meta.url).href)) as { HIDDEN_TEXT: RegExp; visibleText: (t: string) => string };
-    expect(app.HIDDEN_TEXT.source).toBe(HIDDEN_TEXT.source);
-    expect(app.HIDDEN_TEXT.flags).toBe(HIDDEN_TEXT.flags);
+    const app = (await import(new URL("../../src/format.js", import.meta.url).href)) as { HIDDEN_TEXT_SOURCE: string; HIDDEN_TEXT_FLAGS: string; visibleText: (t: string) => string };
+    expect(app.HIDDEN_TEXT_SOURCE).toBe(HIDDEN_TEXT_SOURCE);
+    expect(app.HIDDEN_TEXT_FLAGS).toBe(HIDDEN_TEXT_FLAGS);
     const texts = [...HIDDEN.flatMap(([, c]) => [c, `a${c}b`, `${c}${c}ab`]), ...ORDINARY, "Glo\u200dves \u{1f469}\u200d\u{1f527}\u200d", "\u{1f3f4}\u{e0067}\u{e0062}", "می\u200c"];
     for (const text of texts) {
       expect(app.visibleText(text), JSON.stringify(text)).toBe(withoutHiddenCharacters(text));

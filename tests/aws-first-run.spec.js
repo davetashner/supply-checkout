@@ -26,6 +26,17 @@ async function createTeam(page, backend, name = "Bravo Co") {
   return backend.teams[0].id;
 }
 
+test("a pasted team name loses its invisible direction and zero-width characters", { tag: ["@J1.3"] }, async ({ page }) => {
+  // The API refuses them in a team name (supply-checkout-1dg.13)
+  const backend = new FakeBackend({ teams: [] });
+  await openAws(page, backend);
+  await page.getByLabel("Team name").focus();
+  await page.keyboard.insertText("Bravo \u202eoC\u202c\u200b");
+  await page.getByRole("button", { name: "Create team" }).click();
+  await connected(page);
+  expect(backend.teams[0].name).toBe("Bravo oC");
+});
+
 test("a new owner is guided through the checklist to a team ready to use", { tag: ["@J1.3"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [] });
   const team = await createTeam(page, backend);

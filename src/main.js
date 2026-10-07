@@ -700,7 +700,8 @@ function newProjectModal(existing) {
     let ref, createdAt;
     const form = m.querySelector("#f");
     onSubmit(form, () => {
-      const client = m.querySelector("#fClient").value.trim(), date = m.querySelector("#fDate").value;
+      // Pasted control and invisible characters are cleaned, not sent: the API refuses them (supply-checkout-1dg.13)
+      const client = visibleText(m.querySelector("#fClient").value).trim(), date = m.querySelector("#fDate").value;
       if (!client || !date) return;
       if (editing) {
         saving(form, () => closing(write(() => db.doc("projects/" + existing.id).update({ client, date }), "Saved", existing.id)));
@@ -708,7 +709,7 @@ function newProjectModal(existing) {
       }
       createdAt ||= new Date().toISOString();
       const body = { client, date, createdBy: myId || null, createdAt, status: "open", items: {} };
-      if (needName) body.createdByName = m.querySelector("#fBy").value.trim();
+      if (needName) body.createdByName = visibleText(m.querySelector("#fBy").value).trim();
       saving(form, async () => {
         const ok = await write(() => (ref ||= db.collection("projects").doc()).set(body), "Project created");
         if (ok) { addLocalProject(ref.id, body); closeModal(); ui.projectId = ref.id; ui.mode = "out"; draw(); }
@@ -1602,9 +1603,9 @@ async function saveReceipt() {
       x.createdAt ||= new Date().toISOString();
       saveDraft();
       const ref = db.collection("projects").doc(x.newId);
-      const body = { client: x.client.trim(), date: d.date, createdBy: myId || null, createdAt: x.createdAt, status: "open", items };
-      if (!myId) body.createdByName = d.by.trim();
-      if (d.store) body.source = { store: d.store, receiptDate: d.receiptDate };
+      const body = { client: visibleText(x.client).trim(), date: d.date, createdBy: myId || null, createdAt: x.createdAt, status: "open", items };
+      if (!myId) body.createdByName = visibleText(d.by).trim();
+      if (d.store) body.source = { store: visibleText(d.store), receiptDate: d.receiptDate };
       // A line bought for the client is added to the new project once it exists, as to any project
       ok = await write(async () => {
         if (!tried || !(await ref.get()).exists) await ref.set(body);

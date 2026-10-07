@@ -24,6 +24,7 @@
 
 import { deletionLastDay, PAYMENT_GRACE_DAYS as GRACE_DAYS, READ_ONLY_RETENTION_DAYS as READ_ONLY_DAYS, type ReadOnlyReason, TRIAL_DAYS } from "../data/index.js";
 import type { EmailKind } from "./names.js";
+import { withoutHiddenCharacters } from "../text/hidden-characters.js";
 
 export type InviteRole = "owner" | "contributor" | "viewer";
 
@@ -110,13 +111,12 @@ const ROLE_WHAT: Record<InviteRole, string> = {
   viewer: "Viewers can see the team's projects and inventory, but not change them.",
 };
 
-// eslint-disable-next-line no-control-regex -- removing control characters is the point
-const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
-
 /** A user-supplied name, safe for a subject line or a text body: one line, bounded. */
 export function plainName(value: string, max = 80): string {
-  const flat = String(value).replace(CONTROL, " ").replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat || "your team";
+  // Without control and invisible characters (src/text/hidden-characters.ts): bidi controls could
+  // reorder a subject line. Cut to a few times the limit first, so only that much is scanned.
+  const flat = withoutHiddenCharacters(String(value).slice(0, 4 * max)).replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${withoutHiddenCharacters(flat.slice(0, max - 1)).trimEnd()}…` : flat || "your team";
 }
 
 // Something a mail client might turn into a link: a scheme (https://, mailto:),
@@ -426,7 +426,7 @@ const PLAIN_ADDRESS = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
  * can't add a link of its own. Undefined when there's nothing left.
  */
 export function greetingName(value: string | undefined): string | undefined {
-  if (value === undefined || !value.replace(CONTROL, "").trim()) return undefined;
+  if (value === undefined || !withoutHiddenCharacters(value.slice(0, 160)).trim()) return undefined;
   return plainName(value, 40).replace(LINKISH, (token) => token.replaceAll(".", "[.]").replaceAll(":", "[:]").replaceAll("@", "[at]"));
 }
 

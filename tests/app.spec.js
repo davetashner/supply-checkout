@@ -180,6 +180,17 @@ test("a refused write says why from the runtime when it can", { tag: ["@J9"] }, 
   await expect(page.locator("#notice")).toHaveText("An owner closed this team.");
 });
 
+test("pasting invisible direction or zero-width characters into a new project's client cleans them", { tag: ["@J4.1"] }, async ({ page }) => {
+  // The API refuses them in a client (supply-checkout-1dg.13): pasted, they're cleaned rather than a failed save
+  await openApp(page);
+  await page.getByRole("button", { name: "+ New project" }).click();
+  await page.getByLabel("Client", { exact: true }).focus();
+  await page.keyboard.insertText("Hotel \u202epuorG\u202c\u200b \u{1f3e8}");
+  await page.getByRole("button", { name: "Create project" }).click();
+  await expect(page.locator("#overlay")).toBeHidden();
+  expect(await page.evaluate(() => [...window.__mock.docs.values()].map((d) => d.client).filter((c) => c?.startsWith("Hotel")))).toEqual(["Hotel puorG \u{1f3e8}"]);
+});
+
 test("returning the same item again adds to what's already been returned", { tag: ["@J4.3"] }, async ({ page }) => {
   await openApp(page, {
     seed: {

@@ -264,6 +264,30 @@ describe("parseArtifactExport", () => {
     expect(JSON.stringify(p.errors)).not.toMatch(/Gloves|Glo|Bags/);
   });
 
+  it("refuses control and invisible characters in a project's client, creator's name and store, naming the field only (supply-checkout-1dg.13)", () => {
+    const p = parseArtifactExport(
+      JSON.stringify({
+        app: "Supply Checkout",
+        inventory: [],
+        sheets: [
+          { id: "s1", date: "2026-01-02", client: "Echo \u202eniatnuoM", items: {} },
+          { id: "s2", date: "2026-01-02", client: "Echo", preparedBy: "Sam\u200b", items: {} },
+          { id: "s3", date: "2026-01-02", client: "Echo", createdByName: "Sam\u2066", items: {} },
+          { id: "s4", date: "2026-01-02", client: "Echo", source: { store: "Shop\u{e0041}", receiptDate: "" }, items: {} },
+          { id: "s5", date: "2026-01-02", client: "\u05e0\u05d9\u05e7\u05d9\u05d5\u05df \u{1f9f9}", preparedBy: "Sam", source: { store: "Shop", receiptDate: "" }, items: {} },
+        ],
+      }),
+    );
+    expect(p.errors.map((e) => e.message)).toEqual([
+      "client has an invisible or control character in it",
+      "preparedBy has an invisible or control character in it",
+      "createdByName has an invisible or control character in it",
+      "source.store has an invisible or control character in it",
+    ]);
+    expect(JSON.stringify(p.errors)).not.toMatch(/Echo|Sam|Shop/);
+    expect(p.projects).toEqual([expect.objectContaining({ id: "s5", client: "\u05e0\u05d9\u05e7\u05d9\u05d5\u05df \u{1f9f9}" })]);
+  });
+
   it("refuses two items with one barcode, as the CSV import does", () => {
     const p = parseArtifactExport(
       JSON.stringify({

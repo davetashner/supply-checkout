@@ -20,6 +20,7 @@ import { money } from "./money.js";
 import { listProjectItems, projectAttributes, projectItemsByDatePage, projectKeyFor, readProjectItem } from "./project-items.js";
 import { type Page, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
+import { hasHiddenCharacter, withoutHiddenCharacters } from "../text/hidden-characters.js";
 
 /** One line of a project, as the app writes it: `{code, name, price, cost, out, returned}`. */
 export interface ProjectLine {
@@ -57,7 +58,8 @@ export interface ProjectSource {
 }
 
 const text = (value: unknown, what: string): string => {
-  if (typeof value !== "string" || value.length > 200) throw new InvalidInputError(`Invalid ${what}`);
+  // No control or invisible characters (src/text/hidden-characters.ts), after the length
+  if (typeof value !== "string" || value.length > 200 || hasHiddenCharacter(value)) throw new InvalidInputError(`Invalid ${what}`);
   return value;
 };
 
@@ -67,7 +69,7 @@ function source(value: ProjectSource): ProjectSource {
 }
 
 function client(value: unknown): string {
-  if (typeof value !== "string" || !value.trim() || value.length > 200) throw new InvalidInputError("Invalid client");
+  if (typeof value !== "string" || !value.trim() || value.length > 200 || hasHiddenCharacter(value)) throw new InvalidInputError("Invalid client");
   return value.trim();
 }
 
@@ -81,7 +83,8 @@ function line(value: ProjectLine): ProjectLine {
   }
   return {
     ...(value.code === undefined ? {} : { code: barcode(value.code) }),
-    name: value.name,
+    // A copy of the item's name: control and invisible characters removed, as the commands' copies
+    name: withoutHiddenCharacters(value.name),
     price: money(value.price, "price"),
     ...(value.cost === undefined ? {} : { cost: money(value.cost, "cost") }),
     out: value.out,

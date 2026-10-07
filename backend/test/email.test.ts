@@ -271,6 +271,12 @@ describe("templates", () => {
     expect(greetingName("  \u0000 \n ")).toBeUndefined();
     expect(greetingName("  Sam\nRiley ")).toBe("Sam Riley");
     expect(greetingName("x".repeat(60))).toHaveLength(40);
+    // Bidi controls and zero-width characters can't reorder or hide text in it (supply-checkout-1dg.13)
+    expect(greetingName("Sam \u202eyelir\u202c\u200b")).toBe("Sam yelir");
+    expect(greetingName("\u200b\u2066\u{e0041}")).toBeUndefined();
+    expect(plainName("Echo \u202eecnaelC\u202c Co")).toBe("Echo ecnaelC Co");
+    expect(plainName(`\u{1f469}\u200d\u{1f527} ${"x".repeat(100)}`, 10)).toBe("\u{1f469}\u200d\u{1f527} xxx…");
+    expect(plainName("\u2066\u200b")).toBe("your team");
     expect(greetingName("Sam at evil.example or https://x.example")).toBe("Sam at evil[.]example or https[:]//x[.]example");
     const hostile = renderEmail({ kind: "welcome", givenName: '<a href="https://evil.example">Sam</a>', invited: false, supportAddress: "support@supplycheckout.com" }, { appUrl: APP });
     expect(hostile.html).not.toContain("<a href=\"https://evil");

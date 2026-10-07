@@ -11,7 +11,7 @@
 // subscription says when it ends. Billing needs
 // two-step sign-in (an authenticator app, mfa.js), which Account sets up; when the server
 // refuses billing for want of it, the setup opens.
-import { esc } from "../format.js";
+import { esc, visibleText } from "../format.js";
 import { armButton, closeModal, openModal, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
 import { createDb } from "./db.js";
@@ -215,7 +215,8 @@ export async function start(config) {
       </form>
       ${whoami(me)}`, (el) => { wireWhoami(el, me); wireVerify(el, me, resolve); el.querySelector("#teamForm").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const name = el.querySelector("#teamName").value.trim(), btn = el.querySelector("#createTeam");
+      // Pasted control and invisible characters are cleaned, not sent: the API refuses them (supply-checkout-1dg.13)
+      const name = visibleText(el.querySelector("#teamName").value).trim(), btn = el.querySelector("#createTeam");
       if (!name) return;
       // Same name, same key; a new name after a failed attempt needs a new key
       if (keyName !== null && keyName !== name) key = crypto.randomUUID();
