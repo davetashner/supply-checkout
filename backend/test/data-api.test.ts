@@ -358,6 +358,47 @@ describe("documents (the app's db contract)", () => {
     expect((await call("PUT", "/teams/team-a/projects/s1", { body: { data: { ...project("2026-09-01"), brand: " x " } } })).body.data.brand).toBe(" x ");
   });
 
+  it("refuses control and invisible characters in a product's name and brand, saying which field and never the text (supply-checkout-1dg.12)", async () => {
+    await call("PUT", "/teams/team-a/products/p1", { body: { data: { ...product, brand: "Ansell" } } });
+    const before = table.get("TEAM#team-a", "PRODUCT#p1");
+    // One of each class: C0, C1, a line separator, bidi controls, zero-width characters, a tag character, lone surrogates
+    for (const c of ["\u0009", "\u0085", "\u2028", "\u202e", "\u2067", "\u200f", "\u200b", "\u200d", "\u2060", "\ufeff", "\u{e0041}", "\ud83d", "\udc69"]) {
+      const text = `Glo${c}ves`;
+      for (const field of ["name", "brand"]) {
+        const what = `${field} ${JSON.stringify(text)}`;
+        const put = await call("PUT", "/teams/team-a/products/p1", { body: { data: { ...product, [field]: text } } });
+        expect(put.status, what).toBe(400);
+        expect(put.body.error, what).toEqual({ code: "bad_request", message: `${field} has an invisible or control character in it` });
+        const patch = await call("PATCH", "/teams/team-a/products/p1", { body: { data: { [field]: text } } });
+        expect(patch.body.error, what).toEqual({ code: "bad_request", message: `${field} has an invisible or control character in it` });
+      }
+    }
+    expect(table.get("TEAM#team-a", "PRODUCT#p1")).toEqual(before);
+    // Ordinary text passes: accents, CJK, Hebrew and Arabic written normally, emoji and their ZWJ sequences
+    for (const text of ["Crème brûlée torch", "手袋", "כפפות ניטריל", "قفازات", "🧤 Gloves", "👩\u200d🔧 Mechanic kit", "👨\u200d👩\u200d👧", "می\u200cخواهم"]) {
+      expect((await call("PUT", "/teams/team-a/products/p1", { body: { data: { ...product, name: text, brand: text } } })).body.data, text).toMatchObject({ name: text, brand: text });
+      expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { name: `${text}!`, brand: `${text}!` } } })).body.data, text).toMatchObject({ name: `${text}!`, brand: `${text}!` });
+    }
+  });
+
+  it("saves a product whose name or brand was stored with an invisible character before they were refused, when the write leaves them unchanged (supply-checkout-1dg.12)", async () => {
+    await call("PUT", "/teams/team-a/products/p1", { body: { data: product } });
+    const name = "Nitrile \u202egloves", brand = "Ans\u200bell";
+    table.put({ ...table.get("TEAM#team-a", "PRODUCT#p1"), name, brand });
+    // An unrelated PATCH validates the merged document, which carries both unchanged
+    expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { price: 13 } } })).body.data).toMatchObject({ name, brand, price: 13 });
+    // So does a PUT that repeats them, and a PATCH that sends them as they are
+    expect((await call("PUT", "/teams/team-a/products/p1", { body: { data: { ...product, name, brand, price: 14 } } })).body.data).toMatchObject({ name, brand, price: 14 });
+    expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { name, brand } } })).status).toBe(200);
+    // Changing either to another value with one is refused; cleaning it saves
+    for (const field of ["name", "brand"]) {
+      expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { [field]: "Other \u202etext" } } })).body.error?.code, field).toBe("bad_request");
+    }
+    expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { name: "Nitrile gloves", brand: "Ansell" } } })).body.data).toMatchObject({ name: "Nitrile gloves", brand: "Ansell" });
+    // Once cleaned, the old value is a change like any other
+    expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { name } } })).body.error?.code).toBe("bad_request");
+  });
+
   it("saves a product holding legacy money the write doesn't change, rounding it to cents (ADR 0014)", async () => {
     // Written before the money rule: a price and cost with three decimals
     const legacy = { ...product, price: 2.345, cost: 1.005 };

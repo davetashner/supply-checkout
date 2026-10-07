@@ -293,6 +293,28 @@ test("adds, shows, edits and clears an item's optional brand", { tag: ["@J2.1", 
   expect(await page.evaluate(() => window.__mock.docs.get("products/SKU1"))).toEqual({ code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, stock: 10, updatedAt: expect.any(String) });
 });
 
+test("pasting invisible direction, zero-width or control characters into an item's name or brand cleans them, keeping emoji", { tag: ["@J2.1", "@J2.3"] }, async ({ page }) => {
+  // The API refuses these in a name or brand (supply-checkout-1dg.12): pasted, they're cleaned rather than a failed save
+  await openInventory(page, branded);
+  await page.getByRole("button", { name: "+ Add item" }).click();
+  await modal(page).getByLabel("Item name").focus();
+  await page.keyboard.insertText("Nitrile \u202egloves\u202c\u200b,\tlarge \u{e0041}👩\u200d🔧\u2066");
+  await modal(page).getByLabel("Brand (optional)").focus();
+  await page.keyboard.insertText("\ufeffAn\u200bsell\u0085Pro \u05db\u05e4\u05e4\u05d5\u05ea");
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#overlay")).toBeHidden();
+  const saved = await page.evaluate(() => [...window.__mock.docs.values()].find((d) => d.name?.startsWith("Nitrile")));
+  expect(saved).toMatchObject({ name: "Nitrile gloves, large 👩\u200d🔧", brand: "Ansell Pro \u05db\u05e4\u05e4\u05d5\u05ea" });
+  await expect(inventoryRow(page, "Nitrile gloves").locator(".item-brand")).toHaveText("Ansell Pro \u05db\u05e4\u05e4\u05d5\u05ea");
+
+  // An item stored with one before they were refused is cleaned when next saved
+  await page.evaluate(() => { window.__mock.docs.set("products/SKU1", { ...window.__mock.docs.get("products/SKU1"), name: "Paper \u202etowels", brand: "Bright\u200bleaf" }); window.__mock.notify(); });
+  await inventoryRow(page, "Paper").click();
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#overlay")).toBeHidden();
+  expect(await page.evaluate(() => window.__mock.docs.get("products/SKU1"))).toMatchObject({ name: "Paper towels", brand: "Brightleaf" });
+});
+
 test("inventory search matches an item's brand, and checkout shows it after the name", { tag: ["@J4.2"] }, async ({ page }) => {
   await openApp(page, branded);
   await page.getByRole("button", { name: /Echo Studio/ }).click();

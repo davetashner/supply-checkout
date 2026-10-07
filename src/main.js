@@ -1,7 +1,7 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, markLost, saveItem, addLines, markOf, quickTake, moveLine } from "./moves.js";
-import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY, MAX_BRAND, brandOf, nameWithBrand, brandHTML } from "./format.js";
+import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY, MAX_BRAND, brandOf, nameWithBrand, brandHTML, visibleText } from "./format.js";
 import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts, lostRows, lineLabel, isAdhoc, projectTitle, leftOut } from "./project-math.js";
 import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
@@ -764,7 +764,8 @@ function checkoutModal(s, code, key = keyOf(code), recode = null) {
       let name = prod && prod.name, price = prod ? Number(prod.price) || 0 : 0, oneOff = {}, save = false;
       if (!prod) {
         // A typed price is kept in whole cents, as the API takes it (ADR 0014)
-        name = m.querySelector("#fName").value.trim(); price = Math.max(0, round2(m.querySelector("#fPrice").value));
+        // Without the invisible characters the API refuses in a name (supply-checkout-1dg.12)
+        name = visibleText(m.querySelector("#fName").value).trim(); price = Math.max(0, round2(m.querySelector("#fPrice").value));
         if (!name) return;
         save = code || m.querySelector("#fSave").checked;
         // Not saved to inventory: the line's name and price come from here
@@ -1107,7 +1108,9 @@ function productModal(key) {
     rm && armButton(rm, "Tap to delete", () => busy(form, () => closing(write(() => db.doc("products/" + key).delete(), "Item deleted"))));
     onSubmit(form, () => {
       const code = p ? (p.code || "") : m.querySelector("#fCode").value.trim();
-      const name = m.querySelector("#fName").value.trim(), price = Math.max(0, round2(m.querySelector("#fPrice").value));
+      // Control and invisible characters pasted into the name or brand are cleaned, not sent: the
+      // API refuses them (supply-checkout-1dg.12). A name stored with one is cleaned when next saved.
+      const name = visibleText(m.querySelector("#fName").value).trim(), price = Math.max(0, round2(m.querySelector("#fPrice").value));
       if (!name) return;
       const docKey = p ? key : (code ? keyOf(code) : newItemKey);
       // set replaces the whole item, so start from what's there: fields this form doesn't
@@ -1120,9 +1123,7 @@ function productModal(key) {
       opt("#fStock", "stock", int);
       opt("#fCost", "cost", v => Math.max(0, round2(v)));
       opt("#fPack", "packSize", packInput);
-      // Tabs and other control characters pasted in are spaces: the API refuses them in a brand
-      // eslint-disable-next-line no-control-regex -- replacing control characters is the point
-      opt("#fBrand", "brand", v => v.replace(/[\u0000-\u001f\u007f]+/g, " "));
+      opt("#fBrand", "brand", visibleText);
       opt("#fReorder", "reorderAt", v => Math.min(MAX_COUNT, int(v)));
       opt("#fReorderQty", "reorderQty", v => Math.min(MAX_COUNT, Math.max(1, int(v))));
       // A new reorder level starts afresh: the team's acknowledgment was of the old one
@@ -1228,9 +1229,8 @@ const loadDraft = () => stored(k => { draft = JSON.parse(localStorage.getItem(k)
 const saveDraft = () => stored(k => { draft ? localStorage.setItem(k, JSON.stringify(draft)) : localStorage.removeItem(k); });
 
 // A name or brand on its one line of the prompt's list, as the server quotes it (inventoryList in
-// backend/src/receipts/prompt.ts): no line breaks or control characters, and no "|" of its own
-// eslint-disable-next-line no-control-regex -- removing control characters is the point
-const cellText = (t, max) => String(t || "").replace(/[\s|\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, max);
+// backend/src/receipts/prompt.ts): no line breaks, control or invisible characters, and no "|" of its own
+const cellText = (t, max) => visibleText(visibleText(t || "").replace(/[\s|]+/g, " ").trim().slice(0, max)).trim();
 function receiptPrompt() {
   const inv = Object.entries(products).slice(0, 500);
   const ids = Object.create(null);
@@ -1248,7 +1248,7 @@ function receiptError(msg) {
 // default. perEach: the store sold singles, so a pack item's receipt price is per each.
 function newLine(o) { return { id: uid(), name: "", raw: "", qty: 1, price: 0, dest: "", code: "", match: "", suggested: false, useName: "inv", usePrice: "", perEach: false, ...o }; }
 const lineProd = l => (l.match && products[l.match]) || null;
-const effName = l => { const p = lineProd(l); return p && l.useName === "inv" ? p.name : l.name.trim(); };
+const effName = l => { const p = lineProd(l); return p && l.useName === "inv" ? p.name : visibleText(l.name).trim(); };
 // Units (ADR 0014): a matched item that comes in packs of n takes the receipt's quantity and
 // price as per pack, unless the reviewer says it was priced per each
 const packSizeOf = p => p && Number.isInteger(p.packSize) && p.packSize > 1 ? p.packSize : 1;

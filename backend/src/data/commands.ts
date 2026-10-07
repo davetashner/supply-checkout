@@ -38,6 +38,7 @@ import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
 import { MAX_DOCUMENT_BYTES, projectItem } from "./documents.js";
+import { withoutHiddenCharacters } from "../text/hidden-characters.js";
 import { ConflictError, InvalidInputError, NotFoundError, StockChangedError, TooLargeError, isCancelledAsTooLarge } from "./errors.js";
 import { BOUGHT_SUFFIX, adhocProjectId, barcode, date as checkDate, dateFormat, id as checkId, isCalendarDay, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
 import { count as checkCount, MAX_MONEY, MAX_QUANTITY, money, quantity as checkQuantity, roundCents, storedMoney } from "./money.js";
@@ -265,11 +266,16 @@ export function operationId(value: unknown): string {
   return lower;
 }
 
+/**
+ * A line's name: a copy of the item's, which the checkout and the receipt's
+ * lines send. Control and invisible characters (src/text/hidden-characters.ts) are
+ * removed rather than refused: the copy can come from an item stored before
+ * they were refused, and refusing it would stop those journeys for that item.
+ */
 function lineName(value: unknown): string {
-  if (typeof value !== "string" || !value.trim() || value.trim().length > MAX_NAME) {
-    throw new InvalidInputError(`name must be 1 to ${MAX_NAME} characters`);
-  }
-  return value.trim();
+  const name = typeof value === "string" ? withoutHiddenCharacters(value).trim() : "";
+  if (!name || name.length > MAX_NAME) throw new InvalidInputError(`name must be 1 to ${MAX_NAME} characters`);
+  return name;
 }
 
 /** Clauses that all hold, in any of the alternatives: `(a AND b) OR (a AND c)`, without parentheses. */

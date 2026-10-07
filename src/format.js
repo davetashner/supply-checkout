@@ -33,6 +33,14 @@ export const numOrNull = n => (n === null || n === undefined || n === "" || isNa
 // takes is MAX_BRAND (MAX_BRAND_LENGTH in backend/src/data/brand.ts).
 export const MAX_BRAND = 100;
 export const brandOf = p => String(p.brand ?? "").trim();
+// Text without the control and invisible characters the API refuses in an item's name and brand
+// (supply-checkout-1dg.12): bidi controls, zero-width and tag characters, lone surrogates. Control
+// characters and line separators become a space; the rest have no width and are removed. Kept: a
+// joiner between two emoji (👩‍🔧), joiners in scripts that use them, a subdivision flag's tags.
+// The rule and its reasons are backend/src/text/hidden-characters.ts, whose tests keep this in step.
+const JOINING = ["Arabic", "Syriac", "Nko", "Mongolian", "Devanagari", "Bengali", "Gurmukhi", "Gujarati", "Oriya", "Tamil", "Telugu", "Kannada", "Malayalam", "Sinhala"].map(s => `\\p{sc=${s}}`).join("");
+const HIDDEN = new RegExp(`(\\p{Extended_Pictographic}[\\p{Emoji_Modifier}\\uFE0F]?\\u200D(?=\\p{Extended_Pictographic})|[${JOINING}]\\p{M}*[\\u200C\\u200D](?=[${JOINING}])|\\u{1F3F4}[\\u{E0020}-\\u{E007E}]+\\u{E007F})|[\\p{Cc}\\u2028\\u2029\\p{Bidi_Control}\\u200B-\\u200D\\u2060-\\u2064\\uFEFF\\u{E0000}-\\u{E007F}\\uD800-\\uDFFF]`, "gu");
+export const visibleText = t => String(t).replace(HIDDEN, (c, kept) => kept ?? (/^[\p{Cc}\u2028\u2029]$/u.test(c) ? " " : ""));
 // Where an item's name has one line: its brand after it, "Trash bags · Glad"
 export const nameWithBrand = p => [p.name, brandOf(p)].filter(Boolean).join(" · ");
 // Where it has a line of its own under the name, in lists

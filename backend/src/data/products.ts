@@ -8,6 +8,7 @@ import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { deleteDocument } from "./documents.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
+import { hiddenCharacterProblem } from "../text/hidden-characters.js";
 import { barcode, keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
 import { queryAll, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -31,6 +32,8 @@ export interface ProductFields {
 
 function fields(input: ProductFields): Record<string, unknown> {
   if (typeof input.name !== "string" || !input.name.trim()) throw new InvalidInputError("Invalid product");
+  const problem = hiddenCharacterProblem("name", input.name.trim());
+  if (problem) throw new InvalidInputError(problem);
   if (typeof input.price !== "number" || !Number.isFinite(input.price) || input.price < 0) {
     throw new InvalidInputError("Invalid price");
   }

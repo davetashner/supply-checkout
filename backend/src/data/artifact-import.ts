@@ -59,6 +59,7 @@ import { MAX_DOCUMENT_BYTES } from "./documents.js";
 import { ConflictError, InvalidInputError, TeamClosedError } from "./errors.js";
 import { MAX_NAME_LENGTH, MAX_PACK_SIZE } from "./imports.js";
 import { brandOf } from "./brand.js";
+import { hiddenCharacterProblem } from "../text/hidden-characters.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
 import { MAX_CODE_LENGTH, adhocNumber, isAdhocId, keys, prefixes, strip, teamPartition } from "./keys.js";
 import { legacy } from "./legacy-sheets.js";
@@ -228,7 +229,7 @@ function product(raw: unknown, ignored: (field: string) => void): ArtifactProduc
   return {
     key,
     code: text(raw.code, "code", MAX_CODE_LENGTH, ""),
-    name: text(raw.name, "name", MAX_NAME_LENGTH, ""),
+    name: itemName(raw.name),
     ...(brand === undefined ? {} : { brand }),
     price: amount(raw.price, "price"),
     ...(cost === undefined ? {} : { cost }),
@@ -236,6 +237,14 @@ function product(raw: unknown, ignored: (field: string) => void): ArtifactProduc
     ...(stock === undefined ? {} : { stock }),
     ...(updatedAt === undefined ? {} : { updatedAt }),
   };
+}
+
+/** An item's name (a product's, or a line's copy of it): text with no control or invisible characters (src/text/hidden-characters.ts). */
+function itemName(value: unknown): string {
+  const name = text(value, "name", MAX_NAME_LENGTH, "");
+  const problem = hiddenCharacterProblem("name", name);
+  if (problem) throw new FieldError(problem);
+  return name;
 }
 
 /** A brand by the document routes' rules (brand.ts), as a FieldError. */
@@ -256,7 +265,7 @@ function line(raw: unknown, ignored: (field: string) => void): ArtifactLine {
   const cost = raw.cost === undefined || raw.cost === null ? undefined : amount(raw.cost, "cost");
   return {
     ...(raw.code === undefined || raw.code === null ? {} : { code: text(raw.code, "code", MAX_CODE_LENGTH) }),
-    name: text(raw.name, "name", MAX_NAME_LENGTH, ""),
+    name: itemName(raw.name),
     price: amount(raw.price, "price"),
     ...(cost === undefined ? {} : { cost }),
     out,
