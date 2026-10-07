@@ -14,7 +14,7 @@ async function ruleIds(code: string, filePath: string) {
   return (result?.messages ?? []).map((m) => m.ruleId).filter((r) => r?.startsWith("no-restricted-"));
 }
 
-const HANDLER = "src/handlers/sheets.ts";
+const HANDLER = "src/handlers/projects.ts";
 
 describe("direct DynamoDB client use", () => {
   it.each([
@@ -56,7 +56,7 @@ describe("the data-access module's internals", () => {
   });
 
   it("are open through the entry point", async () => {
-    expect(await ruleIds('import { getSheet } from "../data/index.js";', HANDLER)).toEqual([]);
+    expect(await ruleIds('import { getProject } from "../data/index.js";', HANDLER)).toEqual([]);
     expect(await ruleIds('export const m = await import("../data/index.js");', HANDLER)).toEqual([]);
   });
 
@@ -111,7 +111,7 @@ describe("operator code and old or whole item values (supply-checkout-6uw.5)", (
 
   it("allows the return values the operator-access role permits, and leaves other code alone", async () => {
     for (const file of FILES) expect(await ruleIds('export const input = { ReturnValues: "UPDATED_NEW" };', file)).toEqual([]);
-    expect(await ruleIds('export const input = { ReturnValuesOnConditionCheckFailure: "ALL_OLD" };', "src/data/sheets.ts")).toEqual([]);
+    expect(await ruleIds('export const input = { ReturnValuesOnConditionCheckFailure: "ALL_OLD" };', "src/data/projects.ts")).toEqual([]);
   });
 
   it("keeps the other data-module rules in the ops code", async () => {

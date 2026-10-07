@@ -5,7 +5,7 @@
 // team-context.ts (the lint config enforces that): an operator isn't a member
 // of any team and gets no access to a team's data. It reads teams only from
 // GSI3, the operators' index, whose projection holds the account record and
-// nothing about sheets or inventory. The ops function runs it on the
+// nothing about projects or inventory. The ops function runs it on the
 // operator-access role, which may query that index, update only the comp
 // attributes of the one team its session is tagged with, and put (never
 // update or delete) operator audit items.

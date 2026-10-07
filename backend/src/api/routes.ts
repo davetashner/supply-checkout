@@ -71,6 +71,15 @@ const collectionRoutes = (collection: "products" | "projects", segment: string, 
     { method: "DELETE", path: `/teams/{teamId}/${segment}/{${param}}`, collection, operation: "delete", minRole: "contributor" },
   ].map((r) => ({ ...(r as DataRoute), ...(legacy ? { legacy } : {}) }));
 
+/**
+ * The legacy routes' path segment and parameter (supply-checkout-005.6), the
+ * same as `legacy.sheetsCollection` in src/data/legacy-sheets.ts (a test
+ * checks), repeated because this file has no imports; server release 2
+ * removes them.
+ */
+export const LEGACY_SHEETS_SEGMENT = "sheets";
+const LEGACY_SHEET_ID_PARAM = "sheetId";
+
 /** The commands on one project, under `/projects/{projectId}` or (legacy) `/sheets/{sheetId}`. */
 const projectCommandRoutes = (segment: string, param: string, legacy?: true): DataRoute[] =>
   [
@@ -86,7 +95,7 @@ const projectCommandRoutes = (segment: string, param: string, legacy?: true): Da
 
 const commandRoutes: DataRoute[] = [
   ...projectCommandRoutes("projects", "projectId"),
-  ...projectCommandRoutes("sheets", "sheetId", true),
+  ...projectCommandRoutes(LEGACY_SHEETS_SEGMENT, LEGACY_SHEET_ID_PARAM, true),
   // Quick take onto the team's open General Use project, or the next one (ADR 0017, section 4)
   { method: "POST", path: "/teams/{teamId}/adhoc/checkout", collection: "projects", operation: "quickTake", minRole: "contributor" },
   { method: "POST", path: "/teams/{teamId}/products/{key}/stock", collection: "products", operation: "adjustStock", minRole: "contributor" },
@@ -106,7 +115,7 @@ const commandRoutes: DataRoute[] = [
 export const DATA_ROUTES: readonly DataRoute[] = [
   ...collectionRoutes("products", "products", "key"),
   ...collectionRoutes("projects", "projects", "projectId"),
-  ...collectionRoutes("projects", "sheets", "sheetId", true),
+  ...collectionRoutes("projects", LEGACY_SHEETS_SEGMENT, LEGACY_SHEET_ID_PARAM, true),
   ...commandRoutes,
 ];
 

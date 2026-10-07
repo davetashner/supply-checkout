@@ -1,11 +1,11 @@
-// Checkout sheets, now called projects (ADR 0005, supply-checkout-005.6). One
+// Projects, called checkout sheets before supply-checkout-005.6 (ADR 0005). One
 // item holds a whole project, with its lines in an `items` map keyed by
 // product. A new one is written under `PROJECT#<id>`; through the rename's
 // window an old one can still be under `SHEET#<id>`, and is read, changed and
 // deleted where it is (project-items.ts).
 //
-// Deviation from ADR 0005: the sort key is `SHEET#<sheetId>`, not
-// `SHEET#<date>#<id>`. The date is editable, and a key can't change, so a date
+// Deviation from ADR 0005: the sort key is `PROJECT#<projectId>` (ADR 0005's
+// `SHEET#<sheetId>`), not `<prefix><date>#<id>`. The date is editable, and a key can't change, so a date
 // in the key would turn every date edit into a delete and re-put. Date order
 // comes from GSI1 (`TEAM#<teamId>#PROJECTS`, `<date>#<id>`), whose keys are
 // ordinary attributes that one update can change.
@@ -15,14 +15,15 @@ import { DeleteCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "
 import { type Db, connection, storable } from "./client.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
 import { barcode, date, id as checkId, keys, productKey, strip } from "./keys.js";
+import { legacy } from "./legacy-sheets.js";
 import { money } from "./money.js";
 import { listProjectItems, projectAttributes, projectItemsByDatePage, projectKeyFor, readProjectItem } from "./project-items.js";
 import { type Page, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
-/** One line of a sheet, as the app writes it: `{code, name, price, cost, out, returned}`. */
-export interface SheetLine {
-  /** The item's barcode, empty for an item without one. The sheet CSV exports it as "Barcode". */
+/** One line of a project, as the app writes it: `{code, name, price, cost, out, returned}`. */
+export interface ProjectLine {
+  /** The item's barcode, empty for an item without one. The project CSV exports it as "Barcode". */
   readonly code?: string;
   readonly name: string;
   readonly price: number;
@@ -32,25 +33,25 @@ export interface SheetLine {
   readonly returned: number;
 }
 
-export interface Sheet {
+export interface Project {
   /** "project" for one written since the rename; "sheet" for one the backfill hasn't moved yet. */
-  readonly type: "project" | "sheet";
+  readonly type: "project" | typeof legacy.sheetType;
   readonly id: string;
   readonly client: string;
   readonly date: string;
   readonly status: "open" | "closed";
   readonly createdBy: string;
   readonly createdAt: string;
-  /** Who prepared the sheet, when the app has no signed-in user to put in `createdBy`. */
+  /** Who prepared the project, when the app has no signed-in user to put in `createdBy`. */
   readonly createdByName?: string;
   readonly closedAt?: string;
-  /** The receipt a sheet was made from (receipt scanning). */
-  readonly source?: SheetSource;
-  readonly items: Record<string, SheetLine>;
+  /** The receipt a project was made from (receipt scanning). */
+  readonly source?: ProjectSource;
+  readonly items: Record<string, ProjectLine>;
   readonly version: number;
 }
 
-export interface SheetSource {
+export interface ProjectSource {
   readonly store: string;
   readonly receiptDate: string;
 }
@@ -60,7 +61,7 @@ const text = (value: unknown, what: string): string => {
   return value;
 };
 
-function source(value: SheetSource): SheetSource {
+function source(value: ProjectSource): ProjectSource {
   if (typeof value !== "object" || value === null) throw new InvalidInputError("Invalid source");
   return { store: text(value.store, "store"), receiptDate: text(value.receiptDate, "receipt date") };
 }
@@ -70,13 +71,13 @@ function client(value: unknown): string {
   return value.trim();
 }
 
-function line(value: SheetLine): SheetLine {
+function line(value: ProjectLine): ProjectLine {
   const count = (n: unknown) => typeof n === "number" && Number.isInteger(n) && n >= 0;
   if (
     typeof value?.name !== "string" ||
     !count(value.out) || !count(value.returned) || value.returned > value.out
   ) {
-    throw new InvalidInputError("Invalid sheet line");
+    throw new InvalidInputError("Invalid project line");
   }
   return {
     ...(value.code === undefined ? {} : { code: barcode(value.code) }),
@@ -88,21 +89,21 @@ function line(value: SheetLine): SheetLine {
   };
 }
 
-export async function createSheet(
+export async function createProject(
   db: Db,
   ctx: TeamContext,
   input: {
     readonly client: string;
     readonly date: string;
     readonly createdByName?: string;
-    readonly source?: SheetSource;
-    readonly items?: Record<string, SheetLine>;
+    readonly source?: ProjectSource;
+    readonly items?: Record<string, ProjectLine>;
   },
-): Promise<Sheet> {
+): Promise<Project> {
   writable(db, ctx);
-  const items: Record<string, SheetLine> = {};
+  const items: Record<string, ProjectLine> = {};
   for (const [key, value] of Object.entries(input.items ?? {})) items[productKey(key)] = line(value);
-  const sheet: Sheet = {
+  const project: Project = {
     type: "project",
     id: randomUUID(),
     client: client(input.client),
@@ -118,63 +119,63 @@ export async function createSheet(
   await connection(db).doc.send(
     new PutCommand({
       TableName: db.tableName,
-      Item: storable({ ...sheet, ...projectAttributes(ctx.teamId, sheet.id, sheet.date, "project") }),
+      Item: storable({ ...project, ...projectAttributes(ctx.teamId, project.id, project.date, "project") }),
       ConditionExpression: "attribute_not_exists(PK)",
     }),
   );
-  return sheet;
+  return project;
 }
 
-/** Reads one sheet by ID, strongly consistent, from either of its keys. */
-export async function getSheet(db: Db, ctx: TeamContext, sheetId: string): Promise<Sheet | undefined> {
+/** Reads one project by ID, strongly consistent, from either of its keys. */
+export async function getProject(db: Db, ctx: TeamContext, projectId: string): Promise<Project | undefined> {
   readable(ctx);
-  return strip<Sheet>(await readProjectItem(db, ctx.teamId, sheetId));
+  return strip<Project>(await readProjectItem(db, ctx.teamId, projectId));
 }
 
-/** Every sheet in the team, strongly consistent, in no particular order (the app's initial load). */
-export async function listSheets(db: Db, ctx: TeamContext): Promise<Sheet[]> {
+/** Every project in the team, strongly consistent, in no particular order (the app's initial load). */
+export async function listProjects(db: Db, ctx: TeamContext): Promise<Project[]> {
   readable(ctx);
-  return (await listProjectItems(db, ctx.teamId)).map((item) => strip<Sheet>(item) as Sheet);
+  return (await listProjectItems(db, ctx.teamId)).map((item) => strip<Project>(item) as Project);
 }
 
-/** The key a change to an existing sheet goes to: wherever it is now. */
-async function existingKey(db: Db, ctx: TeamContext, sheetId: string) {
-  return projectKeyFor(ctx.teamId, checkId(sheetId, "sheet ID"), await readProjectItem(db, ctx.teamId, sheetId));
+/** The key a change to an existing project goes to: wherever it is now. */
+async function existingKey(db: Db, ctx: TeamContext, projectId: string) {
+  return projectKeyFor(ctx.teamId, checkId(projectId, "project ID"), await readProjectItem(db, ctx.teamId, projectId));
 }
 
 /**
- * Sheets in date order, newest first by default, optionally within a date
+ * Projects in date order, newest first by default, optionally within a date
  * range, a page at a time. Served by GSI1, so a change can take a moment to
  * appear (GSIs are eventually consistent); live updates cover that gap.
  */
-export async function listSheetsByDate(
+export async function listProjectsByDate(
   db: Db,
   ctx: TeamContext,
   options: { readonly from?: string; readonly to?: string; readonly oldestFirst?: boolean; readonly limit?: number; readonly cursor?: string } = {},
-): Promise<Page<Sheet>> {
+): Promise<Page<Project>> {
   readable(ctx);
   const page = await projectItemsByDatePage(db, ctx.teamId, { from: options.from, to: options.to, forward: options.oldestFirst ?? false, limit: options.limit, cursor: options.cursor });
-  return { items: page.items.map((item) => strip<Sheet>(item) as Sheet), ...(page.cursor ? { cursor: page.cursor } : {}) };
+  return { items: page.items.map((item) => strip<Project>(item) as Project), ...(page.cursor ? { cursor: page.cursor } : {}) };
 }
 
 /**
- * Changes a sheet's client, date, status or preparer's name if nobody else has since
+ * Changes a project's client, date, status or preparer's name if nobody else has since
  * `expectedVersion`. A date change is one update: the key doesn't change, only
  * the index attribute does.
  */
-export async function updateSheet(
+export async function updateProject(
   db: Db,
   ctx: TeamContext,
-  sheetId: string,
+  projectId: string,
   changes: { readonly client?: string; readonly date?: string; readonly status?: "open" | "closed"; readonly createdByName?: string },
   expectedVersion: number,
-): Promise<Sheet> {
+): Promise<Project> {
   writable(db, ctx);
   const fields: Record<string, unknown> = {};
   if (changes.client !== undefined) fields.client = client(changes.client);
   if (changes.date !== undefined) {
     fields.date = date(changes.date);
-    fields.GSI1SK = projectAttributes(ctx.teamId, sheetId, fields.date, "project").GSI1SK;
+    fields.GSI1SK = projectAttributes(ctx.teamId, projectId, fields.date, "project").GSI1SK;
   }
   if (changes.createdByName !== undefined) fields.createdByName = text(changes.createdByName, "name");
   if (changes.status !== undefined) {
@@ -183,27 +184,27 @@ export async function updateSheet(
     if (changes.status === "closed") fields.closedAt = new Date().toISOString();
   }
   const { Attributes } = await connection(db).doc
-    .send(new UpdateCommand({ TableName: db.tableName, Key: await existingKey(db, ctx, sheetId), ...versionedSet(fields, expectedVersion), ReturnValues: "ALL_NEW" }))
-    .catch(conflictOnConditionFailure("This sheet changed; reload and try again"));
-  return strip<Sheet>(Attributes) as Sheet;
+    .send(new UpdateCommand({ TableName: db.tableName, Key: await existingKey(db, ctx, projectId), ...versionedSet(fields, expectedVersion), ReturnValues: "ALL_NEW" }))
+    .catch(conflictOnConditionFailure("This project changed; reload and try again"));
+  return strip<Project>(Attributes) as Project;
 }
 
-/** Sets one line (checkout, return or edit) if the sheet is unchanged since `expectedVersion`. */
-export async function setSheetLine(
+/** Sets one line (checkout, return or edit) if the project is unchanged since `expectedVersion`. */
+export async function setProjectLine(
   db: Db,
   ctx: TeamContext,
-  sheetId: string,
+  projectId: string,
   key: string,
-  value: SheetLine,
+  value: ProjectLine,
   expectedVersion: number,
-): Promise<Sheet> {
+): Promise<Project> {
   writable(db, ctx);
   const update = versionedSet({}, expectedVersion);
   const { Attributes } = await connection(db).doc
     .send(
       new UpdateCommand({
         TableName: db.tableName,
-        Key: await existingKey(db, ctx, sheetId),
+        Key: await existingKey(db, ctx, projectId),
         ...update,
         UpdateExpression: `${update.UpdateExpression}, #items.#line = :line`,
         ExpressionAttributeNames: { ...update.ExpressionAttributeNames, "#items": "items", "#line": productKey(key) },
@@ -211,42 +212,42 @@ export async function setSheetLine(
         ReturnValues: "ALL_NEW",
       }),
     )
-    .catch(conflictOnConditionFailure("This sheet changed; reload and try again"));
-  return strip<Sheet>(Attributes) as Sheet;
+    .catch(conflictOnConditionFailure("This project changed; reload and try again"));
+  return strip<Project>(Attributes) as Project;
 }
 
-export async function removeSheetLine(db: Db, ctx: TeamContext, sheetId: string, key: string, expectedVersion: number): Promise<Sheet> {
+export async function removeProjectLine(db: Db, ctx: TeamContext, projectId: string, key: string, expectedVersion: number): Promise<Project> {
   writable(db, ctx);
   const update = versionedSet({}, expectedVersion);
   const { Attributes } = await connection(db).doc
     .send(
       new UpdateCommand({
         TableName: db.tableName,
-        Key: await existingKey(db, ctx, sheetId),
+        Key: await existingKey(db, ctx, projectId),
         ...update,
         UpdateExpression: `${update.UpdateExpression} REMOVE #items.#line`,
         ExpressionAttributeNames: { ...update.ExpressionAttributeNames, "#items": "items", "#line": productKey(key) },
         ReturnValues: "ALL_NEW",
       }),
     )
-    .catch(conflictOnConditionFailure("This sheet changed; reload and try again"));
-  return strip<Sheet>(Attributes) as Sheet;
+    .catch(conflictOnConditionFailure("This project changed; reload and try again"));
+  return strip<Project>(Attributes) as Project;
 }
 
 /**
- * Deletes a sheet. With `expectedVersion`, only the item as it is now (under
+ * Deletes a project. With `expectedVersion`, only the item as it is now (under
  * whichever key), if its version is still that one; without, it's gone from
  * both keys, as deleteDocument does (project-items.ts).
  */
-export async function deleteSheet(db: Db, ctx: TeamContext, sheetId: string, expectedVersion?: number): Promise<void> {
+export async function deleteProject(db: Db, ctx: TeamContext, projectId: string, expectedVersion?: number): Promise<void> {
   writable(db, ctx);
-  const id = checkId(sheetId, "sheet ID");
+  const id = checkId(projectId, "project ID");
   if (expectedVersion === undefined) {
     await connection(db).doc.send(
       new TransactWriteCommand({
         TransactItems: [
           { Delete: { TableName: db.tableName, Key: keys.project(ctx.teamId, id) } },
-          { Delete: { TableName: db.tableName, Key: keys.sheet(ctx.teamId, id) } },
+          { Delete: { TableName: db.tableName, Key: legacy.sheetKey(ctx.teamId, id) } },
         ],
       }),
     );
@@ -262,5 +263,5 @@ export async function deleteSheet(db: Db, ctx: TeamContext, sheetId: string, exp
         ExpressionAttributeValues: { ":expected": expectedVersion },
       }),
     )
-    .catch(conflictOnConditionFailure("This sheet changed; reload and try again"));
+    .catch(conflictOnConditionFailure("This project changed; reload and try again"));
 }

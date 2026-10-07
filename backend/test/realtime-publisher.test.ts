@@ -7,6 +7,7 @@ import type { DynamoDBRecord } from "aws-lambda";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { audienceChangeFromStream, documentChangeFromStream } from "../src/data/index.js";
 import { keys, prefixes } from "../src/data/keys.js";
+import { legacy } from "../src/data/legacy-sheets.js";
 import { createObservability, type Observability, withObservability } from "../src/observability/index.js";
 import type { Audience } from "../src/realtime/audience.js";
 import { MEMBERS_PER_TEAM } from "../src/data/index.js";
@@ -19,6 +20,7 @@ import {
   COLLECTION_EVENT_FIELDS,
   CONSUMER_TIMEOUT_SECONDS,
   DOCUMENT_SK_PREFIXES,
+  LEGACY_SHEETS_COLLECTION,
   EVENTS_PER_PUBLISH,
   PUBLISH_BUDGET_MS,
   PUBLISH_TIMEOUT_MS,
@@ -66,14 +68,14 @@ function record(eventName: "INSERT" | "MODIFY" | "REMOVE", keys: { PK: string; S
 }
 
 const product = (team: string, key: string) => ({ PK: `TEAM#${team}`, SK: `PRODUCT#${key}` });
-/** A project's item key: under PROJECT#, or (`legacy`) SHEET#, where it is until the rename's backfill moves it. */
-const sheet = (team: string, id: string, legacy = true) => ({ PK: `TEAM#${team}`, SK: `${legacy ? "SHEET" : "PROJECT"}#${id}` });
+/** A project's item key: under PROJECT#, or (`old`) SHEET#, where it is until the rename's backfill moves it. */
+const projectKey = (team: string, id: string, old = false) => ({ PK: `TEAM#${team}`, SK: `${old ? "SHEET" : "PROJECT"}#${id}` });
 const productItem = (key: string, version: number, fields: Item = {}) => ({ type: "product", key, version, name: "Drop cloth", stock: 4, ...fields });
-const sheetItem = (id: string, version: number, fields: Item = {}) => ({
-  type: "sheet",
+const projectItem = (id: string, version: number, fields: Item = {}) => ({
+  type: "project",
   id,
   version,
-  GSI1PK: `TEAM#${TEAM}#SHEETS`,
+  GSI1PK: `TEAM#${TEAM}#PROJECTS`,
   GSI1SK: `2026-09-26#${id}`,
   date: "2026-09-26",
   client: "Echo",
@@ -88,15 +90,15 @@ describe("documentChangeFromStream", () => {
   });
 
   it("maps a project update, under either key, to the projects collection", () => {
-    const change = documentChangeFromStream(record("MODIFY", sheet(TEAM, "s1"), { old: sheetItem("s1", 3), new: sheetItem("s1", 4, { client: "Foxtrot" }) }));
+    const change = documentChangeFromStream(record("MODIFY", projectKey(TEAM, "s1", true), { old: projectItem("s1", 3), new: projectItem("s1", 4, { client: "Foxtrot" }) }));
     expect(change).toEqual({ teamId: TEAM, collection: "projects", id: "s1", op: "put", version: 4 });
-    const moved = documentChangeFromStream(record("MODIFY", sheet(TEAM, "s1", false), { old: sheetItem("s1", 4), new: sheetItem("s1", 5) }));
+    const moved = documentChangeFromStream(record("MODIFY", projectKey(TEAM, "s1"), { old: projectItem("s1", 4), new: projectItem("s1", 5) }));
     expect(moved).toEqual({ teamId: TEAM, collection: "projects", id: "s1", op: "put", version: 5 });
   });
 
   it("maps the rename's backfill moving a project (a SHEET# REMOVE, then a PROJECT# INSERT) to a delete and a put of the same project", () => {
-    expect(documentChangeFromStream(record("REMOVE", sheet(TEAM, "s1"), { old: sheetItem("s1", 5) }))).toEqual({ teamId: TEAM, collection: "projects", id: "s1", op: "delete", version: 5 });
-    expect(documentChangeFromStream(record("INSERT", sheet(TEAM, "s1", false), { new: sheetItem("s1", 5) }))).toEqual({ teamId: TEAM, collection: "projects", id: "s1", op: "put", version: 5 });
+    expect(documentChangeFromStream(record("REMOVE", projectKey(TEAM, "s1", true), { old: projectItem("s1", 5) }))).toEqual({ teamId: TEAM, collection: "projects", id: "s1", op: "delete", version: 5 });
+    expect(documentChangeFromStream(record("INSERT", projectKey(TEAM, "s1"), { new: projectItem("s1", 5) }))).toEqual({ teamId: TEAM, collection: "projects", id: "s1", op: "put", version: 5 });
   });
 
   it("maps a stock ADD, which keeps the version, to a put with the same version", () => {
@@ -107,17 +109,17 @@ describe("documentChangeFromStream", () => {
   });
 
   it("maps a delete to the deleted document's last version", () => {
-    expect(documentChangeFromStream(record("REMOVE", sheet(TEAM, "s1"), { old: sheetItem("s1", 5) }))).toEqual({
+    expect(documentChangeFromStream(record("REMOVE", projectKey(TEAM, "s1"), { old: projectItem("s1", 5) }))).toEqual({
       teamId: TEAM,
       collection: "projects",
       id: "s1",
       op: "delete",
       version: 5,
     });
-    expect(documentChangeFromStream(record("REMOVE", sheet(TEAM, "s1")))).toMatchObject({ op: "delete", version: undefined });
+    expect(documentChangeFromStream(record("REMOVE", projectKey(TEAM, "s1")))).toMatchObject({ op: "delete", version: undefined });
   });
 
-  it("keeps product keys with characters a sheet ID can't have", () => {
+  it("keeps product keys with characters a project ID can't have", () => {
     const key = "Tape, blue #2 (1\")";
     expect(documentChangeFromStream(record("INSERT", product(TEAM, key), { new: productItem(key, 1) }))?.id).toBe(key);
   });
@@ -132,9 +134,9 @@ describe("documentChangeFromStream", () => {
     ["a Stripe link", { PK: "STRIPE#cus_1", SK: "TEAM" }],
     ["a webhook marker", { PK: "WEBHOOK#evt_1", SK: "DONE" }],
     ["a product outside a team partition", { PK: "USER#user-1", SK: "PRODUCT#x" }],
-    ["a product under a partition with extra parts", { PK: `TEAM#${TEAM}#SHEETS`, SK: "PRODUCT#x" }],
+    ["a product under a partition with extra parts", { PK: `TEAM#${TEAM}#PROJECTS`, SK: "PRODUCT#x" }],
     ["a bad team ID", { PK: "TEAM#bad id", SK: "PRODUCT#x" }],
-    ["a bad sheet ID", { PK: `TEAM#${TEAM}`, SK: "SHEET#a#b" }],
+    ["a bad legacy project ID", { PK: `TEAM#${TEAM}`, SK: "SHEET#a#b" }],
     ["a bad project ID", { PK: `TEAM#${TEAM}`, SK: "PROJECT#a#b" }],
     ["a project under another team's index partition", { PK: `TEAM#${TEAM}#PROJECTS`, SK: "PROJECT#x" }],
     ["an empty product key", { PK: `TEAM#${TEAM}`, SK: "PRODUCT#" }],
@@ -168,7 +170,7 @@ describe("audienceChangeFromStream", () => {
     ["a product", product(TEAM, "x"), undefined],
     ["an invite", { PK: `TEAM#${TEAM}`, SK: "INVITE#i1" }, undefined],
     ["a user's team link", { PK: "USER#user-1", SK: `TEAM#${TEAM}` }, undefined],
-    ["the sheets index partition", { PK: `TEAM#${TEAM}#SHEETS`, SK: "META" }, undefined],
+    ["the projects index partition", { PK: `TEAM#${TEAM}#PROJECTS`, SK: "META" }, undefined],
     ["a bad team ID", { PK: "TEAM#bad id", SK: "META" }, undefined],
   ])("for %s", (_, k, expected) => {
     expect(audienceChangeFromStream(record("REMOVE", k))).toBe(expected);
@@ -188,7 +190,8 @@ describe("channels", () => {
   });
 
   it("filters the stream on the document and audience keys the data module uses", () => {
-    expect([...DOCUMENT_SK_PREFIXES]).toEqual([prefixes.product, prefixes.project, prefixes.sheet]);
+    expect([...DOCUMENT_SK_PREFIXES]).toEqual([prefixes.product, prefixes.project, legacy.sheetPrefix]);
+    expect(LEGACY_SHEETS_COLLECTION).toBe(legacy.sheetsCollection);
     expect(AUDIENCE_SK).toEqual({ exact: keys.team(TEAM).SK, prefix: prefixes.member });
   });
 
@@ -221,9 +224,9 @@ describe("changeEvent", () => {
     const items = Object.fromEntries(Array.from({ length: 800 }, (_, i) => [`item-${i}`, { out: 1, returned: 0, note: "x".repeat(30) }]));
     const records = [
       record("INSERT", product(TEAM, "k"), { new: productItem("k", 1, { name: "Secret supplier", notes: "private" }) }),
-      record("MODIFY", sheet(TEAM, "big"), { old: sheetItem("big", 1), new: sheetItem("big", 2, { items, client: "Secret client" }) }),
+      record("MODIFY", projectKey(TEAM, "big"), { old: projectItem("big", 1), new: projectItem("big", 2, { items, client: "Secret client" }) }),
       record("MODIFY", product(TEAM, "k"), { old: productItem("k", 1), new: productItem("k", 1, { stock: 99 }) }),
-      record("REMOVE", sheet(TEAM, "s1"), { old: sheetItem("s1", 5, { client: "Secret client" }) }),
+      record("REMOVE", projectKey(TEAM, "s1"), { old: projectItem("s1", 5, { client: "Secret client" }) }),
     ];
     for (const r of records) {
       const text = changeEvent(r, changeOf(r));
@@ -308,7 +311,7 @@ describe("the stream handler", () => {
     const records = [
       record("INSERT", product(TEAM, "a"), { new: productItem("a", 1) }),
       record("INSERT", { PK: `TEAM#${TEAM}`, SK: "INVITE#i1" }, { new: { teamId: TEAM } }),
-      record("MODIFY", sheet(TEAM_B, "s1"), { old: sheetItem("s1", 1), new: sheetItem("s1", 2) }),
+      record("MODIFY", projectKey(TEAM_B, "s1"), { old: projectItem("s1", 1), new: projectItem("s1", 2) }),
       record("REMOVE", product(TEAM, "b"), { old: productItem("b", 4) }),
     ];
     expect(await run(records)).toEqual({ batchItemFailures: [] });
@@ -610,13 +613,13 @@ describe("the stream handler", () => {
       const imported = products(TEAM, COLLECTION_EVENT_AFTER + 2);
       const records = [
         ...imported.slice(0, 3),
-        record("MODIFY", sheet(TEAM, "s1"), { old: sheetItem("s1", 1), new: sheetItem("s1", 2) }),
+        record("MODIFY", projectKey(TEAM, "s1"), { old: projectItem("s1", 1), new: projectItem("s1", 2) }),
         ...imported.slice(3),
         record("INSERT", product(TEAM_B, "b"), { new: productItem("b", 1) }),
       ];
       expect(await handler()({ Records: records })).toEqual({ batchItemFailures: [] });
       const list = events(`/users/${A1}`);
-      // In the first import record's place, ahead of the sheet change that came after it
+      // In the first import record's place, ahead of the project change that came after it
       expect(list).toEqual([
         { v: 2, teamId: TEAM, eventId: `${imported[0]?.eventID}~${imported.at(-1)?.eventID}`, collection: "products", op: "list", changes: imported.length, at: AT * 1000 },
         { v: 1, teamId: TEAM, eventId: records[3]?.eventID, collection: "projects", id: "s1", op: "put", version: 2, at: AT * 1000 },
@@ -638,7 +641,7 @@ describe("the stream handler", () => {
       members[TEAM] = [A1];
       const records = [
         ...products(TEAM, COLLECTION_EVENT_AFTER),
-        ...Array.from({ length: COLLECTION_EVENT_AFTER }, (_, i) => record("INSERT", sheet(TEAM, `s${i}`), { new: sheetItem(`s${i}`, 1) })),
+        ...Array.from({ length: COLLECTION_EVENT_AFTER }, (_, i) => record("INSERT", projectKey(TEAM, `s${i}`), { new: projectItem(`s${i}`, 1) })),
       ];
       await handler()({ Records: records });
       const list = events(`/users/${A1}`);
@@ -665,7 +668,7 @@ describe("the stream handler", () => {
     });
 
     it("retries from its first record when it doesn't reach every member, counting every change it stands for", async () => {
-      const records = [record("INSERT", sheet(TEAM, "s1"), { new: sheetItem("s1", 1) }), ...products(TEAM, 5)];
+      const records = [record("INSERT", projectKey(TEAM, "s1"), { new: projectItem("s1", 1) }), ...products(TEAM, 5)];
       // All three events are in one chunk: the project (as `projects` and `sheets`) reached A2, the collection event didn't
       answer = async (channel, evs) => (channel === `/users/${A2}` ? { successful: [0, 1], failed: [{ index: 2, code: "BadRequest" }] } : all(evs));
       const result = await handler({ collectionEventAfter: 3 })({ Records: records });
@@ -681,9 +684,9 @@ describe("the stream handler", () => {
         return all(evs);
       };
       members[TEAM] = Array.from({ length: MEMBERS_PER_TEAM }, (_, i) => `m${i}`);
-      const records = [...products(TEAM, STREAM_BATCH_SIZE - 1), record("INSERT", sheet(TEAM, "s1"), { new: sheetItem("s1", 1) })];
+      const records = [...products(TEAM, STREAM_BATCH_SIZE - 1), record("INSERT", projectKey(TEAM, "s1"), { new: projectItem("s1", 1) })];
       const result = await createPublisherHandler({ publish, audience, obs: fakeObservability(), budgetMs: 1_000, now: () => clock, concurrency: 1 })({ Records: records });
-      // The collection event and the sheet were one chunk, which went to all 100 members outside the budget
+      // The collection event and the project were one chunk, which went to all 100 members outside the budget
       expect(result).toEqual({ batchItemFailures: [] });
       expect(published).toHaveLength(MEMBERS_PER_TEAM);
       expect(counts).toEqual({ LiveUpdates: STREAM_BATCH_SIZE });
@@ -770,7 +773,7 @@ describe("the stream handler", () => {
 });
 
 describe("the consumer's logs", () => {
-  // Stream images carry whole items: a MEMBER item's email and name, a sheet's client and lines.
+  // Stream images carry whole items: a MEMBER item's email and name, a project's client and lines.
   // The consumer may read them to find the change, and must never write them out.
   const EMAIL = "crew.member@example.com";
   let out: string[];
@@ -791,7 +794,7 @@ describe("the consumer's logs", () => {
 
   const records = () => [
     record("INSERT", { PK: `TEAM#${TEAM}`, SK: `MEMBER#${A2}` }, { new: { userId: A2, role: "viewer", email: EMAIL, name: "Pat Secretname" } }),
-    record("MODIFY", sheet(TEAM, "s1"), { old: sheetItem("s1", 1, { client: "Secret client" }), new: sheetItem("s1", 2, { client: "Secret client" }) }),
+    record("MODIFY", projectKey(TEAM, "s1"), { old: projectItem("s1", 1, { client: "Secret client" }), new: projectItem("s1", 2, { client: "Secret client" }) }),
     ...Array.from({ length: COLLECTION_EVENT_AFTER + 1 }, (_, i) => record("INSERT", product(TEAM, `k${i}`), { new: productItem(`k${i}`, 1, { name: "Secret supplier" }) })),
     record("REMOVE", product(TEAM_B, "gone"), { old: productItem("gone", 3, { name: "Secret supplier" }) }),
   ];

@@ -97,20 +97,20 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
 6. **Prove the copy path now, with an on-demand backup and copy.** Use the backup role, the same one the plan uses, so this tests the same permissions:
 
    ```bash
-   P="--profile supply-prod --region us-east-1"
-   TABLE_ARN=$(aws dynamodb describe-table --table-name supply-checkout-prod-app --query Table.TableArn --output text $P)
+   P=(--profile supply-prod --region us-east-1)
+   TABLE_ARN=$(aws dynamodb describe-table --table-name supply-checkout-prod-app --query Table.TableArn --output text "${P[@]}")
    ROLE_ARN=$(aws iam get-role --role-name supply-checkout-prod-backup --query Role.Arn --output text --profile supply-prod)
-   COPY_VAULT=$(aws ssm get-parameter --name /supply-checkout/prod/backup/copy-vault-arn --query Parameter.Value --output text $P)
+   COPY_VAULT=$(aws ssm get-parameter --name /supply-checkout/prod/backup/copy-vault-arn --query Parameter.Value --output text "${P[@]}")
 
-   aws backup start-backup-job $P --backup-vault-name supply-checkout-prod-backups \
+   aws backup start-backup-job "${P[@]}" --backup-vault-name supply-checkout-prod-backups \
      --resource-arn "$TABLE_ARN" --iam-role-arn "$ROLE_ARN" --lifecycle DeleteAfterDays=35
-   aws backup describe-backup-job $P --backup-job-id <id>   # until COMPLETED; note RecoveryPointArn
+   aws backup describe-backup-job "${P[@]}" --backup-job-id <id>   # until COMPLETED; note RecoveryPointArn
 
-   aws backup start-copy-job $P --recovery-point-arn <RecoveryPointArn> \
+   aws backup start-copy-job "${P[@]}" --recovery-point-arn <RecoveryPointArn> \
      --source-backup-vault-name supply-checkout-prod-backups \
      --destination-backup-vault-arn "$COPY_VAULT" --iam-role-arn "$ROLE_ARN" \
      --lifecycle DeleteAfterDays=90
-   aws backup describe-copy-job $P --copy-job-id <id>       # until COMPLETED
+   aws backup describe-copy-job "${P[@]}" --copy-job-id <id>       # until COMPLETED
 
    aws backup list-recovery-points-by-backup-vault --backup-vault-name supply-checkout-prod-backup-copies \
      --profile supply-backup --region us-east-1               # the copy is here
@@ -505,7 +505,7 @@ Run these from `backend/` with the owner's SSO profile. Every command prints the
 ```bash
 aws sso login --profile supply-prod
 cd backend && npm ci
-P="--region us-east-1 --profile supply-prod"
+P=(--region us-east-1 --profile supply-prod)
 LIVE=supply-checkout-prod-app
 RESTORED=supply-checkout-prod-app-restore-<yyyymmdd>
 export SUPPLY_CHECKOUT_EXPECTED_ACCOUNT=<prod account ID>   # in your shell only: the script refuses any other account
@@ -518,8 +518,8 @@ Use [drill A or B](#restore-drill) with the target account the live table is in,
 #### 2. Preview
 
 ```bash
-npm run restore -- deletions --table $RESTORED $P      # what would be deleted again
-npm run restore -- copy-back --from $RESTORED --to $LIVE $P   # how many items would be put and deleted
+npm run restore -- deletions --table $RESTORED "${P[@]}"      # what would be deleted again
+npm run restore -- copy-back --from $RESTORED --to $LIVE "${P[@]}"   # how many items would be put and deleted
 ```
 
 Nothing is written. The copy-back counts tell you how long step 5 will take. A `deletions` line listing teams "left for a person" needs [a decision](#a-team-left-for-a-person) before step 4.
@@ -531,10 +531,10 @@ Nothing is written. The copy-back counts tell you how long step 5 will take. A `
 Throttle every function that uses the live table to zero, except the live-update function (`supply-checkout-<env>-live-updates`), which only reads the stream and publishes to clients:
 
 ```bash
-FNS=$(aws lambda list-functions $P --query "Functions[?Environment.Variables.TABLE_NAME=='$LIVE'].FunctionName" --output text \
+FNS=$(aws lambda list-functions "${P[@]}" --query "Functions[?Environment.Variables.TABLE_NAME=='$LIVE'].FunctionName" --output text \
   | tr '\t' '\n' | grep -v -- '-live-updates$')
 echo "$FNS"   # the data, account and ops API functions, the email events handler, the scheduled checks and purge, and the sign-in triggers
-for f in $FNS; do aws lambda put-function-concurrency $P --function-name "$f" --reserved-concurrent-executions 0; done
+for f in $FNS; do aws lambda put-function-concurrency "${P[@]}" --function-name "$f" --reserved-concurrent-executions 0; done
 date -u +%FT%TZ   # throttled
 ```
 
@@ -542,7 +542,7 @@ Throttling stops new invocations, not ones already running. Wait until none are:
 
 ```bash
 for f in $FNS; do
-  echo "$f $(aws cloudwatch get-metric-statistics $P --namespace AWS/Lambda --metric-name ConcurrentExecutions \
+  echo "$f $(aws cloudwatch get-metric-statistics "${P[@]}" --namespace AWS/Lambda --metric-name ConcurrentExecutions \
     --dimensions Name=FunctionName,Value=$f --statistics Maximum --period 60 \
     --start-time $(date -u -v-2M +%FT%TZ) --end-time $(date -u +%FT%TZ) --query 'max(Datapoints[].Maximum)')"
 done   # every one None or 0; if not, wait a minute and check again
@@ -558,8 +558,8 @@ Note the time: the live table's own PITR can take it back to this moment if the 
 Now no more deletions can happen, so the records are complete. It runs only on a restored table (`--live` would allow the live table, with a warning; the runbook never needs it):
 
 ```bash
-npm run restore -- deletions --table $RESTORED $P --apply
-npm run restore -- deletions --table $RESTORED $P      # again: purges 0, removes 0
+npm run restore -- deletions --table $RESTORED "${P[@]}" --apply
+npm run restore -- deletions --table $RESTORED "${P[@]}"      # again: purges 0, removes 0
 ```
 
 For each record it finds in the restored table:
@@ -582,8 +582,8 @@ It exits 1 while a team is left for a person, or while any record version isn't 
 >
 > ```bash
 > aws sso login --profile supply-backup
-> npm run restore -- deletions --table $RESTORED $P --records-profile supply-backup          # dry run
-> npm run restore -- deletions --table $RESTORED $P --records-profile supply-backup --apply
+> npm run restore -- deletions --table $RESTORED "${P[@]}" --records-profile supply-backup          # dry run
+> npm run restore -- deletions --table $RESTORED "${P[@]}" --records-profile supply-backup --apply
 > ```
 >
 > The first line names the copy bucket and the backup account. It's `supply-checkout-<env>-deletions-copy-<region>-<backup account>` unless `--bucket` names another (the old account's own bucket, if that account is still reachable, with a profile that can read it). A record written in the old account's last minutes may not have replicated before it was lost (replication usually takes seconds to minutes); nothing can recover those. If the copy is missing altogether (replication was never set up), the deletions since the recovery point can't be re-applied, and every account and team deleted in the last 90 days may come back: tell the owner, and delete them by hand as their owners ask again.
@@ -596,8 +596,8 @@ The app never lets an account be deleted while it's the only owner of an open te
 
 ```bash
 date -u +%FT%TZ   # copy started
-npm run restore -- copy-back --from $RESTORED --to $LIVE $P --apply
-npm run restore -- copy-back --from $RESTORED --to $LIVE $P   # again: put 0, deleted 0
+npm run restore -- copy-back --from $RESTORED --to $LIVE "${P[@]}" --apply
+npm run restore -- copy-back --from $RESTORED --to $LIVE "${P[@]}"   # again: put 0, deleted 0
 date -u +%FT%TZ   # copy finished
 ```
 
@@ -606,7 +606,7 @@ Every write goes through the live table's stream, so the live-update function pu
 #### 6. Check the live table's settings
 
 ```bash
-npm run restore -- check --table $LIVE $P
+npm run restore -- check --table $LIVE "${P[@]}"
 ```
 
 It checks the table is active, has `GSI1`, `GSI2` and `GSI3` active, KMS encryption, TTL on `expiresAt`, the stream with new and old images, point-in-time recovery, deletion protection and the stack's tags, and exits 1 if anything is wrong. After a copy-back all of these are as they were. If one is wrong, the data stack has drifted: `npx cdk diff supply-checkout-prod-us-east-1-data -c backupCopy=false` shows it (drop the flag once [step 4](#setting-it-up) is done), and a deploy of the data stack puts it back.
@@ -614,8 +614,8 @@ It checks the table is active, has `GSI1`, `GSI2` and `GSI3` active, KMS encrypt
 Also confirm the stream mapping is enabled and on the table's current stream:
 
 ```bash
-aws dynamodb describe-table --table-name $LIVE $P --query Table.LatestStreamArn
-aws lambda list-event-source-mappings --function-name supply-checkout-prod-live-updates $P \
+aws dynamodb describe-table --table-name $LIVE "${P[@]}" --query Table.LatestStreamArn
+aws lambda list-event-source-mappings --function-name supply-checkout-prod-live-updates "${P[@]}" \
   --query 'EventSourceMappings[].[EventSourceArn,State]'   # the same ARN, Enabled
 ```
 
@@ -626,7 +626,7 @@ Repeat [verify the restored table](#verify-the-restored-table)'s item count and 
 #### 8. Writes back on
 
 ```bash
-for f in $FNS; do aws lambda delete-function-concurrency $P --function-name "$f"; done
+for f in $FNS; do aws lambda delete-function-concurrency "${P[@]}" --function-name "$f"; done
 date -u +%FT%TZ   # writes back on
 ```
 
@@ -635,7 +635,7 @@ Sign in, open a team, add a sheet line, and watch the alarms clear and the canar
 Then put every subscribed team's seat quantity right: the copy-back took teams' members back to the recovery point, and step 4 removed deleted accounts, all without a seat sync (the worker reads the live table, so a sync queued during step 4 would have counted the old members). Run the nightly seat reconciliation once by hand, now that the billing worker runs again:
 
 ```bash
-aws lambda invoke $P --function-name supply-checkout-prod-seat-reconcile /dev/stdout   # {"queued": <teams>}
+aws lambda invoke "${P[@]}" --function-name supply-checkout-prod-seat-reconcile /dev/stdout   # {"queued": <teams>}
 ```
 
 The billing worker's `Seat quantity drift` lines name each team it corrected, and Seat counts drifting fires for them: expected after a restore. A team whose quantity went down may need a credit for the time it was overbilled (see "Seat counts drifting: what to do" in [journeys](journeys.md)). Running it again the same day is safe: each run's messages are new deliveries, so none replays an earlier update.

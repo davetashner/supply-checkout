@@ -353,7 +353,7 @@ const CONCURRENCY = 10;
 
 /**
  * Deletes everything a closed team has, if its `purgeAfter` has passed: the
- * whole `TEAM#<teamId>` partition (members, invites, products, sheets,
+ * whole `TEAM#<teamId>` partition (members, invites, products, projects,
  * movements, audit trail, counters), each member's team-switcher row, and the
  * Stripe link. Returns how many items it deleted. Safe to run again after it
  * stopped part-way, and a no-op for a team that isn't closed or isn't due.

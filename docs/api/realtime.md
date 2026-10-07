@@ -108,11 +108,11 @@ Events for a team you've just been added to start within about 30 seconds of joi
 - **`delete`**: drop the document locally. No fetch.
 - **Once**: skip an event whose `eventId` you've already applied (the web app remembers the last 500, `src/aws/live.js`). Events without an `eventId` always go through.
 - **`list`**: re-list the collection (see [Collection events](#collection-events)).
-- **Coalesce**: keep at most one fetch in flight per document; if more events for it arrive meanwhile, fetch once more when it finishes. A busy sheet can change several times a second.
+- **Coalesce**: keep at most one fetch in flight per document; if more events for it arrive meanwhile, fetch once more when it finishes. A busy project can change several times a second.
 - **Bursts**: a bulk write (a CSV import of hundreds of items) usually arrives as collection events, but can still send many document events when the stream splits it into small batches. Don't fetch them all: past a few fetches a second for one collection, hold the events and re-list the collection once they stop. The web app fetches up to 10 documents per collection a second; past that it holds events and re-lists after 300 ms without one, or 2 seconds after the first was held if they keep coming, and it counts the re-list as a full second's fetches (`BURST_FETCHES` and the rest in `src/aws/db.js`). A 200-row import costs each client at most 10 fetches and a re-list or two, not 200 fetches.
 - **Other teams**: drop events whose `teamId` isn't the team on screen, before anything else.
 - **Order**: events for one team arrive in the order the writes happened, but a retry can repeat older events after newer ones. Because every `put` is answered by fetching the current document, a repeated or out-of-order event only costs a fetch; it can't leave stale data on screen.
-- **Your own writes** come back as events too. The write's response already has the new version, so a `put` whose `version` equals the one you just wrote can be skipped for sheets. For products, fetch anyway (stock).
+- **Your own writes** come back as events too. The write's response already has the new version, so a `put` whose `version` equals the one you just wrote can be skipped for projects. For products, fetch anyway (stock).
 
 ## Reconnecting
 
@@ -153,8 +153,8 @@ Acceptance: a change on one device shows on another within 2 seconds at p95 in s
 **End to end (p95 under 2 s).** With two test users in one staging team, run a subscriber and a writer from a laptop:
 
 1. Subscriber: connect and subscribe as user A (a Node script with the `ws` package, or [wscat](https://github.com/websockets/wscat): `wscat -p 13 -s "header-$HEADER" -s aws-appsync-event-ws -c wss://realtime.staging.supplycheckout.com/event/realtime`, then send the `connection_init` and `subscribe` messages above). Record the local time each `data` message arrives, with its `id` and `version`.
-2. Writer: as user B, `PUT /teams/{teamId}/sheets/latency-<n>` 200 times, one every 2 seconds, recording the local time each request was **sent**.
-3. Latency for each write = event arrival − request sent, matched on the sheet ID and version. Take the 95th percentile. It includes the API write, the stream, the consumer and AppSync's fan-out: everything a crew member waits for. Running both on one machine keeps the clocks the same.
+2. Writer: as user B, `PUT /teams/{teamId}/projects/latency-<n>` 200 times, one every 2 seconds, recording the local time each request was **sent**.
+3. Latency for each write = event arrival − request sent, matched on the project ID and version. Take the 95th percentile. It includes the API write, the stream, the consumer and AppSync's fan-out: everything a crew member waits for. Running both on one machine keeps the clocks the same.
 
 **Server side, all the time.** The consumer logs one `Batch` line per invocation with `lagMs` (now minus the oldest record's stream time, which is to the second), and the `Live updates delayed` alarm watches its `IteratorAge`. In Logs Insights, on the log group of `supply-checkout-<env>-live-updates` (the realtime stack's `PublisherLogs`; [Finding a function's log group](../journeys.md#finding-a-functions-log-group)):
 
@@ -164,6 +164,6 @@ filter message = "Batch" | stats pct(lagMs, 95) as p95, count() by bin(1h)
 
 Subtract about 500 ms for the second-precision timestamp. The dashboard's "J4: live updates" graph shows `LiveUpdates` and `LiveUpdateFailures`.
 
-**Reconnect after 5 minutes offline.** In staging, open the app on a phone, turn on airplane mode, have another device check out and return items and create a sheet for 5 minutes, turn airplane mode off, and check that within a few seconds the phone shows the same sheets and counts as the other device, without a manual reload. The adapter's contract tests (a2b) cover the same with a mocked socket.
+**Reconnect after 5 minutes offline.** In staging, open the app on a phone, turn on airplane mode, have another device check out and return items and create a project for 5 minutes, turn airplane mode off, and check that within a few seconds the phone shows the same projects and counts as the other device, without a manual reload. The adapter's contract tests (a2b) cover the same with a mocked socket.
 
 **Another user's channel, and removal.** Subscribe as user A to user B's channel: expect `subscribe_error`. Then, with user B subscribed to their own channel in a raw WebSocket client (not the app, which stops at the first `403`), remove B from the team and keep writing as A: B's socket should get no event for that team from about a second after the removal, and at the latest 30 seconds. Check that B's next fetch gets `403` too.

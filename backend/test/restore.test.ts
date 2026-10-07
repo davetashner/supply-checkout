@@ -83,7 +83,7 @@ describe("deletion records", () => {
     expect(deletionKey("user", "u-1")).toBe("users/u-1.json");
     expect(deletionKey("team", "t_1")).toBe("teams/t_1.json");
     for (const id of ["", "a/b", "../x", "a b", "x".repeat(129), 5 as unknown as string]) expect(() => deletionKey("user", id)).toThrow("Invalid ID");
-    expect(() => deletionKey("sheet" as "user", "s1")).toThrow("Unknown deletion kind");
+    expect(() => deletionKey("project" as "user", "s1")).toThrow("Unknown deletion kind");
   });
 
   it("checks a record: its kind, IDs and time, and closed teams only on a user's", () => {

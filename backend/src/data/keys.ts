@@ -1,6 +1,6 @@
 // Key builders for every entity in ADR 0005. Nothing else builds key strings,
 // and each builder validates its parts so a caller-supplied ID can't reach
-// into another key (for example, a sheet ID containing "#").
+// into another key (for example, a project ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
 import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, INVITE_LIMIT_PREFIX, LAPSE_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, TOTP_ON_SK, VERIFIED_EMAIL_SK, WELCOME_SK } from "./schema.js";
@@ -20,7 +20,7 @@ function isoInstant(value: unknown): string {
   return value;
 }
 
-/** Team, user, sheet, invite, Stripe customer and event IDs: letters, digits, _ and -. */
+/** Team, user, project, invite, Stripe customer and event IDs: letters, digits, _ and -. */
 export function id(value: unknown, what: string): string {
   if (typeof value !== "string" || !ID.test(value)) throw new InvalidInputError(`Invalid ${what}`);
   return value;
@@ -28,7 +28,7 @@ export function id(value: unknown, what: string): string {
 
 /**
  * Product keys come from the app (a barcode or a generated key), so they allow
- * more. Not "__proto__": a product key is also a field name in a sheet's
+ * more. Not "__proto__": a product key is also a field name in a project's
  * `items` map, and JavaScript (and the SDK's marshaller) would treat that one
  * as the map's prototype, not a field. Other built-in names ("constructor",
  * "toString") are fine; code that reads a line by key uses Object.hasOwn.
@@ -41,41 +41,41 @@ export function productKey(value: unknown): string {
 }
 
 /**
- * The suffix of a sheet line for company equipment bought for the client
+ * The suffix of a project line for company equipment bought for the client
  * (ADR 0017, section 2a): `<productKey>:bought`. Only the receipt's lines
  * command (addLines) makes such a line, and no new product may have a key
  * ending in it.
  */
 export const BOUGHT_SUFFIX = ":bought";
 
-/** An ad hoc sheet's ID: `adhoc-<n>`, n from 1 (ADR 0017, section 4). */
+/** A General Use project's ID: `adhoc-<n>`, n from 1 (ADR 0017, section 4). */
 const ADHOC_ID = /^adhoc-([1-9][0-9]{0,8})$/;
 
-/** The ID of the team's `n`th ad hoc sheet. */
-export function adhocSheetId(n: number): string {
-  if (!Number.isInteger(n) || n < 1 || n > 999_999_999) throw new InvalidInputError("Invalid ad hoc sheet number");
+/** The ID of the team's `n`th General Use project. */
+export function adhocProjectId(n: number): string {
+  if (!Number.isInteger(n) || n < 1 || n > 999_999_999) throw new InvalidInputError("Invalid General Use project number");
   return `adhoc-${n}`;
 }
 
-/** The number of an ad hoc sheet's ID (`adhoc-3` is 3), or undefined for any other ID. */
-export function adhocNumber(sheetId: string): number | undefined {
-  const match = ADHOC_ID.exec(sheetId);
+/** The number of a General Use project's ID (`adhoc-3` is 3), or undefined for any other ID. */
+export function adhocNumber(projectId: string): number | undefined {
+  const match = ADHOC_ID.exec(projectId);
   return match ? Number(match[1]) : undefined;
 }
 
-/** True for an ID the ad hoc sheets use (`adhoc-<anything>`): no document write may create one. */
-export const isAdhocId = (sheetId: string): boolean => sheetId.startsWith("adhoc-");
+/** True for an ID the General Use projects use (`adhoc-<anything>`): no document write may create one. */
+export const isAdhocId = (projectId: string): boolean => projectId.startsWith("adhoc-");
 
 /** The longest barcode: the same bound as a product key, which the app makes from the barcode. */
 export const MAX_CODE_LENGTH = 256;
 
-/** A barcode (a product's or a sheet line's `code`): a string, empty for an item without one. */
+/** A barcode (a product's or a project line's `code`): a string, empty for an item without one. */
 export function barcode(value: unknown): string {
   if (typeof value !== "string" || value.length > MAX_CODE_LENGTH) throw new InvalidInputError("Invalid barcode");
   return value;
 }
 
-/** A sheet date, YYYY-MM-DD, as the app stores it. */
+/** A project date, YYYY-MM-DD, as the app stores it. */
 export function date(value: unknown): string {
   if (typeof value !== "string" || !DATE.test(value)) throw new InvalidInputError("Invalid date");
   return value;
@@ -125,19 +125,10 @@ export const keys = {
     SK: `INVITEGUARD#${inviteLimitPartition(emailHash).slice(INVITE_LIMIT_PREFIX.length)}`,
   }),
   product: (teamId: string, key: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `PRODUCT#${productKey(key)}` }),
-  /** A project (formerly a sheet): where new ones are written, and where the rename's backfill moves old ones. */
+  /** A project: where new ones are written, and where the rename's backfill moves old ones (legacy-sheets.ts has the old key). */
   project: (teamId: string, projectId: string) => ({
     PK: `TEAM#${id(teamId, "team ID")}`,
     SK: `PROJECT#${id(projectId, "project ID")}`,
-  }),
-  /**
-   * A project's legacy key, from before the rename (supply-checkout-005.6).
-   * Read, and updated in place, until the backfill has moved the item to
-   * `keys.project`; never used for a new item.
-   */
-  sheet: (teamId: string, sheetId: string) => ({
-    PK: `TEAM#${id(teamId, "team ID")}`,
-    SK: `SHEET#${id(sheetId, "sheet ID")}`,
   }),
   usage: (teamId: string, m: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `USAGE#${month(m)}` }),
   /** Receipts a team read while it wasn't paying: its trial's allowance, counted once for the whole trial (supply-checkout-wxx). */
@@ -218,12 +209,12 @@ export const keys = {
   /** The team's settings (ADR 0017, section 2a): owners write it; only owners read its markup. */
   settings: (teamId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: "SETTINGS" }),
   /**
-   * The team's ad hoc sheets (ADR 0017, section 4): `count`, how many it has
+   * The team's General Use projects (ADR 0017, section 4): `count`, how many it has
    * made (the last is `adhoc-<count>`), and `open`, the ID of the one that's
    * open, if any. The quick take reads it and, in the transaction that takes,
-   * adds to the open sheet or makes the next one, on the condition that its
+   * adds to the open project or makes the next one, on the condition that its
    * `version` is still the one read. Closing, reopening and deleting an ad hoc
-   * sheet update it in the sheet write's transaction (documents.ts).
+   * project update it in the project write's transaction (documents.ts).
    */
   adhoc: (teamId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: "ADHOC" }),
   /** A checkout, return or stock command's record, for replaying a retry (commands.ts). */
@@ -262,8 +253,6 @@ export const prefixes = {
   invite: "INVITE#",
   product: "PRODUCT#",
   project: "PROJECT#",
-  /** Legacy: projects not yet moved by the rename's backfill (supply-checkout-005.6). */
-  sheet: "SHEET#",
   audit: "AUDIT#",
   userTeam: "TEAM#",
 };
@@ -276,12 +265,6 @@ export const gsi1 = {
     GSI1SK: `${date(projectDate)}#${id(projectId, "project ID")}`,
   }),
   projectsPartition: (teamId: string) => `TEAM#${id(teamId, "team ID")}#PROJECTS`,
-  /** Legacy: the date index partition of projects not yet moved by the rename's backfill. */
-  sheetsByDate: (teamId: string, sheetDate: string, sheetId: string) => ({
-    GSI1PK: `TEAM#${id(teamId, "team ID")}#SHEETS`,
-    GSI1SK: `${date(sheetDate)}#${id(sheetId, "sheet ID")}`,
-  }),
-  sheetsPartition: (teamId: string) => `TEAM#${id(teamId, "team ID")}#SHEETS`,
   inviteToken: (tokenHash: string) => ({ GSI1PK: `INVITE#${tokenHash}`, GSI1SK: "INVITE" }),
   /** A closed team's META item, in the partition the purge reads, by when it's due (ISO 8601). */
   closedTeam: (purgeAfter: string, teamId: string) => ({ GSI1PK: CLOSED_TEAMS_PARTITION, GSI1SK: `${purgeAfter}#${id(teamId, "team ID")}` }),

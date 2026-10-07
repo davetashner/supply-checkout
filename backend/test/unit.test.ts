@@ -7,7 +7,7 @@ import {
   createDb,
   ForbiddenError,
   InvalidInputError,
-  listSheetsByDate,
+  listProjectsByDate,
   localRegion,
   TeamContext,
   teamContextForStripeCustomer,
@@ -19,6 +19,7 @@ import { conflictOnConditionFailure, isCancelledAsTooLarge, isItemTooLarge, star
 import { retryDelay } from "../src/data/documents.js";
 import { MAX_MONEY, money } from "../src/data/money.js";
 import { gsi1, keys, strip } from "../src/data/keys.js";
+import { legacy } from "../src/data/legacy-sheets.js";
 import { billingAccess, deletionLastDay, deletionTime, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, PAYMENT_GRACE_DAYS, READ_ONLY_RETENTION_DAYS, teamCounts } from "../src/data/model.js";
 import { tableName } from "../src/data/schema.js";
 import { assertContext, writable } from "../src/data/team-context.js";
@@ -35,14 +36,12 @@ describe("keys (ADR 0005)", () => {
     expect(keys.userTeam("u1", "t1")).toEqual({ PK: "USER#u1", SK: "TEAM#t1" });
     expect(keys.invite("t1", "i1")).toEqual({ PK: "TEAM#t1", SK: "INVITE#i1" });
     expect(keys.product("t1", "0123 456")).toEqual({ PK: "TEAM#t1", SK: "PRODUCT#0123 456" });
-    expect(keys.sheet("t1", "s1")).toEqual({ PK: "TEAM#t1", SK: "SHEET#s1" });
     expect(keys.project("t1", "s1")).toEqual({ PK: "TEAM#t1", SK: "PROJECT#s1" });
     expect(() => keys.project("t1", "a#b")).toThrow(InvalidInputError);
     expect(keys.usage("t1", "2026-09")).toEqual({ PK: "TEAM#t1", SK: "USAGE#2026-09" });
     expect(keys.audit("t1", "2026-09-25T00:00:00.000Z", "e1")).toEqual({ PK: "TEAM#t1", SK: "AUDIT#2026-09-25T00:00:00.000Z#e1" });
     expect(keys.stripe("cus_1")).toEqual({ PK: "STRIPE#cus_1", SK: "TEAM" });
     expect(keys.webhook("evt_1")).toEqual({ PK: "WEBHOOK#evt_1", SK: "DONE" });
-    expect(gsi1.sheetsByDate("t1", "2026-09-25", "s1")).toEqual({ GSI1PK: "TEAM#t1#SHEETS", GSI1SK: "2026-09-25#s1" });
     expect(gsi1.projectsByDate("t1", "2026-09-25", "s1")).toEqual({ GSI1PK: "TEAM#t1#PROJECTS", GSI1SK: "2026-09-25#s1" });
     expect(gsi1.projectsPartition("t1")).toBe("TEAM#t1#PROJECTS");
     expect(() => gsi1.projectsByDate("t1", "25/09/2026", "s1")).toThrow(InvalidInputError);
@@ -50,15 +49,24 @@ describe("keys (ADR 0005)", () => {
   });
 
   it("rejects IDs that could reach into another key", () => {
-    expect(() => keys.team("t1#SHEET")).toThrow(InvalidInputError);
+    expect(() => keys.team("t1#PROJECT")).toThrow(InvalidInputError);
     expect(() => keys.member("t1", "")).toThrow(InvalidInputError);
-    expect(() => keys.sheet("t1", "a".repeat(129))).toThrow(InvalidInputError);
+    expect(() => keys.project("t1", "a".repeat(129))).toThrow(InvalidInputError);
     expect(() => keys.product("t1", "")).toThrow(InvalidInputError);
     expect(() => keys.product("t1", "a\nb")).toThrow(InvalidInputError);
     expect(() => keys.product("t1", "x".repeat(257))).toThrow(InvalidInputError);
     expect(() => keys.usage("t1", "2026-13")).toThrow(InvalidInputError);
-    expect(() => gsi1.sheetsByDate("t1", "25/09/2026", "s1")).toThrow(InvalidInputError);
+    expect(() => gsi1.projectsByDate("t1", "25/09/2026", "s1")).toThrow(InvalidInputError);
     expect(() => keys.team(42 as unknown as string)).toThrow(InvalidInputError);
+  });
+
+  it("builds a project's legacy keys from before the rename, checking the IDs the same way (supply-checkout-005.6)", () => {
+    expect(legacy.sheetKey("t1", "s1")).toEqual({ PK: "TEAM#t1", SK: "SHEET#s1" });
+    expect(legacy.sheetsPartition("t1")).toBe("TEAM#t1#SHEETS");
+    expect(legacy.sheetPrefix).toBe("SHEET#");
+    for (const bad of ["a#b", "a".repeat(129), ""]) expect(() => legacy.sheetKey("t1", bad)).toThrow(InvalidInputError);
+    expect(() => legacy.sheetKey("t1#x", "s1")).toThrow(InvalidInputError);
+    expect(() => legacy.sheetsPartition("t1#x")).toThrow(InvalidInputError);
   });
 
   it("strips key attributes from items leaving the module", () => {
@@ -219,11 +227,11 @@ describe("cursors", async () => {
 
   it.each([
     ["not base64 JSON", "%%%"],
-    ["another team's partition", cursor({ GSI1PK: "TEAM#t2#SHEETS", GSI1SK: "x", PK: "TEAM#t2", SK: "SHEET#s" })],
-    ["an array", cursor(["TEAM#t1#SHEETS"])],
-    ["non-string values", cursor({ GSI1PK: "TEAM#t1#SHEETS", GSI1SK: { S: "x" } })],
+    ["another team's partition", cursor({ GSI1PK: "TEAM#t2#PROJECTS", GSI1SK: "x", PK: "TEAM#t2", SK: "PROJECT#s" })],
+    ["an array", cursor(["TEAM#t1#PROJECTS"])],
+    ["non-string values", cursor({ GSI1PK: "TEAM#t1#PROJECTS", GSI1SK: { S: "x" } })],
   ])("rejects %s before querying", async (_label, value) => {
-    await expect(listSheetsByDate(offline, ctx, { cursor: value })).rejects.toThrow(InvalidInputError);
+    await expect(listProjectsByDate(offline, ctx, { cursor: value })).rejects.toThrow(InvalidInputError);
   });
 });
 

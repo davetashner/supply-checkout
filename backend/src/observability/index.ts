@@ -11,9 +11,9 @@
 //
 // Usage in a handler:
 //
-//   const obs = createObservability({ service: "sheets" });
+//   const obs = createObservability({ service: "projects" });
 //   export const handler = withObservability(obs, async (event) => {
-//     obs.logger.info("Checking out", { sheetId });
+//     obs.logger.info("Checking out", { projectId });
 //     obs.count(BusinessMetric.Checkouts, items.length, { teamId });
 //     ...
 //   });
@@ -27,7 +27,7 @@ export { BusinessMetric, type BusinessMetricName, METRICS_NAMESPACE, REGION_DIME
 export type { Logger } from "@aws-lambda-powertools/logger";
 
 export interface ObservabilityOptions {
-  /** The function's service name, e.g. "sheets". Defaults to POWERTOOLS_SERVICE_NAME. */
+  /** The function's service name, e.g. "projects". Defaults to POWERTOOLS_SERVICE_NAME. */
   readonly service?: string;
   /** Defaults to process.env. */
   readonly env?: NodeJS.ProcessEnv;

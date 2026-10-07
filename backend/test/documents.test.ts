@@ -5,16 +5,17 @@ import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { connection } from "../src/data/client.js";
 import { keys } from "../src/data/keys.js";
+import { legacy } from "../src/data/legacy-sheets.js";
 import {
   adjustStock,
   ConflictError,
-  createSheet,
+  createProject,
   createTeam,
   deleteDocument,
   ForbiddenError,
   getDocument,
   getProduct,
-  getSheet,
+  getProject,
   InvalidInputError,
   listDocuments,
   listMovements,
@@ -38,7 +39,7 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
 
   it("stores documents as the typed items, with keys, index attributes and a version", async () => {
     const ctx = await team();
-    const { after } = await setDocument(db, ctx, "sheets", "s1", { client: "Echo", date: "2026-09-01", status: "open", items: { a: { out: 2, returned: 0, name: "Gloves", price: 1, code: "A" } } });
+    const { after } = await setDocument(db, ctx, "projects", "s1", { client: "Echo", date: "2026-09-01", status: "open", items: { a: { out: 2, returned: 0, name: "Gloves", price: 1, code: "A" } } });
     expect(after.version).toBe(1);
     // A new project's item: PROJECT#, in the #PROJECTS date index partition (supply-checkout-005.6)
     expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1")).toBeUndefined();
@@ -51,58 +52,58 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
       client: "Echo",
     });
     // The typed functions read it, and documents read what they write
-    expect(await getSheet(db, ctx, "s1")).toMatchObject({ id: "s1", client: "Echo", version: 1 });
-    const typed = await createSheet(db, ctx, { client: "Typed", date: "2026-09-02" });
-    expect(await getDocument(db, ctx, "sheets", typed.id)).toMatchObject({ id: typed.id, version: 1, data: { client: "Typed", date: "2026-09-02", status: "open" } });
+    expect(await getProject(db, ctx, "s1")).toMatchObject({ id: "s1", client: "Echo", version: 1 });
+    const typed = await createProject(db, ctx, { client: "Typed", date: "2026-09-02" });
+    expect(await getDocument(db, ctx, "projects", typed.id)).toMatchObject({ id: typed.id, version: 1, data: { client: "Typed", date: "2026-09-02", status: "open" } });
   });
 
   it("deep-merges updates and bumps the version", async () => {
     const ctx = await team();
-    await setDocument(db, ctx, "sheets", "s1", { client: "Echo", date: "2026-09-01", items: { a: { out: 2, returned: 0 } } });
-    const { before, after } = await updateDocument(db, ctx, "sheets", "s1", { items: { a: { returned: 1 }, b: { out: 1, returned: 0 } } });
+    await setDocument(db, ctx, "projects", "s1", { client: "Echo", date: "2026-09-01", items: { a: { out: 2, returned: 0 } } });
+    const { before, after } = await updateDocument(db, ctx, "projects", "s1", { items: { a: { returned: 1 }, b: { out: 1, returned: 0 } } });
     expect(before?.data.items).toEqual({ a: { out: 2, returned: 0 } });
     expect(after).toEqual({ id: "s1", version: 2, data: { client: "Echo", date: "2026-09-01", items: { a: { out: 2, returned: 1 }, b: { out: 1, returned: 0 } } } });
-    expect(await getDocument(db, ctx, "sheets", "s1")).toEqual(after);
-    await expect(updateDocument(db, ctx, "sheets", "missing", { a: 1 })).rejects.toThrow(NotFoundError);
+    expect(await getDocument(db, ctx, "projects", "s1")).toEqual(after);
+    await expect(updateDocument(db, ctx, "projects", "missing", { a: 1 })).rejects.toThrow(NotFoundError);
   });
 
-  it("keeps each sheet line's barcode through set and deep-merge update", async () => {
+  it("keeps each project line's barcode through set and deep-merge update", async () => {
     const ctx = await team();
     const gloves = { code: "0123456789", name: "Gloves", price: 12.5, out: 3, returned: 0 };
-    await setDocument(db, ctx, "sheets", "s1", { client: "Echo", date: "2026-09-01", status: "open", items: { "0123456789": gloves } });
-    expect((await getDocument(db, ctx, "sheets", "s1"))?.data.items).toEqual({ "0123456789": gloves });
+    await setDocument(db, ctx, "projects", "s1", { client: "Echo", date: "2026-09-01", status: "open", items: { "0123456789": gloves } });
+    expect((await getDocument(db, ctx, "projects", "s1"))?.data.items).toEqual({ "0123456789": gloves });
     // A checkout adds a line; a return changes one field and leaves the code
-    await updateDocument(db, ctx, "sheets", "s1", { items: { "nb-1": { code: "", name: "Rags", price: 1, out: 1, returned: 0 } } });
-    await updateDocument(db, ctx, "sheets", "s1", { items: { "0123456789": { returned: 2 } } });
-    expect((await getDocument(db, ctx, "sheets", "s1"))?.data.items).toEqual({ "0123456789": { ...gloves, returned: 2 }, "nb-1": { code: "", name: "Rags", price: 1, out: 1, returned: 0 } });
+    await updateDocument(db, ctx, "projects", "s1", { items: { "nb-1": { code: "", name: "Rags", price: 1, out: 1, returned: 0 } } });
+    await updateDocument(db, ctx, "projects", "s1", { items: { "0123456789": { returned: 2 } } });
+    expect((await getDocument(db, ctx, "projects", "s1"))?.data.items).toEqual({ "0123456789": { ...gloves, returned: 2 }, "nb-1": { code: "", name: "Rags", price: 1, out: 1, returned: 0 } });
     // The typed functions read it too
-    expect((await getSheet(db, ctx, "s1"))?.items["0123456789"]?.code).toBe("0123456789");
+    expect((await getProject(db, ctx, "s1"))?.items["0123456789"]?.code).toBe("0123456789");
     // A barcode is bounded like a product key, in either write
-    await expect(setDocument(db, ctx, "sheets", "s2", { items: { a: { ...gloves, code: "1".repeat(257) } } })).rejects.toThrow(InvalidInputError);
-    await expect(updateDocument(db, ctx, "sheets", "s1", { items: { a: { code: 5 } } })).rejects.toThrow(InvalidInputError);
+    await expect(setDocument(db, ctx, "projects", "s2", { items: { a: { ...gloves, code: "1".repeat(257) } } })).rejects.toThrow(InvalidInputError);
+    await expect(updateDocument(db, ctx, "projects", "s1", { items: { a: { code: 5 } } })).rejects.toThrow(InvalidInputError);
     // So is a line's cost each (ADR 0014): kept as written, refused unless it's an amount in whole cents
-    await updateDocument(db, ctx, "sheets", "s1", { items: { "nb-1": { cost: 0.75 } } });
-    expect((await getDocument(db, ctx, "sheets", "s1"))?.data.items).toMatchObject({ "nb-1": { name: "Rags", cost: 0.75 } });
-    expect((await getSheet(db, ctx, "s1"))?.items["nb-1"]?.cost).toBe(0.75);
-    await expect(setDocument(db, ctx, "sheets", "s2", { items: { a: { ...gloves, cost: -1 } } })).rejects.toThrow(InvalidInputError);
-    await expect(updateDocument(db, ctx, "sheets", "s1", { items: { a: { cost: 0.001 } } })).rejects.toThrow(InvalidInputError);
+    await updateDocument(db, ctx, "projects", "s1", { items: { "nb-1": { cost: 0.75 } } });
+    expect((await getDocument(db, ctx, "projects", "s1"))?.data.items).toMatchObject({ "nb-1": { name: "Rags", cost: 0.75 } });
+    expect((await getProject(db, ctx, "s1"))?.items["nb-1"]?.cost).toBe(0.75);
+    await expect(setDocument(db, ctx, "projects", "s2", { items: { a: { ...gloves, cost: -1 } } })).rejects.toThrow(InvalidInputError);
+    await expect(updateDocument(db, ctx, "projects", "s1", { items: { a: { cost: 0.001 } } })).rejects.toThrow(InvalidInputError);
   });
 
   it("lists by ID (consistent) or by date (the index), a page at a time", async () => {
     const ctx = await team();
-    await setDocument(db, ctx, "sheets", "s1", { date: "2026-09-01" });
-    await setDocument(db, ctx, "sheets", "s2", { date: "2026-09-20" });
-    await setDocument(db, ctx, "sheets", "s3", { client: "undated" });
+    await setDocument(db, ctx, "projects", "s1", { date: "2026-09-01" });
+    await setDocument(db, ctx, "projects", "s2", { date: "2026-09-20" });
+    await setDocument(db, ctx, "projects", "s3", { client: "undated" });
     await setDocument(db, ctx, "products", "p1", { name: "Gloves" });
     const ids = (docs: { id: string }[]) => docs.map((d) => d.id);
-    expect(ids((await listDocuments(db, ctx, "sheets")).items)).toEqual(["s1", "s2", "s3"]);
+    expect(ids((await listDocuments(db, ctx, "projects")).items)).toEqual(["s1", "s2", "s3"]);
     expect(ids((await listDocuments(db, ctx, "products")).items)).toEqual(["p1"]);
-    const first = await listDocuments(db, ctx, "sheets", { orderBy: "date", descending: true, limit: 2 });
+    const first = await listDocuments(db, ctx, "projects", { orderBy: "date", descending: true, limit: 2 });
     expect(ids(first.items)).toEqual(["s2", "s1"]);
-    const second = await listDocuments(db, ctx, "sheets", { orderBy: "date", descending: true, limit: 2, cursor: first.cursor });
+    const second = await listDocuments(db, ctx, "projects", { orderBy: "date", descending: true, limit: 2, cursor: first.cursor });
     expect(ids(second.items)).toEqual(["s3"]);
     // A cursor from one listing can't be used on another
-    const products = await listDocuments(db, ctx, "sheets", { limit: 1 });
+    const products = await listDocuments(db, ctx, "projects", { limit: 1 });
     await expect(listDocuments(db, ctx, "products", { cursor: products.cursor })).rejects.toThrow(InvalidInputError);
     await expect(listDocuments(db, ctx, "products", { orderBy: "date" })).rejects.toThrow(InvalidInputError);
   });
@@ -147,15 +148,15 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p1")).toMatchObject({ version: 4, stock: 5 });
   });
 
-  it("saves a sheet with a legacy line cost when another line changes, rounding it to cents", async () => {
+  it("saves a project with a legacy line cost when another line changes, rounding it to cents, in place under its old key", async () => {
     const ctx = await team();
-    const legacy = { code: "A", name: "Gloves", price: 2.345, cost: 1.005, out: 2, returned: 0 };
-    await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.sheet(ctx.teamId, "s1"), type: "sheet", id: "s1", version: 1, client: "Echo", items: { a: legacy } } }));
-    const { after } = await updateDocument(db, ctx, "sheets", "s1", { items: { b: { code: "B", name: "Rags", price: 1, out: 1, returned: 0 } } });
+    const oldLine = { code: "A", name: "Gloves", price: 2.345, cost: 1.005, out: 2, returned: 0 };
+    await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...legacy.sheetKey(ctx.teamId, "s1"), type: "sheet", id: "s1", version: 1, client: "Echo", items: { a: oldLine } } }));
+    const { after } = await updateDocument(db, ctx, "projects", "s1", { items: { b: { code: "B", name: "Rags", price: 1, out: 1, returned: 0 } } });
     expect(after.data.items).toMatchObject({ a: { price: 2.35, cost: 1.01 }, b: { price: 1 } });
     expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1")).toMatchObject({ version: 2, items: { a: { price: 2.35, cost: 1.01 } } });
-    await expect(updateDocument(db, ctx, "sheets", "s1", { items: { a: { cost: 1.006 } } })).rejects.toThrow(InvalidInputError);
-    await expect(updateDocument(db, ctx, "sheets", "s1", { items: { b: { price: 1.001 } } })).rejects.toThrow(InvalidInputError);
+    await expect(updateDocument(db, ctx, "projects", "s1", { items: { a: { cost: 1.006 } } })).rejects.toThrow(InvalidInputError);
+    await expect(updateDocument(db, ctx, "projects", "s1", { items: { b: { price: 1.001 } } })).rejects.toThrow(InvalidInputError);
   });
 
   it("saves a product with legacy price and cost when another field changes, rounding them to cents", async () => {
@@ -207,7 +208,7 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     await expect(deleteDocument(db, viewer, "products", "p1")).rejects.toThrow(ForbiddenError);
     expect(await getDocument(db, viewer, "products", "p1")).toBeUndefined();
     await expect(setDocument(db, owner, "products", "p1", { teamId: "other" })).rejects.toThrow(InvalidInputError);
-    await expect(setDocument(db, owner, "sheets", "s1", { big: "x".repeat(MAX_DOCUMENT_BYTES) })).rejects.toThrow(TooLargeError);
+    await expect(setDocument(db, owner, "projects", "s1", { big: "x".repeat(MAX_DOCUMENT_BYTES) })).rejects.toThrow(TooLargeError);
   });
   it("lists projects under PROJECT# and SHEET# once each, by ID and by date, in pages of any size (supply-checkout-005.6)", async () => {
     const ctx = await team();
@@ -224,6 +225,7 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
       const seen: string[] = [];
       let cursor: string | undefined;
       for (let pages = 0; pages < 30; pages++) {
+        // By the collection's old name, which means the same
         const page = await listDocuments(db, ctx, "sheets", { ...options, cursor });
         if (options.limit !== undefined) expect(page.items.length).toBeLessThanOrEqual(options.limit);
         seen.push(...page.items.map((d) => d.id));

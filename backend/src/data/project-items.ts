@@ -20,28 +20,30 @@
 //   `SHEET#` item whose `PROJECT#` twin exists, which only a manual mix
 //   could leave (the backfill never does).
 //
-// Server release 2 (plan section 3, step 5) removes the `SHEET#` half.
+// Server release 2 (plan section 3, step 5) removes the `SHEET#` half, with
+// legacy-sheets.ts.
 
 import { GetCommand, QueryCommand, type QueryCommandOutput } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { InvalidInputError } from "./errors.js";
 import { date as checkDate, gsi1, keys, prefixes, teamPartition } from "./keys.js";
+import { legacy } from "./legacy-sheets.js";
 import type { Page } from "./query.js";
 import { GSI1 } from "./schema.js";
 
 type Item = Record<string, unknown>;
 
 /** Where a project's item is: the new layout, or the old one the backfill hasn't moved yet. */
-export type ProjectLayout = "project" | "sheet";
+export type ProjectLayout = "project" | typeof legacy.sheetType;
 
 /** The layout of a stored project item, by its sort key. */
 export function layoutOf(item: Item | undefined): ProjectLayout {
-  return typeof item?.SK === "string" && item.SK.startsWith(prefixes.sheet) ? "sheet" : "project";
+  return typeof item?.SK === "string" && item.SK.startsWith(legacy.sheetPrefix) ? legacy.sheetType : "project";
 }
 
 /** The key of project `projectId`'s item in `layout`. */
 export function projectKey(teamId: string, projectId: string, layout: ProjectLayout): { PK: string; SK: string } {
-  return layout === "sheet" ? keys.sheet(teamId, projectId) : keys.project(teamId, projectId);
+  return layout === legacy.sheetType ? legacy.sheetKey(teamId, projectId) : keys.project(teamId, projectId);
 }
 
 /**
@@ -64,7 +66,7 @@ export function projectAttributes(teamId: string, projectId: string, rawDate: un
   } catch {
     // no date, or not one: sorts first
   }
-  const partition = layout === "sheet" ? gsi1.sheetsPartition(teamId) : gsi1.projectsPartition(teamId);
+  const partition = layout === legacy.sheetType ? legacy.sheetsPartition(teamId) : gsi1.projectsPartition(teamId);
   return { ...projectKey(teamId, projectId, layout), GSI1PK: partition, GSI1SK: `${day}#${projectId}`, type: layout };
 }
 
@@ -79,14 +81,14 @@ async function getItem(db: Db, key: Item): Promise<Item | undefined> {
  * Both reads are in the team's partition.
  */
 export async function readProjectItem(db: Db, teamId: string, projectId: string): Promise<Item | undefined> {
-  const [current, legacy] = await Promise.all([getItem(db, keys.project(teamId, projectId)), getItem(db, keys.sheet(teamId, projectId))]);
-  return current ?? legacy;
+  const [current, old] = await Promise.all([getItem(db, keys.project(teamId, projectId)), getItem(db, legacy.sheetKey(teamId, projectId))]);
+  return current ?? old;
 }
 
 /** The project ID in a project item's sort key. */
 function idOf(item: Item): string {
   const sk = String(item.SK);
-  return sk.slice((sk.startsWith(prefixes.sheet) ? prefixes.sheet : prefixes.project).length);
+  return sk.slice((sk.startsWith(legacy.sheetPrefix) ? legacy.sheetPrefix : prefixes.project).length);
 }
 
 /** How many twin checks (GetItem) are in flight at once. */
@@ -119,10 +121,10 @@ async function withProjectItem(db: Db, teamId: string, ids: readonly string[]): 
  * in the team, so nothing else does either.
  */
 async function withoutTwins(db: Db, teamId: string, items: Item[], complete = false): Promise<Item[]> {
-  const legacy = items.filter((item) => layoutOf(item) === "sheet").map(idOf);
-  if (legacy.length === 0) return items;
+  const old = items.filter((item) => layoutOf(item) === legacy.sheetType).map(idOf);
+  if (old.length === 0) return items;
   const here = new Set(items.filter((item) => layoutOf(item) === "project").map(idOf));
-  const moved = complete ? here : new Set([...here, ...(await withProjectItem(db, teamId, legacy.filter((id) => !here.has(id))))]);
+  const moved = complete ? here : new Set([...here, ...(await withProjectItem(db, teamId, old.filter((id) => !here.has(id))))]);
   return items.filter((item) => layoutOf(item) === "project" || !moved.has(idOf(item)));
 }
 
@@ -130,7 +132,7 @@ async function withoutTwins(db: Db, teamId: string, items: Item[], complete = fa
 export async function listProjectItems(db: Db, teamId: string): Promise<Item[]> {
   const pk = teamPartition(teamId);
   const out: Item[] = [];
-  for (const prefix of [prefixes.project, prefixes.sheet]) {
+  for (const prefix of [prefixes.project, legacy.sheetPrefix]) {
     let ExclusiveStartKey: Item | undefined;
     do {
       const page: QueryCommandOutput = await connection(db).doc.send(
@@ -193,8 +195,8 @@ export async function projectItemsPage(db: Db, teamId: string, options: { readon
   let phase = 0;
   if (options.cursor !== undefined) {
     const raw = decode(options.cursor);
-    phase = isMap(raw) && typeof raw.SK === "string" && raw.SK.startsWith(prefixes.sheet) ? 1 : 0;
-    start = startKey(raw, teamId, phase ? prefixes.sheet : prefixes.project);
+    phase = isMap(raw) && typeof raw.SK === "string" && raw.SK.startsWith(legacy.sheetPrefix) ? 1 : 0;
+    start = startKey(raw, teamId, phase ? legacy.sheetPrefix : prefixes.project);
   }
   const items: Item[] = [];
   let cursor: string | undefined;
@@ -204,7 +206,7 @@ export async function projectItemsPage(db: Db, teamId: string, options: { readon
       new QueryCommand({
         TableName: db.tableName,
         KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
-        ExpressionAttributeValues: { ":pk": pk, ":prefix": phase ? prefixes.sheet : prefixes.project },
+        ExpressionAttributeValues: { ":pk": pk, ":prefix": phase ? legacy.sheetPrefix : prefixes.project },
         ConsistentRead: true,
         Limit: left,
         ExclusiveStartKey: start,
@@ -239,8 +241,8 @@ export async function projectItemsByDatePage(
   teamId: string,
   options: { readonly from?: string; readonly to?: string; readonly forward: boolean; readonly limit?: number; readonly cursor?: string },
 ): Promise<Page<Item>> {
-  const partitions = [gsi1.projectsPartition(teamId), gsi1.sheetsPartition(teamId)] as const;
-  const skPrefixes = [prefixes.project, prefixes.sheet] as const;
+  const partitions = [gsi1.projectsPartition(teamId), legacy.sheetsPartition(teamId)] as const;
+  const skPrefixes = [prefixes.project, legacy.sheetPrefix] as const;
   let positions: Position[] = [null, null];
   if (options.cursor !== undefined) {
     const raw = decode(options.cursor);

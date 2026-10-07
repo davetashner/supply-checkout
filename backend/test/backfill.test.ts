@@ -56,7 +56,7 @@ describe("expectedOpsKeys", () => {
     expect(expectedOpsKeys({ PK: "TEAM#t1", SK: "MEMBER#u1", role: "owner" })).toEqual({ GSI3PK: "OPS#OWNERS#t1", GSI3SK: "u1" });
     expect(expectedOpsKeys({ PK: "OPAUDIT#t1", SK: "AUDIT#2026-09-27T10:00:00.000Z#e1" })).toEqual({ GSI3PK: "OPS#AUDIT#2026-09", GSI3SK: "2026-09-27T10:00:00.000Z#e1" });
     expect(expectedOpsKeys({ PK: "TEAM#t1", SK: "MEMBER#u1", role: "contributor" })).toBeUndefined();
-    expect(expectedOpsKeys({ PK: "TEAM#t1", SK: "SHEET#s1" })).toBeUndefined();
+    expect(expectedOpsKeys({ PK: "TEAM#t1", SK: "PROJECT#s1" })).toBeUndefined();
     expect(expectedOpsKeys({ PK: "OPAUDIT#t1", SK: "REQUEST#abc" })).toBeUndefined();
     expect(expectedOpsKeys({ PK: "TEAM#bad id", SK: "META" })).toBeUndefined();
     expect(expectedOpsKeys({ PK: "USER#u1", SK: "TEAM#t1" })).toBeUndefined();
@@ -125,10 +125,10 @@ describe("the backfill CLI's arguments", () => {
       "  keys that aren't valid IDs, left alone: 1",
       "Done.",
     ]);
-    expect(formatReport({ mode: "stray-ops-keys", apply: false, found: 1, changed: 1, raced: 0, invalid: 0, strays: ["TEAM#t1 SHEET: 1"] })).toEqual([
+    expect(formatReport({ mode: "stray-ops-keys", apply: false, found: 1, changed: 1, raced: 0, invalid: 0, strays: ["TEAM#t1 PROJECT: 1"] })).toEqual([
       "Items with GSI3 keys they shouldn't have: 1",
       "  keys removed: 1 (dry run: would be)",
-      "  TEAM#t1 SHEET: 1",
+      "  TEAM#t1 PROJECT: 1",
       "Dry run: nothing was written. Run again with --apply to write.",
     ]);
     expect(formatReport({ mode: "notice-address", apply: true, found: 2, changed: 1, raced: 1, invalid: 0, accounts: { listed: 6, untrusted: 2, present: 1, deleting: 1 } })).toEqual([
@@ -450,7 +450,7 @@ describe.skipIf(!endpoint)("the stray index key cleanup on DynamoDB Local", () =
     await getOpsTeam(db, op, team.teamId, now); // an operator audit item, in GSI3
     const t = team.teamId;
     const viewer = newUser();
-    await put(db, { PK: `TEAM#${t}`, SK: "SHEET#s1", type: "sheet", GSI3PK: "OPS#TEAMS", GSI3SK: "forged" });
+    await put(db, { PK: `TEAM#${t}`, SK: "PROJECT#s1", type: "project", GSI3PK: "OPS#TEAMS", GSI3SK: "forged" });
     await put(db, { PK: `TEAM#${t}`, SK: `MEMBER#${viewer}`, type: "member", role: "viewer", email: "viewer@example.com", GSI3PK: `OPS#OWNERS#${t}`, GSI3SK: viewer });
     await put(db, { PK: `USER#${viewer}`, SK: `TEAM#${t}`, GSI3SK: "only-a-sort-key" });
     const wrong = await legacyTeam(db, []);
@@ -458,14 +458,14 @@ describe.skipIf(!endpoint)("the stray index key cleanup on DynamoDB Local", () =
 
     const dry = await stripStrayOpsKeys(db, { apply: false });
     expect(dry).toMatchObject({ found: 4, changed: 4, raced: 0 });
-    expect(dry.strays).toEqual([`TEAM#${t} MEMBER: 1`, `TEAM#${t} SHEET: 1`, `TEAM#${wrong} META: 1`, "USER# TEAM: 1"].sort((a, b) => a.localeCompare(b)));
+    expect(dry.strays).toEqual([`TEAM#${t} MEMBER: 1`, `TEAM#${t} PROJECT: 1`, `TEAM#${wrong} META: 1`, "USER# TEAM: 1"].sort((a, b) => a.localeCompare(b)));
     // No user IDs or emails in the report
     expect(JSON.stringify(dry)).not.toContain(viewer);
     expect(JSON.stringify(dry)).not.toContain("@");
-    expect((await rawItem(db, `TEAM#${t}`, "SHEET#s1"))?.GSI3PK).toBe("OPS#TEAMS");
+    expect((await rawItem(db, `TEAM#${t}`, "PROJECT#s1"))?.GSI3PK).toBe("OPS#TEAMS");
 
     expect(await stripStrayOpsKeys(db, { apply: true })).toMatchObject({ found: 4, changed: 4, raced: 0 });
-    for (const [pk, sk] of [[`TEAM#${t}`, "SHEET#s1"], [`TEAM#${t}`, `MEMBER#${viewer}`], [`USER#${viewer}`, `TEAM#${t}`], [`TEAM#${wrong}`, "META"]] as const) {
+    for (const [pk, sk] of [[`TEAM#${t}`, "PROJECT#s1"], [`TEAM#${t}`, `MEMBER#${viewer}`], [`USER#${viewer}`, `TEAM#${t}`], [`TEAM#${wrong}`, "META"]] as const) {
       const item = await rawItem(db, pk, sk);
       expect(item?.GSI3PK).toBeUndefined();
       expect(item?.GSI3SK).toBeUndefined();
@@ -486,13 +486,13 @@ describe.skipIf(!endpoint)("the stray index key cleanup on DynamoDB Local", () =
   it("leaves keys changed since the scan alone, and a member promoted since", async () => {
     const db = table.db;
     const teamId = newTeamId();
-    await put(db, { PK: `TEAM#${teamId}`, SK: "SHEET#s2", GSI3PK: "OPS#TEAMS", GSI3SK: "forged" });
+    await put(db, { PK: `TEAM#${teamId}`, SK: "PROJECT#s2", GSI3PK: "OPS#TEAMS", GSI3SK: "forged" });
     const changing = interleaved(db, () =>
-      connection(db).doc.send(new UpdateCommand({ TableName: db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "SHEET#s2" }, UpdateExpression: "SET GSI3SK = :s", ExpressionAttributeValues: { ":s": "other" } })),
+      connection(db).doc.send(new UpdateCommand({ TableName: db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "PROJECT#s2" }, UpdateExpression: "SET GSI3SK = :s", ExpressionAttributeValues: { ":s": "other" } })),
     );
     expect(await stripStrayOpsKeys(changing, { apply: true })).toMatchObject({ found: 1, changed: 0, raced: 1 });
-    expect((await rawItem(db, `TEAM#${teamId}`, "SHEET#s2"))?.GSI3SK).toBe("other");
-    await connection(db).doc.send(new DeleteCommand({ TableName: db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "SHEET#s2" } }));
+    expect((await rawItem(db, `TEAM#${teamId}`, "PROJECT#s2"))?.GSI3SK).toBe("other");
+    await connection(db).doc.send(new DeleteCommand({ TableName: db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "PROJECT#s2" } }));
 
     const promoted = newUser();
     await put(db, { PK: `TEAM#${teamId}`, SK: `MEMBER#${promoted}`, role: "contributor", GSI3PK: `OPS#OWNERS#${teamId}`, GSI3SK: promoted });

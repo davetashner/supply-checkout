@@ -209,7 +209,7 @@ export class ApiStack extends SupplyCheckoutStack {
 
     this.dataFunction = this.handler("DataFunction", "data", {
       memorySize: 1024,
-      description: "Products and sheets for the app (the data API)",
+      description: "Products and projects for the app (the data API)",
       environment: { [API_ENV.tableName]: table },
     });
     this.authFunction = this.handler("AuthFunction", "auth", {
@@ -900,7 +900,8 @@ export class ApiStack extends SupplyCheckoutStack {
    *
    * - Query GSI3's OPS#TEAMS, OPS#OWNERS#* and OPS#AUDIT#* partitions, and
    *   only for what the index projects (dynamodb:Select), so never a team's
-   *   sheets, inventory or invites: no base-table read of a TEAM# partition.
+   *   data (its projects, inventory or invites): no base-table read of a
+   *   TEAM# partition.
    * - UpdateItem in the tagged team's partition, naming only COMP_ATTRIBUTES
    *   (dynamodb:Attributes) and returning at most those.
    * - PutItem and Query in OPAUDIT#* partitions, never update or delete.

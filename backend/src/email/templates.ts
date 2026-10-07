@@ -106,8 +106,8 @@ export interface RenderOptions {
 const ROLE_PHRASE: Record<InviteRole, string> = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
 const ROLE_WHAT: Record<InviteRole, string> = {
   owner: "Owners manage the team, its members and billing, and can edit everything.",
-  contributor: "Contributors check supplies out and back in, and edit sheets and inventory.",
-  viewer: "Viewers can see the team's sheets and inventory, but not change them.",
+  contributor: "Contributors check supplies out and back in, and edit projects and inventory.",
+  viewer: "Viewers can see the team's projects and inventory, but not change them.",
 };
 
 // eslint-disable-next-line no-control-regex -- removing control characters is the point
@@ -270,11 +270,11 @@ function content(input: EmailInput, appUrl: string): Content {
       const ends = formatDate(input.trialEndsAt);
       return {
         subject: `Your Supply Checkout trial for ${team} ends on ${ends}`,
-        preheader: `Add a payment method to keep editing ${team}'s sheets and inventory.`,
+        preheader: `Add a payment method to keep editing ${team}'s projects and inventory.`,
         heading: "Your free trial is ending",
         paragraphs: [
           `The free trial for ${team} ends on ${ends}.`,
-          "To keep checking supplies out and editing sheets, an owner can choose a plan and add a payment method in the app.",
+          "To keep checking supplies out and editing projects, an owner can choose a plan and add a payment method in the app.",
           `If there's no plan when the trial ends, ${team} becomes read-only: everyone on the team can still see it, and owners can export it, for ${READ_ONLY_DAYS} days. After that, the team and everything in it are deleted.`,
         ],
         button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },
@@ -302,7 +302,7 @@ function content(input: EmailInput, appUrl: string): Content {
           preheader: "The payment is still overdue. Update the payment method to edit again.",
           heading: `${team} is read-only`,
           paragraphs: [
-            `The payment for ${team}'s Supply Checkout subscription is still overdue, so its sheets and inventory are read-only until it's paid. Nothing has been deleted: everyone on the team can still see it, and owners can still export it.`,
+            `The payment for ${team}'s Supply Checkout subscription is still overdue, so its projects and inventory are read-only until it's paid. Nothing has been deleted: everyone on the team can still see it, and owners can still export it.`,
             "An owner can update the payment method in the app, from Billing, to start editing again.",
           ],
           button: { label: "Update payment method", url: appLink(appUrl, "/") },
@@ -314,7 +314,7 @@ function content(input: EmailInput, appUrl: string): Content {
         preheader: deletes ? `Subscribe by ${deletes} to keep your team's data.` : "Your team's data is safe. Subscribe to edit again.",
         heading: `${team} is read-only`,
         paragraphs: [
-          `${why}, so its sheets and inventory are read-only. Nothing has been deleted yet: everyone on the team can still see it, and owners can still export it.`,
+          `${why}, so its projects and inventory are read-only. Nothing has been deleted yet: everyone on the team can still see it, and owners can still export it.`,
           ...(deletes ? [`After ${deletes}, ${team} and everything in it will be deleted, unless an owner subscribes by then.`] : []),
           "An owner can subscribe in the app to start editing again.",
         ],
@@ -325,9 +325,9 @@ function content(input: EmailInput, appUrl: string): Content {
       const expires = formatDate(input.expiresAt);
       return {
         subject: `Your Supply Checkout export for ${team} is ready`,
-        preheader: `Download ${team}'s sheets and inventory before ${expires}.`,
+        preheader: `Download ${team}'s projects and inventory before ${expires}.`,
         heading: "Your export is ready",
-        paragraphs: [`The export of ${team}'s sheets and inventory is ready to download.`, "Sign in to download it. Only the team's owners can."],
+        paragraphs: [`The export of ${team}'s projects and inventory is ready to download.`, "Sign in to download it. Only the team's owners can."],
         button: { label: "Download the export", url: appLink(appUrl, "/", { export: input.exportId }) },
         note: `The download is available until ${expires}.`,
       };
@@ -339,8 +339,8 @@ function content(input: EmailInput, appUrl: string): Content {
         preheader: `It will be deleted for good on ${purge}.`,
         heading: `${team} was closed`,
         paragraphs: [
-          `An owner of ${team} closed the team. It's read-only now: its members can still see its sheets and inventory, but nobody can change them or join it, and its invites were cancelled.`,
-          `On ${purge}, the team, its sheets and its inventory will be deleted for good. Until then, owners can export its data, or reopen the team, in the app.`,
+          `An owner of ${team} closed the team. It's read-only now: its members can still see its projects and inventory, but nobody can change them or join it, and its invites were cancelled.`,
+          `On ${purge}, the team, its projects and its inventory will be deleted for good. Until then, owners can export its data, or reopen the team, in the app.`,
           "You're getting this because you're an owner of the team. If you didn't expect it to close, check with its other owners, and make sure nobody else can sign in to your account.",
         ],
         button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },
@@ -353,7 +353,7 @@ function content(input: EmailInput, appUrl: string): Content {
         preheader: `Subscribe or export your data by ${deletes}.`,
         heading: `${team} will be deleted after ${deletes}`,
         paragraphs: [
-          `${team} has been read-only since its free trial or subscription ended. After ${deletes}, the team, its sheets and its inventory will be deleted for good, and this can't be undone.`,
+          `${team} has been read-only since its free trial or subscription ended. After ${deletes}, the team, its projects and its inventory will be deleted for good, and this can't be undone.`,
           `To keep the team, an owner can subscribe in the app by ${deletes}. To keep a copy instead, an owner can use Export data.`,
           "You're getting this because you're an owner of the team.",
         ],
@@ -366,7 +366,7 @@ function content(input: EmailInput, appUrl: string): Content {
         preheader: "It won't be deleted, and its members can change it again.",
         heading: `${team} was reopened`,
         paragraphs: [
-          `An owner of ${team} reopened the team, so it won't be deleted. Its members can change its sheets and inventory again.`,
+          `An owner of ${team} reopened the team, so it won't be deleted. Its members can change its projects and inventory again.`,
           "Invites that were cancelled when it closed stay cancelled, and anyone who left or was removed while it was closed isn't back. Owners can invite them again in the app.",
           // Sent as the team reopens, before the billing worker resyncs its subscription (billing/reopening.ts), so it can't know the outcome.
           // The resume can fail or be left for a person, so this points owners at the app's note ("To keep it, renew it from Billing")
@@ -454,7 +454,7 @@ function welcomeContent(input: WelcomeEmail, appUrl: string): Content {
       paragraphs: [
         greeting,
         ready,
-        "You've been invited to a team. Open Supply Checkout and accept the invite, if you haven't already, to see the team's sheets and inventory.",
+        "You've been invited to a team. Open Supply Checkout and accept the invite, if you haven't already, to see the team's projects and inventory.",
         `Want a team of your own too? You can create one in the app. ${TRIAL}`,
         questions,
       ],

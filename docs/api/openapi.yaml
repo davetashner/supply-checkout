@@ -63,9 +63,9 @@ info:
     - A document is any JSON object up to 350,000 bytes (UTF-8 JSON), nested
       at most 16 levels, with numbers DynamoDB can store. These top-level
       fields are the server's and are refused in a body: `PK`, `SK`, `GSI1PK`,
-      `GSI1SK`, `GSI2PK`, `GSI2SK`, `GSI3PK`, `GSI3SK` (and any `GSI<n>PK` or `GSI<n>SK`), `type`, `id`, `key`, `version`, `teamId`. For sheets, `date` must be a string
+      `GSI1SK`, `GSI2PK`, `GSI2SK`, `GSI3PK`, `GSI3SK` (and any `GSI<n>PK` or `GSI<n>SK`), `type`, `id`, `key`, `version`, `teamId`. For projects, `date` must be a string
       and `items` an object. A barcode (`code`, on a product and on each line
-      in a sheet's `items`) must be a string of at most 256 characters, the
+      in a project's `items`) must be a string of at most 256 characters, the
       product key limit; it's empty for an item without a barcode. A
       product's `price` and `cost`, and a line's, if present, must be `Money`
       amounts (0 to 1,000,000, at most two decimals; ADR 0014) where the write
@@ -79,8 +79,8 @@ info:
       that doesn't track stock or doesn't exist yet, is 400 `bad_request` and
       changes nothing. A new item starts counting with a `count` adjustment
       after it's created. See [commands.md](commands.md).
-    - Every other field is kept exactly as written. The `Product`, `Sheet` and
-      `SheetLine` schemas list the fields the app writes; all of them,
+    - Every other field is kept exactly as written. The `Product`, `Project` and
+      `ProjectLine` schemas list the fields the app writes; all of them,
       including each line's `code`, read back unchanged.
     - `update` merges like the artifact runtime: where the patch and the
       document both have an object at the same key, they merge key by key;
@@ -92,9 +92,9 @@ info:
       fails with 409 `aborted` and changes nothing; fetch the document and
       make the change again on the latest values. A write without it is 400
       `bad_request`.
-    - Sheets ordered by date come from an index, which can lag a write by a
+    - Projects ordered by date come from an index, which can lag a write by a
       moment. Unordered lists and single reads are strongly consistent. A
-      sheet without a valid `YYYY-MM-DD` date sorts after every dated sheet
+      project without a valid `YYYY-MM-DD` date sorts after every dated project
       when newest-first.
 
     ## Isolation
@@ -102,7 +102,7 @@ info:
     Every data route needs a Cognito access token. The Lambda checks the
     caller's membership of the path's team on every request, and their role
     against the route's (ADR 0007: viewers read; contributors also scan and
-    edit sheets and inventory; owners also import and manage members), and
+    edit projects and inventory; owners also import and manage members), and
     makes every DynamoDB call through a role session tagged with that team,
     whose IAM policy allows only that team's partition
     (`dynamodb:LeadingKeys`). A role below the route's is 403
@@ -188,7 +188,7 @@ tags:
       user pool (`opsCognito`), whose user must be in the `operators` group;
       a customer's token is refused. Removing, disabling or signing out an
       operator takes effect on their next request. Operators never read a
-      team's sheets, inventory, invites or receipts. They can list imports
+      team's projects, inventory, invites or receipts. They can list imports
       stuck part-way and take one out of the stuck-import check. Every change, and every
       read of one team's record, is audited, and the team's owners see it
       (`GET /teams/{teamId}/support-actions`). `npm run ops` is the client.
@@ -274,7 +274,7 @@ paths:
     post:
       tags: [commands]
       operationId: adjustStock
-      summary: Change an item's stock outside a sheet, in one transaction, with a movement in its history.
+      summary: Change an item's stock outside a project, in one transaction, with a movement in its history.
       description: |
         - `reason: "receipt"`: `quantity` eaches bought at `unitCost` each
           (after any pack conversion, ADR 0014) are added to stock. An item
@@ -456,7 +456,7 @@ paths:
       parameters:
         - name: orderBy
           in: query
-          description: "`date` for date order, which the app's sheet list uses."
+          description: "`date` for date order, which the app's project list uses."
           schema: { type: string, enum: [date] }
         - name: direction
           in: query
@@ -634,13 +634,13 @@ paths:
     post:
       tags: [commands]
       operationId: quickTake
-      summary: Quick take. Check out whole eaches of an item onto the team's ad hoc sheet, and take them off stock, in one transaction.
+      summary: Quick take. Check out whole eaches of an item onto the team's General Use project, and take them off stock, in one transaction.
       description: |
-        A checkout without choosing a sheet (ADR 0017, section 4). It goes on
-        the team's open ad hoc sheet, or, when there is none, starts the next
+        A checkout without choosing a project (ADR 0017, section 4). It goes on
+        the team's open General Use project, or, when there is none, starts the next
         one, `adhoc-<n>` (`kind: "adhoc"`, no client, `date` as sent or
         today in UTC), and makes it the open one. Two first takes at once end
-        on one sheet: one transaction makes it, and the other adds to it.
+        on one project: one transaction makes it, and the other adds to it.
         `result.projectId` (and `sheetId`) names it, `result.projectCreated` (and `sheetCreated`) says whether
         this take started it, and a retry returns the same. Otherwise as a
         checkout: the line, its snapshot, stock and the movement
@@ -1624,7 +1624,7 @@ paths:
         (so owners can export it) and leave, but nothing else changes, and a
         write is 403 `permission_denied` with `reason: "team_closed"`. Its
         invites are deleted, nobody can join, and live updates stop. 30 days
-        later (`deletesAt`) all of its data is deleted: sheets, inventory,
+        later (`deletesAt`) all of its data is deleted: projects, inventory,
         stock history, members and the audit trail. `name` must be the
         team's name (ignoring case and surrounding spaces), or it's 400 and
         nothing changes. Closing a closed team returns it as it is. Until an
@@ -2527,7 +2527,7 @@ components:
                 description: Write only if the document is at this version (0 = doesn't exist).
           examples:
             checkout:
-              summary: Check out 3 of an item (PATCH a sheet)
+              summary: Check out 3 of an item (PATCH a project)
               value: { data: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 3, returned: 0 } } }, expectedVersion: 7 }
     Checkout:
       required: true
@@ -2568,7 +2568,7 @@ components:
               price: { allOf: [{ $ref: "#/components/schemas/Money" }], description: Only for an item that isn't in inventory. }
               code: { type: string, maxLength: 256, description: Only for an item that isn't in inventory. }
               cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: Only for an item that isn't in inventory. }
-              date: { type: string, description: "`YYYY-MM-DD`, the person's local date: a new ad hoc sheet's date. Default: today in UTC." }
+              date: { type: string, description: "`YYYY-MM-DD`, the person's local date: a new General Use project's date. Default: today in UTC." }
           examples:
             take:
               summary: Take 2 of an item for no job
@@ -2629,7 +2629,7 @@ components:
               operationId: { $ref: "#/components/schemas/OperationId" }
               productKey: { type: string, minLength: 1, maxLength: 256, description: The equipment line's key. }
               quantity: { $ref: "#/components/schemas/Quantity" }
-              charge: { allOf: [{ $ref: "#/components/schemas/Money" }], description: Dollars to charge the client for the lot (not each). Job sheets only. }
+              charge: { allOf: [{ $ref: "#/components/schemas/Money" }], description: Dollars to charge the client for the lot (not each). Client projects only. }
     Return:
       required: true
       content:
@@ -2907,7 +2907,7 @@ components:
         quantity: { type: integer, description: "Eaches checked out, returned or received; for a move, the line's `out`. Absent for a count or uncount." }
         count: { type: integer, description: The level counted (count only). }
         stockDelta: { type: integer, description: "The change to the product's `stock`: 0 when it doesn't track stock or isn't in inventory. For an uncount, minus the stock it had." }
-        lineCreated: { type: boolean, description: "Checkout and quick take; for a move, whether the job sheet had no line for the item." }
+        lineCreated: { type: boolean, description: "Checkout and quick take; for a move, whether the client project had no line for the item." }
         snapshot: { $ref: "#/components/schemas/LineSnapshot" }
         unitCost: { type: number, description: Receipt only. }
         charge: { type: number, description: "Lost only: what the client is charged for it, if anything." }
@@ -2969,11 +2969,11 @@ components:
       type: object
       required: [id, version, data]
       properties:
-        id: { type: string, description: The product key or sheet ID. }
+        id: { type: string, description: The product key or project ID. }
         version: { type: integer, minimum: 1 }
         data:
           type: object
-          description: The document's fields as the app wrote them. `Product` and `Sheet` list the fields the app writes.
+          description: The document's fields as the app wrote them. `Product` and `Project` list the fields the app writes.
     Product:
       type: object
       description: "`data` of a document in `products` (src/main.js). Other fields are kept as written."
@@ -2985,33 +2985,33 @@ components:
         kind: { type: string, enum: [supply, equipment], description: "A supply (used up and charged; the default when absent) or company equipment (reused, and not charged), ADR 0017." }
         stock: { type: number, description: "The count in storage; absent if not counted. Read-only here: only the stock commands and the CSV import change it, and a write may only repeat the stored value." }
         updatedAt: { type: string, format: date-time }
-    Sheet:
+    Project:
       type: object
-      description: "`data` of a document in `sheets` (src/main.js). Other fields are kept as written."
+      description: "`data` of a document in `projects` (src/main.js). Other fields are kept as written."
       properties:
         client: { type: string }
-        date: { type: string, description: "`YYYY-MM-DD`; sheets without a valid date sort last when newest-first." }
+        date: { type: string, description: "`YYYY-MM-DD`; projects without a valid date sort last when newest-first." }
         createdBy: { type: [string, "null"], description: "The creator's user ID, or `null` without a signed-in user." }
-        createdByName: { type: string, description: "Who prepared the sheet, when `createdBy` is `null`." }
+        createdByName: { type: string, description: "Who prepared the project, when `createdBy` is `null`." }
         createdAt: { type: string, format: date-time }
-        status: { type: string, enum: [open, closed], description: "Closing is refused (409 `equipment_out`) while company equipment is still out. Reopening an ad hoc sheet is refused (409 `adhoc_open`) while another ad hoc sheet is open." }
+        status: { type: string, enum: [open, closed], description: "Closing is refused (409 `equipment_out`) while company equipment is still out. Reopening a General Use project is refused (409 `adhoc_open`) while another General Use project is open." }
         closedAt: { type: string, format: date-time }
-        kind: { const: adhoc, description: "The team's ad hoc sheet (ADR 0017), `adhoc-<n>`, made only by the quick take; a document write can't add, change or remove it, or create a sheet whose ID starts `adhoc-`. Absent for a client's (job) sheet." }
+        kind: { const: adhoc, description: "The team's General Use project (ADR 0017), `adhoc-<n>`, made only by the quick take; a document write can't add, change or remove it, or create a project whose ID starts `adhoc-`. Absent for a client project." }
         items:
           type: object
-          description: The sheet's lines, keyed by product key.
-          additionalProperties: { $ref: "#/components/schemas/SheetLine" }
+          description: The project's lines, keyed by product key.
+          additionalProperties: { $ref: "#/components/schemas/ProjectLine" }
         source:
           type: object
-          description: The receipt the sheet was made from, when receipt scanning named a store.
+          description: The receipt the project was made from, when receipt scanning named a store.
           properties:
             store: { type: string }
             receiptDate: { type: string }
-    SheetLine:
+    ProjectLine:
       type: object
-      description: One line of a sheet. A PATCH may send only some fields (a return sends `returned`); the rest, including `code`, are kept.
+      description: One line of a project. A PATCH may send only some fields (a return sends `returned`); the rest, including `code`, are kept.
       properties:
-        code: { type: string, maxLength: 256, description: 'The barcode, exported as "Barcode" in the sheet CSV; empty for an item without one.' }
+        code: { type: string, maxLength: 256, description: 'The barcode, exported as "Barcode" in the project CSV; empty for an item without one.' }
         name: { type: string }
         price: { type: number, minimum: 0 }
         cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "What the business paid per each (ADR 0014): copied from the product at the line's first checkout, or the receipt's cost each for a line a receipt adds. Absent when unknown; any other value is refused with 400 `bad_request`." }
@@ -3019,7 +3019,7 @@ components:
         returned: { type: integer, minimum: 0, description: "How many came back. With `lost`, never more than `out`." }
         kind: { const: equipment, description: "Company equipment (ADR 0017), from the product at the line's first checkout; it can't change. Not charged." }
         lost: { type: integer, minimum: 0, description: Equipment only. How many were lost or broken. }
-        lostCharge: { allOf: [{ $ref: "#/components/schemas/Money" }], description: Equipment on a job sheet only. What the client is charged for what was lost or broken. }
+        lostCharge: { allOf: [{ $ref: "#/components/schemas/Money" }], description: Equipment on a client project only. What the client is charged for what was lost or broken. }
         takenBy: { type: string, maxLength: 200, description: "Who took equipment last. Set by the checkout command; a write may only repeat it." }
         takenAt: { type: string, format: date-time, description: "When equipment was last taken. Set by the checkout command." }
         purchased: { const: true, description: "Company equipment bought for the client, on the line `<productKey>:bought` (ADR 0017, section 2a). Only the receipt's lines command adds one." }
@@ -3133,11 +3133,11 @@ components:
                 can't be reopened.
                 `stock_changed`: a stock count sent with `expectedStock` found
                 the stock already changed from it (the message says what it is now).
-                `equipment_out`: Finished Return (closing a sheet) while company
+                `equipment_out`: Finished Return (closing a project) while company
                 equipment is still out on it; each piece must be back, lost or
                 broken first (ADR 0017).
-                `adhoc_open`: reopening a finished ad hoc sheet while another
-                ad hoc sheet is open; a team has at most one open (ADR 0017).
+                `adhoc_open`: reopening a finished General Use project while another
+                General Use project is open; a team has at most one open (ADR 0017).
                 Verifying an email address: `code_mismatch` (the code isn't
                 right), `code_expired`, `already_verified`, `email_in_use`
                 (another account has the address), and `email_changed` (the
@@ -3297,7 +3297,7 @@ components:
                       properties:
                         productKey: { type: string }
                         quantity: { type: integer }
-                        lineCreated: { type: boolean, description: "False: it added to a line already on the sheet." }
+                        lineCreated: { type: boolean, description: "False: it added to a line already on the project." }
                         lineKey: { type: string, description: "Company equipment bought for the client: the line it went on, `<productKey>:bought`." }
                         purchased: { const: true }
                   userId: { type: string }
@@ -3313,13 +3313,13 @@ components:
       description: |
         `bad_request`, nothing changed: a malformed body, a quantity that isn't
         a whole number from 1, money with more than two decimals, a return of
-        more than is left out, an item that isn't on the sheet, an item not in
+        more than is left out, an item that isn't on the project, an item not in
         inventory checked out without `name` and `price`, or an `operationId`
         already used for a different request. Don't retry it unchanged.
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     CommandConflict:
       description: |
-        `aborted`, nothing changed: the sheet is closed, the line or item
+        `aborted`, nothing changed: the project is closed, the line or item
         kept changing under every retry, or (reason `stock_changed`) a stock
         count's `expectedStock` isn't the stock any more. The message says
         which. A retry with the same `operationId` is safe.
@@ -3391,7 +3391,7 @@ components:
         caller's own role, changed meanwhile; reload and try again.
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     NotFound:
-      description: "`not_found`: no such document (for a command: no such sheet, or for a stock adjustment no such item)."
+      description: "`not_found`: no such document (for a command: no such project, or for a stock adjustment no such item)."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Conflict:
       description: "`aborted`: the document isn't at `expectedVersion` (for a command: it changed during every retry)."

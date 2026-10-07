@@ -5,7 +5,7 @@
 // from it, on the server).
 //
 // Owners read and write it. Nobody else gets the percentage: getTeamSettings
-// returns it to owners only, and no other response carries it (a sheet line
+// returns it to owners only, and no other response carries it (a project line
 // stores the resulting price, not the percentage). Every change to the markup
 // is audited in the same transaction (who, when, the old and new value).
 // Missing, the markup is 0%.

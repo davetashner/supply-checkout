@@ -23,7 +23,7 @@
 //    whose IAM policy allows only that team's partition (team-db.ts).
 //
 // Next to the document routes are the inventory commands (checkout, return,
-// the quick take onto the ad hoc sheet, moving an ad hoc line to a job sheet,
+// the quick take onto the General Use project, moving a General Use line to a client project,
 // adding a receipt's lines, marking equipment lost, stock adjust), each one transaction that's idempotent by operation ID, and
 // a product's stock history (backend/src/data/commands.ts, docs/api/commands.md),
 // and the CSV inventory import, owners only (backend/src/data/imports.ts).
@@ -141,7 +141,7 @@ export function documentId(event: DataEvent, fromEnd = 0): string {
 }
 
 // Every document write names the version it was made against (ADR 0006), so two people
-// editing the same sheet or item can't silently overwrite each other: 0 for a document
+// editing the same project or item can't silently overwrite each other: 0 for a document
 // that shouldn't exist yet, otherwise the version the client last read. A stale one is 409.
 function expectedVersionFrom(value: unknown): number {
   if (value === undefined) throw new ApiError(400, "bad_request", "expectedVersion is required");
@@ -159,8 +159,8 @@ const linesOf = (doc: StoredDocument | undefined): Lines => {
   return typeof items === "object" && items !== null && !Array.isArray(items) ? (items as Lines) : {};
 };
 
-/** Units checked out and returned by a sheet write: what went up on each line. */
-export function sheetMovement(result: WriteResult): { checkouts: number; returns: number } {
+/** Units checked out and returned by a project write: what went up on each line. */
+export function projectMovement(result: WriteResult): { checkouts: number; returns: number } {
   const before = linesOf(result.before);
   const after = linesOf(result.after);
   let checkouts = 0;
@@ -198,7 +198,7 @@ async function commandResponse(deps: DataHandlerDeps, ctx: TeamContext, outcome:
   const metadata = { teamId: ctx.teamId };
   if (!replayed) {
     deps.obs.count(BusinessMetric.Writes, 1, metadata);
-    // A quick take is a checkout, onto the ad hoc sheet (the Checkouts stopped alarm counts it)
+    // A quick take is a checkout, onto the General Use project (the Checkouts stopped alarm counts it)
     if (result.command === "checkout" || result.command === "quickTake") deps.obs.count(BusinessMetric.Checkouts, result.quantity ?? 0, metadata);
     if (result.command === "return") deps.obs.count(BusinessMetric.Returns, result.quantity ?? 0, metadata);
   }
@@ -337,7 +337,7 @@ async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ct
     const q = event.queryStringParameters ?? {};
     let orderBy: "date" | undefined;
     if (q.orderBy !== undefined) {
-      if (q.orderBy !== "date" || collection !== "projects") throw new ApiError(400, "bad_request", "Only sheets can be ordered, and only by date");
+      if (q.orderBy !== "date" || collection !== "projects") throw new ApiError(400, "bad_request", "Only projects can be ordered, and only by date");
       orderBy = "date";
     }
     if (q.direction !== undefined && q.direction !== "asc" && q.direction !== "desc") throw new ApiError(400, "bad_request", "direction is asc or desc");
@@ -374,7 +374,7 @@ async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ct
       : await updateDocument(db, ctx, collection, id, body.data, { expectedVersion, now: new Date((deps.now ?? Date.now)()) });
   deps.obs.count(BusinessMetric.Writes, 1, metadata);
   if (collection === "projects") {
-    const { checkouts, returns } = sheetMovement(result);
+    const { checkouts, returns } = projectMovement(result);
     if (checkouts) deps.obs.count(BusinessMetric.Checkouts, checkouts, metadata);
     if (returns) deps.obs.count(BusinessMetric.Returns, returns, metadata);
   }
@@ -413,7 +413,7 @@ export function createDataHandler(deps: DataHandlerDeps) {
       status = apiError.status;
       // A count refused because the stock moved since the form opened (stock_changed), or a
       // Finished Return refused while equipment is still out (equipment_out), or a reopen refused
-      // while another ad hoc sheet is open (adhoc_open), is the refusal
+      // while another General Use project is open (adhoc_open), is the refusal
       // working as meant, not a write that lost a race, so it isn't counted as one
       if (apiError.status === 409 && apiError.reason !== "stock_changed" && apiError.reason !== "equipment_out" && apiError.reason !== "adhoc_open") deps.obs.count(BusinessMetric.ConditionalWriteConflicts, 1, teamId ? { teamId } : {});
       if (apiError.status >= 500) deps.obs.logger.error("Request failed", error as Error);

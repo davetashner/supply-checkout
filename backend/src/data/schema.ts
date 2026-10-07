@@ -170,7 +170,7 @@ export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as
  * The operators' index (ADR 0015), sparse, with an INCLUDE projection of only
  * OPS_INDEX_ATTRIBUTES. It serves the ops function, whose role may query it
  * but has no read access to any TEAM# partition, so an operator can list teams
- * and read their account records without being able to read sheets or
+ * and read their account records without being able to read projects or
  * inventory:
  *
  * - Every team: GSI3PK `OPS#TEAMS` (OPS_TEAMS_PARTITION), GSI3SK
@@ -180,7 +180,7 @@ export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as
  * - The operator audit trail by month: GSI3PK `OPS#AUDIT#<yyyy-mm>`, GSI3SK
  *   `<ts>#<eventId>`, on each operator audit item (`OPAUDIT#` partitions).
  *
- * Nothing else (sheets, products, movements, invites, imports) ever has
+ * Nothing else (projects, products, movements, invites, imports) ever has
  * GSI3PK, so it isn't in the index: documents and imports refuse every
  * GSI<n>PK and GSI<n>SK field (isReservedField in documents.ts).
  */
@@ -220,7 +220,7 @@ export const COMP_FIELDS = ["compPlan", "compSeats", "compUntil", "compReason", 
  * The only attributes the operator-access role may name when it updates an
  * item in a team's partition (dynamodb:Attributes): the keys, `type` and
  * `version` (the comp's condition), and the comp fields. So it can't change a
- * team's name, plan, status or anything else, or touch a sheet's content.
+ * team's name, plan, status or anything else, or touch a project's content.
  */
 export const COMP_ATTRIBUTES = [PK, SK, "type", "version", ...COMP_FIELDS, "compMonths"] as const;
 
@@ -329,7 +329,7 @@ export const LAPSE_LIST_ATTRIBUTES = [PK, SK, GSI3PK, GSI3SK, "status", "trialEn
  * What the lapsed-team job may read of a team's META item (GetItem,
  * consistent): what billingAccess reads, the team's name for the owner
  * emails, its closure, Stripe IDs and version (the closure's condition).
- * Never documents, sheets or members.
+ * Never documents, projects or members.
  */
 export const LAPSE_READ_ATTRIBUTES = [
   PK,
@@ -521,7 +521,7 @@ export const STRIPE_LINK_READ_ATTRIBUTES = [PK, SK, "teamId"] as const;
  * reopen's pending resync and what decides it, billing/reopening.ts), and
  * what the access rules read (billingAccess: the trial's end and the team's
  * creation, and when it went past due or ended).
- * Never documents, sheets or anything else.
+ * Never documents, projects or anything else.
  */
 export const BILLING_READ_ATTRIBUTES = [
   PK,

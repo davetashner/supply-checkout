@@ -46,8 +46,8 @@ export class StockChangedError extends ConflictError {
 }
 
 /**
- * Finished Return on a sheet that still has company equipment out (ADR 0017,
- * section 3): every piece must be back, still at the job (the sheet stays
+ * Finished Return on a project that still has company equipment out (ADR 0017,
+ * section 3): every piece must be back, still at the job (the project stays
  * open) or lost or broken first. (409, reason `equipment_out`)
  */
 export class EquipmentOutError extends ConflictError {
@@ -55,7 +55,7 @@ export class EquipmentOutError extends ConflictError {
 }
 
 /**
- * Reopening a finished ad hoc sheet while another ad hoc sheet is open (ADR
+ * Reopening a finished General Use project while another General Use project is open (ADR
  * 0017, section 4): a team has at most one open. (409, reason `adhoc_open`)
  */
 export class AdhocOpenError extends ConflictError {

@@ -78,7 +78,7 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     const crewId = newUser();
     const crew = await acceptInvite(db, { userId: crewId, verifiedEmail: email }, made.invite, made.token, now);
     await setDocument(db, owner, "products", "0123", { code: "0123", name: "Gloves", price: 1 }, { expectedVersion: 0 });
-    await setDocument(db, crew, "sheets", "s1", { client: "Echo", date: "2026-09-26", items: {} }, { expectedVersion: 0 });
+    await setDocument(db, crew, "projects", "s1", { client: "Echo", date: "2026-09-26", items: {} }, { expectedVersion: 0 });
     await createInvite(db, owner, { email: `pending.${ownerId}@example.com`, role: "viewer" }, now);
     return { teamId: created.teamId, owner, ownerId, crew, crewId };
   }

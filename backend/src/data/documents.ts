@@ -6,7 +6,7 @@
 // browser adapter maps the app's calls onto it.
 //
 // Documents are stored as the same items the typed functions in products.ts
-// and sheets.ts use (ADR 0005): the document's fields at the top level, plus
+// and projects.ts use (ADR 0005): the document's fields at the top level, plus
 // the key attributes and a few fields the server owns (RESERVED_FIELDS), which
 // never appear in a document's data and can't be written by a client.
 //
@@ -26,6 +26,7 @@ import { type Db, connection, storable } from "./client.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
 import { AdhocOpenError, ConflictError, EquipmentOutError, InvalidInputError, NotFoundError, TooLargeError, isCancelledAsTooLarge, isItemTooLarge } from "./errors.js";
 import { BOUGHT_SUFFIX, adhocNumber, barcode, id as checkId, isAdhocId, keys, prefixes, productKey, teamPartition } from "./keys.js";
+import { legacy } from "./legacy-sheets.js";
 import { money, storedMoney } from "./money.js";
 import type { Movement } from "./commands.js";
 import { type ProjectLayout, layoutOf, projectAttributes, projectItemsByDatePage, projectItemsPage, projectKeyFor, readProjectItem } from "./project-items.js";
@@ -39,8 +40,8 @@ export type Collection = "products" | "projects";
  * `projects`, accepted (and treated as `projects`) through the rename's window
  * (supply-checkout-005.6).
  */
-export type CollectionName = Collection | "sheets";
-export const COLLECTIONS: readonly CollectionName[] = ["products", "projects", "sheets"];
+export type CollectionName = Collection | typeof legacy.sheetsCollection;
+export const COLLECTIONS: readonly CollectionName[] = ["products", "projects", legacy.sheetsCollection];
 
 export type DocumentData = Record<string, unknown>;
 
@@ -100,7 +101,7 @@ export function isReservedField(field: string): boolean {
  */
 export const MAX_DOCUMENT_BYTES = 350_000;
 
-/** DynamoDB allows 32 levels of nesting; the app uses 3 (a sheet's items map). */
+/** DynamoDB allows 32 levels of nesting; the app uses 3 (a project's items map). */
 const MAX_DEPTH = 16;
 const MAX_ATTEMPTS = 5;
 
@@ -109,11 +110,11 @@ const isMap = (v: unknown): v is Record<string, unknown> => typeof v === "object
 /** The collection a name means: `sheets` is `projects`. Throws for any other name. */
 export function canonicalCollection(name: CollectionName): Collection {
   if (!COLLECTIONS.includes(name)) throw new InvalidInputError("Unknown collection");
-  return name === "sheets" ? "projects" : name;
+  return name === legacy.sheetsCollection ? "projects" : name;
 }
 
 function docId(collection: Collection, value: unknown): string {
-  return collection === "products" ? productKey(value) : checkId(value, "sheet ID");
+  return collection === "products" ? productKey(value) : checkId(value, "project ID");
 }
 
 /** Throws unless `value` is JSON that DynamoDB can store as it is. */
@@ -143,7 +144,7 @@ function checkValue(value: unknown, depth: number): void {
 const sameValue = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);
 
 /**
- * A product's or sheet line's price or cost as the write leaves it. A value
+ * A product's or project line's price or cost as the write leaves it. A value
  * the write changes (or a new product's or line's) must follow the money
  * rule. One `stored` already had is legacy money the write doesn't touch
  * (ADR 0014: the server accepts it on read and rejects only what's written),
@@ -180,7 +181,7 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
   if (collection === "products") {
     if ("stock" in data && typeof data.stock !== "number") throw new InvalidInputError("Invalid stock");
     if ("code" in data) barcode(data.code);
-    // A product's price and cost follow the money rule like a sheet line's (ADR 0014)
+    // A product's price and cost follow the money rule like a project line's (ADR 0014)
     for (const field of ["price", "cost"] as const) if (Object.hasOwn(data, field)) data[field] = writtenMoney(data[field], before?.data, field);
   }
   if (collection === "projects") {
@@ -217,11 +218,11 @@ const stillOut = (line: Record<string, unknown> | undefined) => (line ? counted(
  * - A product's `kind` is "supply" or "equipment", or missing (a supply).
  *   No new product's key ends in ":bought", which is kept for lines bought
  *   for a client.
- * - A sheet's `kind` is set only by the server (the ad hoc sheet's quick take,
+ * - A project's `kind` is set only by the server (the General Use project's quick take,
  *   supply-checkout-mdae): a document write can't add, change or remove it.
  * - A line's `kind` is "equipment" or missing, and can't change once the line
  *   exists. `lost` (whole eaches) and `lostCharge` (money) are only on
- *   equipment lines, and a charge only on a job sheet. A changed line keeps
+ *   equipment lines, and a charge only on a client project. A changed line keeps
  *   `returned + lost <= out`.
  * - `takenBy` and `takenAt` (the checkout command's), and `priceSetBy` and
  *   `priceSetAt`, are the server's: a write may only repeat what's stored.
@@ -231,7 +232,7 @@ const stillOut = (line: Record<string, unknown> | undefined) => (line ? counted(
  *   of it comes back, so its `returned` stays 0. Its `priceSet` is the
  *   server's: a changed price is "manual", stamped with who changed it and
  *   when (`priceSetBy`, `priceSetAt`), so a typed price can be traced.
- * - A sheet isn't closed (`status: "closed"`) while an equipment line has
+ * - A project isn't closed (`status: "closed"`) while an equipment line has
  *   something still out: EquipmentOutError (409).
  */
 function checkKinds(collection: Collection, data: DocumentData, actor: Actor, before?: StoredDocument): DocumentData {
@@ -240,7 +241,7 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
     if (Object.hasOwn(data, "kind") && !PRODUCT_KINDS.has(data.kind as string)) throw new InvalidInputError('kind is "supply" or "equipment"');
     return data;
   }
-  if (!sameValue(data.kind, stored?.kind)) throw new InvalidInputError("A sheet's kind is set by the server");
+  if (!sameValue(data.kind, stored?.kind)) throw new InvalidInputError("A project's kind is set by the server");
   const storedLines = isMap(stored?.items) ? stored.items : {};
   const lines = isMap(data.items) ? data.items : {};
   for (const [key, line] of Object.entries(lines)) {
@@ -253,7 +254,7 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
     // Bought for the client: only addLines marks a line so, and the mark stays
     if (has("purchased") && line.purchased !== true) throw new InvalidInputError("purchased is true or left out");
     if (!sameValue(line.purchased, old?.purchased) || (key.endsWith(BOUGHT_SUFFIX) && line.purchased !== true)) {
-      throw new InvalidInputError("Only a receipt's lines (POST .../sheets/{sheetId}/lines) add a line bought for the client");
+      throw new InvalidInputError("Only a receipt's lines (POST .../projects/{projectId}/lines) add a line bought for the client");
     }
     if (line.purchased === true && line.kind !== undefined) throw new InvalidInputError("A line bought for the client has no kind");
     if (has("priceSet") && (line.purchased !== true || !PRICE_SET.has(line.priceSet as string))) throw new InvalidInputError("priceSet is set by the server, on lines bought for the client");
@@ -273,7 +274,7 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
     }
     if (has("lost") && (!equipment || !isWhole(line.lost))) throw new InvalidInputError("lost is a whole number, on company equipment lines only");
     if (has("lostCharge")) {
-      if (!equipment || data.kind === "adhoc") throw new InvalidInputError("lostCharge is only on company equipment lines of a client's sheet");
+      if (!equipment || data.kind === "adhoc") throw new InvalidInputError("lostCharge is only on company equipment lines of a client project");
       line.lostCharge = writtenMoney(line.lostCharge, old, "lostCharge");
     }
     // Counts the write changes: what came back and what was lost can't be more than went out
@@ -282,12 +283,12 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
     }
   }
   if (data.status === "closed") {
-    // Closing, or changing a closed sheet so that more is out: every piece of equipment must be accounted for first
+    // Closing, or changing a closed project so that more is out: every piece of equipment must be accounted for first
     const wasClosed = stored?.status === "closed";
     for (const [key, line] of Object.entries(lines)) {
       if (!isMap(line) || line.kind !== "equipment" || stillOut(line) <= 0) continue;
       const old = Object.hasOwn(storedLines, key) && isMap(storedLines[key]) ? storedLines[key] : undefined;
-      if (!wasClosed || stillOut(line) > stillOut(old)) throw new EquipmentOutError("Equipment is still out on this sheet");
+      if (!wasClosed || stillOut(line) > stillOut(old)) throw new EquipmentOutError("Equipment is still out on this project");
     }
   }
   return data;
@@ -313,9 +314,9 @@ function toItem(collection: Collection, teamId: string, docId: string, data: Doc
   return { ...data, ...projectAttributes(teamId, docId, data.date, layout), id: docId, version };
 }
 
-/** A new project's item as stored, with its keys and date index: for the quick take, which makes the ad hoc project (commands.ts). */
-export function sheetItem(teamId: string, sheetId: string, data: DocumentData, version: number): Record<string, unknown> {
-  return toItem("projects", teamId, sheetId, data, version);
+/** A new project's item as stored, with its keys and date index: for the quick take, which makes the General Use project (commands.ts). */
+export function projectItem(teamId: string, projectId: string, data: DocumentData, version: number): Record<string, unknown> {
+  return toItem("projects", teamId, projectId, data, version);
 }
 
 function fromItem(collection: Collection, item: Record<string, unknown>): StoredDocument {
@@ -363,16 +364,16 @@ type TransactItem = Record<string, Record<string, unknown>>;
 
 /**
  * The change to the team's ADHOC item (adhoc.ts) that goes with a write to an
- * ad hoc sheet, in the same transaction (ADR 0017, section 7):
+ * General Use project, in the same transaction (ADR 0017, section 7):
  *
- * - Closing the open ad hoc sheet (Finished Return) clears the pointer, so
- *   the next quick take starts the next sheet.
- * - Reopening a finished one points at it, unless another ad hoc sheet is
- *   open: AdhocOpenError (409). A pointer naming a sheet that's gone or
+ * - Closing the open General Use project (Finished Return) clears the pointer, so
+ *   the next quick take starts the next project.
+ * - Reopening a finished one points at it, unless another General Use project is
+ *   open: AdhocOpenError (409). A pointer naming a project that's gone or
  *   closed (which these transactions never leave, but a restore might) doesn't
  *   count as open.
  *
- * Any other write, or a write to a job sheet, leaves the item alone.
+ * Any other write, or a write to a client project, leaves the item alone.
  */
 async function adhocChange(db: Db, ctx: TeamContext, id: string, before: StoredDocument | undefined, data: DocumentData, at: string): Promise<TransactItem | undefined> {
   if (before?.data.kind !== "adhoc") return undefined;
@@ -383,7 +384,7 @@ async function adhocChange(db: Db, ctx: TeamContext, id: string, before: StoredD
   if (closing) return open === id ? adhocPut(db, ctx.teamId, pointer, { open: undefined, count: adhocCount(pointer) }, at) : undefined;
   if (open !== undefined && open !== id) {
     const other = await readItem(db, "projects", ctx.teamId, open);
-    if (other && other.status !== "closed") throw new AdhocOpenError("Another ad hoc sheet is open. Finish it before reopening this one.");
+    if (other && other.status !== "closed") throw new AdhocOpenError("Another General Use project is open. Finish it before reopening this one.");
   }
   return adhocPut(db, ctx.teamId, pointer, { open: id, count: adhocNumber(id) ?? 0 }, at);
 }
@@ -410,8 +411,8 @@ async function write(
     if (expected !== undefined && (before?.version ?? 0) !== expected) throw new ConflictError("This document changed; reload and try again");
     // Kept for the lines of equipment bought for a client (ADR 0017), which aren't products
     if (collection === "products" && !before && id.endsWith(BOUGHT_SUFFIX)) throw new InvalidInputError(`An item's key can't end in "${BOUGHT_SUFFIX}"`);
-    // Kept for the ad hoc sheets, which only the quick take makes (ADR 0017, section 4)
-    if (collection === "projects" && !before && isAdhocId(id)) throw new InvalidInputError('Sheet IDs starting "adhoc-" are kept for the ad hoc sheet, which Quick take makes');
+    // Kept for the General Use projects, which only the quick take makes (ADR 0017, section 4)
+    if (collection === "projects" && !before && isAdhocId(id)) throw new InvalidInputError('Project IDs starting "adhoc-" are kept for the General Use project, which Quick take makes');
     const at = (options.now ?? new Date()).toISOString();
     const data = checkDocument(collection, build(before), { userId: ctx.userId, at }, before);
     const adhoc = collection === "projects" ? await adhocChange(db, ctx, id, before, data, at) : undefined;
@@ -489,7 +490,7 @@ export async function listDocuments(db: Db, ctx: TeamContext, name: CollectionNa
   const collection = canonicalCollection(name);
   const { limit, cursor } = options;
   if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 1000)) throw new InvalidInputError("Invalid limit");
-  if (options.orderBy !== undefined && (options.orderBy !== "date" || collection !== "projects")) throw new InvalidInputError("Only sheets can be ordered, and only by date");
+  if (options.orderBy !== undefined && (options.orderBy !== "date" || collection !== "projects")) throw new InvalidInputError("Only projects can be ordered, and only by date");
   let page: Page<Record<string, unknown>>;
   try {
     if (collection === "projects") {
@@ -582,7 +583,7 @@ export async function deleteDocument(db: Db, ctx: TeamContext, name: CollectionN
   const id = docId(collection, rawId);
   const expected = expectedVersion(options);
   if (collection === "products") return deleteProductDocument(db, ctx, id, expected);
-  if (isAdhocId(id)) return deleteAdhocSheet(db, ctx, id, expected);
+  if (isAdhocId(id)) return deleteAdhocProject(db, ctx, id, expected);
   if (expected === undefined) {
     // Last writer wins: gone from both keys, wherever it was (project-items.ts)
     const item = await readProjectItem(db, ctx.teamId, id);
@@ -590,7 +591,7 @@ export async function deleteDocument(db: Db, ctx: TeamContext, name: CollectionN
       new TransactWriteCommand({
         TransactItems: [
           { Delete: { TableName: db.tableName, Key: keys.project(ctx.teamId, id) } },
-          { Delete: { TableName: db.tableName, Key: keys.sheet(ctx.teamId, id) } },
+          { Delete: { TableName: db.tableName, Key: legacy.sheetKey(ctx.teamId, id) } },
         ],
       }),
     );
@@ -617,13 +618,13 @@ export async function deleteDocument(db: Db, ctx: TeamContext, name: CollectionN
 }
 
 /**
- * An ad hoc sheet's delete (ADR 0017, section 4): reads it, then deletes it on
+ * A General Use project's delete (ADR 0017, section 4): reads it, then deletes it on
  * the condition that its version hasn't changed since, and, when it's the
  * open one, clears the team's ADHOC pointer in the same transaction, so the
- * next quick take starts a new sheet. Stock doesn't change, as for any sheet.
+ * next quick take starts a new project. Stock doesn't change, as for any project.
  * A lost race is retried on the fresh item unless a version was expected.
  */
-async function deleteAdhocSheet(db: Db, ctx: TeamContext, id: string, expected: number | undefined): Promise<{ before?: StoredDocument }> {
+async function deleteAdhocProject(db: Db, ctx: TeamContext, id: string, expected: number | undefined): Promise<{ before?: StoredDocument }> {
   for (let attempt = 1; ; attempt++) {
     const item = await readItem(db, "projects", ctx.teamId, id);
     const before = item ? fromItem("projects", item) : undefined;

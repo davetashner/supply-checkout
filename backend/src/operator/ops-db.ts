@@ -9,7 +9,7 @@
 // - put and query items in OPAUDIT#* partitions (never update or delete);
 // - batch-get teams' receipt counters by key, the keys and `receipts` only.
 //
-// So an operator can't read a team's sheets or inventory through the ops
+// So an operator can't read a team's projects or inventory through the ops
 // function, even with a bug in it. Sessions are cached like the data
 // function's (team-db.ts).
 

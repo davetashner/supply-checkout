@@ -141,7 +141,7 @@ describe("templates", () => {
     const email = renderEmail({ kind: "deletionWarning", teamName: "Echo", deletesAt: "2026-11-02T12:00:00.000Z" }, { appUrl: APP });
     // deletesAt is the deletion time (noon UTC the next day); the email states the last day it's kept
     expect(email.subject).toBe("Echo will be deleted after November 1, 2026");
-    expect(email.text).toContain("After November 1, 2026, the team, its sheets and its inventory will be deleted for good");
+    expect(email.text).toContain("After November 1, 2026, the team, its projects and its inventory will be deleted for good");
     expect(email.text).toContain("subscribe in the app by November 1, 2026");
     expect(email.text).toContain("Export data");
   });
@@ -179,7 +179,7 @@ describe("templates", () => {
   it("tells an owner their team closed and the day it'll be deleted, with its name defanged", () => {
     const email = renderEmail(samples[5] as EmailInput, { appUrl: APP });
     expect(email.subject).toBe("Echo Cleaning was closed on Supply Checkout");
-    expect(email.text).toContain("On October 26, 2026, the team, its sheets and its inventory will be deleted for good.");
+    expect(email.text).toContain("On October 26, 2026, the team, its projects and its inventory will be deleted for good.");
     expect(email.html).toContain("It will be deleted for good on October 26, 2026.");
     const hostile = renderEmail({ kind: "teamClosed", teamName: "<b>Reopen</b> at https://evil.example/restore", purgeAfter: "2026-10-26T12:00:00.000Z" }, { appUrl: APP });
     for (const part of [hostile.subject, hostile.html, hostile.text]) expect(part).not.toMatch(/evil\.example|https:\/\/evil/);
@@ -614,7 +614,7 @@ describe("email events", () => {
       compPlan: "p", compSeats: 1, compUntil: "d", compReason: "r", compBy: "o", compAt: "d", compMonths: 1,
     };
     const member: Required<Member> = { type: "member", teamId: "t", userId: "u", role: "owner", email: "e", joinedAt: "d" };
-    // Sheets and products carry status, type, version and their document fields
+    // Projects and products carry status, type, version and their document fields
     const others = [...Object.keys(team), ...Object.keys(member), "status", "type", "version", "GSI1PK", "GSI1SK", "GSI2SK", "GSI3PK", "GSI3SK", "expiresAt"];
     const written = EMAIL_EVENTS_WRITES.filter((a) => !["PK", "SK", "GSI2PK"].includes(a));
     expect(written).toEqual(["inviteStatus", "failureReason", "failedAt"]);

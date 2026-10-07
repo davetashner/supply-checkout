@@ -10,8 +10,9 @@ import type { DbForAccount } from "../src/api/account-db.js";
 import { createAccountHandler } from "../src/api/account-handler.js";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { hasRole, requireRole } from "../src/api/roles.js";
-import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey, TEAM_ROLES, type TeamRole } from "../src/api/routes.js";
+import { ACCOUNT_ROUTES, DATA_ROUTES, LEGACY_SHEETS_SEGMENT, routeKey, TEAM_ROLES, type TeamRole } from "../src/api/routes.js";
 import { hashEmail, InvalidInputError } from "../src/data/index.js";
+import { legacy } from "../src/data/legacy-sheets.js";
 import type { Observability } from "../src/observability/index.js";
 import { accountPartitions, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -64,8 +65,8 @@ function seed() {
   table.put({ PK: "TEAM#team-a", SK: "PRODUCT#0123", type: "product", key: "0123", version: 3, code: "0123", name: "Nitrile gloves", price: 12.5, stock: 10 });
   table.put({
     PK: "TEAM#team-a",
-    SK: "SHEET#s1",
-    type: "sheet",
+    SK: "PROJECT#s1",
+    type: "project",
     id: "s1",
     version: 1,
     client: "Echo",
@@ -76,12 +77,12 @@ function seed() {
       ladder: { code: "", name: "Ladder", kind: "equipment", cost: 120, out: 1, returned: 0 },
     },
   });
-  // The team's open ad hoc sheet (ADR 0017), for the move
+  // The team's open General Use project (ADR 0017), for the move
   table.put({ PK: "TEAM#team-a", SK: "ADHOC", type: "adhoc", count: 1, open: "adhoc-1", version: 1 });
   table.put({
     PK: "TEAM#team-a",
-    SK: "SHEET#adhoc-1",
-    type: "sheet",
+    SK: "PROJECT#adhoc-1",
+    type: "project",
     id: "adhoc-1",
     version: 1,
     kind: "adhoc",
@@ -233,10 +234,11 @@ describe("the role matrix", () => {
   });
 
   it("gives every old /sheets route exactly its /projects twin's role, and nothing else differs (supply-checkout-005.6)", () => {
-    const legacy = DATA_ROUTES.filter((r) => r.legacy);
-    expect(legacy.map(routeKey).sort()).toEqual(DATA_ROUTES.filter((r) => r.path.includes("/sheets")).map(routeKey).sort());
-    expect(legacy).toHaveLength(10);
-    for (const route of legacy) {
+    expect(LEGACY_SHEETS_SEGMENT).toBe(legacy.sheetsCollection);
+    const old = DATA_ROUTES.filter((r) => r.legacy);
+    expect(old.map(routeKey).sort()).toEqual(DATA_ROUTES.filter((r) => r.path.includes("/sheets")).map(routeKey).sort());
+    expect(old).toHaveLength(10);
+    for (const route of old) {
       const twin = DATA_ROUTES.find((r) => !r.legacy && r.method === route.method && r.path === route.path.replace("/sheets/{sheetId}", "/projects/{projectId}").replace(/\/sheets$/, "/projects"));
       expect(twin, routeKey(route)).toBeDefined();
       expect({ ...route, path: twin?.path, legacy: undefined }, routeKey(route)).toEqual({ ...twin, legacy: undefined });
