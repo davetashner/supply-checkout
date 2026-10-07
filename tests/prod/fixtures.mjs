@@ -20,6 +20,7 @@ import { MASKED_VALUES_FILE, createMasker } from "../../scripts/journeys/lib/mas
 import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
 import { freshTotp } from "../../scripts/journeys/lib/totp.mjs";
+import { assertNotTracing, markTracing, secretFill } from "../../scripts/journeys/lib/tracing.mjs";
 import { waitUntilConnected } from "../ui/app.js";
 
 const RUM = /^https:\/\/dataplane\.rum\.[a-z0-9-]+\.amazonaws\.com\//;
@@ -97,6 +98,7 @@ export const test = base.extend({
     let tracing = false;
     page.startTrace = async () => {
       if (tracing) return;
+      markTracing(page.context());
       await page.context().tracing.start({ screenshots: true, snapshots: true, title: testInfo.title });
       tracing = true;
     };
@@ -116,6 +118,8 @@ export const test = base.extend({
     await use(async (page, role) => {
       const account = harness.config.accounts[role];
       if (!account) throw new Error(`No long-lived account ${role}`);
+      // A trace records the password and code typed below: never sign in while tracing
+      assertNotTracing(page.context(), "a sign-in");
       identity.account = account.email;
       const meResponse = page.waitForResponse((r) => r.url() === `${PROD.api}/me` && r.request().method() === "GET", { timeout: 60_000 });
       await page.goto("/");
@@ -134,24 +138,6 @@ export const test = base.extend({
     });
   },
 });
-
-/**
- * Types a secret into an input without it reaching any report: Playwright names a fill() step
- * `Fill "<value>"`, and step titles and call logs can end up in the JSON report and the list
- * reporter's output. This sets the value in the page instead (the setter a framework watches,
- * then input and change events); an evaluate step's title and errors never carry its argument.
- * Tracing isn't on yet during sign-in either.
- */
-export async function secretFill(locator, value) {
-  await locator.focus();
-  await locator.evaluate((el, v) => {
-    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")?.set;
-    if (setter) setter.call(el, v);
-    else el.value = v;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-  }, value);
-}
 
 /**
  * Managed Login's pages: the email, then the password (choosing it if the page offers other
@@ -175,4 +161,4 @@ export async function managedLogin(page, account, totpCode) {
   }
 }
 
-export { expect };
+export { expect, secretFill };

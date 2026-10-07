@@ -1,7 +1,7 @@
 // node --test scripts/journeys/test/ (part of npm run test:scripts): TOTP, the Cognito, API and
 // S3 clients, the run records, global setup and the results upload, against fakes.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -14,7 +14,8 @@ import { checkRecord, readRecords, recordKey, writeRecord } from "../lib/runs.mj
 import { createS3 } from "../lib/s3.mjs";
 import { setup } from "../lib/setup.mjs";
 import { base32Decode, freshTotp, hotp, stepAt, totp } from "../lib/totp.mjs";
-import { NOT_UPLOADED, filesToUpload, findLeaks, scrubReport, upload } from "../upload-results.mjs";
+import { NOT_UPLOADED, UploadRefused, filesToUpload, findLeaks, leakForms, scrubReport, upload } from "../upload-results.mjs";
+import { assertNotTracing, markTracing, secretFill } from "../lib/tracing.mjs";
 import { at, fakeEnv, fakeFetch, fakeS3 } from "./helpers.mjs";
 
 // RFC 6238's published test vector, "12345678901234567890" in base32: not a credential
@@ -228,48 +229,74 @@ function runDirWith(files) {
 }
 const uploadEnv = (temp) => fakeEnv({ GITHUB_ACTIONS: "true", CI: "true", GITHUB_RUN_ID: "77", GITHUB_RUN_ATTEMPT: "1", RUNNER_TEMP: temp });
 
-test("upload-results scrubs the report, then puts the run's directory under runs/<runId>/", async () => {
+test("upload-results scrubs the report and text files, then puts the run's directory under runs/<runId>/", async () => {
   const env = fakeEnv();
   const report = {
     suites: [{ specs: [{ tests: [{ results: [{
-      stdout: [{ text: `\n::add-mask::${env.JOURNEYS_OWNER_PASSWORD}\n` }, { text: "::add-mask::run-throwaway-address-value\n" }],
+      stdout: [{ text: "\n::add-mask::run-throwaway-address-value\n" }],
       stderr: [{ text: "noise" }],
-      error: { message: `expected run-throwaway-address-value for ${env.JOURNEYS_CREW_EMAIL}\n::add-mask::leftover-value` },
-      steps: [{ title: `Fill "${env.JOURNEYS_VIEWER_PASSWORD}"` }],
+      error: { message: `expected run-throwaway-address-value for ${env.JOURNEYS_CREW_EMAIL} in ${env.JOURNEYS_DESKTOP_TEAM_ID}\n::add-mask::leftover-value` },
     }] }] }] }],
   };
+  // A failed test's error-context.md shows the page: the signed-in address, the team in a URL
+  const context = `# Page\n- text: Signed in as ${env.JOURNEYS_CREW_EMAIL}\n- link: https://app.supplycheckout.com/?team=${env.JOURNEYS_DESKTOP_TEAM_ID}\n- bucket ${env.JOURNEYS_RESULTS_BUCKET}\n`;
   const { temp, dir } = runDirWith({
     "report.json": JSON.stringify(report),
     "masked-values": "run-throwaway-address-value\n",
     "totp-step.1000": "",
+    "test-results/x/error-context.md": context,
     "test-results/x/trace.zip": "PK binary",
+    "test-results/x/test-failed-1.png": `PNG ${env.JOURNEYS_CREW_EMAIL}`,
   });
   const s3 = fakeS3();
   const message = await upload({ env: uploadEnv(temp), s3For: (b) => { assert.equal(b, env.JOURNEYS_RESULTS_BUCKET); return s3; } });
   assert.deepEqual(s3.calls, [["upload", dir, "runs/77-1/"]]);
-  assert.match(message, /\(2 files\)/);
+  assert.match(message, /\(4 files\)/);
   assert.ok(!message.includes(env.JOURNEYS_RESULTS_BUCKET));
   const scrubbed = readFileSync(path.join(dir, "report.json"), "utf8");
-  for (const v of ["::add-mask::", "stdout", "stderr", env.JOURNEYS_OWNER_PASSWORD, env.JOURNEYS_VIEWER_PASSWORD, env.JOURNEYS_CREW_EMAIL, "run-throwaway-address-value"]) assert.ok(!scrubbed.includes(v), v);
-  assert.match(scrubbed, /Fill \\"\*\*\*\\"/);
-  assert.deepEqual(filesToUpload(dir), ["report.json", "test-results/x/trace.zip"]);
+  for (const v of ["::add-mask::", "stdout", "stderr", env.JOURNEYS_CREW_EMAIL, env.JOURNEYS_DESKTOP_TEAM_ID, "run-throwaway-address-value"]) assert.ok(!scrubbed.includes(v), v);
+  const md = readFileSync(path.join(dir, "test-results/x/error-context.md"), "utf8");
+  for (const v of [env.JOURNEYS_CREW_EMAIL, env.JOURNEYS_DESKTOP_TEAM_ID, env.JOURNEYS_RESULTS_BUCKET]) assert.ok(!md.includes(v), v);
+  assert.match(md, /Signed in as \*\*\*/);
+  // Binary files are uploaded as they are
+  assert.equal(readFileSync(path.join(dir, "test-results/x/test-failed-1.png"), "utf8"), `PNG ${env.JOURNEYS_CREW_EMAIL}`);
+  assert.deepEqual(filesToUpload(dir), ["report.json", "test-results/x/error-context.md", "test-results/x/test-failed-1.png", "test-results/x/trace.zip"]);
   assert.deepEqual(NOT_UPLOADED, ["masked-values", "totp-step*"]);
   // An unreadable report is replaced, not uploaded as is
-  const bad = runDirWith({ "report.json": `{ broken ${env.JOURNEYS_OWNER_PASSWORD}` });
+  const bad = runDirWith({ "report.json": `{ broken ${env.JOURNEYS_CREW_EMAIL}` });
   await upload({ env: uploadEnv(bad.temp), s3For: () => fakeS3() });
-  assert.ok(!readFileSync(path.join(bad.dir, "report.json"), "utf8").includes(env.JOURNEYS_OWNER_PASSWORD));
+  assert.ok(!readFileSync(path.join(bad.dir, "report.json"), "utf8").includes(env.JOURNEYS_CREW_EMAIL));
 });
 
-test("upload-results refuses when any file still holds a secret or a mask command", async () => {
+test("upload-results refuses on a password or the TOTP secret in any form, anywhere, and on a mask command", async () => {
   const env = fakeEnv();
-  for (const leak of [`log line ${env.JOURNEYS_OWNER_TOTP}`, "::add-mask::x-value", `${env.JOURNEYS_MAIL_BUCKET}`]) {
-    const { temp, dir } = runDirWith({ "report.json": "{}", "test-results/a/error-context.md": leak, "test-results/a/ok.txt": "fine" });
+  const pw = env.JOURNEYS_OWNER_PASSWORD;
+  const cases = [
+    ["test-results/a/error-context.md", `log line ${env.JOURNEYS_OWNER_TOTP}`],
+    ["test-results/a/error-context.md", "::add-mask::x-value"],
+    ["test-results/a/data.bin", `binary ${env.JOURNEYS_VIEWER_PASSWORD}`],
+    ["report.json", JSON.stringify({ steps: [{ title: `Fill "${pw}"` }] })],
+    ["test-results/a/note.txt", JSON.stringify(`said "${pw}"`)],
+    ["test-results/a/url.bin", `https://x.example/?p=${encodeURIComponent(pw)}`],
+  ];
+  for (const [file, body] of cases) {
+    const { temp } = runDirWith({ "report.json": "{}", [file]: body, "test-results/a/ok.txt": "fine" });
     const s3 = fakeS3();
-    await assert.rejects(upload({ env: uploadEnv(temp), s3For: () => s3 }), (e) => e.message === "Refusing to upload: a secret or an ::add-mask:: command is in test-results/a/error-context.md" && !e.message.includes(env.JOURNEYS_OWNER_TOTP));
-    assert.deepEqual(s3.calls, []);
-    assert.deepEqual(findLeaks(dir, ["test-results/a/ok.txt"], [env.JOURNEYS_OWNER_TOTP]), []);
+    await assert.rejects(upload({ env: uploadEnv(temp), s3For: () => s3 }), (e) => e instanceof UploadRefused && e.message.endsWith(` is in ${file}`) && !e.message.includes(pw), file);
+    assert.deepEqual(s3.calls, [], file);
   }
+  assert.deepEqual(leakForms('a"b c/d'), ['a"b c/d', 'a\\"b c/d', "a%22b%20c%2Fd"]);
   assert.deepEqual(scrubReport({ a: ["x\n::add-mask::y", 1, null], stdout: [] }, (s) => s), { a: ["x", 1, null] });
+  const { dir } = runDirWith({ "ok.txt": "fine" });
+  assert.deepEqual(findLeaks(dir, ["ok.txt"], [pw]), []);
+});
+
+test("upload-results refuses a run directory with a symlink", async () => {
+  const { temp, dir } = runDirWith({ "report.json": "{}" });
+  symlinkSync("/etc/hosts", path.join(dir, "hosts"));
+  const s3 = fakeS3();
+  await assert.rejects(upload({ env: uploadEnv(temp), s3For: () => s3 }), (e) => e instanceof UploadRefused && /symlinks \(hosts\)/.test(e.message));
+  assert.deepEqual(s3.calls, []);
 });
 
 test("upload-results needs a run, the opt-in or Actions, and the secrets", async () => {
@@ -277,4 +304,32 @@ test("upload-results needs a run, the opt-in or Actions, and the secrets", async
   assert.match(await upload({ env: { ...uploadEnv(temp), GITHUB_RUN_ID: "5" }, s3For: () => fakeS3() }), /nothing to upload for run 5-1/);
   await assert.rejects(upload({ env: fakeEnv(), s3For: () => fakeS3() }), /runs only in GitHub Actions/);
   await assert.rejects(upload({ env: { ...uploadEnv(temp), JOURNEYS_RESULTS_BUCKET: "" }, s3For: () => fakeS3() }), /JOURNEYS_RESULTS_BUCKET is not set/);
+});
+
+test("secrets are never typed into a traced page, and secretFill sets the value in the page", async () => {
+  const context = {};
+  const calls = [];
+  const locator = {
+    page: () => ({ context: () => context }),
+    focus: async () => calls.push("focus"),
+    evaluate: async (fn, value) => {
+      // Run the page function against a stand-in input
+      const events = [];
+      const proto = { set value(v) { this._v = v; } };
+      const el = Object.assign(Object.create(proto), { dispatchEvent: (e) => events.push(e.type) });
+      globalThis.Event ??= class { constructor(type) { this.type = type; } };
+      fn(el, value);
+      calls.push(["evaluate", el._v, events]);
+    },
+  };
+  await secretFill(locator, "s3cret-value");
+  assert.deepEqual(calls, ["focus", ["evaluate", "s3cret-value", ["input", "change"]]]);
+  assert.doesNotThrow(() => assertNotTracing(context));
+  markTracing(context);
+  assert.throws(() => assertNotTracing(context, "a sign-in"), /Refusing to enter a sign-in while this page is being traced/);
+  calls.length = 0;
+  await assert.rejects(secretFill(locator, "s3cret-value"), /being traced/);
+  assert.deepEqual(calls, [], "nothing typed");
+  // Another context isn't affected
+  assert.doesNotThrow(() => assertNotTracing({}));
 });

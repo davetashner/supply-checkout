@@ -6,18 +6,22 @@
 //   node scripts/journeys/upload-results.mjs [--run <runId>]
 //
 // The journeys workflow runs it after cleanup (so every token in a trace was already revoked)
-// and after prod-summary.mjs, both with `if: always()`. Before uploading it:
+// and after prod-summary.mjs, both with `if: always()`, in the same job as the tests. Before
+// uploading it:
 //
-// 1. Rewrites report.json without any test's stdout or stderr (where ::add-mask:: commands and
-//    anything a test printed would be), without any ::add-mask:: line, and with every string
-//    redacted: the environment's secrets, the values the run masked (the masked-values file),
-//    and anything shaped like a token, an address or an account ID.
-// 2. Refuses to upload anything if any file it would upload still holds a secret from the
-//    environment or an ::add-mask:: command, naming the files (never the values).
+// 1. Refuses if the run directory holds a symlink (the AWS CLI would follow it).
+// 2. Rewrites report.json without any test's stdout or stderr (where ::add-mask:: commands and
+//    anything a test printed would be) and without any ::add-mask:: line, and rewrites it and
+//    every other text file (.json, .md, .txt: Playwright's error-context.md, for one) with every
+//    string redacted: the environment's secrets (addresses, team IDs and bucket names among
+//    them, which a failed test's page and URLs show), the values the run masked (the
+//    masked-values file), and anything shaped like a token, an address or an account ID.
+// 3. Refuses to upload anything if any file it would upload (binary ones too) holds a password
+//    or the TOTP secret, as is, JSON-escaped or URL-encoded (checked before and after step 2),
+//    or still holds an ::add-mask:: command after it, naming the files (never the values). The compressed trace.zip can't be checked
+//    this way: the fixtures keep secrets out of traces (scripts/journeys/lib/tracing.mjs).
 //
-// It never uploads the masked-values file or the TOTP step markers, and prints the key prefix,
-// never the bucket.
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENV, assertRunAllowed, readConfig, runDir, runId as currentRunId, secretValues } from "./lib/config.mjs";
@@ -43,42 +47,63 @@ export function scrubReport(report, redact) {
   return walk(report);
 }
 
-/** Every file under `dir` it would upload, relative to `dir`. */
+/** Every file under `dir` it would upload, relative to `dir`. Throws if there's a symlink. */
 export function filesToUpload(dir) {
-  return readdirSync(dir, { recursive: true, withFileTypes: true })
+  const entries = readdirSync(dir, { recursive: true, withFileTypes: true });
+  const links = entries.filter((d) => d.isSymbolicLink()).map((d) => path.relative(dir, path.join(d.parentPath ?? d.path, d.name)));
+  if (links.length) throw new UploadRefused(`Refusing to upload: the run directory holds symlinks (${links.sort().join(", ")})`);
+  return entries
     .filter((d) => d.isFile())
     .map((d) => path.relative(dir, path.join(d.parentPath ?? d.path, d.name)))
     .filter((rel) => !notUploaded(rel))
     .sort();
 }
 
-/** The files (relative paths) that hold any of `secrets` or an ::add-mask:: command. */
-export function findLeaks(dir, files, secrets) {
-  const needles = [ADD_MASK, ...secrets].filter((s) => s && s.length >= 4).map((s) => Buffer.from(s));
+export class UploadRefused extends Error {}
+
+/** The forms a secret can take in a file: as is, JSON-escaped and URL-encoded. */
+export const leakForms = (secret) => [...new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)])];
+
+/** The files (relative paths) that hold any form of any of `secrets`, or an ::add-mask:: command. */
+export function findLeaks(dir, files, secrets, { addMask = true } = {}) {
+  const needles = [...(addMask ? [ADD_MASK] : []), ...secrets.filter((s) => s && s.length >= 4).flatMap(leakForms)].map((s) => Buffer.from(s));
   return files.filter((rel) => {
     const bytes = readFileSync(path.join(dir, rel));
     return needles.some((n) => bytes.includes(n));
   });
 }
 
+/** Text files the upload rewrites redacted. */
+const TEXT = /\.(json|md|txt)$/i;
+
 export async function upload({ env, run, s3For }) {
   assertRunAllowed(env);
   const config = readConfig(env);
   const id = run ?? currentRunId(env);
   const dir = runDir(env, id);
-  let files;
-  try { files = filesToUpload(dir); } catch { return `upload-results: nothing to upload for run ${id}`; }
-  const secrets = secretValues(config);
+  if (!existsSync(dir)) return `upload-results: nothing to upload for run ${id}`;
+  const files = filesToUpload(dir);
+  // Only what unlocks an account refuses the upload (everything else is redacted below). Checked
+  // before redacting as well as after, so a password anywhere is a refusal, never a quiet fix.
+  const { owner, crew, viewer } = config.accounts;
+  const unlocking = [owner.password, crew.password, viewer.password, owner.totp];
+  const refuse = (leaks) => { if (leaks.length) throw new UploadRefused(`Refusing to upload: a password, the TOTP secret or an ::add-mask:: command is in ${leaks.join(", ")}`); };
+  refuse(findLeaks(dir, files, unlocking, { addMask: false }));
   const masker = createMasker({ github: false });
-  for (const v of [...secrets, ...readMaskedValues(path.join(dir, MASKED_VALUES_FILE))]) masker.remember(v);
-  if (files.includes(REPORT_FILE)) {
-    const file = path.join(dir, REPORT_FILE);
-    let report;
-    try { report = JSON.parse(readFileSync(file, "utf8")); } catch { report = { error: "The JSON report couldn't be read; it was replaced by this note" }; }
-    writeFileSync(file, JSON.stringify(scrubReport(report, masker.redact)), { mode: 0o600 });
+  for (const v of [...secretValues(config), ...readMaskedValues(path.join(dir, MASKED_VALUES_FILE))]) masker.remember(v);
+  for (const rel of files.filter((f) => TEXT.test(f))) {
+    const file = path.join(dir, rel);
+    if (rel === REPORT_FILE) {
+      let report;
+      try { report = JSON.parse(readFileSync(file, "utf8")); } catch { report = { error: "The JSON report couldn't be read; it was replaced by this note" }; }
+      writeFileSync(file, JSON.stringify(scrubReport(report, masker.redact)), { mode: 0o600 });
+    } else {
+      // Redacted, but a mask command is kept so the check below refuses it: only the report's
+      // own stdout is an expected place for one
+      writeFileSync(file, masker.redact(readFileSync(file, "utf8")), { mode: 0o600 });
+    }
   }
-  const leaks = findLeaks(dir, files, secrets);
-  if (leaks.length) throw new Error(`Refusing to upload: a secret or an ::add-mask:: command is in ${leaks.join(", ")}`);
+  refuse(findLeaks(dir, files, unlocking));
   await s3For(env[ENV.buckets.results]).upload(dir, `runs/${id}/`, NOT_UPLOADED);
   return `upload-results: run ${id}'s results (${files.length} files) are in the results bucket under runs/${id}/`;
 }
