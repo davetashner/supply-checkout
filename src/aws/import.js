@@ -39,7 +39,8 @@ function previewHTML(res) {
   if (!res.errorCount) {
     // Company equipment has no price (ADR 0017)
     const rows = res.rows.slice(0, SHOWN).map((r) => `<tr><td>${esc(r.name)}${brandHTML(r)}${r.barcode ? `<span class="code">${esc(r.barcode)}</span>` : ""}</td><td>${r.kind === "equipment" ? "Equipment" : money(r.price)}</td><td>${r.stock ?? "—"}</td><td>${r.reorderAt ?? "—"}</td><td>${esc(actionText(r))}</td></tr>`);
-    html += `<div class="table-wrap import-table"><table><thead><tr><th>Item</th><th>Price</th><th>Stock</th><th>Reorder at</th><th>Change</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+    // Focusable, so the preview can be scrolled from the keyboard when it's taller or wider than the dialog
+    html += `<div class="table-wrap import-table" tabindex="0" role="region" aria-label="Preview of the import"><table><thead><tr><th>Item</th><th>Price</th><th>Stock</th><th>Reorder at</th><th>Change</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
     if (res.rows.length > SHOWN) html += `<p class="hint">…and ${plural(res.rows.length - SHOWN, "more row")}.</p>`;
   }
   return html;
