@@ -44,7 +44,7 @@ import { count as checkCount, MAX_MONEY, MAX_QUANTITY, money, quantity as checkQ
 import { type Page, queryPage } from "./query.js";
 import { legacy } from "./legacy-sheets.js";
 import { projectKeyFor, readProjectItem } from "./project-items.js";
-import { ackEnds, ackOnRaise, ackRemoval } from "./reorder.js";
+import { ackOnCount, ackOnRaise, ackRemoval } from "./reorder.js";
 import { PK } from "./schema.js";
 import { storedMarkup } from "./settings.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -454,7 +454,8 @@ function productWrite(
   const names = { "#stock": "stock", ...extra.names };
   if (tracked) {
     checkVersion(product);
-    // A return that takes stock above the reorder level ends the low-stock acknowledgment (reorder.ts)
+    // A return that takes stock above the reorder level ends the low-stock acknowledgment
+    // (reorder.ts); a checkout (delta < 0) gets nothing from this, and its update is unchanged
     const ack = ackOnRaise(product, delta);
     return {
       item: {
@@ -462,7 +463,7 @@ function productWrite(
           TableName: db.tableName,
           Key,
           UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :delta${ackRemoval(ack)}`,
-          ConditionExpression: ["attribute_exists(#stock)", ...extra.clauses, ...(ack ? [ack.clause] : [])].join(" AND "),
+          ConditionExpression: ["attribute_exists(#stock)", ...extra.clauses, ...(ack?.clauses ?? [])].join(" AND "),
           ExpressionAttributeNames: { ...names, "#version": "version", ...ack?.names },
           ExpressionAttributeValues: { ":delta": delta, ":one": 1, ...extra.values, ...ack?.values },
         },
@@ -1402,6 +1403,8 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
     if (!product) throw new NotFoundError("No such item");
     checkVersion(product);
     const base = { operationId: opId, command: "stockAdjust" as const, productKey: key, userId: ctx.userId, at };
+    // A stock that isn't a number (written before stock was checked) can't be added to or counted from
+    if (product.stock !== undefined && typeof product.stock !== "number") throw new InvalidInputError("This item's stock isn't a number");
     if (parsed.reason === "receipt") {
       const { qty, unitCost } = parsed;
       // A restock above the reorder level ends the low-stock acknowledgment (reorder.ts)
@@ -1414,7 +1417,7 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
               TableName: db.tableName,
               Key,
               UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :qty${ackRemoval(ack)}`,
-              ConditionExpression: ["attribute_exists(PK)", ...(ack ? [ack.clause] : [])].join(" AND "),
+              ConditionExpression: ["attribute_exists(PK)", ...(ack?.clauses ?? [])].join(" AND "),
               ExpressionAttributeNames: { "#stock": "stock", "#version": "version", ...ack?.names },
               ExpressionAttributeValues: { ":qty": qty, ":one": 1, ...ack?.values },
             },
@@ -1423,8 +1426,7 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
         ],
       };
     }
-    const current = product.stock;
-    if (current !== undefined && typeof current !== "number") throw new InvalidInputError("This item's stock isn't a number");
+    const current = product.stock as number | undefined;
     // Moved since the person started, and not already what they're setting: refused, not
     // undone. The writes below are conditional on `current`, so this holds when they commit.
     const target = parsed.reason === "count" ? parsed.counted : undefined;
@@ -1450,10 +1452,11 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
             Update: {
               TableName: db.tableName,
               Key,
-              UpdateExpression: `SET ${BUMP_VERSION} REMOVE #stock`,
+              // An uncounted item is never low, so its low-stock acknowledgment goes too (reorder.ts)
+              UpdateExpression: `SET ${BUMP_VERSION} REMOVE #stock, #ackedAtStock`,
               // Removed from the level just read, so the movement's delta is exact
               ConditionExpression: "attribute_exists(PK) AND #stock = :current",
-              ExpressionAttributeNames: { "#stock": "stock", "#version": "version" },
+              ExpressionAttributeNames: { "#stock": "stock", "#version": "version", "#ackedAtStock": "ackedAtStock" },
               ExpressionAttributeValues: { ":current": current, ":one": 1 },
             },
           },
@@ -1463,8 +1466,8 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
     }
     const delta = parsed.counted - (current ?? 0);
     // A count above the reorder level ends the low-stock acknowledgment (reorder.ts). The write is
-    // conditional on the stock just read, so this is decided on the stock it replaces.
-    const endsAck = ackEnds(product, parsed.counted);
+    // conditional on the stock just read, and on the acknowledgment and level as read.
+    const ack = ackOnCount(product, parsed.counted);
     return {
       result: { ...base, reason: "count", count: parsed.counted, stockDelta: delta },
       writes: [
@@ -1472,11 +1475,11 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
           Update: {
             TableName: db.tableName,
             Key,
-            UpdateExpression: `SET #stock = :count, ${BUMP_VERSION}${ackRemoval({ remove: endsAck })}`,
+            UpdateExpression: `SET #stock = :count, ${BUMP_VERSION}${ackRemoval(ack)}`,
             // Set from the level just read, so the movement's delta is exact
-            ConditionExpression: current === undefined ? "attribute_exists(PK) AND attribute_not_exists(#stock)" : "attribute_exists(PK) AND #stock = :current",
-            ExpressionAttributeNames: { "#stock": "stock", "#version": "version", ...(endsAck ? { "#ackedAtStock": "ackedAtStock" } : {}) },
-            ExpressionAttributeValues: { ":count": parsed.counted, ":one": 1, ...(current === undefined ? {} : { ":current": current }) },
+            ConditionExpression: [current === undefined ? "attribute_exists(PK) AND attribute_not_exists(#stock)" : "attribute_exists(PK) AND #stock = :current", ...ack.clauses].join(" AND "),
+            ExpressionAttributeNames: { "#stock": "stock", "#version": "version", ...ack.names },
+            ExpressionAttributeValues: { ":count": parsed.counted, ":one": 1, ...(current === undefined ? {} : { ":current": current }), ...ack.values },
           },
         },
         movementPut(db, ctx, { productKey: key, reason: "count", delta, tracked: true, count: parsed.counted, operationId: opId, userId: ctx.userId, at }),

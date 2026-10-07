@@ -28,7 +28,7 @@ import {
   TooLargeError,
   updateDocument,
 } from "../src/data/index.js";
-import { connection } from "../src/data/client.js";
+import { connection, dbFromConnection } from "../src/data/client.js";
 import { ITEM_TOO_LARGE_MESSAGES } from "../src/data/errors.js";
 import { keys } from "../src/data/keys.js";
 import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
@@ -303,6 +303,93 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     expect(await stock(ctx)).toBe(back);
     if (back > 5) expect(await product()).not.toHaveProperty("ackedAtStock");
     else expect(await product()).toHaveProperty("ackedAtStock", 0);
+  });
+
+  // A Db that runs `before` ahead of each of the next `times` transactions it sends: another
+  // member's write landing between the command's read and its commit (supply-checkout-005.16)
+  function racing(times: number, before: () => Promise<unknown>): { db: Db; attempts: () => number } {
+    const real = connection(db);
+    let left = times, attempts = 0;
+    const doc = {
+      send: async (command: object, ...rest: unknown[]) => {
+        if (command instanceof TransactWriteCommand) {
+          attempts++;
+          if (left > 0) {
+            left--;
+            await before();
+          }
+        }
+        return (real.doc.send as (c: object, ...r: unknown[]) => Promise<unknown>)(command, ...rest);
+      },
+    } as unknown as typeof real.doc;
+    return { db: dbFromConnection({ ...real, doc }), attempts: () => attempts };
+  }
+  const reorderItem = async (ctx: TeamContext, data: Record<string, unknown>) => {
+    await counted(ctx, "0123", { code: "0123", name: "Nitrile gloves", price: 12.5, ...data });
+    // Twenty out on the project, to return
+    await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...(await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#s1")), items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 20, returned: 0 } } } }));
+  };
+  const productData = async (ctx: TeamContext) => (await getDocument(db, ctx, "products", "0123"))?.data;
+
+  it("ends an acknowledgment committed between a return's read and its commit, when the return crosses the level", async () => {
+    const ctx = await team();
+    await reorderItem(ctx, { stock: 4, reorderAt: 5 });
+    // The return reads no acknowledgment; someone acknowledges at 4 before it commits
+    const race = racing(1, () => updateDocument(db, ctx, "products", "0123", { ackedAtStock: 4 }));
+    await returnItems(race.db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 3 });
+    expect(race.attempts()).toBe(2);
+    expect(await productData(ctx)).toMatchObject({ stock: 7, reorderAt: 5 });
+    expect(await productData(ctx)).not.toHaveProperty("ackedAtStock");
+
+    // The same for a count and a receipt
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 2, expectedStock: 7 });
+    const counting = racing(1, () => updateDocument(db, ctx, "products", "0123", { ackedAtStock: 2 }));
+    await adjustStockCommand(counting.db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 9, expectedStock: 2 });
+    expect(counting.attempts()).toBe(2);
+    expect(await productData(ctx)).not.toHaveProperty("ackedAtStock");
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 2, expectedStock: 9 });
+    const buying = racing(1, () => updateDocument(db, ctx, "products", "0123", { ackedAtStock: 2 }));
+    await adjustStockCommand(buying.db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "receipt", quantity: 12, unitCost: 9 });
+    expect(buying.attempts()).toBe(2);
+    expect(await productData(ctx)).toMatchObject({ stock: 14 });
+    expect(await productData(ctx)).not.toHaveProperty("ackedAtStock");
+  });
+
+  it("decides on the reorder level the return commits against, when it changed after the read", async () => {
+    const ctx = await team();
+    await reorderItem(ctx, { stock: 5, reorderAt: 5, ackedAtStock: 3 });
+    // Read at level 5, where 5 + 1 crosses it; before it commits, someone raises the level to 10 and acknowledges at 4
+    const race = racing(1, () => updateDocument(db, ctx, "products", "0123", { reorderAt: 10, ackedAtStock: 4 }));
+    await returnItems(race.db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 1 });
+    expect(race.attempts()).toBe(2);
+    // 6 is still at or below 10: the new acknowledgment stays
+    expect(await productData(ctx)).toMatchObject({ stock: 6, reorderAt: 10, ackedAtStock: 4 });
+  });
+
+  it("doesn't make a return of an acknowledged item conflict when busy checkouts leave it on the same side of the level", async () => {
+    const ctx = await team();
+    await reorderItem(ctx, { stock: 9, reorderAt: 10, ackedAtStock: 9 });
+    // A checkout lands ahead of every attempt the return makes: before, an exact-stock condition retried until it gave up
+    const race = racing(10, () => checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 1 }));
+    await returnItems(race.db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 1 });
+    expect(race.attempts()).toBe(1);
+    expect(await productData(ctx)).toMatchObject({ stock: 9, ackedAtStock: 9 });
+  });
+
+  it("removes the acknowledgment when an item stops being counted, and refuses a receipt on a stock that isn't a number", async () => {
+    const ctx = await team();
+    await reorderItem(ctx, { stock: 2, reorderAt: 5, reorderQty: 24, ackedAtStock: 2 });
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "uncount", expectedStock: 2 });
+    expect(await productData(ctx)).toEqual({ code: "0123", name: "Nitrile gloves", price: 12.5, reorderAt: 5, reorderQty: 24 });
+    // Without an acknowledgment to remove, uncounting still works
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 4 });
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "uncount" });
+    expect(await productData(ctx)).not.toHaveProperty("stock");
+
+    await reorderItem(ctx, { stock: "4", reorderAt: 5, ackedAtStock: 2 });
+    const race = racing(0, async () => undefined);
+    await expect(adjustStockCommand(race.db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "receipt", quantity: 1, unitCost: 9 })).rejects.toThrow(InvalidInputError);
+    expect(race.attempts()).toBe(0);
   });
 
   it("refuses viewers", async () => {

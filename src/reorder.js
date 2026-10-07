@@ -7,9 +7,11 @@
 // - `reorderQty`: how many the team usually orders. Only shown.
 // - `ackedAtStock`: someone acknowledged the alert when stock was this. It's the team's, kept
 //   on the item. The alert stays quiet while stock is at or above it, and comes back when stock
-//   falls below it. A restock above `reorderAt` ends it: the server removes it then (a return,
-//   a receipt, a count or an import), and so does saving a new reorder level (productModal).
-//   One at or above `reorderAt` is out of date, and doesn't quiet anything.
+//   falls below it. A restock above `reorderAt` ends it (ackEnds): the server removes it then
+//   (a return, a receipt, a count or an import, and an uncount, since an uncounted item is never
+//   low), the artifact runtime's writes in src/moves.js do the same, and so does saving a new
+//   reorder level (productModal). One at or above `reorderAt` is out of date, and doesn't quiet
+//   anything.
 import { hasStock, brandOf } from "./format.js";
 import { toCsv } from "./export.js";
 
@@ -20,6 +22,12 @@ export const reorderLevel = p => (p && whole(p.reorderAt) ? p.reorderAt : null);
 export const isLow = p => !!hasStock(p) && reorderLevel(p) !== null && p.stock <= p.reorderAt;
 /** Low, and the team acknowledged it at a stock it hasn't fallen below since. */
 export const isAcked = p => isLow(p) && whole(p.ackedAtStock) && p.ackedAtStock <= p.reorderAt && p.stock >= p.ackedAtStock;
+/**
+ * True when stock going to `stock` ends the item's acknowledgment (ackEnds in
+ * backend/src/data/reorder.ts): it has one, and the new stock is above its reorder level, or it
+ * has no level. null for `stock`: no longer counted, which ends it too.
+ */
+export const ackEnds = (p, stock) => Object.hasOwn(p, "ackedAtStock") && (stock === null || typeof p.reorderAt !== "number" || stock > p.reorderAt);
 /** Low, and nobody has acknowledged it yet: what the alert counts. */
 export const needsReorder = p => isLow(p) && !isAcked(p);
 
@@ -37,7 +45,10 @@ export function reorderCsv(list) {
   ]);
 }
 
-/** The reorder list as text to paste in a message: one line per item. */
+/**
+ * The reorder list as text to paste in a message: one line per item. Plain text, not a
+ * spreadsheet, so it isn't guarded against formulas the way the CSV's cells are (src/export.js).
+ */
 export function reorderText(list) {
   return list.map(p => {
     const brand = brandOf(p), order = whole(p.reorderQty) ? `, order ${p.reorderQty}` : "";

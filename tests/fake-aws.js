@@ -352,6 +352,8 @@ export class FakeBackend {
     if (coll === "products" && Object.hasOwn(call.body.data, "stock") && call.body.data.stock !== stored) return err(400, "bad_request");
     const data = method === "PUT" ? clone(call.body.data) : clone(cur.data);
     if (method === "PATCH") merge(data, call.body.data);
+    // A changed reorder level drops an acknowledgment carried over unchanged (checkReorderFields in backend/src/data/reorder.ts)
+    if (coll === "products" && cur && JSON.stringify(data.reorderAt) !== JSON.stringify(cur.data.reorderAt) && Object.hasOwn(data, "ackedAtStock") && data.ackedAtStock === cur.data.ackedAtStock) delete data.ackedAtStock;
     if (coll === "products" && stored !== undefined) data.stock = stored;
     // A project line's cost each is an amount in whole cents (ADR 0014), as backend/src/data/documents.ts checks
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
@@ -744,7 +746,8 @@ export class FakeBackend {
       return [409, { error: { code: "aborted", reason: "stock_changed", message: `The count changed while you were editing: ${tracked ? `it's now ${before}` : "it's no longer counted"}` } }];
     }
     const delta = reason === "receipt" ? quantity : reason === "count" ? count - before : -before;
-    if (reason === "uncount") delete product.data.stock;
+    // An uncounted item is never low: its acknowledgment goes too (reorder.ts)
+    if (reason === "uncount") { delete product.data.stock; delete product.data.ackedAtStock; }
     else { product.data.stock = before + delta; endAck(product.data, reason === "count" ? 1 : delta); }
     if (tracked || reason !== "uncount") product.version++;
     const result = { operationId, command: "stockAdjust", reason, productKey: key, ...(reason === "receipt" ? { quantity, unitCost } : reason === "count" ? { count } : {}), stockDelta: delta, userId: this.user.id, at: new Date().toISOString() };

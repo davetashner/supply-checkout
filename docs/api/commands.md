@@ -464,11 +464,18 @@ before answering `409`, so `409` from contention is rare.
   supply-checkout-005.8). On an item with `ackedAtStock`, a return or receipt
   that takes `stock` above `reorderAt` (or any count that leaves it above)
   removes `ackedAtStock` in the same update, so the next fall to the reorder
-  level alerts again. A return or receipt on such an item is also conditional
-  on the stock it read, so the decision is made on the stock it adds to: one
-  that loses a race is read again and retried like any other conflict.
-  Checkouts only take stock down, so they never change it, and items without
-  an acknowledgment are updated exactly as before.
+  level alerts again. An uncount removes it too. The update is conditional on
+  what that decision was made on (supply-checkout-005.16): with no
+  acknowledgment read, that there's still none
+  (`attribute_not_exists(ackedAtStock)`); with one read, that `reorderAt` is
+  as read and, for a return or receipt, that the new stock is still on the
+  same side of it (`stock > reorderAt − quantity` to remove, `<=` to keep; a
+  count is already conditional on the exact stock it read). One that loses a
+  race is read again and retried like any other conflict, and checkouts that
+  leave a return on the same side of the level don't make it conflict.
+  Checkouts only take stock down, so they never change it, and their updates
+  are as they were before low-stock alerts. A receipt for an item whose
+  stored `stock` isn't a number is refused (400), as a count is.
 
 ## Stock history
 

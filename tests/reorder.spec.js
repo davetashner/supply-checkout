@@ -1,7 +1,8 @@
 // Low-stock alerts (supply-checkout-005.8, src/reorder.js): a reorder level per item, the Low
 // badge, Running low with its count, the team's acknowledgment, and the reorder list.
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect, openApp, modal, inventoryRow } from "./helpers.js";
+import { test, expect, openApp, modal, inventoryRow, enterBarcode } from "./helpers.js";
+import { usedState, fakeImage } from "./fixtures.js";
 
 const seed = {
   // Low: 2 left, reorder at 5
@@ -95,6 +96,16 @@ test.describe("low-stock alerts", { tag: ["@J15"] }, () => {
     await expect(modal(page).getByLabel("Usual order (optional)")).toHaveValue("");
   });
 
+  test("an Acknowledge for an item deleted or no longer low since the list was drawn does nothing", { tag: ["@J15.3"] }, async ({ page }) => {
+    await openInventory(page);
+    await lowChip(page).click();
+    await expect(page.getByRole("button", { name: "Acknowledge Nitrile gloves" })).toBeVisible();
+    // As if the redraw hadn't happened yet: the button names an item that's gone, then one that isn't low
+    await page.evaluate(() => { const b = document.querySelector("[data-ack]"); b.dataset.ack = "gone"; b.click(); b.dataset.ack = "TWL"; b.click(); });
+    expect(await page.evaluate(() => window.__mock.writes)).toBe(0);
+    expect((await doc(page, "products/GLV")).ackedAtStock).toBeUndefined();
+  });
+
   test("an acknowledgment made on an item someone else changed meanwhile isn't saved, and the latest shows", { tag: ["@J15.3"] }, async ({ page }) => {
     await openInventory(page, { writeErrorFor: { prefix: "products/GLV", code: "aborted" } });
     await lowChip(page).click();
@@ -149,6 +160,65 @@ test.describe("low-stock alerts", { tag: ["@J15"] }, () => {
     await rows.nth(0).click();
     await expect(page.locator("#overlay")).toBeHidden();
     await expect(page.getByRole("button", { name: "Copy list" })).toBeVisible();
+  });
+});
+
+test.describe("a restock in the app's own storage (src/moves.js)", { tag: ["@J15.3"] }, () => {
+  // The mock runtime's writes end an acknowledgment as the server's commands do
+  test("a return above the reorder level ends it, and one at or below keeps it", async ({ page }) => {
+    const project = usedState.seed["projects/s1"];
+    await openApp(page, {
+      seed: {
+        "products/SKU1": { ...usedState.seed["products/SKU1"], stock: 5, reorderAt: 5, ackedAtStock: 5 },
+        "products/GLV": { code: "GLV", name: "Nitrile gloves", price: 12.5, stock: 2, reorderAt: 5, ackedAtStock: 2 },
+        "projects/s1": { ...project, items: { SKU1: project.items.SKU1, GLV: { code: "GLV", name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 } } },
+      },
+    });
+    await page.getByRole("button", { name: /Echo Studio/ }).click();
+    for (const code of ["SKU1", "GLV"]) {
+      await page.getByRole("button", { name: "Return", exact: true }).click();
+      await enterBarcode(page, code);
+      await modal(page).getByRole("button", { name: "Save return" }).click();
+      await expect(page.locator("#overlay")).toBeHidden();
+    }
+    await expect.poll(async () => (await doc(page, "products/GLV")).stock).toBe(3);
+    expect(await doc(page, "products/SKU1")).toMatchObject({ stock: 6, reorderAt: 5 });
+    expect(await doc(page, "products/SKU1")).not.toHaveProperty("ackedAtStock");
+    expect(await doc(page, "products/GLV")).toMatchObject({ stock: 3, ackedAtStock: 2 });
+  });
+
+  test("a receipt into storage above the reorder level ends it", async ({ page }) => {
+    // Line 0 of the receipt is 4 storage bins, matched to nb-bins (i2)
+    const receipt = { ...usedState.receipt, items: usedState.receipt.items.slice(0, 1).map((it) => ({ ...it, match: "i2" })) };
+    await openApp(page, { ...usedState, receipt, seed: { ...usedState.seed, "products/nb-bins": { ...usedState.seed["products/nb-bins"], reorderAt: 4, ackedAtStock: 2 } } });
+    await page.setInputFiles("#receiptFile", fakeImage);
+    await page.locator(".rline").nth(0).locator('[data-f="dest"]').selectOption({ label: "General inventory (storage)" });
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.locator("#toast")).toHaveText("4 added to storage");
+    expect(await doc(page, "products/nb-bins")).toMatchObject({ stock: 6, reorderAt: 4 });
+    expect(await doc(page, "products/nb-bins")).not.toHaveProperty("ackedAtStock");
+  });
+
+  test("a count above the level, a count with no level, and no count at all end it; a count at the level keeps it", async ({ page }) => {
+    await openInventory(page, { seed: { ...seed, "products/OLD": { code: "OLD", name: "Old stock", price: 1, stock: 1, ackedAtStock: 1 } } });
+    const count = async (name, value) => {
+      await inventoryRow(page, name).click();
+      await modal(page).getByLabel("Single items in storage now").fill(value);
+      await modal(page).getByRole("button", { name: "Save" }).click();
+      await expect(page.locator("#overlay")).toBeHidden();
+    };
+    await count("Storage bins", "4");
+    expect(await doc(page, "products/nb-bins")).toMatchObject({ stock: 4, ackedAtStock: 3 });
+    await count("Storage bins", "9");
+    expect(await doc(page, "products/nb-bins")).not.toHaveProperty("ackedAtStock");
+    await count("Old stock", "2");
+    expect(await doc(page, "products/OLD")).not.toHaveProperty("ackedAtStock");
+    // Uncounting an acknowledged item
+    await page.evaluate(() => { window.__mock.docs.get("products/GLV").ackedAtStock = 2; window.__mock.notify(); });
+    await expect(inventoryRow(page, "Nitrile gloves").locator(".low-badge")).toHaveText("Low, acknowledged");
+    await count("Nitrile gloves", "");
+    expect(await doc(page, "products/GLV")).not.toHaveProperty("ackedAtStock");
+    expect(await doc(page, "products/GLV")).not.toHaveProperty("stock");
   });
 });
 
