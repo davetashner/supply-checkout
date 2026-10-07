@@ -54,6 +54,8 @@ export const BusinessMetric = {
   ReceiptLimitReached: "ReceiptLimitReached",
   /** Trial teams whose read just reached RECEIPT_NEAR_LIMIT_SHARE (80%) of their trial's allowance, once per trial; the team ID goes in metadata (J5). Many at once suggests a farm of sign-ups. */
   ReceiptTrialsNearLimit: "ReceiptTrialsNearLimit",
+  /** Trial receipt reads refused because every trial team in the account together had read RECEIPT_TRIAL_READS_PER_DAY that UTC day (supply-checkout-i1d.3); the team ID goes in metadata (J5). Alarms: trials are paused until the next UTC day. */
+  ReceiptTrialCapReached: "ReceiptTrialCapReached",
   /** Paying or comped teams whose read just reached 80% of their month's allowance, once a month; the team ID goes in metadata (J5). Dashboard only. */
   ReceiptPaidTeamsNearLimit: "ReceiptPaidTeamsNearLimit",
   /** How long each receipt read's model call took, in milliseconds, success or not (J5). The dashboard reads its p95. */

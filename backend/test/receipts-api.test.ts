@@ -11,11 +11,11 @@ import type { DataEvent } from "../src/api/data-handler.js";
 import { MAX_RECEIPT_IMAGE_BYTES, createReceiptsHandler, receiptImage } from "../src/api/receipts-handler.js";
 import { RECEIPT_ROUTES, routeKey } from "../src/api/routes.js";
 import type { DbForTeam, DbForTeamUser } from "../src/api/team-db.js";
-import { authorizeTeam, InvalidInputError, setDocument } from "../src/data/index.js";
+import { authorizeTeam, InvalidInputError, MAX_RECEIPT_TRIAL_READS_PER_DAY, RECEIPT_TRIAL_READS_PER_DAY, setDocument, TRIAL_CAP_REACHED, trialReadsPerDayFrom } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
 import { RECEIPT_INSTRUCTIONS } from "../src/receipts/prompt.js";
 import type { ReceiptModel } from "../src/receipts/reader.js";
-import { RECEIPT_RATE_ATTRIBUTES, RECEIPT_USAGE_ATTRIBUTES } from "../src/data/schema.js";
+import { RECEIPT_RATE_ATTRIBUTES, RECEIPT_TRIAL_CAP_ATTRIBUTES, RECEIPT_USAGE_ATTRIBUTES } from "../src/data/schema.js";
 import { connection } from "../src/data/client.js";
 import { fakeDb, namedAttributes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -97,10 +97,10 @@ const dbForTeam: DbForTeam = (teamId) => {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(teamId)) throw new InvalidInputError("Invalid team ID");
   return table.db(teamId);
 };
-// Like the receipt-access role's LeadingKeys: the session's team, and the caller's own rate counters
+// Like the receipt-access role's LeadingKeys: the session's team, the caller's own rate counters, and the account's trial count
 const dbFor: DbForTeamUser = (teamId, userId) => {
   dbForTeam(teamId);
-  return table.scoped([`TEAM#${teamId}`, `RECEIPTRATE#${userId}`]);
+  return table.scoped([`TEAM#${teamId}`, `RECEIPTRATE#${userId}`, "RECEIPTTRIALS"]);
 };
 const MONTH_OF_3 = { period: "month", limit: 3 } as const;
 
@@ -370,6 +370,7 @@ describe("under the receipt-access role's policy (infra/lib/stacks/api-stack.ts)
   // team's partition, an update there only of the receipt counters' attributes
   // (dynamodb:Attributes) returning at most what it updated, and an update in the
   // caller's RECEIPTRATE# partition only of the rate counters' attributes, returning
+  // nothing, and in RECEIPTTRIALS only of the day's count's attributes, returning
   // nothing. No puts, deletes or anything else.
   const policyDb = (teamId: string, userId: string, refused: string[]) =>
     table.guarded((command, input) => {
@@ -384,6 +385,7 @@ describe("under the receipt-access role's policy (infra/lib/stacks/api-stack.ts)
       const update = (u: Record<string, unknown>) => {
         if (pkOf(u.Key) === pk) return only(u, RECEIPT_USAGE_ATTRIBUTES) && returns(u, ["NONE", "UPDATED_NEW", undefined]);
         if (pkOf(u.Key) === `RECEIPTRATE#${userId}`) return only(u, RECEIPT_RATE_ATTRIBUTES) && returns(u, ["NONE", undefined]);
+        if (pkOf(u.Key) === "RECEIPTTRIALS") return only(u, RECEIPT_TRIAL_CAP_ATTRIBUTES) && returns(u, ["NONE", undefined]);
         return false;
       };
       const ok = (() => {
@@ -414,6 +416,7 @@ describe("under the receipt-access role's policy (infra/lib/stacks/api-stack.ts)
     expect((await guarded(event({ body: { image: jpeg } }))).statusCode).toBe(429);
     expect(refused).toEqual([]);
     expect(table.get("TEAM#team-a", "USAGE#TRIAL")?.receipts).toBe(1);
+    expect(table.get("RECEIPTTRIALS", "DAY#2026-09-26")).toEqual({ PK: "RECEIPTTRIALS", SK: "DAY#2026-09-26", count: 1, expiresAt: Date.parse("2026-09-27T00:00:00Z") / 1000 + 7 * 86_400 });
     // And the usage route
     const usage = await guarded(event({ routeKey: "GET /teams/{teamId}/receipts/usage", path: "/teams/team-a/receipts/usage" }));
     expect(refused).toEqual([]);
@@ -630,6 +633,115 @@ describe("the per-user rate limit (supply-checkout-wxx)", () => {
     for (let i = 0; i < 10; i++) expect((await read()).body.error.reason).toBe("receipt_limit");
     expect((await read()).body.error.reason).toBe("rate_limited");
     expect(table.get(`RECEIPTRATE#${CONTRIBUTOR}`, "RECEIPTS#MINUTE#2026-09-26T12:00")?.count).toBe(10);
+  });
+});
+
+describe("the account-wide trial cap (supply-checkout-i1d.3)", () => {
+  let clock: number;
+  let h: ReturnType<typeof createReceiptsHandler>;
+  const read = async (user = CONTRIBUTOR, path = PATH) => {
+    const res = await h(event({ path, body: { image: jpeg }, claims: { sub: user, token_use: "access", exp: String(clock / 1000 + 600), client_id: "web" } }));
+    return { status: res.statusCode, body: JSON.parse(res.body as string), headers: res.headers ?? {} };
+  };
+  const trialDay = (day = "2026-09-26") => table.get("RECEIPTTRIALS", `DAY#${day}`)?.count;
+  beforeEach(() => {
+    clock = NOW;
+    // team-a and team-c are trials (no status), each with its own members
+    h = createReceiptsHandler({ dbFor, obs: fakeObservability(), model: fakeModel, modelId: MODEL_ID, now: () => clock, trialReadsPerDay: 3 });
+    table.seedTeam("team-c", { [OUTSIDER]: "owner" });
+  });
+
+  it("stops every trial team's reads at the day's cap, before the model, gives the team's read back, and starts again the next UTC day", async () => {
+    expect((await read()).status).toBe(200);
+    expect((await read(OUTSIDER, "/teams/team-c/receipts/read")).status).toBe(200);
+    expect((await read()).status).toBe(200);
+    expect(trialDay()).toBe(3);
+    const over = await read(OUTSIDER, "/teams/team-c/receipts/read");
+    expect(over.status).toBe(429);
+    expect(over.body.error).toEqual({ code: "quota_exceeded", reason: "rate_limited", message: TRIAL_CAP_REACHED });
+    // 12:00 to midnight UTC
+    expect(over.headers["retry-after"]).toBe(String(12 * 3600));
+    expect(counts.ReceiptTrialCapReached).toBe(1);
+    expect(counts.ReceiptLimitReached).toBeUndefined();
+    expect(JSON.stringify(logs)).toContain('"refused":"trial_cap"');
+    expect(calls).toHaveLength(3);
+    // The refused read isn't the team's: its trial and month are as they were, and the day's count didn't move
+    expect(table.get("TEAM#team-c", "USAGE#TRIAL")?.receipts).toBe(1);
+    expect(usageCount("team-c")).toBe(1);
+    expect(trialDay()).toBe(3);
+    // A paying team isn't counted or stopped
+    table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), status: "active" });
+    expect((await read()).status).toBe(200);
+    expect(trialDay()).toBe(3);
+    // The next UTC day is a new count
+    clock = Date.parse("2026-09-27T00:00:00Z");
+    expect((await read(OUTSIDER, "/teams/team-c/receipts/read")).status).toBe(200);
+    expect(trialDay("2026-09-27")).toBe(1);
+  });
+
+  it("can't be raced past by reads at once", async () => {
+    table.seedTeam("team-d", { [OWNER]: "owner" });
+    const reads = await Promise.all([
+      ...Array.from({ length: 3 }, () => read()),
+      ...Array.from({ length: 3 }, () => read(OUTSIDER, "/teams/team-c/receipts/read")),
+      ...Array.from({ length: 3 }, () => read(OWNER, "/teams/team-d/receipts/read")),
+    ]);
+    expect(reads.filter((r) => r.status === 200)).toHaveLength(3);
+    expect(reads.filter((r) => r.status === 429 && r.body.error.message === TRIAL_CAP_REACHED)).toHaveLength(6);
+    expect(trialDay()).toBe(3);
+    expect(calls).toHaveLength(3);
+    // Each refused read was given back to its team
+    const teamReads = ["team-a", "team-c", "team-d"].reduce((n, t) => n + ((table.get(`TEAM#${t}`, "USAGE#TRIAL")?.receipts as number | undefined) ?? 0), 0);
+    expect(teamReads).toBe(3);
+  });
+
+  it("gives a read the model service refused back to the day's count too", async () => {
+    answer = async () => Promise.reject(new RateLimitError(429, { message: "busy" }, "busy", new Headers()));
+    expect((await read()).body.error.reason).toBe("model_busy");
+    expect(trialDay()).toBe(0);
+    expect(table.get("TEAM#team-a", "USAGE#TRIAL")?.receipts).toBe(0);
+    // Never below zero, even if the day's count is gone by then
+    answer = async () => {
+      table.delete("RECEIPTTRIALS", "DAY#2026-09-26");
+      throw new RateLimitError(429, { message: "busy" }, "busy", new Headers());
+    };
+    expect((await read()).body.error.reason).toBe("model_busy");
+    expect(trialDay()).toBeUndefined();
+    expect(JSON.stringify(logs)).toContain('"refunded":1');
+  });
+
+  it("refuses every trial read at a cap of 0, writing nothing to the day's count", async () => {
+    h = createReceiptsHandler({ dbFor, obs: fakeObservability(), model: fakeModel, modelId: MODEL_ID, now: () => clock, trialReadsPerDay: 0 });
+    const res = await read();
+    expect(res.body.error.message).toBe(TRIAL_CAP_REACHED);
+    expect(trialDay()).toBeUndefined();
+    expect(table.get("TEAM#team-a", "USAGE#TRIAL")?.receipts).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("fails closed, and gives the team's read back, when the day's count can't be written", async () => {
+    const noCap: DbForTeamUser = (teamId, userId) => table.scoped([`TEAM#${teamId}`, `RECEIPTRATE#${userId}`]);
+    h = createReceiptsHandler({ dbFor: noCap, obs: fakeObservability(), model: fakeModel, modelId: MODEL_ID, now: () => clock, trialReadsPerDay: 3 });
+    expect((await read()).status).toBe(500);
+    expect(table.get("TEAM#team-a", "USAGE#TRIAL")?.receipts).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("is read from the environment: the default when unset, a whole number up to the maximum, and anything else refused", () => {
+    expect(trialReadsPerDayFrom(undefined)).toBe(RECEIPT_TRIAL_READS_PER_DAY);
+    expect(trialReadsPerDayFrom("")).toBe(RECEIPT_TRIAL_READS_PER_DAY);
+    expect(trialReadsPerDayFrom("0")).toBe(0);
+    expect(trialReadsPerDayFrom("250")).toBe(250);
+    expect(trialReadsPerDayFrom(String(MAX_RECEIPT_TRIAL_READS_PER_DAY))).toBe(MAX_RECEIPT_TRIAL_READS_PER_DAY);
+    for (const bad of ["-1", "1.5", "01", "1e3", "abc", " 5", String(MAX_RECEIPT_TRIAL_READS_PER_DAY + 1)]) expect(() => trialReadsPerDayFrom(bad), bad).toThrow(/whole number/);
+  });
+
+  it("refuses a cap that isn't a whole number in range before counting anything", async () => {
+    for (const bad of [-1, 1.5, Number.NaN, MAX_RECEIPT_TRIAL_READS_PER_DAY + 1]) {
+      h = createReceiptsHandler({ dbFor, obs: fakeObservability(), model: fakeModel, modelId: MODEL_ID, now: () => clock, trialReadsPerDay: bad });
+      expect((await read()).status, String(bad)).toBe(400);
+    }
+    expect(table.get("TEAM#team-a", "USAGE#TRIAL")).toBeUndefined();
   });
 });
 

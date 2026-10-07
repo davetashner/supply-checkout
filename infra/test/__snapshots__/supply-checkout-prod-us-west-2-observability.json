@@ -2064,6 +2064,195 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsreceipttrialspaused75D3BF27": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Receipt trials paused (J5, us-west-2). Any ReceiptTrialCapReached in an hour: every trial team in the account together has read RECEIPT_TRIAL_READS_PER_DAY receipts today (supply-checkout-i1d.3), so trial teams can't scan receipts until the next UTC day. Paying teams aren't affected. Either a farm of sign-ups or real trial growth. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-receipt-trials-paused",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "ReceiptTrialCapReached (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "ReceiptTrialCapReached",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsbedrockspendhighC7133D85": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Bedrock spend high (J5, us-west-2). The receipt model's estimated spend above $5 in a day (BEDROCK_SPEND_ALARM_USD_PER_DAY), from Bedrock's own input, output and cache token counts for the receipt model at its list prices: faster than the Bedrock budget, which sees billed cost hours later. A receipt read costs about half a cent. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-bedrock-spend-high",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "(FILL(i_us_west_2, 0) * 1 + FILL(o_us_west_2, 0) * 5 + FILL(cr_us_west_2, 0) * 0.1 + FILL(cw_us_west_2, 0) * 1.25) / 1000000",
+            "Id": "expr_1",
+            "Label": "Receipt model spend, USD (us-west-2)",
+            "ReturnData": true
+          },
+          {
+            "Id": "i_us_west_2",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ModelId",
+                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  }
+                ],
+                "MetricName": "InputTokenCount",
+                "Namespace": "AWS/Bedrock"
+              },
+              "Period": 86400,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "o_us_west_2",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ModelId",
+                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  }
+                ],
+                "MetricName": "OutputTokenCount",
+                "Namespace": "AWS/Bedrock"
+              },
+              "Period": 86400,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "cr_us_west_2",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ModelId",
+                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  }
+                ],
+                "MetricName": "CacheReadInputTokenCount",
+                "Namespace": "AWS/Bedrock"
+              },
+              "Period": 86400,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "cw_us_west_2",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ModelId",
+                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  }
+                ],
+                "MetricName": "CacheWriteInputTokenCount",
+                "Namespace": "AWS/Bedrock"
+              },
+              "Period": 86400,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 5,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmscheckoutbroken12502696": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {

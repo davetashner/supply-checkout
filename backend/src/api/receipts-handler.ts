@@ -17,13 +17,17 @@
 //    team's read RECEIPT_TRIAL_READS_PER_USER_PER_DAY; 429 `rate_limited`
 //    with Retry-After), then against the team's allowance: a month's while
 //    it pays, its trial's in all while it doesn't (429 `receipt_limit`).
-//    Each counter is atomic, so reads at once can't go past it
-//    (data/usage.ts). Both refuse a closed team and one whose subscription
+//    A trial team's read also counts in the account's trial reads for the
+//    UTC day (RECEIPT_TRIAL_READS_PER_DAY, supply-checkout-i1d.3; past it,
+//    429 `rate_limited` with Retry-After to the next UTC day, and the team's
+//    read given back). Each counter is atomic, so reads at once can't go past
+//    it (data/usage.ts). Both refuse a closed team and one whose subscription
 //    ended. Rate counts are attempts and are never given back.
 // 4. The team's inventory is read for matching, and the model is called with
 //    a deadline (RECEIPT_DEADLINE_MS) under API Gateway's 30 seconds. If the
 //    model service refuses the call before billing any tokens (throttled, or
-//    a 503), the team's read is given back (refundReceipt); anything else (a
+//    a 503), the team's read (and a trial's, the account's) is given back
+//    (refundReceipt); anything else (a
 //    timeout, a bad reply, a 500, a network error) still counts, since its
 //    tokens may have been billed.
 //
@@ -89,6 +93,8 @@ export interface ReceiptsHandlerDeps {
   readonly deadlineMs?: number;
   /** For tests: the team's allowance instead of the one its plan gives (receiptAllowance). */
   readonly allowance?: ReceiptAllowance;
+  /** Receipts every trial team together may read each UTC day; defaults to RECEIPT_TRIAL_READS_PER_DAY. */
+  readonly trialReadsPerDay?: number;
 }
 
 
@@ -141,9 +147,8 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
   const now = deps.now ?? Date.now;
   const deadlineMs = deps.deadlineMs ?? RECEIPT_DEADLINE_MS;
 
-  /** Counts the read against the caller's rate and the team's allowance, or refuses it. */
-  async function take(db: Db, ctx: TeamContext, log: Record<string, string | number>): Promise<ReceiptQuota> {
-    const at = new Date(now());
+  /** Counts the read against the caller's rate and the team's allowance (and a trial's, the account's trial reads for the day), or refuses it. */
+  async function take(db: Db, ctx: TeamContext, at: Date, log: Record<string, string | number>): Promise<ReceiptQuota> {
     const metadata = { teamId: ctx.teamId };
     // The allowance first: a trial team's read also counts in the user's trial reads for the day
     const allowance = deps.allowance ?? (await getReceiptAllowance(db, ctx, at));
@@ -157,11 +162,17 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
       throw new ApiError(429, "quota_exceeded", error.message, "rate_limited", { "retry-after": String(error.retryAfterSeconds) });
     }
     try {
-      const taken = await takeReceipt(db, ctx, allowance, at);
+      const taken = await takeReceipt(db, ctx, allowance, at, deps.trialReadsPerDay);
       // Split by period: a trial's crossing alarms (a farm shows as many), a paying team's is for the dashboard
       if (crossesNearLimit(taken)) deps.obs.count(taken.period === "trial" ? BusinessMetric.ReceiptTrialsNearLimit : BusinessMetric.ReceiptPaidTeamsNearLimit, 1, metadata);
       return taken;
     } catch (error) {
+      // Every trial team's reads for the day together are used up: until the next UTC day, as a rate limit, whose message the app shows as it is
+      if (error instanceof RateLimitedError) {
+        deps.obs.count(BusinessMetric.ReceiptTrialCapReached, 1, metadata);
+        log.refused = "trial_cap";
+        throw new ApiError(429, "quota_exceeded", error.message, "rate_limited", { "retry-after": String(error.retryAfterSeconds) });
+      }
       if (!(error instanceof LimitReachedError)) throw error;
       deps.obs.count(BusinessMetric.ReceiptLimitReached, 1, { ...metadata, period: allowance.period });
       log.refused = "receipt_limit";
@@ -173,7 +184,8 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
     const body = jsonBody(event, ["image"], MAX_RECEIPT_BODY_BYTES);
     const image = receiptImage(body.image);
     log.imageBytes = image.bytes;
-    const taken = await take(db, ctx, log);
+    const takenAt = new Date(now());
+    const taken = await take(db, ctx, takenAt, log);
     const products = await listDocuments(db, ctx, "products", { limit: MAX_INVENTORY_LINES });
     const inventory = products.items.map((doc) => ({ key: doc.id, name: doc.data.name, brand: doc.data.brand, price: doc.data.price }));
     log.inventoryItems = inventory.length;
@@ -197,7 +209,7 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
       // Only a throttle or a 503 from the model service, with no tokens: see ReceiptReadError.refundable
       if (error.refundable && !usageOf(error)) {
         // Best effort: the answer is the failure either way
-        log.refunded = await refundReceipt(db, ctx, taken).then(
+        log.refunded = await refundReceipt(db, ctx, taken, takenAt).then(
           () => 1,
           () => 0,
         );

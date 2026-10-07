@@ -163,6 +163,35 @@ export const RECEIPT_RATE_PREFIX = "RECEIPTRATE#";
  */
 export const RECEIPT_RATE_ATTRIBUTES = [PK, SK, "count", "expiresAt"] as const;
 
+/**
+ * The partition of the account-wide count of trial receipt reads
+ * (supply-checkout-i1d.3): `RECEIPTTRIALS`, sort key `DAY#<YYYY-MM-DD>`
+ * (keys.receiptTrialDay), one item per UTC day for every trial team in the
+ * account together. A circuit breaker on model spend: per-team and per-user
+ * limits bound one account, not a farm of many. The receipts function's role
+ * reaches this one partition (a fixed name, no tag in it), only with
+ * UpdateItem, only these attributes (RECEIPT_TRIAL_CAP_ATTRIBUTES) and
+ * nothing returned.
+ */
+export const RECEIPT_TRIAL_CAP_PARTITION = "RECEIPTTRIALS";
+
+/**
+ * Receipts every trial team in the account together may read each UTC day
+ * (supply-checkout-i1d.3): the account-wide circuit breaker on trial model
+ * spend. At about half a cent a read, 500 is a few dollars a day at most;
+ * twenty trials using their whole 25 in one day. PROVISIONAL: the deployed
+ * number comes from the receipts function's RECEIPT_TRIAL_READS_PER_DAY
+ * (`-c receiptTrialReadsPerDay=<n>`, infra/lib/config.ts; trialReadsPerDayFrom in usage.ts), this when unset;
+ * 0 stops every trial read.
+ */
+export const RECEIPT_TRIAL_READS_PER_DAY = 500;
+
+/** The most RECEIPT_TRIAL_READS_PER_DAY may be set to: a typo shouldn't lift the breaker. */
+export const MAX_RECEIPT_TRIAL_READS_PER_DAY = 100_000;
+
+/** The only attributes the receipts function may name in the `RECEIPTTRIALS` partition: the keys, the day's count and its expiry (TTL). */
+export const RECEIPT_TRIAL_CAP_ATTRIBUTES = [PK, SK, "count", "expiresAt"] as const;
+
 /** The only attributes a request may name in an `INVITELIMIT#` partition: the keys, the count, its item type and its expiry. */
 export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;
 

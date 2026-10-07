@@ -8,7 +8,7 @@ import type { AlarmTopics, Severity } from "./alarm-topics.js";
 // OWNER: the defaults below are a guess for a pre-launch account (a few
 // dollars to a few tens of dollars a month). Adjust them as real spend
 // becomes known, either here or per deploy with CDK context:
-//   -c monthlyBudgetUsd=150 -c costAnomalyUsd=25
+//   -c monthlyBudgetUsd=150 -c bedrockBudgetUsd=75 -c costAnomalyUsd=25
 // (or the same keys in cdk.json's context).
 
 /** The monthly cost budget, in US dollars. Alerts at 50%, 80% and 100% of actual spend and 100% of forecast spend. */
@@ -16,6 +16,23 @@ export const DEFAULT_MONTHLY_BUDGET_USD = 100;
 
 /** Cost Anomaly Detection alerts on an anomaly whose total impact is at least this many US dollars. */
 export const DEFAULT_COST_ANOMALY_USD = 20;
+
+/**
+ * The monthly budget for Bedrock alone, in US dollars (supply-checkout-i1d.3):
+ * receipt reading's model spend, alerting at the same thresholds as the
+ * account's budget. Provisional: about 10,000 receipt reads a month.
+ */
+export const DEFAULT_BEDROCK_BUDGET_USD = 50;
+
+/**
+ * The services the Bedrock budget counts, by their names in Cost Explorer's
+ * Service dimension, matched exactly. Bedrock's own charges are "Amazon
+ * Bedrock"; Anthropic's models are billed through AWS Marketplace under a
+ * service named for the model. OWNER: check these against Cost Explorer
+ * (grouped by Service) once the first reads are billed, and fix any that
+ * don't match, or the budget won't see that spend.
+ */
+export const BEDROCK_BUDGET_SERVICES = ["Amazon Bedrock", "Claude Haiku 4.5 (Amazon Bedrock Edition)"] as const;
 
 /** The largest value either setting accepts: a typo (an extra zero or two) shouldn't silence the alerts. */
 const MAX_USD = 10_000;
@@ -34,6 +51,8 @@ export const COST_ALERT_SEVERITY: Severity = "P2";
 
 export interface CostAlertSettings {
   readonly monthlyBudgetUsd: number;
+  /** The Bedrock budget (BEDROCK_BUDGET_SERVICES), monthly. */
+  readonly bedrockBudgetUsd: number;
   readonly anomalyUsd: number;
   /**
    * An existing Cost Anomaly Detection monitor to subscribe to, instead of
@@ -60,7 +79,7 @@ function usd(node: ContextReader, key: string, fallback: number): number {
 
 const MONITOR_ARN = /^arn:aws[a-z-]*:ce::\d{12}:anomalymonitor\/[0-9a-f-]{1,64}$/;
 
-/** Reads monthlyBudgetUsd, costAnomalyUsd and costAnomalyMonitorArn from CDK context. */
+/** Reads monthlyBudgetUsd, bedrockBudgetUsd, costAnomalyUsd and costAnomalyMonitorArn from CDK context. */
 export function costAlertsFromContext(node: ContextReader): CostAlertSettings {
   const arn = node.tryGetContext("costAnomalyMonitorArn");
   if (arn !== undefined && (typeof arn !== "string" || !MONITOR_ARN.test(arn))) {
@@ -68,12 +87,14 @@ export function costAlertsFromContext(node: ContextReader): CostAlertSettings {
   }
   return {
     monthlyBudgetUsd: usd(node, "monthlyBudgetUsd", DEFAULT_MONTHLY_BUDGET_USD),
+    bedrockBudgetUsd: usd(node, "bedrockBudgetUsd", DEFAULT_BEDROCK_BUDGET_USD),
     anomalyUsd: usd(node, "costAnomalyUsd", DEFAULT_COST_ANOMALY_USD),
     ...(arn === undefined ? {} : { anomalyMonitorArn: arn }),
   };
 }
 
 export const budgetName = (envName: string) => `supply-checkout-${envName}-monthly`;
+export const bedrockBudgetName = (envName: string) => `supply-checkout-${envName}-bedrock`;
 export const anomalyMonitorName = (envName: string) => `supply-checkout-${envName}-services`;
 export const anomalySubscriptionName = (envName: string) => `supply-checkout-${envName}-anomalies`;
 
@@ -83,7 +104,8 @@ export interface CostAlertsProps extends CostAlertSettings {
 }
 
 /**
- * The account's monthly cost budget and its Cost Anomaly Detection monitor
+ * The account's monthly cost budget, a monthly budget for Bedrock alone
+ * (supply-checkout-i1d.3), and the account's Cost Anomaly Detection monitor
  * and subscription (supply-checkout-jxq), notifying the P2 alarm topic.
  *
  * Budgets and Cost Explorer are account-wide, not regional (Cost Explorer's
@@ -97,6 +119,7 @@ export interface CostAlertsProps extends CostAlertSettings {
  */
 export class CostAlerts extends Construct {
   readonly budget: CfnBudget;
+  readonly bedrockBudget: CfnBudget;
   readonly monitor?: CfnAnomalyMonitor;
   readonly subscription: CfnAnomalySubscription;
 
@@ -143,6 +166,24 @@ export class CostAlerts extends Construct {
     });
     // Budgets checks it may publish when it saves the notifications
     this.budget.node.addDependency(topic);
+
+    // Bedrock alone (supply-checkout-i1d.3): receipt reading's model spend, which a
+    // farm of trial sign-ups would drive, seen apart from the rest of the bill
+    this.bedrockBudget = new CfnBudget(this, "BedrockBudget", {
+      budget: {
+        budgetName: bedrockBudgetName(props.envName),
+        budgetType: "COST",
+        timeUnit: "MONTHLY",
+        budgetLimit: { amount: props.bedrockBudgetUsd, unit: "USD" },
+        costTypes: { includeCredit: false, includeRefund: false },
+        filterExpression: { dimensions: { key: "SERVICE", values: [...BEDROCK_BUDGET_SERVICES], matchOptions: ["EQUALS"] } },
+      },
+      notificationsWithSubscribers: [
+        ...ACTUAL_THRESHOLDS.map((t) => notification("ACTUAL", t)),
+        notification("FORECASTED", FORECAST_THRESHOLD),
+      ],
+    });
+    this.bedrockBudget.node.addDependency(topic);
 
     let monitorArn = props.anomalyMonitorArn;
     if (monitorArn === undefined) {

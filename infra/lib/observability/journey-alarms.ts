@@ -25,6 +25,7 @@ import {
   STRIPE_DELETION_STUCK_DAYS,
 } from "../../../backend/src/ops/names.js";
 import { realtimeResourceNames } from "../../../backend/src/realtime/channels.js";
+import { RECEIPT_MODEL_ID, RECEIPT_MODEL_PRICES_PER_MILLION_TOKENS } from "../config.js";
 import type { AlarmTopics, Severity } from "./alarm-topics.js";
 import { apiGateway, business, dynamoDbSystemErrors, dynamoDbThrottles, FIVE_MINUTES, lambda } from "./metrics.js";
 
@@ -93,6 +94,40 @@ export const RECEIPT_READS_ALARM_PER_HOUR = 300;
  * or two a day is a healthy trial; several in an hour is likely a farm.
  */
 export const RECEIPT_TRIALS_NEAR_LIMIT_ALARM_PER_HOUR = 5;
+
+/**
+ * The receipt model's estimated spend in a day, in US dollars, that "Bedrock
+ * spend high" alarms above (supply-checkout-i1d.3), from Bedrock's own token
+ * counts at RECEIPT_MODEL_PRICES_PER_MILLION_TOKENS. Provisional: a read costs
+ * about half a cent, so this is about a thousand reads a day, several times
+ * the pilot's use and twice the account-wide trial cap's worst day. Raise it
+ * with real traffic.
+ */
+export const BEDROCK_SPEND_ALARM_USD_PER_DAY = 5;
+
+/**
+ * The receipt model's estimated spend in US dollars, per `period`, from the
+ * AWS/Bedrock token counts for RECEIPT_MODEL_ID (the inference profile the
+ * receipts function calls) in this region: every call, not only the ones the
+ * function counted, priced by kind of token.
+ */
+export function bedrockSpend(region: string, period: Duration): MathExpression {
+  const tokens = (metricName: string) => new Metric({ namespace: "AWS/Bedrock", metricName, dimensionsMap: { ModelId: RECEIPT_MODEL_ID }, statistic: "Sum", period, region });
+  const p = RECEIPT_MODEL_PRICES_PER_MILLION_TOKENS;
+  // IDs named for the region, so one graph can hold every region's
+  const r = region.replace(/-/g, "_");
+  return new MathExpression({
+    expression: `(FILL(i_${r}, 0) * ${p.input} + FILL(o_${r}, 0) * ${p.output} + FILL(cr_${r}, 0) * ${p.cacheRead} + FILL(cw_${r}, 0) * ${p.cacheWrite}) / 1000000`,
+    usingMetrics: {
+      [`i_${r}`]: tokens("InputTokenCount"),
+      [`o_${r}`]: tokens("OutputTokenCount"),
+      [`cr_${r}`]: tokens("CacheReadInputTokenCount"),
+      [`cw_${r}`]: tokens("CacheWriteInputTokenCount"),
+    },
+    period,
+    label: `Receipt model spend, USD (${region})`,
+  });
+}
 
 /**
  * Closed teams set aside at once that "Many closed-team subscriptions set
@@ -499,6 +534,24 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       metric: business(BusinessMetric.ReceiptTrialsNearLimit, region, Duration.hours(1)),
       // Above the threshold: at least RECEIPT_TRIALS_NEAR_LIMIT_ALARM_PER_HOUR
       threshold: RECEIPT_TRIALS_NEAR_LIMIT_ALARM_PER_HOUR - 1,
+    },
+    {
+      id: "receipt-trials-paused",
+      title: "Receipt trials paused",
+      journeys: "J5",
+      severity: "P2",
+      rule: "Any ReceiptTrialCapReached in an hour: every trial team in the account together has read RECEIPT_TRIAL_READS_PER_DAY receipts today (supply-checkout-i1d.3), so trial teams can't scan receipts until the next UTC day. Paying teams aren't affected. Either a farm of sign-ups or real trial growth.",
+      metric: business(BusinessMetric.ReceiptTrialCapReached, region, Duration.hours(1)),
+      threshold: 0,
+    },
+    {
+      id: "bedrock-spend-high",
+      title: "Bedrock spend high",
+      journeys: "J5",
+      severity: "P2",
+      rule: `The receipt model's estimated spend above $${BEDROCK_SPEND_ALARM_USD_PER_DAY} in a day (BEDROCK_SPEND_ALARM_USD_PER_DAY), from Bedrock's own input, output and cache token counts for the receipt model at its list prices: faster than the Bedrock budget, which sees billed cost hours later. A receipt read costs about half a cent.`,
+      metric: bedrockSpend(region, Duration.days(1)),
+      threshold: BEDROCK_SPEND_ALARM_USD_PER_DAY,
     },
     // J7. Subscribe, add seats and see invoices
     {
