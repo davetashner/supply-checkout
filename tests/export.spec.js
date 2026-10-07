@@ -7,7 +7,7 @@ const seed = {
   ...usedState.seed,
   "products/uncounted": { code: "UC1", name: "=HYPERLINK(\"x\")", brand: "@Brand", price: 2.25 },
   "products/noname": { code: "", price: "3" },
-  "products/noprice": { code: "NP", name: "Rags", brand: " Acme, Inc. ", stock: 4 },
+  "products/noprice": { code: "NP", name: "Rags", brand: " Acme, Inc. ", stock: 4, reorderAt: 0, reorderQty: 12 },
   "projects/s2": { client: "Delta, \"Dry\" Cleaning", date: "2026-09-25", createdByName: "Sam", status: "closed", closedAt: "2026-09-25T18:00:00Z", items: {} },
   "projects/s3": { client: "", status: "open", items: { odd: { code: "", out: "4", returned: 9 } } },
 };
@@ -43,12 +43,12 @@ test("owners export every project and the inventory as CSV, and everything as JS
   // By name, as the Inventory tab lists it, with each item's brand (blank for none); a
   // formula-like name or brand can't run in a spreadsheet
   expect(inventory.data.split("\n")).toEqual([
-    "Item,Brand,Barcode,In storage,Price each,Value,Kind",
-    "\"'=HYPERLINK(\"\"x\"\")\",'@Brand,UC1,,2.25,,Supply",
-    "\"Paper towels, 6 roll\",,SKU1,10,8.50,85.00,Supply",
-    "Rags,\"Acme, Inc.\",NP,4,0.00,0.00,Supply",
-    "\"Storage bins, 12 qt\",,,2,5.00,10.00,Supply",
-    "Unnamed item,,,,3.00,,Supply",
+    "Item,Brand,Barcode,In storage,Price each,Value,Kind,Reorder at,Usual order",
+    "\"'=HYPERLINK(\"\"x\"\")\",'@Brand,UC1,,2.25,,Supply,,",
+    "\"Paper towels, 6 roll\",,SKU1,10,8.50,85.00,Supply,,",
+    "Rags,\"Acme, Inc.\",NP,4,0.00,0.00,Supply,0,12",
+    "\"Storage bins, 12 qt\",,,2,5.00,10.00,Supply,,",
+    "Unnamed item,,,,3.00,,Supply,,",
   ]);
 
   await modal(page).getByRole("button", { name: "Everything (JSON)" }).click();

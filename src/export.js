@@ -62,16 +62,18 @@ export function projectsCsv(projects, preparedBy) {
 
 const byName = products => Object.entries(products).map(([key, p]) => ({ key, ...p })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
+// A reorder level or usual order (supply-checkout-005.13), as the API takes them: anything else is left blank
+const whole = v => Number.isInteger(v) && v >= 0;
 // The inventory, as the Inventory tab lists it. Items nobody has counted have no count or value.
 // Company equipment has no price; its value is what the business paid for each. Brand is blank
 // for an item without one (supply-checkout-005.9). The headers are ones the CSV import reads.
 export function inventoryCsv(products) {
   return toCsv([
-    ["Item", "Brand", "Barcode", "In storage", "Price each", "Value", "Kind"],
+    ["Item", "Brand", "Barcode", "In storage", "Price each", "Value", "Kind", "Reorder at", "Usual order"],
     ...byName(products).map(p => {
       const counted = hasStock(p), equipment = isEquipment(p);
       const each = equipment ? unitValue(p) : Number(p.price) || 0;
-      return [p.name || "Unnamed item", brandOf(p), p.code || "", counted ? p.stock : "", equipment ? "" : fixed(p.price), counted ? fixed(p.stock * each) : "", equipment ? "Equipment" : "Supply"];
+      return [p.name || "Unnamed item", brandOf(p), p.code || "", counted ? p.stock : "", equipment ? "" : fixed(p.price), counted ? fixed(p.stock * each) : "", equipment ? "Equipment" : "Supply", whole(p.reorderAt) ? p.reorderAt : "", whole(p.reorderQty) ? p.reorderQty : ""];
     }),
   ]);
 }

@@ -1,5 +1,6 @@
 // CSV inventory import (supply-checkout-1dg.4, ADR 0014): an owner uploads a
-// spreadsheet of items (name, brand, barcode, price, cost, stock, pack_size) and
+// spreadsheet of items (name, brand, barcode, price, cost, stock, pack_size,
+// reorder_at, reorder_qty) and
 // every row goes in, or none does.
 //
 // All or nothing, for more rows than one DynamoDB transaction can hold (100
@@ -94,10 +95,10 @@ const IMPORT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
-type Field = "name" | "brand" | "barcode" | "kind" | "price" | "cost" | "stock" | "packSize";
+type Field = "name" | "brand" | "barcode" | "kind" | "price" | "cost" | "stock" | "packSize" | "reorderAt" | "reorderQty";
 
 /** The column names errors use, as the file would spell them. */
-const LABEL: Record<Field, string> = { name: "name", brand: "brand", barcode: "barcode", kind: "kind", price: "price", cost: "cost", stock: "stock", packSize: "pack_size" };
+const LABEL: Record<Field, string> = { name: "name", brand: "brand", barcode: "barcode", kind: "kind", price: "price", cost: "cost", stock: "stock", packSize: "pack_size", reorderAt: "reorder_at", reorderQty: "reorder_qty" };
 
 /**
  * Header names, lowercased with spaces, underscores and hyphens removed
@@ -114,6 +115,8 @@ const HEADERS = new Map<string, Field>([
   ["cost", "cost"], ["costeach", "cost"], ["unitcost", "cost"],
   ["stock", "stock"], ["instorage", "stock"], ["onhand", "stock"],
   ["packsize", "packSize"], ["casesize", "packSize"],
+  ["reorderat", "reorderAt"], ["reorderlevel", "reorderAt"], ["reorderpoint", "reorderAt"],
+  ["reorderqty", "reorderQty"], ["reorderquantity", "reorderQty"], ["usualorder", "reorderQty"],
 ]);
 
 /** One valid row of the file, with its values as they'll be saved. */
@@ -134,6 +137,10 @@ export interface ImportRow {
   /** Whole eaches. Absent: leave stock as it is (a new item doesn't track stock). */
   readonly stock?: number;
   readonly packSize?: number;
+  /** The reorder level in eaches (supply-checkout-005.8). Absent: keep the item's (a blank cell). */
+  readonly reorderAt?: number;
+  /** How many the team usually orders. Absent: keep the item's. */
+  readonly reorderQty?: number;
 }
 
 /** A problem with one row (or with the header, on its line). Nothing is imported while there are any. */
@@ -151,7 +158,7 @@ export interface PlannedRow extends ImportRow {
   /** The product key it writes: the matched item's, or a new one. */
   readonly key: string;
   readonly action: ImportAction;
-  /** The fields that change (all of the row's for a new item): code, name, brand, kind, price, cost, packSize, stock. */
+  /** The fields that change (all of the row's for a new item): code, name, brand, kind, price, cost, packSize, reorderAt, reorderQty, stock. */
   readonly changes: string[];
 }
 
@@ -207,6 +214,8 @@ interface StagedRow {
   readonly cost?: number;
   readonly stock?: number;
   readonly packSize?: number;
+  readonly reorderAt?: number;
+  readonly reorderQty?: number;
 }
 
 class CellError extends Error {
@@ -283,7 +292,7 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
   }
   for (const required of ["name", "price"] as const) {
     if (!columns.includes(required)) {
-      throw new InvalidInputError(`The file needs a ${LABEL[required]} column. Its first row names the columns: name, brand, barcode, kind, price, cost, stock, pack_size`);
+      throw new InvalidInputError(`The file needs a ${LABEL[required]} column. Its first row names the columns: name, brand, barcode, kind, price, cost, stock, pack_size, reorder_at, reorder_qty`);
     }
   }
   if (!body.length) throw new InvalidInputError("The file has no rows under its header");
@@ -328,6 +337,9 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
     const cost = read("cost", (raw) => moneyCell("cost", raw));
     const stock = read("stock", (raw) => wholeCell("stock", raw, 0, MAX_QUANTITY));
     const packSize = read("packSize", (raw) => wholeCell("packSize", raw, 1, MAX_PACK_SIZE));
+    // As the product routes take them (reorder.ts): whole eaches, the level from 0, the usual order from 1
+    const reorderAt = read("reorderAt", (raw) => wholeCell("reorderAt", raw, 0, MAX_QUANTITY));
+    const reorderQty = read("reorderQty", (raw) => wholeCell("reorderQty", raw, 1, MAX_QUANTITY));
     if (problems.length || name === undefined) {
       errors.push(...problems);
       continue;
@@ -342,6 +354,8 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
       ...(cost === undefined ? {} : { cost }),
       ...(stock === undefined ? {} : { stock }),
       ...(packSize === undefined ? {} : { packSize }),
+      ...(reorderAt === undefined ? {} : { reorderAt }),
+      ...(reorderQty === undefined ? {} : { reorderQty }),
     });
   }
   return { rows, errors, ignoredColumns };
@@ -366,7 +380,7 @@ function kindCell(raw: string): "supply" | "equipment" {
 }
 
 /** The fields an import sets, in the order `changes` lists them. */
-const IMPORTED = ["code", "name", "brand", "kind", "price", "cost", "packSize", "stock"] as const;
+const IMPORTED = ["code", "name", "brand", "kind", "price", "cost", "packSize", "reorderAt", "reorderQty", "stock"] as const;
 
 /** An item's data after a row is applied: the row's values over what's there, and blank cells keep what's there. */
 function applyRow(current: Item | undefined, row: ImportRow): { data: Item; changes: string[] } {
@@ -387,6 +401,11 @@ function applyRow(current: Item | undefined, row: ImportRow): { data: Item; chan
   }
   if (row.cost !== undefined) data.cost = row.cost;
   if (row.packSize !== undefined) data.packSize = row.packSize;
+  // A new reorder level starts afresh: the acknowledgment was of the old one (as checkReorderFields
+  // in reorder.ts does for the product routes). An order stays: it's still on its way.
+  if (row.reorderAt !== undefined && row.reorderAt !== before.reorderAt) delete data.ackedAtStock;
+  if (row.reorderAt !== undefined) data.reorderAt = row.reorderAt;
+  if (row.reorderQty !== undefined) data.reorderQty = row.reorderQty;
   if (row.stock !== undefined) data.stock = row.stock;
   // Restocked above the reorder level: the low-stock marks (acknowledgment, order) end (reorder.ts). An
   // item's reorder level and usual order are kept, as every field the file doesn't have is.
@@ -499,7 +518,7 @@ function importId(value: unknown): string {
 }
 
 function staged(row: PlannedRow): StagedRow {
-  const { line, key, name, brand, barcode, kind, price, cost, stock, packSize } = row;
+  const { line, key, name, brand, barcode, kind, price, cost, stock, packSize, reorderAt, reorderQty } = row;
   return {
     line,
     ...(row.action === "create" ? { create: true as const } : {}),
@@ -512,6 +531,8 @@ function staged(row: PlannedRow): StagedRow {
     ...(cost === undefined ? {} : { cost }),
     ...(stock === undefined ? {} : { stock }),
     ...(packSize === undefined ? {} : { packSize }),
+    ...(reorderAt === undefined ? {} : { reorderAt }),
+    ...(reorderQty === undefined ? {} : { reorderQty }),
   };
 }
 

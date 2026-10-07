@@ -15,7 +15,7 @@ import TEMPLATE from "./import-template.csv?raw";
 const MAX_BYTES = 300_000;
 // Rows shown in the preview; the summary counts all of them
 const SHOWN = 100;
-const CHANGE = { code: "barcode", name: "name", brand: "brand", kind: "kind", price: "price", cost: "cost", packSize: "pack size", stock: "stock" };
+const CHANGE = { code: "barcode", name: "name", brand: "brand", kind: "kind", price: "price", cost: "cost", packSize: "pack size", reorderAt: "reorder level", reorderQty: "usual order", stock: "stock" };
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
 function actionText(r) {
@@ -38,8 +38,8 @@ function previewHTML(res) {
   if (res.ignoredColumns.length) html += `<p class="hint">Not imported: ${res.ignoredColumns.map((c) => `“${esc(c)}”`).join(", ")}.</p>`;
   if (!res.errorCount) {
     // Company equipment has no price (ADR 0017)
-    const rows = res.rows.slice(0, SHOWN).map((r) => `<tr><td>${esc(r.name)}${brandHTML(r)}${r.barcode ? `<span class="code">${esc(r.barcode)}</span>` : ""}</td><td>${r.kind === "equipment" ? "Equipment" : money(r.price)}</td><td>${r.stock ?? "—"}</td><td>${esc(actionText(r))}</td></tr>`);
-    html += `<div class="table-wrap import-table"><table><thead><tr><th>Item</th><th>Price</th><th>Stock</th><th>Change</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+    const rows = res.rows.slice(0, SHOWN).map((r) => `<tr><td>${esc(r.name)}${brandHTML(r)}${r.barcode ? `<span class="code">${esc(r.barcode)}</span>` : ""}</td><td>${r.kind === "equipment" ? "Equipment" : money(r.price)}</td><td>${r.stock ?? "—"}</td><td>${r.reorderAt ?? "—"}</td><td>${esc(actionText(r))}</td></tr>`);
+    html += `<div class="table-wrap import-table"><table><thead><tr><th>Item</th><th>Price</th><th>Stock</th><th>Reorder at</th><th>Change</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
     if (res.rows.length > SHOWN) html += `<p class="hint">…and ${plural(res.rows.length - SHOWN, "more row")}.</p>`;
   }
   return html;
@@ -57,6 +57,8 @@ const GUIDE = [
   ["cost", "What you paid for one each, before tax. It isn't shown on client projects. For equipment, what one is worth."],
   ["stock", "How many eaches you have, as a whole number (not cases)."],
   ["pack_size", "How many eaches come in one case or pack you buy. Blank means 1."],
+  ["reorder_at", "Optional. Flag the item as running low when storage is down to this many eaches. Blank keeps an item's level."],
+  ["reorder_qty", "Optional. How many eaches you usually order. Blank keeps an item's."],
 ];
 
 // save: the runtime's download (downloads.save in account.js)
@@ -64,7 +66,7 @@ export function openImport(api, teamId, save) {
   const path = `/teams/${encodeURIComponent(teamId)}/imports`;
   let csv = "", importId = "";
   openModal(`<h2>Import inventory</h2>
-    <p class="hint">Choose a CSV file whose first row names its columns: <strong>name</strong> and <strong>price</strong>, and if you have them brand, barcode, kind, cost, stock and pack_size. Items already in inventory are matched by barcode, or by name, and updated. Importing a file again doesn't add anything twice.</p>
+    <p class="hint">Choose a CSV file whose first row names its columns: <strong>name</strong> and <strong>price</strong>, and if you have them brand, barcode, kind, cost, stock, pack_size, reorder_at and reorder_qty. Items already in inventory are matched by barcode, or by name, and updated. Importing a file again doesn't add anything twice.</p>
     <p><button type="button" class="btn" id="importTemplate">Download a template</button></p>
     <details class="import-guide"><summary>What goes in each column</summary><dl>${GUIDE.map(([c, d]) => `<dt>${c}</dt><dd>${d}</dd>`).join("")}</dl><p class="hint">An "each" is the smallest unit you take to a job: a bottle, a roll, a box of bags. The template's two example rows are made up; replace them with your items.</p></details>
     <div class="field"><label for="importFile">CSV file</label><input type="file" id="importFile" accept=".csv,text/csv"></div>
