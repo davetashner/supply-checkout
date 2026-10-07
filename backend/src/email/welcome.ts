@@ -1,6 +1,6 @@
 // Lambda entry point for the welcome email function (see welcome-handler.ts).
 
-import { createDb } from "../data/index.js";
+import { createDb, TEST_MAIL_DOMAIN_ENV, testMailDomain } from "../data/index.js";
 import { cognitoAccounts } from "../identity/cognito-accounts.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { mailerFromEnv } from "./mailer.js";
@@ -23,5 +23,6 @@ export const handler = withObservability(
     mailer: mailerFromEnv(),
     obs,
     supportAddress: need(WELCOME_ENV.supportAddress),
+    testMailDomain: testMailDomain(process.env[TEST_MAIL_DOMAIN_ENV]),
   }),
 );

@@ -15,7 +15,9 @@ import type { Construct } from "constructs";
 import { GSI2, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
 import { EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, emailResourceNames, WELCOME_ENV } from "../../../backend/src/email/names.js";
 import { SECURITY_NOTICE_EVENTS, SECURITY_NOTICES_ENV } from "../../../backend/src/identity/names.js";
+import { TEST_MAIL_DOMAIN_ENV } from "../../../backend/src/data/test-accounts.js";
 import type { DeploymentConfig } from "../config.js";
+import { hostNames } from "../domain.js";
 import { grantSendEmail, supportAddress } from "../email.js";
 import { identityOutputParameters } from "../identity.js";
 import { LOG_RETENTION } from "../observability/defaults.js";
@@ -254,6 +256,8 @@ export class EmailStack extends SupplyCheckoutStack {
         TABLE_NAME: table,
         [WELCOME_ENV.userPoolId]: userPoolId,
         [WELCOME_ENV.supportAddress]: supportAddress(config),
+        // A test account's welcome is left out of WelcomeEmails (supply-checkout-o60.2)
+        [TEST_MAIL_DOMAIN_ENV]: hostNames(config).testMail,
       },
       retryAttempts: 2,
       maxEventAge: Duration.hours(6),

@@ -237,6 +237,23 @@ test("searches teams, opens one, and shows its billing and comp", async ({ page 
   await noViolations(page);
 });
 
+test("shows a Test badge on a test team, in the list and its record, and nothing else changes (supply-checkout-o60.2)", async ({ page }) => {
+  const teams = [{ ...structuredClone(TEAM), test: true }, { ...structuredClone(TEAM), id: "team_beta", name: "Beta Builders", comp: null, stripeCustomerId: null, owners: [], test: false }];
+  await signIn(page, { api: new FakeOpsApi({ teams }) });
+  await expect(page.getByRole("row", { name: /Acme Cleaning/ }).locator(".badge")).toHaveText("Test");
+  await expect(page.getByRole("row", { name: /Beta Builders/ }).locator(".badge")).toHaveCount(0);
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+  await page.getByRole("link", { name: "Acme Cleaning" }).click();
+  await expect(page.getByRole("heading", { name: "Acme Cleaning Test", level: 1 })).toBeVisible();
+  await expect(page.locator("dl.facts")).toContainText("left out of customer metrics");
+  // Only a label: the record's comp and billing are the same as any team's
+  await expect(page.locator("#discount")).toBeVisible();
+  await expect(page.getByRole("button", { name: /comp/i }).first()).toBeVisible();
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await noViolations(page);
+});
+
 test("comps a team for N months, with its version and an Idempotency-Key, after asking for a reason", async ({ page }) => {
   const { api } = await signIn(page);
   await page.getByRole("link", { name: "Acme Cleaning" }).click();

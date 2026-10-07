@@ -7,7 +7,7 @@ import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import { AwsSolutionsChecks } from "cdk-nag";
 import type { Construct } from "constructs";
 import { describe, expect, it } from "vitest";
-import { BusinessMetric } from "../../backend/src/observability/names.js";
+import { BusinessMetric, METRICS_NAMESPACE, TEST_SKIPPED_METRICS } from "../../backend/src/observability/names.js";
 import { APPROVED_REGIONS, configFromContext, type DeploymentConfig, GLOBAL_SERVICES_REGION, RECEIPT_MODEL_ID } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
@@ -2994,5 +2994,29 @@ describe("EventBridge pattern sizes (supply-checkout-pbp.17)", () => {
     expect(`arn:aws-us-gov:kms:${REGION}:${"0".repeat(12)}:key/${"k".repeat(36)}`.length).toBeLessThan(REFERENCE.length);
     // CloudFormation's generated names: a role's is at most 64 characters, and a log group's is the stack name, the logical ID and a suffix
     expect(`supply-checkout-${"a".repeat(16)}-${REGION}-observability-OperatorAuditWatchLogsC88D29BF-${"s".repeat(12)}`.length).toBeLessThan(REFERENCE.length);
+  });
+});
+
+describe("test teams and alarm ratios (supply-checkout-o60.2)", () => {
+  // count() leaves a test team's TEST_SKIPPED_METRICS out. An alarm whose math mixes a skipped
+  // business metric with a sent one (a failure over its denominator) would see test traffic on
+  // one side only and skew, so every business metric in one alarm's math is skipped or sent alike.
+  it("never mixes skipped and sent business metrics in one alarm's math", () => {
+    const { stacks } = build();
+    const mixed: string[] = [];
+    let checked = 0;
+    for (const stack of stacks.all) {
+      for (const [id, alarm] of Object.entries(Template.fromStack(stack).findResources("AWS::CloudWatch::Alarm"))) {
+        const queries = (alarm.Properties as { Metrics?: { MetricStat?: { Metric?: { Namespace?: string; MetricName?: string } } }[] }).Metrics;
+        if (!queries) continue;
+        const names = queries.map((q) => q.MetricStat?.Metric).filter((m) => m?.Namespace === METRICS_NAMESPACE).map((m) => m?.MetricName as (typeof BusinessMetric)[keyof typeof BusinessMetric]);
+        if (names.length < 2) continue;
+        checked++;
+        if (new Set(names.map((n) => TEST_SKIPPED_METRICS.has(n))).size > 1) mixed.push(`${stack.stackName} ${id}: ${names.join(", ")}`);
+      }
+    }
+    expect(mixed).toEqual([]);
+    // The ratios this guards: Writes rejected, Receipt reading failing, Live updates failing
+    expect(checked).toBeGreaterThanOrEqual(3);
   });
 });

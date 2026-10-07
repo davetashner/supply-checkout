@@ -994,6 +994,37 @@ async function receiptCounts(db: Db, wanted: { PK: string; SK: string }[]): Prom
   return counts;
 }
 
+/**
+ * Which of `teamIds` are test teams (their META item's `test` is true:
+ * supply-checkout-o60.2), for the operators' Test badge. The operators' index
+ * has no room for the mark (GSI3 projects 20 attributes, the most it can), so
+ * it's read from the table with BatchGetItem, projecting only the keys and
+ * `test` (TEST_MARK_ATTRIBUTES, all the operator-access role allows). Only
+ * shows a badge: nothing an operator can do depends on it. Not audited on its
+ * own: it's part of the list or record read it goes with.
+ */
+export async function opsTestTeams(db: Db, operator: Operator, teamIds: readonly string[]): Promise<Set<string>> {
+  operatorSub(operator);
+  const wanted = [...new Set(teamIds)].map((teamId) => keys.team(teamId));
+  const test = new Set<string>();
+  for (let i = 0; i < wanted.length; i += BATCH_GET_KEYS) {
+    let Keys: Record<string, unknown>[] | undefined = wanted.slice(i, i + BATCH_GET_KEYS);
+    for (let attempt = 1; Keys?.length; attempt++) {
+      if (attempt > 5) throw new Error("Test mark reads kept coming back unprocessed");
+      const out: BatchGetCommandOutput = await connection(db).doc.send(
+        new BatchGetCommand({ RequestItems: { [db.tableName]: { Keys, ProjectionExpression: "PK, SK, #test", ExpressionAttributeNames: { "#test": "test" }, ConsistentRead: false } } }),
+      );
+      for (const item of out.Responses?.[db.tableName] ?? []) {
+        const teamId = keyId(item.PK, "TEAM#");
+        if (teamId && item.SK === "META" && item.test === true) test.add(teamId);
+      }
+      Keys = out.UnprocessedKeys?.[db.tableName]?.Keys;
+      if (Keys?.length) await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
+    }
+  }
+  return test;
+}
+
 const countOf = (counts: Map<string, number>, key: { PK: string; SK: string }) => counts.get(`${key.PK} ${key.SK}`) ?? 0;
 
 /**

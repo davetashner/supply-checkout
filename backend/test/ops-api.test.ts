@@ -1282,7 +1282,7 @@ describe("receipt usage (supply-checkout-wxx)", () => {
     });
     expect(ESTIMATED_COST_PER_RECEIPT_USD).toBe(0.007);
     // Only the counters, by key, projected: nothing else of the team's partition
-    const reads = table.requests.filter((r) => r.command === "BatchGetCommand");
+    const reads = table.requests.filter((r) => r.command === "BatchGetCommand" && !JSON.stringify(r.input).includes('"#test"'));
     expect(reads).toHaveLength(1);
     const request = Object.values(reads[0]?.input.RequestItems as Record<string, { Keys: { PK: string; SK: string }[]; ProjectionExpression: string }>)[0];
     expect(request?.ProjectionExpression).toBe("PK, SK, receipts");
@@ -1369,5 +1369,60 @@ describe("receipt usage (supply-checkout-wxx)", () => {
     expect((await call("GET", "/ops/receipts", { claims: { sub: "member-only" } })).status).toBe(403);
     expect((await call("GET", "/ops/receipts", { claims: { iss: CUSTOMER_ISSUER, client_id: WEB_CLIENT } })).status).toBe(401);
     expect(table.requests.filter((r) => r.command === "BatchGetCommand")).toEqual([]);
+  });
+});
+
+describe("test teams' badge (supply-checkout-o60.2)", () => {
+  /** teamA made by a test account: its META item marked, as createTeam marks it. */
+  async function markTeamA() {
+    const marked = (await createTeam(table.db(), { userId: "user-probe", test: true }, { name: "Probe Team" }, new Date(NOW - DAY))).team;
+    expect(teamOf(marked.teamId).test).toBe(true);
+    return marked.teamId;
+  }
+
+  it("shows the mark on the list and a team's record, read with the keys and `test` only, within the role's policy", async () => {
+    const probe = await markTeamA();
+    const list = await call("GET", "/ops/teams");
+    expect(list.status).toBe(200);
+    const byId = Object.fromEntries(list.body.teams.map((t: { id: string; test: boolean }) => [t.id, t.test]));
+    expect(byId).toEqual({ [teamA]: false, [teamB]: false, [probe]: true });
+    expect((await call("GET", `/ops/teams/${probe}`)).body.team.test).toBe(true);
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.team.test).toBe(false);
+    const reads = table.requests.filter((r) => r.command === "BatchGetCommand" && JSON.stringify(r.input).includes('"#test"'));
+    expect(reads.length).toBeGreaterThan(0);
+    for (const r of reads) {
+      const [request] = Object.values(r.input.RequestItems as Record<string, { Keys: { PK: string; SK: string }[]; ProjectionExpression: string }>);
+      expect(request?.ProjectionExpression).toBe("PK, SK, #test");
+      expect(request?.Keys.every((k) => k.PK.startsWith("TEAM#") && k.SK === "META")).toBe(true);
+    }
+    expect(denied).toEqual([]);
+  });
+
+  it("changes nothing an operator can do: a test team is comped like any", async () => {
+    const probe = await markTeamA();
+    const res = await call("PUT", `/ops/teams/${probe}/comp`, { body: { plan: "pro", months: 1, reason: "Journey test team", expectedVersion: 1 }, key: "comp-probe-0001" });
+    expect(res.status).toBe(200);
+    expect(denied).toEqual([]);
+    expect(teamOf(probe)).toMatchObject({ test: true, compPlan: "pro" });
+  });
+
+  it("leaves the badge unknown (null) when the marks can't be read, and still answers", async () => {
+    const probe = await markTeamA();
+    const failing = createOpsHandler({
+      dbFor: (_operatorSub, teamId) => table.guarded((command, input) => !(command === "BatchGetCommand" && JSON.stringify(input).includes('"#test"')) && opsPolicy(teamId ?? ".", denied)(command, input)),
+      directory,
+      reopen: async () => { throw new Error("unused"); },
+      issuerUrl: OPS_ISSUER,
+      clientId: OPS_CLIENT,
+      obs: fakeObservability(),
+      now: () => now,
+    });
+    const list = await failing(event("GET", "/ops/teams"));
+    expect(list.statusCode).toBe(200);
+    expect(JSON.parse(list.body as string).teams.map((t: { test: unknown }) => t.test)).toEqual([null, null, null]);
+    const record = await failing(event("GET", `/ops/teams/${probe}`));
+    expect(record.statusCode).toBe(200);
+    expect(JSON.parse(record.body as string).team.test).toBeNull();
+    expect(JSON.stringify(logs)).toContain('"Test marks unavailable",{"teams":1,"code":"AccessDeniedException"}');
   });
 });

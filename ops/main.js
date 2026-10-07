@@ -69,6 +69,9 @@ function show(...nodes) {
   }
 }
 
+/** The Test badge on a test team (the prod journey tests'): only a label, it changes nothing here. */
+const testBadge = () => h("span", { className: "badge", title: "A test team: left out of customer metrics; billed and limited like any team" }, "Test");
+
 const message = (kind, ...lines) => h("div", { className: `notice ${kind}`, role: kind === "error" || kind === "conflict" ? "alert" : "status" }, ...lines.map((l) => (l instanceof Node ? l : h("p", {}, l))));
 
 // Sign-in and the session
@@ -192,7 +195,7 @@ async function drawTeams({ search } = {}) {
     const rows = teamsView.teams.map((team) => {
       const row = teamRow(team, now);
       const name = TEAM_ID.test(String(team.id)) ? h("a", { href: `#/team/${team.id}` }, row.name) : row.name;
-      return h("tr", {}, h("td", {}, name), h("td", { className: "mono" }, row.id), h("td", {}, row.plan), h("td", {}, row.comp), h("td", {}, row.owners), h("td", {}, row.created));
+      return h("tr", {}, h("td", {}, name, row.test ? [" ", testBadge()] : null), h("td", { className: "mono" }, row.id), h("td", {}, row.plan), h("td", {}, row.comp), h("td", {}, row.owners), h("td", {}, row.created));
     });
     const more = h("button", { type: "button", className: "secondary" }, "More");
     more.addEventListener("click", () => load(teamsView.cursor));
@@ -241,7 +244,7 @@ async function drawTeam(teamId) {
 
   show(
     h("p", {}, h("a", { href: "#/teams" }, "Back to teams")),
-    h("h1", {}, String(team.name ?? "Team")),
+    h("h1", {}, String(team.name ?? "Team"), team.test === true ? [" ", testBadge()] : null),
     h("dl", { className: "facts" }, teamFacts(team, now).map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
     Array.isArray(team.owners) && team.owners.length
       ? h("section", {}, h("h2", {}, "Owners"), h("ul", {}, team.owners.map((o) => h("li", {}, `${o?.email ?? "(no email)"} (${o?.userId ?? "?"}), joined ${date(o?.joinedAt)}`))))

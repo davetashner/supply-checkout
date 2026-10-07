@@ -21,9 +21,9 @@
 import { Logger } from "@aws-lambda-powertools/logger";
 import { MetricUnit, Metrics } from "@aws-lambda-powertools/metrics";
 import type { Context } from "aws-lambda";
-import { type BusinessMetricName, ENV, METRICS_NAMESPACE, REGION_DIMENSION } from "./names.js";
+import { type BusinessMetricName, ENV, METRICS_NAMESPACE, REGION_DIMENSION, TEST_SKIPPED_METRICS } from "./names.js";
 
-export { BusinessMetric, type BusinessMetricName, METRICS_NAMESPACE, REGION_DIMENSION } from "./names.js";
+export { BusinessMetric, type BusinessMetricName, METRICS_NAMESPACE, REGION_DIMENSION, TEST_SKIPPED_METRICS } from "./names.js";
 export type { Logger } from "@aws-lambda-powertools/logger";
 
 export interface ObservabilityOptions {
@@ -45,7 +45,9 @@ export interface Observability {
   readonly region: string;
   /**
    * Adds `value` to a business metric. Metadata (such as the team ID) is
-   * written beside the metric in the log line, not as a dimension.
+   * written beside the metric in the log line, not as a dimension. With
+   * `test: true` in the metadata (a test account or team), a metric in
+   * TEST_SKIPPED_METRICS is only logged, never sent (skippedForTest).
    */
   count(metric: BusinessMetricName, value?: number, metadata?: Metadata): void;
   /**
@@ -56,6 +58,18 @@ export interface Observability {
   /** Writes buffered metrics. withObservability calls this after every invocation. */
   flush(): void;
 }
+
+/**
+ * Whether count() logs this metric instead of sending it: a customer-activity
+ * metric (TEST_SKIPPED_METRICS) for a test account or team, whose metadata
+ * says `test: true` (exactly true).
+ */
+export function skippedForTest(metric: BusinessMetricName, metadata: Metadata = {}): boolean {
+  return metadata.test === true && TEST_SKIPPED_METRICS.has(metric);
+}
+
+/** `{ test: true }` for a test account or team, to spread into a metric's metadata; nothing otherwise. */
+export const testMark = (test: boolean | undefined): { test?: true } => (test === true ? { test: true } : {});
 
 function regionFrom(env: NodeJS.ProcessEnv): string {
   const region = env.AWS_REGION || env.AWS_DEFAULT_REGION;
@@ -94,6 +108,10 @@ export function createObservability(options: ObservabilityOptions = {}): Observa
     flush,
     count(metric, value = 1, metadata = {}) {
       if (!Number.isFinite(value) || value < 0) throw new Error(`Metric ${metric} needs a count of 0 or more (got ${value})`);
+      if (skippedForTest(metric, metadata)) {
+        logger.info("Business metric not sent for a test account or team", { ...metadata, metric, value });
+        return;
+      }
       // Metadata is per log line, so a metric with metadata goes out on its own
       // line rather than sharing one with other metrics' metadata.
       const hasMetadata = Object.keys(metadata).length > 0;

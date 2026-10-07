@@ -684,7 +684,8 @@
               "Ref": "SeatSyncsQueue518F74A6"
             },
             "SUPPLY_CHECKOUT_ENV": "prod",
-            "TABLE_NAME": "supply-checkout-prod-app"
+            "TABLE_NAME": "supply-checkout-prod-app",
+            "TEST_MAIL_DOMAIN": "e2e.supplycheckout.com"
           }
         },
         "Handler": "index.handler",
@@ -7860,6 +7861,40 @@
                     ]
                   },
                   "Sid": "StuckImportIndexKeysOnly"
+                },
+                {
+                  "Action": "dynamodb:BatchGetItem",
+                  "Condition": {
+                    "ForAllValues:StringLike": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#*"
+                      ]
+                    },
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "test"
+                      ]
+                    },
+                    "StringEquals": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "TeamTestMarksReadOnly"
                 },
                 {
                   "Action": "dynamodb:BatchGetItem",

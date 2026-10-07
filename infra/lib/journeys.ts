@@ -5,13 +5,17 @@
 // access logs; the harness (supply-checkout-o60.5) builds the same names.
 import { Aws } from "aws-cdk-lib";
 import type { DeploymentConfig } from "./config.js";
-import { envDomain } from "./domain.js";
+import { hostNames, TEST_MAIL_LABEL } from "./domain.js";
 
-/** The label of the test mail subdomain: `e2e.<env domain>`. */
-export const JOURNEY_MAIL_LABEL = "e2e";
+/** The label of the test mail subdomain: `e2e.<env domain>`. Defined once, in domain.ts. */
+export const JOURNEY_MAIL_LABEL = TEST_MAIL_LABEL;
 
-/** The test mail subdomain. Every test account's address is at it, and only SES (for us) receives its mail. */
-export const journeyMailDomain = (config: Pick<DeploymentConfig, "envName" | "domainName">) => `${JOURNEY_MAIL_LABEL}.${envDomain(config)}`;
+/**
+ * The test mail subdomain. Every test account's address is at it, and only SES (for us) receives its mail.
+ * The same name the account and welcome functions get as TEST_MAIL_DOMAIN (supply-checkout-o60.2), so an
+ * address SES receives for is exactly the one the backend treats as a test account.
+ */
+export const journeyMailDomain = (config: Pick<DeploymentConfig, "envName" | "domainName">) => hostNames(config).testMail;
 
 /** Where SES writes each message to the test subdomain, in the mail bucket. Kept 1 day. */
 export const JOURNEY_MAIL_INBOX_PREFIX = "inbox/";

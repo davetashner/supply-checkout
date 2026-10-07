@@ -44,7 +44,9 @@ describe("host names", () => {
       auth: "auth.supplycheckout.com",
       opsAuth: "ops-auth.supplycheckout.com",
       mailFrom: "mail.supplycheckout.com",
+      testMail: "e2e.supplycheckout.com",
     });
+    expect(hostNames({ envName: "dev", domainName: "example.com" }).testMail).toBe("e2e.dev.example.com");
     expect(hostNames({ envName: "dev", domainName: "example.com" }).app).toBe("app.dev.example.com");
   });
 });

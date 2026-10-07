@@ -69,6 +69,7 @@ import {
   liveComp,
   listOperatorAudit,
   listOpsOwnersOf,
+  opsTestTeams,
   listOpsReceiptUsage,
   listOpsTeams,
   listStuckImportsForOps,
@@ -144,10 +145,12 @@ export function errorFor(error: unknown): ApiError {
 }
 
 /** A team as the ops routes return it. */
-export function opsTeamBody(team: OpsTeam, now: Date, owners?: OpsOwner[]) {
+export function opsTeamBody(team: OpsTeam, now: Date, owners?: OpsOwner[], test: boolean | null = false) {
   return {
     id: team.teamId,
     name: team.name,
+    // A test team (supply-checkout-o60.2), or null if the mark couldn't be read: only a badge, nothing an operator can do depends on it
+    test,
     plan: team.plan,
     seats: team.seats,
     status: team.status,
@@ -253,14 +256,29 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
     }
   }
 
+  /**
+   * The test teams among `teamIds` (opsTestTeams), or undefined if the marks
+   * can't be read: the badge is left unknown (null), and the list or record
+   * still comes back. Never throws.
+   */
+  async function testTeams(db: ReturnType<DbForOps>, op: Operator, teamIds: readonly string[]): Promise<Set<string> | undefined> {
+    try {
+      return await opsTestTeams(db, op, teamIds);
+    } catch (error) {
+      obs.logger.warn("Test marks unavailable", { teams: teamIds.length, code: String((error as { name?: unknown } | null)?.name ?? "Error").slice(0, 64) });
+      return undefined;
+    }
+  }
+
   const actions: Record<OpsRoute["action"], (event: OpsEvent, op: Operator) => Promise<Result>> = {
     async listTeams(event, op) {
       const q = event.queryStringParameters ?? {};
       const db = deps.dbFor(op.sub);
       const at = new Date(now());
       const page = await listOpsTeams(db, op, { q: q.q, cursor: q.cursor, limit: limitFrom(q.limit) }, at);
-      const owners = await listOpsOwnersOf(db, op, page.teams.map((t) => t.teamId));
-      const teams = page.teams.map((team) => opsTeamBody(team, at, owners.get(team.teamId) ?? []));
+      const ids = page.teams.map((t) => t.teamId);
+      const [owners, test] = await Promise.all([listOpsOwnersOf(db, op, ids), testTeams(db, op, ids)]);
+      const teams = page.teams.map((team) => opsTeamBody(team, at, owners.get(team.teamId) ?? [], test ? test.has(team.teamId) : null));
       return { response: json(200, { teams, ...(page.cursor ? { cursor: page.cursor } : {}) }) };
     },
     async getTeam(event, op) {
@@ -276,7 +294,8 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
         obs.logger.warn("Receipt usage unavailable", { teamId, code: String((error as { name?: unknown } | null)?.name ?? "Error").slice(0, 64) });
         return null;
       });
-      return { teamId, response: json(200, { team: opsTeamBody(team, at, owners), stripe, receipts }) };
+      const test = await testTeams(db, op, [teamId]);
+      return { teamId, response: json(200, { team: opsTeamBody(team, at, owners, test ? test.has(teamId) : null), stripe, receipts }) };
     },
     async setComp(event, op) {
       const teamId = teamIdFrom(event);

@@ -147,6 +147,13 @@ export const INVITE_LIMIT_PREFIX = "INVITELIMIT#";
 export const RECEIPT_USAGE_ATTRIBUTES = [PK, SK, "receipts"] as const;
 
 /**
+ * The only attributes the operator-access role may name when it reads teams'
+ * test marks (supply-checkout-o60.2, opsTestTeams): BatchGetItem of META
+ * items, projecting the keys and `test`, for the Test badge. Read only.
+ */
+export const TEST_MARK_ATTRIBUTES = [PK, SK, "test"] as const;
+
+/**
  * The partition prefix of the per-user receipt rate counters (supply-checkout-wxx):
  * `RECEIPTRATE#<userId>`, sort key `RECEIPTS#<window>#<stamp>` (keys.receiptRate).
  * The receipts function's role session is tagged with the caller's `sub`, and

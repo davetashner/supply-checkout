@@ -44,6 +44,8 @@ export function teamRow(team, now) {
   return {
     id: text(team.id),
     name: text(team.name),
+    // A test team (the prod journey tests'): shown as a badge, nothing more
+    test: team.test === true,
     plan: `${text(team.plan)} / ${text(team.status)}${team.closedAt ? ` (closed ${date(team.closedAt)})` : ""}`,
     comp: team.comp ? compLine(team.comp, now) : "",
     owners: (Array.isArray(team.owners) ? team.owners : []).map((o) => text(o?.email ?? o?.userId)).join(", "),
@@ -55,6 +57,7 @@ export function teamRow(team, now) {
 export function teamFacts(team, now) {
   return [
     ["Team ID", text(team.id)],
+    ...(team.test === true ? [["Test team", "Yes: made by the prod journey tests, and left out of customer metrics. It's billed and limited like any team."]] : []),
     ["Plan", text(team.plan)],
     ["Status", `${text(team.status)}${team.closedAt ? `, closed ${team.closedAt} (read-only until it's deleted)` : ""}`],
     ["Seats", text(team.seats)],

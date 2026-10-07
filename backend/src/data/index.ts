@@ -68,6 +68,7 @@ export { claimLapseNotice, claimLapseRun, closeLapsedTeam, LAPSE_CHECKOUT_GUARD_
 export { listStripeCustomerDeletions, queueStripeCustomerDeletion, removeStripeCustomerDeletion, type StripeDeletion } from "./stripe-deletions.js";
 export * from "./email-codes.js";
 export * from "./verified-email.js";
+export { isAtDomain, isTestAccount, TEST_MAIL_DOMAIN_ENV, testMailDomain } from "./test-accounts.js";
 export * from "./security-notices.js";
 export * from "./two-step.js";
 export * from "./welcome.js";

@@ -83,6 +83,13 @@ export interface Team {
   readonly createdAt: string;
   readonly version: number;
   /**
+   * A test team (supply-checkout-o60.2, test-accounts.ts): a test account
+   * created it. Written once, by createTeam, and never changed. It only
+   * leaves the team out of customer-activity metrics and shows operators a
+   * Test badge; it never grants anything.
+   */
+  readonly test?: true;
+  /**
    * A comp (ADR 0015): a plan an operator granted until `compUntil` (ISO
    * 8601), at most 12 months ahead. While it's live (liveComp) the team is
    * active on it whatever its Stripe status says. Only the ops function writes

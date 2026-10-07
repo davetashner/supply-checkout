@@ -2843,10 +2843,11 @@ components:
             hasMoreInvoices: { type: boolean }
     OpsTeam:
       type: object
-      required: [id, name, plan, seats, status, ownerCount, createdAt, version, comp, owners]
+      required: [id, name, test, plan, seats, status, ownerCount, createdAt, version, comp, owners]
       properties:
         id: { type: string }
         name: { type: string }
+        test: { type: [boolean, "null"], description: "A test team: one a test account (a verified address at the test mail domain) created, for the prod journey tests. Shown as a Test badge; it grants nothing and changes nothing an operator can do. Null if the mark couldn't be read." }
         plan: { type: string, description: From billing (ADR 0009). }
         seats: { type: integer }
         status: { type: string, description: The Stripe subscription status. }

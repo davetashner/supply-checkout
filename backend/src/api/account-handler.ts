@@ -196,6 +196,7 @@ import {
   recordNoticeAddress,
   recordTotpOn,
   hasEnded,
+  isTestAccount,
   billingAccess,
   deletionLastDay,
   liveComp,
@@ -224,7 +225,7 @@ import { EmailNotSentError, type Mailer, sendInviteEmail, sendTeamNotice } from 
 import type { EmailInput, SecurityNotice } from "../email/templates.js";
 import type { DeletionLog } from "../deletions/records.js";
 import type { SeatSyncQueue } from "../billing/seat-queue.js";
-import { BusinessMetric, type BusinessMetricName, type Observability } from "../observability/index.js";
+import { BusinessMetric, type BusinessMetricName, type Observability, testMark } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
 import type { CognitoUser, DeleteUser, EmailCodes, TotpSetup, UserInfo } from "./cognito-user.js";
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
@@ -252,6 +253,12 @@ export interface AccountHandlerDeps {
   readonly seats?: SeatSyncQueue;
   /** How long a security notice may wait on SES (NOTICE_TIMEOUT_MS); for tests. */
   readonly noticeTimeoutMs?: number;
+  /**
+   * The test mail domain (TEST_MAIL_DOMAIN, data/test-accounts.ts): a team a
+   * verified address there creates is a test team, left out of customer
+   * metrics. Absent, no account is a test account.
+   */
+  readonly testMailDomain?: string;
   readonly now?: () => number;
 }
 
@@ -536,8 +543,10 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const body = jsonBody(event, ["name"]);
     const user = await cognitoUser(event, userId);
     const db = dbFor({ userId, teamId: teamIdForRequest(userId, key) });
-    const { team, context, created } = await createTeam(db, { userId, email: verifiedEmail(user) }, { name: body.name as string, requestKey: key }, new Date(now()));
-    if (created) obs.count(BusinessMetric.SignUps, 1, { teamId: team.teamId });
+    // A test account (its verified address, from Cognito, at the test mail domain) makes a test team: metrics only
+    const test = isTestAccount(user, deps.testMailDomain);
+    const { team, context, created } = await createTeam(db, { userId, email: verifiedEmail(user), test }, { name: body.name as string, requestKey: key }, new Date(now()));
+    if (created) obs.count(BusinessMetric.SignUps, 1, { teamId: team.teamId, ...testMark(team.test) });
     return json(created ? 201 : 200, { team: teamBody(team, context.role) });
   }
 
@@ -553,7 +562,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     if (!invite || typeof token !== "string") throw new ApiError(404, "not_found", "This invite has expired, was already used, or is for another email address");
     const db = dbFor({ userId, teamId: invite.teamId });
     const ctx = await acceptInvite(db, { userId, verifiedEmail: email }, invite, token, at);
-    obs.count(BusinessMetric.InvitesAccepted, 1, { teamId: ctx.teamId });
+    obs.count(BusinessMetric.InvitesAccepted, 1, { teamId: ctx.teamId, ...testMark(ctx.test) });
     const team = await getTeam(db, ctx);
     await queueSeatSync(ctx.teamId, team);
     return json(200, { team: teamBody(team, ctx.role) });
@@ -683,14 +692,14 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   async function send(db: ReturnType<DbForAccount>, ctx: TeamContext, invite: Invite, token: string): Promise<Invite> {
     try {
       await sendInviteEmail(deps.mailer, invite, token);
-      obs.count(BusinessMetric.InvitesSent, 1, { teamId: ctx.teamId });
+      obs.count(BusinessMetric.InvitesSent, 1, { teamId: ctx.teamId, ...testMark(ctx.test) });
       return invite;
     } catch (error) {
       const code = error instanceof EmailNotSentError ? error.code : ((error as { name?: string } | null)?.name ?? "Unknown");
       obs.logger.warn("Invite email not sent", { teamId: ctx.teamId, inviteId: invite.inviteId, code });
       const at = new Date(now());
       await markInviteNotSent(db, ctx, invite.inviteId, at);
-      obs.count(BusinessMetric.InvitesFailed, 1, { teamId: ctx.teamId, reason: "not_sent" });
+      obs.count(BusinessMetric.InvitesFailed, 1, { teamId: ctx.teamId, reason: "not_sent", ...testMark(ctx.test) });
       return { ...invite, inviteStatus: "failed", failureReason: "not_sent", failedAt: at.toISOString() };
     }
   }
@@ -741,7 +750,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const db = dbFor({ userId, teamId });
     const { team, closedNow } = await closeTeam(db, ctx, { confirmName: body.name as string }, new Date(now()));
     if (closedNow) {
-      obs.count(BusinessMetric.TeamsClosed, 1, { teamId });
+      obs.count(BusinessMetric.TeamsClosed, 1, { teamId, ...testMark(ctx.test) });
       obs.logger.info("Team closed", { teamId, purgeAfter: team.purgeAfter ?? "" });
       await queueClosedSync(teamId, team);
       await noticeOwners(db, ctx, { kind: "teamClosed", teamName: team.name, purgeAfter: team.purgeAfter as string }, CLOSED_NOTICES);
@@ -760,7 +769,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const db = dbFor({ userId, teamId });
     const { team, reopenedNow } = await reopenTeam(db, ctx, { confirmName: body.name as string }, new Date(now()));
     if (reopenedNow) {
-      obs.count(BusinessMetric.TeamsReopened, 1, { teamId });
+      obs.count(BusinessMetric.TeamsReopened, 1, { teamId, ...testMark(ctx.test) });
       obs.logger.info("Team reopened", { teamId });
       // Members may have left while it was closed
       await queueSeatSync(teamId, team);
@@ -778,23 +787,24 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
    */
   async function noticeOwners(db: ReturnType<DbForAccount>, ctx: TeamContext, input: TeamNotice, metrics: NoticeMetrics): Promise<void> {
     const { teamId } = ctx;
+    const test = testMark(ctx.test);
     let owners: Member[];
     try {
       owners = (await listMembers(db, ctx)).filter((m) => m.role === "owner");
     } catch (error) {
       obs.logger.warn(metrics.log, { teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
-      obs.count(metrics.failures, 1, { teamId, reason: "not_listed" });
+      obs.count(metrics.failures, 1, { teamId, reason: "not_listed", ...test });
       return;
     }
     const results = await Promise.allSettled(
       owners.map((owner) => (owner.email ? sendTeamNotice(deps.mailer, owner.email, teamId, input) : Promise.reject(new EmailNotSentError("NoAddress")))),
     );
     const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
-    if (results.length > failed.length) obs.count(metrics.sent, results.length - failed.length, { teamId });
+    if (results.length > failed.length) obs.count(metrics.sent, results.length - failed.length, { teamId, ...test });
     if (failed.length) {
       const codes = [...new Set(failed.map((r) => (r.reason instanceof EmailNotSentError ? r.reason.code : ((r.reason as { name?: string } | null)?.name ?? "Unknown"))))];
       obs.logger.warn(metrics.log, { teamId, failed: failed.length, owners: owners.length, codes: codes.join(",") });
-      obs.count(metrics.failures, failed.length, { teamId, reason: "not_sent" });
+      obs.count(metrics.failures, failed.length, { teamId, reason: "not_sent", ...test });
     }
   }
 
@@ -851,7 +861,10 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       throw new ApiError(400, "bad_request", `Type ${DELETE_CONFIRMATION} to confirm`);
     }
     const token = accessToken(event);
-    const email = verifiedEmail(await cognitoUser(event, userId));
+    const user = await cognitoUser(event, userId);
+    const email = verifiedEmail(user);
+    // Read before the Cognito user goes: a test account's deletion is left out of the metric
+    const test = isTestAccount(user, deps.testMailDomain);
     const invitee = email && hashEmail(email);
     const own = dbFor({ userId, invitee });
     const at = new Date(now());
@@ -887,7 +900,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
           // Only while they're still alone in it: someone who joined meanwhile makes it a ConflictError
           const { closedNow } = await closeTeam(db, ctx, { confirmName: team.name, onlyMember: true }, at);
           if (closedNow) {
-            obs.count(BusinessMetric.TeamsClosed, 1, { teamId: ctx.teamId });
+            obs.count(BusinessMetric.TeamsClosed, 1, { teamId: ctx.teamId, ...testMark(ctx.test) });
             await queueClosedSync(ctx.teamId, team);
           }
         }
@@ -912,7 +925,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const rowsDeleted = await deleteUserRows(own, userId);
     // Last: until it's gone the user can sign in and try again
     await deps.deleteUser(token);
-    obs.count(BusinessMetric.AccountsDeleted, 1);
+    obs.count(BusinessMetric.AccountsDeleted, 1, testMark(test));
     obs.logger.info("Account deleted", { userId, teamsLeft: teams.length, teamsClosed: teams.filter((t) => t.alone).length, invitesDeleted: invites.length, rowsDeleted });
     return noContent();
   }

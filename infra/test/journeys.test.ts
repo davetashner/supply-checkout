@@ -190,6 +190,21 @@ describe("journeys stack (supply-checkout-o60.3)", () => {
   });
 
   describe("the test mail subdomain", () => {
+    it("receives mail for exactly the domain the account and welcome functions treat as test accounts' (supply-checkout-o60.2)", () => {
+      const { template } = build();
+      const rules = Object.values(template.findResources("AWS::SES::ReceiptRule")) as { Properties: { Rule: { Recipients: string[] } } }[];
+      const recipients = rules.flatMap((r) => r.Properties.Rule.Recipients);
+      expect(recipients).toEqual([journeyMailDomain(config)]);
+      const main = addSupplyCheckout(testApp(), config);
+      const testMailDomains = [Template.fromStack((main.regions[EAST] as (typeof main.regions)[string]).api), Template.fromStack(main.email)].flatMap((t) =>
+        Object.values(t.findResources("AWS::Lambda::Function"))
+          .map((fn) => (fn as { Properties: { Environment?: { Variables?: Record<string, unknown> } } }).Properties.Environment?.Variables?.TEST_MAIL_DOMAIN)
+          .filter((v) => v !== undefined),
+      );
+      // The account function and the welcome function, both the receipt rule's recipient
+      expect(testMailDomains).toEqual([recipients[0], recipients[0]]);
+    });
+
     it("routes e2e.<domain>'s mail to SES inbound in the primary region, and verifies it with Easy DKIM", () => {
       const { template } = build();
       expect(journeyMailDomain(config)).toBe("e2e.supplycheckout.com");

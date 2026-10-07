@@ -15,6 +15,9 @@ export function envDomain(config: Pick<DeploymentConfig, "envName" | "domainName
   return config.envName === "prod" ? config.domainName : `${config.envName}.${config.domainName}`;
 }
 
+/** The label of the test mail subdomain, `e2e.<env domain>` (hostNames().testMail; the journeys stack's JOURNEY_MAIL_LABEL). */
+export const TEST_MAIL_LABEL = "e2e";
+
 export interface HostNames {
   /** The zone apex. Serves the demo until the real app launches (supply-checkout-sy6). */
   readonly apex: string;
@@ -33,6 +36,14 @@ export interface HostNames {
   readonly opsAuth: string;
   /** SES custom MAIL FROM domain, so SPF aligns with the From address for DMARC. */
   readonly mailFrom: string;
+  /**
+   * The test mail domain (supply-checkout-o60): the prod journey tests' accounts
+   * have addresses here, and SES receives its mail into a private bucket
+   * (the journeys stack, supply-checkout-o60.3), so only we can verify one. An
+   * account with a verified address here is a test account, and its teams are
+   * test teams, left out of customer metrics (backend/src/data/test-accounts.ts).
+   */
+  readonly testMail: string;
 }
 
 export function hostNames(config: Pick<DeploymentConfig, "envName" | "domainName">): HostNames {
@@ -47,6 +58,7 @@ export function hostNames(config: Pick<DeploymentConfig, "envName" | "domainName
     auth: `auth.${apex}`,
     opsAuth: `ops-auth.${apex}`,
     mailFrom: `mail.${apex}`,
+    testMail: `${TEST_MAIL_LABEL}.${apex}`,
   };
 }
 

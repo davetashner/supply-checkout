@@ -52,7 +52,7 @@ import {
   takeReceiptRate,
   type TeamContext,
 } from "../data/index.js";
-import { BusinessMetric, type Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import { MAX_INVENTORY_LINES } from "../receipts/prompt.js";
 import { RECEIPT_MEDIA_TYPES, type ReceiptMediaType, type ReceiptModel, ReceiptReadError, readReceipt, usageOf } from "../receipts/reader.js";
 import { callerId, type DataEvent, errorFor } from "./data-handler.js";
@@ -149,7 +149,7 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
 
   /** Counts the read against the caller's rate and the team's allowance (and a trial's, the account's trial reads for the day), or refuses it. */
   async function take(db: Db, ctx: TeamContext, at: Date, log: Record<string, string | number>): Promise<ReceiptQuota> {
-    const metadata = { teamId: ctx.teamId };
+    const metadata = { teamId: ctx.teamId, ...testMark(ctx.test) };
     // The allowance first: a trial team's read also counts in the user's trial reads for the day
     const allowance = deps.allowance ?? (await getReceiptAllowance(db, ctx, at));
     log.allowance = allowance.period;
@@ -196,7 +196,7 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), budget);
     const started = now();
-    const metadata = { teamId: ctx.teamId };
+    const metadata = { teamId: ctx.teamId, ...testMark(ctx.test) };
     deps.obs.count(BusinessMetric.ReceiptReads, 1, metadata);
     try {
       const { result, usage } = await readReceipt(deps.model, { modelId: deps.modelId, image, inventory, signal: abort.signal, timeoutMs: budget });

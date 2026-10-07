@@ -69,8 +69,14 @@ export class TeamContext {
   readonly subscriptionEnded: boolean;
   /** Why, when `subscriptionEnded`. */
   readonly readOnlyReason?: ReadOnlyReason;
+  /**
+   * A test team (its META item's `test`, test-accounts.ts). Read only to
+   * leave the team out of customer-activity metrics: nothing that decides
+   * access, limits or billing may read it.
+   */
+  readonly test: boolean;
 
-  constructor(token: symbol, teamId: string, userId: string, role: Role, homeRegion: string, closed = false, readOnlyReason?: ReadOnlyReason) {
+  constructor(token: symbol, teamId: string, userId: string, role: Role, homeRegion: string, closed = false, readOnlyReason?: ReadOnlyReason, test = false) {
     if (token !== ISSUE) throw new ForbiddenError("TeamContext can only be issued by the data layer");
     this.teamId = teamId;
     this.userId = userId;
@@ -79,14 +85,15 @@ export class TeamContext {
     this.closed = closed;
     this.subscriptionEnded = readOnlyReason !== undefined;
     if (readOnlyReason !== undefined) this.readOnlyReason = readOnlyReason;
+    this.test = test;
     Object.freeze(this);
     issued.add(this);
   }
 }
 
 // Not exported: only the issuers below can call it.
-function issue(teamId: string, userId: string, role: Role, homeRegion: string, closed = false, readOnlyReason?: ReadOnlyReason): TeamContext {
-  return new TeamContext(ISSUE, teamId, userId, role, homeRegion, closed, readOnlyReason);
+function issue(teamId: string, userId: string, role: Role, homeRegion: string, closed = false, readOnlyReason?: ReadOnlyReason, test = false): TeamContext {
+  return new TeamContext(ISSUE, teamId, userId, role, homeRegion, closed, readOnlyReason, test);
 }
 
 /** Throws unless `ctx` was issued by this file. */
@@ -155,9 +162,9 @@ export async function authorizeTeam(db: Db, userId: string, teamId: string, now 
           Get: {
             TableName: db.tableName,
             Key: keys.team(teamId),
-            // What billingAccess reads, and the home region and closure
-            ProjectionExpression: "homeRegion, closedAt, #status, trialEndsAt, createdAt, stripeSubscriptionId, pastDueSince, subscriptionEndedAt, compPlan, compUntil",
-            ExpressionAttributeNames: { "#status": "status" },
+            // What billingAccess reads, the home region and closure, and the test mark (for metrics only)
+            ProjectionExpression: "homeRegion, closedAt, #status, trialEndsAt, createdAt, stripeSubscriptionId, pastDueSince, subscriptionEndedAt, compPlan, compUntil, #test",
+            ExpressionAttributeNames: { "#status": "status", "#test": "test" },
           },
         },
         {
@@ -175,7 +182,7 @@ export async function authorizeTeam(db: Db, userId: string, teamId: string, now 
   if (!meta || !membership) throw new ForbiddenError("Not a member of this team");
   // A MEMBER item with a missing or unknown role is treated as no membership
   if (!isMemberRole(membership.role)) throw new ForbiddenError("Not a member of this team");
-  return issue(teamId, userId, membership.role, meta.homeRegion as string, isClosed(meta), billingAccess(meta, now).reason);
+  return issue(teamId, userId, membership.role, meta.homeRegion as string, isClosed(meta), billingAccess(meta, now).reason, meta.test === true);
 }
 
 /** The per-item reasons DynamoDB gave for cancelling a transaction, if it did. */
@@ -211,6 +218,11 @@ function notBeingDeleted(db: Db, userId: string) {
  * context. The home region is the region this runs in (ADR 0010), and the
  * team starts a TRIAL_DAYS free trial (ADR 0009).
  *
+ * `owner.test` (exactly true: the caller found the owner a test account with
+ * isTestAccount, from Cognito) marks the team a test team, `test: true` on
+ * its META item; this is the only write of the mark. A repeat with the same
+ * request key returns the stored team as it is, mark and all.
+ *
  * With a `requestKey` (the client's idempotency key), the team's ID is derived
  * from the user and the key, so a double-click or a retry makes one team: the
  * repeat finds the team it already made and returns it with `created: false`.
@@ -223,7 +235,7 @@ function notBeingDeleted(db: Db, userId: string) {
  */
 export async function createTeam(
   db: Db,
-  owner: { readonly userId: string; readonly email?: string },
+  owner: { readonly userId: string; readonly email?: string; readonly test?: boolean },
   input: { readonly name: string; readonly plan?: string; readonly seats?: number; readonly requestKey?: string },
   now = new Date(),
 ): Promise<{ team: Team; context: TeamContext; created: boolean }> {
@@ -244,6 +256,7 @@ export async function createTeam(
     members: 1,
     createdAt,
     version: 1,
+    ...(owner.test === true ? { test: true as const } : {}),
   };
   const member: Member = { type: "member", teamId, userId, role: "owner", email: owner.email, joinedAt: createdAt };
   const userTeam: UserTeam = { type: "userTeam", userId, teamId, teamName: team.name, role: "owner" };
@@ -275,7 +288,7 @@ export async function createTeam(
   for (let attempt = 1; !mine.has(teamId); attempt++) {
     try {
       await write();
-      return { team, context: issue(teamId, userId, "owner", team.homeRegion), created: true };
+      return { team, context: issue(teamId, userId, "owner", team.homeRegion, false, undefined, team.test === true), created: true };
     } catch (error) {
       const codes = cancellationCodes(error);
       // Two creates with the same key at once (a double-click): the loser

@@ -66,6 +66,7 @@ import {
   RECEIPT_TRIAL_CAP_ATTRIBUTES,
   RECEIPT_TRIAL_CAP_PARTITION,
   RECEIPT_USAGE_ATTRIBUTES,
+  TEST_MARK_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
   STRIPE_LINK_PREFIX,
@@ -76,6 +77,7 @@ import {
   WEBHOOK_RECORD_ATTRIBUTES,
   WEBHOOK_RECORD_PREFIX,
 } from "../../../backend/src/data/schema.js";
+import { TEST_MAIL_DOMAIN_ENV } from "../../../backend/src/data/test-accounts.js";
 import { BILLING_ENV, BILLING_MAX_RECEIVES, billingResourceNames, OPS_STRIPE_ENV, SEAT_SYNC_MAX_CONCURRENCY, STRIPE_ENV, stripeOpsKeySecretName, stripeSecretName, stripeWebhookSecretName } from "../../../backend/src/billing/names.js";
 import { BILLING_WORKER_TAGS } from "../../../backend/src/billing/worker-db.js";
 import { type DeploymentConfig, foundationModelOf, RECEIPT_MODEL_ID, RECEIPT_MODEL_REGIONS, receiptsReservedConcurrencyFromContext, receiptTrialReadsPerDayFromContext, stripeModeOf, stripeOpsKeySecretArn, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
@@ -229,7 +231,8 @@ export class ApiStack extends SupplyCheckoutStack {
     this.accountFunction = this.handler("AccountFunction", "account", {
       memorySize: 512,
       description: "The signed-in user's teams and invites; creates teams, manages members and invites, and accepts invites",
-      environment: { [API_ENV.tableName]: table, [API_ENV.issuerUrl]: ssm(identity.issuerUrl) },
+      // TEST_MAIL_DOMAIN: a team a verified address there creates is a test team, for metrics only (supply-checkout-o60.2)
+      environment: { [API_ENV.tableName]: table, [API_ENV.issuerUrl]: ssm(identity.issuerUrl), [TEST_MAIL_DOMAIN_ENV]: names.testMail },
     });
     const tableKeyStatement = () =>
       new PolicyStatement({
@@ -1001,6 +1004,21 @@ export class ApiStack extends SupplyCheckoutStack {
                   "dynamodb:Attributes": [...IMPORT_INDEX_ATTRIBUTES],
                 },
                 StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            // Teams' test marks (supply-checkout-o60.2): the Test badge on the list and a team's record.
+            // GSI3 projects 20 attributes, the most it can, so the mark is read from the META items:
+            // only BatchGetItem, only the keys and `test`, and only with a projection. Same residual
+            // risk as the counters' statement below: a guessed key's existence, and its `test` if any
+            new PolicyStatement({
+              sid: "TeamTestMarksReadOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:BatchGetItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+                "ForAllValues:StringEquals": { "dynamodb:Attributes": [...TEST_MARK_ATTRIBUTES] },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
             // Teams' receipt counters (supply-checkout-wxx): a team's record shows its reads by

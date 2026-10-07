@@ -286,6 +286,8 @@ describe("email stack", () => {
       expect(vars).toMatchObject({
         TABLE_NAME: "supply-checkout-prod-app",
         SUPPORT_ADDRESS: "support@supplycheckout.com",
+        // A test account's welcome is left out of WelcomeEmails (supply-checkout-o60.2)
+        TEST_MAIL_DOMAIN: "e2e.supplycheckout.com",
         [EMAIL_ENV.fromAddress]: "noreply@supplycheckout.com",
         [EMAIL_ENV.appUrl]: "https://app.supplycheckout.com",
       });

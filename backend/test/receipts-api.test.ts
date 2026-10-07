@@ -444,6 +444,22 @@ describe("the monthly limit", () => {
   });
 });
 
+describe("a test team (supply-checkout-o60.2)", () => {
+  it("is held to the same limit, and its reads, tokens and limit hits are marked test", async () => {
+    table.put({ ...table.get("TEAM#team-a", "META"), test: true });
+    const counted: { metric: string; metadata: Record<string, unknown> }[] = [];
+    const obs = fakeObservability();
+    const marked = createReceiptsHandler({ dbFor, obs: { ...obs, count: (metric, _value, metadata = {}) => void counted.push({ metric, metadata }) }, model: fakeModel, modelId: MODEL_ID, now: () => NOW, allowance: MONTH_OF_3 });
+    const read = async () => (await marked(event({ body: { image: jpeg } }))).statusCode;
+    for (let i = 1; i <= 3; i++) expect(await read()).toBe(200);
+    // The same 3-a-month limit as any team
+    expect(await read()).toBe(429);
+    expect(calls).toHaveLength(3);
+    expect(new Set(counted.map((c) => c.metric))).toEqual(new Set(["ReceiptReads", "ReceiptTokens", "ReceiptPaidTeamsNearLimit", "ReceiptLimitReached"]));
+    for (const c of counted) expect(c.metadata).toMatchObject({ teamId: "team-a", test: true });
+  });
+});
+
 describe("each team's allowance, from its plan (supply-checkout-wxx)", () => {
   // A clock that moves 10 seconds a read, so the per-user rate limit (10 a minute) never refuses
   let clock: number;

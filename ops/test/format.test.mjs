@@ -59,6 +59,7 @@ test("teamRow and teamFacts", () => {
   assert.deepEqual(teamRow({ ...team, owners: [{ email: "o@example.test", userId: "u1" }, { userId: "u2" }, null] }, NOW), {
     id: "t1",
     name: "Acme",
+    test: false,
     plan: "pro / active",
     comp: "",
     owners: "o@example.test, u2, -",
@@ -68,6 +69,11 @@ test("teamRow and teamFacts", () => {
   assert.equal(closed.plan, "pro / active (closed 2026-09-30)");
   assert.equal(closed.comp, "free until 2026-11-01, less than a month left");
   assert.equal(teamRow({ id: "t2" }, NOW).owners, "");
+  // The Test badge only for a team marked exactly true (not for null: the mark unread)
+  assert.equal(teamRow({ ...team, test: true }, NOW).test, true);
+  assert.equal(teamRow({ ...team, test: null }, NOW).test, false);
+  assert.match(Object.fromEntries(teamFacts({ ...team, test: true }, NOW))["Test team"], /^Yes: made by the prod journey tests/);
+  assert.equal(Object.fromEntries(teamFacts({ ...team, test: null }, NOW))["Test team"], undefined);
 
   const facts = Object.fromEntries(teamFacts(team, NOW));
   assert.equal(facts.Comp, "No comp");
