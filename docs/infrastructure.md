@@ -855,6 +855,7 @@ A line such as `changed by something else first, left alone: 1` is a race the co
 - `--reverse` does the same from `PROJECT#` back to `SHEET#`: the rollback. It's the same code, and it's tested both ways.
 - `--export-to <path>` writes the team's `SHEET#`, `PROJECT#` and `MOVE#` items to a new JSON file (owner-only, never over an existing file) before anything is written. It refuses a path inside the repo, or inside any folder with a `.git` entry (so a worktree's main checkout too), compared as the disk spells it: the file holds client names and prices.
 - `--team` on a team with no `META` item (a typo) says so, and the run is never `Done.`
+- A team with no `META` item, or one that's closed (`purgeAfter`) or being purged (`purging`), is left alone and counted, and the run isn't `Done.` while there is one: its data goes with the purge, and a copy must not outlive it. Every move's transaction checks the `META` item again. A closed team that's reopened can be run then.
 - `--expect-account <id>` (any backfill mode) stops before reading anything unless the profile signs in to that account.
 
 The output is counts and check names only: no team, sheet or user IDs, names or emails. A dry run (the default) counts the sheets it would move, the conflicts, the movements, and about how many bytes the sheets hold (the largest must stay well under DynamoDB's 400 KB). After `--apply` it checks, and prints `Done.` only when all of them hold (otherwise `Not done`, and it exits 1):

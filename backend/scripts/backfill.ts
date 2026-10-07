@@ -90,7 +90,9 @@ function canonical(path: string): string {
 
 /** The main checkout of the repo a folder is in (the parent of git's common dir), so a worktree's main checkout counts too. */
 function mainCheckout(dir: string): string | undefined {
-  const git = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, encoding: "utf8", timeout: 5_000 });
+  // Without the variables that would point git at another repository than the folder's own
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"].includes(name)));
+  const git = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, encoding: "utf8", timeout: 5_000, env });
   const common = git.status === 0 ? git.stdout.trim() : "";
   return common ? dirname(common) : undefined;
 }
@@ -148,6 +150,7 @@ export function formatRenameReport(r: ProjectsRenameReport): string[] {
   const wouldBe = r.apply ? "" : " (dry run: would be)";
   const lines = [`${r.from} to ${r.to}, teams: ${r.teams}`];
   if (r.teamMissing) lines.push("No team META item for --team: check the team ID");
+  if (r.skippedTeams) lines.push(`Teams left alone (no META item, closed or being purged): ${r.skippedTeams}`);
   if (r.invalidTeams) lines.push(`Team partitions whose ID isn't a valid ID, left alone: ${r.invalidTeams}`);
   if (r.exported !== undefined) lines.push(`Exported ${r.exported} items to the file first`);
   lines.push(`Items under ${r.from}: ${r.found} (about ${r.bytes} bytes; the largest about ${r.largest})`);
@@ -174,7 +177,7 @@ export function formatRenameReport(r: ProjectsRenameReport): string[] {
   lines.push("Verification:");
   for (const c of r.verification.checks) lines.push(`  ${c.ok ? "ok" : "FAILED"}: ${c.check}`);
   lines.push(
-    r.verification.ok && !r.conflicts && !r.failed && !r.leftByLimit && !r.invalid && !r.invalidTeams && !r.teamMissing
+    r.verification.ok && !r.conflicts && !r.failed && !r.leftByLimit && !r.invalid && !r.invalidTeams && !r.teamMissing && !r.skippedTeams
       ? "Done."
       : "Not done: see above. Run it again (it skips what's moved), or roll back with --reverse.",
   );

@@ -109,11 +109,12 @@ describe("the rename's pieces", () => {
   });
 
   it("formats a report with every line it has, and none it doesn't", () => {
-    const base = { apply: true, from: "SHEET#", to: "PROJECT#", teams: 1, invalidTeams: 1, teamMissing: true, found: 3, moved: 1, duplicates: 1, conflicts: 1, gone: 1, failed: 1, retries: 2, invalid: 1, leftByLimit: 1, bytes: 300, largest: 120, exported: 4 };
+    const base = { apply: true, from: "SHEET#", to: "PROJECT#", teams: 1, invalidTeams: 1, teamMissing: true, skippedTeams: 1, found: 3, moved: 1, duplicates: 1, conflicts: 1, gone: 1, failed: 1, retries: 2, invalid: 1, leftByLimit: 1, bytes: 300, largest: 120, exported: 4 };
     const lines = formatRenameReport({ ...base, movements: { found: 0, renamed: 0, conflicts: 0, raced: 0, skipped: true }, verification: { ok: false, checks: [{ check: "x", ok: false }, { check: "y", ok: true }] } });
     expect(lines).toEqual([
       "SHEET# to PROJECT#, teams: 1",
       "No team META item for --team: check the team ID",
+      "Teams left alone (no META item, closed or being purged): 1",
       "Team partitions whose ID isn't a valid ID, left alone: 1",
       "Exported 4 items to the file first",
       "Items under SHEET#: 3 (about 300 bytes; the largest about 120)",
@@ -131,7 +132,7 @@ describe("the rename's pieces", () => {
       "  ok: y",
       "Not done: see above. Run it again (it skips what's moved), or roll back with --reverse.",
     ]);
-    const quiet = formatRenameReport({ ...base, apply: false, invalidTeams: 0, teamMissing: false, duplicates: 0, conflicts: 0, gone: 0, failed: 0, retries: 0, invalid: 0, leftByLimit: 0, exported: undefined, movements: { found: 2, renamed: 1, conflicts: 1, raced: 1, skipped: false } });
+    const quiet = formatRenameReport({ ...base, apply: false, invalidTeams: 0, teamMissing: false, skippedTeams: 0, duplicates: 0, conflicts: 0, gone: 0, failed: 0, retries: 0, invalid: 0, leftByLimit: 0, exported: undefined, movements: { found: 2, renamed: 1, conflicts: 1, raced: 1, skipped: false } });
     expect(quiet).toEqual([
       "SHEET# to PROJECT#, teams: 1",
       "Items under SHEET#: 3 (about 300 bytes; the largest about 120)",
@@ -299,9 +300,32 @@ describe.skipIf(!endpoint)("the projects rename on DynamoDB Local", () => {
     expect(await rawItem(db, `TEAM#${teamId}`, "PROJECT#s1")).toEqual(renamedItem(s1, teamId, "s1", PROJECTS));
   });
 
+  it("leaves a closed or purging team alone, and never calls it done", async () => {
+    const { db } = table;
+    for (const mark of [{ purgeAfter: "2026-12-01T00:00:00.000Z", closedAt: "2026-10-01T00:00:00.000Z" }, { purging: "2026-10-06T00:00:00.000Z" }]) {
+      const teamId = await seedTeam(db, 2);
+      await connection(db).doc.send(new UpdateCommand({ TableName: db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "META" }, UpdateExpression: `SET ${Object.keys(mark).map((k) => `${k} = :${k}`).join(", ")}`, ExpressionAttributeValues: Object.fromEntries(Object.entries(mark).map(([k, v]) => [`:${k}`, v])) }));
+      const report = await renameProjects(db, opts({ team: teamId }));
+      expect(report).toMatchObject({ teams: 0, skippedTeams: 1, teamMissing: false, found: 0 });
+      expect(formatRenameReport(report).at(-1)).toMatch(/^Not done/);
+      expect(await partition(db, teamId, "SHEET#")).toHaveLength(2);
+      expect(await partition(db, teamId, "PROJECT#")).toHaveLength(0);
+    }
+  });
+
+  it("never moves a sheet once its team starts being purged mid-run", async () => {
+    const { db } = table;
+    const teamId = await seedTeam(db, 1);
+    const purge = () => connection(db).doc.send(new UpdateCommand({ TableName: db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "META" }, UpdateExpression: "SET purging = :p", ExpressionAttributeValues: { ":p": "now" } }));
+    const report = await renameProjects(interleaved(db, purge), opts({ team: teamId }));
+    expect(report).toMatchObject({ moved: 0, failed: 1 });
+    expect(await partition(db, teamId, "SHEET#")).toHaveLength(1);
+    expect(await partition(db, teamId, "PROJECT#")).toHaveLength(0);
+  });
+
   it("says when --team names no team, and never calls it done", async () => {
     const report = await renameProjects(table.db, opts({ team: newTeamId() }));
-    expect(report).toMatchObject({ teamMissing: true, found: 0 });
+    expect(report).toMatchObject({ teamMissing: true, skippedTeams: 1, teams: 0, found: 0 });
     expect(report.verification?.ok).toBe(true);
     expect(formatRenameReport(report).at(-1)).toMatch(/^Not done/);
   });
@@ -378,7 +402,7 @@ describe.skipIf(!endpoint)("the projects rename on DynamoDB Local", () => {
 
   it("skips a sheet whose key isn't a valid ID", async () => {
     const { db } = table;
-    const teamId = newTeamId();
+    const teamId = await seedTeam(db, 0);
     await put(db, { PK: `TEAM#${teamId}`, SK: "SHEET#bad id", type: "sheet", version: 1 });
     expect(await renameProjects(db, opts({ team: teamId }))).toMatchObject({ found: 1, invalid: 1, moved: 0 });
   });
@@ -436,5 +460,11 @@ describe.skipIf(!endpoint)("the projects rename of every team on DynamoDB Local"
     const bad = await renameProjects(db, { apply: true, ...fast });
     expect(bad).toMatchObject({ teams: 0, invalidTeams: 1 });
     expect(formatRenameReport(bad).at(-1)).toMatch(/^Not done/);
+
+    // A closed team is found by the scan but left alone
+    const closed = await seedTeam(db, 1);
+    await connection(db).doc.send(new UpdateCommand({ TableName: db.tableName, Key: { PK: `TEAM#${closed}`, SK: "META" }, UpdateExpression: "SET purgeAfter = :p", ExpressionAttributeValues: { ":p": "2026-12-01T00:00:00.000Z" } }));
+    expect(await renameProjects(db, { apply: true, ...fast })).toMatchObject({ teams: 0, skippedTeams: 1, invalidTeams: 1, found: 0 });
+    expect(await partition(db, closed, "SHEET#")).toHaveLength(1);
   });
 });

@@ -23,6 +23,10 @@
 //   `projectId` (and `fromProjectId`), on the condition that the old name is
 //   still there and the new one isn't.
 //
+// - A team whose META item is missing, or that is closed (`purgeAfter`) or
+//   being purged (`purging`), is left alone and counted, and every move's
+//   transaction checks that again, so no copy outlives a purge.
+//
 // With apply, it verifies afterwards and reports `ok` only when every check
 // holds. Reports hold counts and check names only: never team IDs, sheet IDs,
 // emails, names or item contents. Writes are sequential, about
@@ -115,6 +119,8 @@ export interface ProjectsRenameReport {
   readonly invalidTeams: number;
   /** --team named a team with no META item: probably a typo. */
   readonly teamMissing: boolean;
+  /** Teams left alone because their META item is missing or they're closed or being purged (`purgeAfter`, `purging`). */
+  readonly skippedTeams: number;
   /** Old items not read because of the limit. */
   readonly leftByLimit: number;
   /** About how many bytes the old items hold, and the largest one (DynamoDB's limit is 400 KB). */
@@ -313,6 +319,15 @@ function sameVersion(item: Item) {
     : { ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(#version)", ExpressionAttributeNames: { "#version": "version" } };
 }
 
+/** The team still exists and isn't closed or being purged: a copy must never outlive a purge (team-purge.ts). */
+const LIVE_TEAM = "attribute_exists(PK) AND attribute_not_exists(purging) AND attribute_not_exists(purgeAfter)";
+
+/** Whether a team META item is one to rename: present, not closed (`purgeAfter`) and not being purged (`purging`). */
+export const liveTeam = (meta: Item | undefined): boolean => meta !== undefined && meta.purging === undefined && meta.purgeAfter === undefined;
+
+/** The transaction item that holds the team to LIVE_TEAM. */
+const teamCheck = (db: Db, pk: string) => ({ ConditionCheck: { TableName: db.tableName, Key: { PK: pk, SK: "META" }, ConditionExpression: LIVE_TEAM } });
+
 const isConditionFailure = (e: unknown) => {
   const name = (e as { name?: string } | null)?.name;
   return name === "TransactionCanceledException" || name === "ConditionalCheckFailedException";
@@ -345,6 +360,7 @@ async function moveOne(db: Db, teamId: string, docId: string, from: Spelling, to
           new TransactWriteCommand({
             TransactItems: [
               { ConditionCheck: { TableName: db.tableName, Key: newKey, ...sameVersion(existing) } },
+              teamCheck(db, pk),
               { Delete: { TableName: db.tableName, Key: oldKey, ...sameVersion(old) } },
             ],
           }),
@@ -356,6 +372,7 @@ async function moveOne(db: Db, teamId: string, docId: string, from: Spelling, to
         new TransactWriteCommand({
           TransactItems: [
             { Put: { TableName: db.tableName, Item: storable(renamedItem(old, teamId, docId, to)), ConditionExpression: "attribute_not_exists(PK)" } },
+            teamCheck(db, pk),
             { Delete: { TableName: db.tableName, Key: oldKey, ...sameVersion(old) } },
           ],
         }),
@@ -448,7 +465,15 @@ export async function renameProjects(db: Db, options: ProjectsRenameOptions): Pr
     teamMissing = !(await get(db, { PK: `${TEAM}${options.team}`, SK: "META" }));
   } else ({ teams: teamIds, invalid: invalidTeams } = await teamsToRename(db, from));
   const surveys: Survey[] = [];
-  for (const teamId of teamIds) surveys.push(await survey(db, teamId, from, to));
+  let skippedTeams = 0;
+  for (const teamId of teamIds) {
+    // A closed or purging team is left alone, so no copy outlives its purge
+    if (!liveTeam(await get(db, { PK: `${TEAM}${teamId}`, SK: "META" }))) {
+      skippedTeams++;
+      continue;
+    }
+    surveys.push(await survey(db, teamId, from, to));
+  }
 
   let exported: number | undefined;
   if (options.exportTo) {
@@ -519,7 +544,7 @@ export async function renameProjects(db: Db, options: ProjectsRenameOptions): Pr
     }
   }
 
-  const report = { apply, from: from.sk, to: to.sk, teams: surveys.length, invalidTeams, teamMissing, found, moved, duplicates, conflicts, gone, failed, retries, invalid, leftByLimit, bytes, largest, movements, ...(exported === undefined ? {} : { exported }) };
+  const report = { apply, from: from.sk, to: to.sk, teams: surveys.length, invalidTeams, teamMissing, skippedTeams, found, moved, duplicates, conflicts, gone, failed, retries, invalid, leftByLimit, bytes, largest, movements, ...(exported === undefined ? {} : { exported }) };
   if (!apply) return report;
   return { ...report, verification: await verify(db, done, from, to, options.indexWaitMs ?? INDEX_WAIT_MS, sleep) };
 }
