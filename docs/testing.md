@@ -48,7 +48,7 @@ While working on a change, run just the file and browser you're touching, e.g. `
 | `resilience.spec.js` | Missing capabilities, failed receipt reads, full storage, lost write permission, and resuming an unsaved receipt |
 | `projects.spec.js` | Editing, filtering, reopening and deleting projects; editing and removing lines; picking and returning items without barcodes |
 | `inventory.spec.js` | Adding, editing and deleting items; storage counts and totals; view-only and disconnected states |
-| `barcode.spec.js` | Reading barcode photos with the browser's detector or ZXing, at several sizes, and when the photo can't be read |
+| `barcode.spec.js` | Reading barcode photos with the browser's detector or ZXing: at several sizes, codes turned, upside down, at a slant or small in a busy photo (synthetic photos drawn in the test, like the pilot's bin label), the time budget, check digits and codes that need a second read, correcting a misread number before it's saved, and when the photo can't be read |
 | `receipts.spec.js` | Receipt review: clients, existing projects, name and price choices, barcodes, splitting, every save check, partial save failures, a save whose answer was lost or timed out adding each line and each stock line once, and the review locked from the first attempt until it's saved |
 | `startup.spec.js` | Starting without the runtime or with capabilities declined, lost connections, download failures, and saved-draft problems |
 | `export.spec.js` | Exporting all data: projects and inventory as CSV, everything as JSON, matching the screens; formula-like text guarded; the marks of recent saves left out of the JSON; owners only, including view-only owners; 1,000 projects |
