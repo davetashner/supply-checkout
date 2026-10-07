@@ -220,6 +220,45 @@ test("the camera stops if the page is hidden while it starts, and no frame is re
   await expect(modal(page)).toContainText("Paper towels, 6 roll");
 });
 
+// A camera that starts but never sends a picture (in use elsewhere, say) still turns off at the time limit
+test("a camera that sends no picture is read from no frames, and stops at the time limit", { tag: ["@J4.2"] }, async ({ page }) => {
+  await page.clock.install();
+  await openProject(page, { camera: "dark", detector: [[code("SKU1")]] });
+  await scan(page);
+  await expect(status(page)).toHaveText("Hold the barcode inside the frame.");
+  await page.clock.runFor(2000);
+  expect(await page.evaluate(() => [window.__camera.detects, window.__camera.draws])).toEqual([0, 0]);
+  await page.clock.fastForward(31000);
+  await expect(status(page)).toHaveText("No barcode read yet. Move closer, add light, or take a photo instead.");
+  expect(await stopped(page)).toBe(1);
+});
+
+test("closed before a camera's first picture, the scanner just closes", { tag: ["@J4.2"] }, async ({ page }) => {
+  await openProject(page, { camera: "dark" });
+  await scan(page);
+  await expect(status(page)).toHaveText("Hold the barcode inside the frame.");
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(scanner(page)).toBeHidden();
+  expect(await stopped(page)).toBe(1);
+});
+
+// The camera stops (the page hidden) while the first frame waits for ZXing to load: that frame
+// isn't drawn from a video that no longer has a picture (which threw in Firefox and Android)
+test("a frame read when the camera stops goes no further", { tag: ["@J4.2"] }, async ({ page }) => {
+  let release, requested;
+  const asked = new Promise((resolve) => { requested = resolve; });
+  await openProject(page, { detector: [[]] });
+  await page.route(/\/assets\/zxing-[^/]*\.js$/, async (route) => { requested(); await new Promise((resolve) => { release = resolve; }); await route.fallback(); });
+  await scan(page);
+  await asked;
+  await page.evaluate(() => { Object.defineProperty(document, "hidden", { value: true, configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
+  await expect(status(page)).toHaveText("Scanning paused.");
+  release();
+  await expect.poll(() => page.evaluate(() => [...performance.getEntriesByType("resource")].some((e) => /zxing-/.test(e.name)))).toBe(true);
+  await expect(status(page)).toHaveText("Scanning paused.");
+  expect(await page.evaluate(() => window.__camera.draws)).toBe(0);
+});
+
 test("the flashlight toggles where the camera has one", { tag: ["@J4.2"] }, async ({ page }) => {
   await openProject(page, { detector: [[]], torch: "yes" });
   await scan(page);

@@ -1,18 +1,22 @@
 // A stand-in camera for the live barcode scanner (src/live-scan.js), for tests/live-scan.spec.js
 // and tests/content-security-policy.spec.js. installCamera runs in the page (addInitScript).
-// A stand-in camera: a 640×480 canvas streamed as the camera's video (redrawn each animation
-// frame, so the stream keeps sending frames), and a stand-in BarcodeDetector.
+// A stand-in camera: a 640×480 canvas streamed as the camera's video (redrawn every 40 ms, so
+// the stream keeps sending frames), and a stand-in BarcodeDetector.
 //   camera:   "ok" | "denied" (permission refused) | "missing" (no camera found) | "held" (the
 //             browser is still asking until window.__answerCamera(ok)) | "unsupported" (no
 //             navigator.mediaDevices) | "none" (no camera in enumerateDevices) | "unlisted"
-//             (enumerateDevices fails; the camera works)
+//             (enumerateDevices fails; the camera works) | "dark" (it starts but sends no picture)
 //   detector: "none" (no BarcodeDetector) | "throws" | a list of what each frame finds (the
 //             last repeats), each a list of { rawValue, format }
 //   picture:  { modules, m, x, y, h, turned } a 1D code drawn on the camera (bars m pixels
 //             wide, from x, y, h tall; turned: bars lie flat)
 //   torch:    "yes" | "no" | "fails" (applyConstraints rejects) | "unknown" (no getCapabilities)
+// window.__camera counts cameras opened and stopped, detections, and frames drawn for ZXing (draws).
 export function installCamera({ camera = "ok", detector = "none", picture = null, torch = "no" }) {
-  const cam = (window.__camera = { opened: 0, stopped: 0, torch: [], detects: 0 });
+  const cam = (window.__camera = { opened: 0, stopped: 0, torch: [], detects: 0, draws: 0 });
+  // The frames ZXing reads: the app draws them from the video
+  const draw = CanvasRenderingContext2D.prototype.drawImage;
+  CanvasRenderingContext2D.prototype.drawImage = function (...args) { if (args[0] instanceof HTMLVideoElement) cam.draws++; return draw.apply(this, args); };
   if (detector === "none") delete window.BarcodeDetector;
   else {
     window.BarcodeDetector = class {
@@ -31,24 +35,33 @@ export function installCamera({ camera = "ok", detector = "none", picture = null
     g.fillStyle = `rgb(${tick++ % 2 ? 250 : 255},255,255)`; g.fillRect(0, 0, 1, 1); // a new frame each time
     g.fillStyle = "#000";
     if (picture) picture.modules.forEach((black, i) => black && (picture.turned ? g.fillRect(picture.x, picture.y + i * picture.m, picture.h, picture.m) : g.fillRect(picture.x + i * picture.m, picture.y, picture.m, picture.h)));
-    requestAnimationFrame(paint);
   };
   // On the prototype: WebKit hands out a new object for a track each time it's asked for
   const track = MediaStreamTrack.prototype, stop = track.stop;
   track.stop = function () { cam.stopped++; stop.call(this); };
   track.getCapabilities = torch === "unknown" ? undefined : () => (torch === "no" ? {} : { torch: true });
   track.applyConstraints = async (c) => { if (torch === "fails") throw new Error("no torch"); cam.torch.push(c.advanced[0].torch); };
+  // A camera sends a picture when the canvas changes: painted on a timer, not on animation
+  // frames, which WebKit can hold back on a busy runner (so the video never had a picture).
+  // "dark": a camera that sends no picture at all (captureStream(0) sends one only on request).
   const answer = (ok) => {
     if (!ok) throw new DOMException("No camera", camera === "denied" ? "NotAllowedError" : "NotFoundError");
-    paint();
     cam.opened++;
-    return canvas.captureStream(30);
+    if (camera === "dark") {
+      // WebKit sends a first frame even so: the video says it has no picture, as it would
+      Object.defineProperty(HTMLMediaElement.prototype, "readyState", { get: () => 0, configurable: true });
+      return canvas.captureStream(0);
+    }
+    const stream = canvas.captureStream();
+    paint();
+    setInterval(paint, 40);
+    return stream;
   };
   const devices = {
     enumerateDevices: async () => { if (camera === "unlisted") throw new Error("not allowed"); return camera === "none" ? [] : [{ kind: "videoinput" }]; },
     getUserMedia: async () => {
       if (camera === "held") return answer(await new Promise((resolve) => { window.__answerCamera = resolve; }));
-      return answer(camera === "ok" || camera === "unlisted");
+      return answer(camera === "ok" || camera === "unlisted" || camera === "dark");
     },
   };
   Object.defineProperty(Navigator.prototype, "mediaDevices", { get: () => devices, configurable: true });
