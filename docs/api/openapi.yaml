@@ -70,7 +70,10 @@ info:
       product's `price` and `cost`, and a line's, if present, must be `Money`
       amounts (0 to 1,000,000, at most two decimals; ADR 0014) where the write
       changes them. A legacy value the document already had, carried over
-      unchanged, is rounded to cents instead of refused.
+      unchanged, is rounded to cents instead of refused. A product's
+      optional `brand` must be a string of at most 100 characters (after
+      trimming) with no control characters, or `null`; it's stored trimmed,
+      and a blank or `null` brand removes the field.
     - A product's `stock` changes only through the stock commands (the
       `commands` tag) and the CSV import, which record a movement for every
       change. A product `set` or `update` keeps the stored `stock`: leave it
@@ -340,12 +343,12 @@ paths:
       operationId: importProducts
       summary: Import items from a CSV file, all or nothing, with a dry-run preview. Owners only.
       description: |
-        The server reads the file (columns `name`, `barcode`, `kind`, `price`,
+        The server reads the file (columns `name`, `brand`, `barcode`, `kind`, `price`,
         `cost`, `stock`, `pack_size`, matched without regard to case or
         spacing; other columns are left out) and validates every row against the whole
         inventory before it writes anything. A row matches an existing item by
         barcode, or by name when the row or the item has no barcode, and
-        updates it; a re-import **sets** price, cost, pack size and stock to
+        updates it; a re-import **sets** brand, price, cost, pack size and stock to
         the file's values and never duplicates an item. Blank optional cells
         keep what's there. `kind` is `supply` or `equipment` (ADR 0017); blank
         or missing is a supply, which needs a `price`. Company equipment has no
@@ -2942,6 +2945,7 @@ components:
       properties:
         line: { type: integer, description: The row's line in the file. }
         name: { type: string, maxLength: 200 }
+        brand: { type: string, maxLength: 100, description: Absent when the row's brand cell is blank or there's no brand column, which keeps the item's brand. }
         barcode: { type: string, maxLength: 256 }
         price: { $ref: "#/components/schemas/Money" }
         cost: { $ref: "#/components/schemas/Money" }
@@ -2949,7 +2953,7 @@ components:
         packSize: { type: integer, minimum: 1, maximum: 10000 }
         key: { type: string, description: The product key the row writes. }
         action: { type: string, enum: [create, update, unchanged] }
-        changes: { type: array, items: { type: string, enum: [code, name, price, cost, packSize, stock] } }
+        changes: { type: array, items: { type: string, enum: [code, name, brand, kind, price, cost, packSize, stock] } }
     ImportRowError:
       type: object
       required: [line, message]
@@ -2980,6 +2984,7 @@ components:
       properties:
         code: { type: string, maxLength: 256, description: The barcode; empty for an item without one. }
         name: { type: string }
+        brand: { type: string, maxLength: 100, description: "Optional (supply-checkout-005.9): who makes the item. Stored trimmed, no control characters; absent for none. A write with a blank or `null` brand removes it." }
         price: { type: number, minimum: 0, description: The client price each. Absent for company equipment. }
         cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "What the business paid per each; for company equipment, its value each." }
         kind: { type: string, enum: [supply, equipment], description: "A supply (used up and charged; the default when absent) or company equipment (reused, and not charged), ADR 0017." }

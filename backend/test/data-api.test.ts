@@ -354,8 +354,8 @@ describe("documents (the app's db contract)", () => {
       expect(patch.body.error?.code, JSON.stringify(brand)).toBe("bad_request");
     }
     expect(table.get("TEAM#team-a", "PRODUCT#p1")).toEqual(before);
-    // A sheet's fields aren't a product's: a `brand` there is kept as written, like any other field
-    expect((await call("PUT", "/teams/team-a/sheets/s1", { body: { data: { ...sheet("2026-09-01"), brand: " x " } } })).body.data.brand).toBe(" x ");
+    // A project's fields aren't a product's: a `brand` there is kept as written, like any other field
+    expect((await call("PUT", "/teams/team-a/projects/s1", { body: { data: { ...project("2026-09-01"), brand: " x " } } })).body.data.brand).toBe(" x ");
   });
 
   it("saves a product holding legacy money the write doesn't change, rounding it to cents (ADR 0014)", async () => {

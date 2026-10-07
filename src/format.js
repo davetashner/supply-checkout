@@ -29,3 +29,11 @@ export const MAX_MONEY = 1000000;
 // Rounds to cents, halves up (ADR 0014). toPrecision first, so 1.005 (really 1.00499…) is 1.01
 export const round2 = n => Math.round(Number(((Number(n) || 0) * 100).toPrecision(12))) / 100;
 export const numOrNull = n => (n === null || n === undefined || n === "" || isNaN(Number(n))) ? null : round2(n);
+// A product's optional brand (supply-checkout-005.9), or "" for none. The longest the API
+// takes is MAX_BRAND (MAX_BRAND_LENGTH in backend/src/data/brand.ts).
+export const MAX_BRAND = 100;
+export const brandOf = p => String(p.brand ?? "").trim();
+// Where an item's name has one line: its brand after it, "Trash bags · Glad"
+export const nameWithBrand = p => [p.name, brandOf(p)].filter(Boolean).join(" · ");
+// Where it has a line of its own under the name, in lists
+export const brandHTML = p => { const b = brandOf(p); return b ? `<span class="item-brand">${esc(b)}</span>` : ""; };

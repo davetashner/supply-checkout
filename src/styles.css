@@ -183,6 +183,8 @@ th:first-child,td:first-child{text-align:left}
 td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;vertical-align:top}
 td:first-child{font-family:var(--body)}
 td .code{display:block;font-family:var(--mono);font-size:12px;color:var(--muted)}
+/* A product's brand: its own line under the name, in lists */
+.item-brand{display:block;font-family:var(--body);font-size:13px;color:var(--muted)}
 tbody tr.click{cursor:pointer}
 tbody tr.click:hover td{background:var(--sunk)}
 tfoot td{border-bottom:0;font-weight:600}

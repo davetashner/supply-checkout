@@ -5,9 +5,9 @@
 // request again, which "Try again" does, so nothing is added twice. When the server says
 // the import can't go on (409 "aborted": items kept changing, the import expired, or a
 // planned key was taken), its message says what to do.
-import { esc, money } from "../format.js";
+import { esc, money, brandHTML } from "../format.js";
 import { openModal, closeModal, toast } from "../dom.js";
-// The template the dialog offers: the seven columns and three made-up example rows. Importing
+// The template the dialog offers: the eight columns and three made-up example rows. Importing
 // it unchanged passes the preview (backend/test/imports-api.test.ts parses this file).
 import TEMPLATE from "./import-template.csv?raw";
 
@@ -15,7 +15,7 @@ import TEMPLATE from "./import-template.csv?raw";
 const MAX_BYTES = 300_000;
 // Rows shown in the preview; the summary counts all of them
 const SHOWN = 100;
-const CHANGE = { code: "barcode", name: "name", kind: "kind", price: "price", cost: "cost", packSize: "pack size", stock: "stock" };
+const CHANGE = { code: "barcode", name: "name", brand: "brand", kind: "kind", price: "price", cost: "cost", packSize: "pack size", stock: "stock" };
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
 function actionText(r) {
@@ -38,7 +38,7 @@ function previewHTML(res) {
   if (res.ignoredColumns.length) html += `<p class="hint">Not imported: ${res.ignoredColumns.map((c) => `“${esc(c)}”`).join(", ")}.</p>`;
   if (!res.errorCount) {
     // Company equipment has no price (ADR 0017)
-    const rows = res.rows.slice(0, SHOWN).map((r) => `<tr><td>${esc(r.name)}${r.barcode ? `<span class="code">${esc(r.barcode)}</span>` : ""}</td><td>${r.kind === "equipment" ? "Equipment" : money(r.price)}</td><td>${r.stock ?? "—"}</td><td>${esc(actionText(r))}</td></tr>`);
+    const rows = res.rows.slice(0, SHOWN).map((r) => `<tr><td>${esc(r.name)}${brandHTML(r)}${r.barcode ? `<span class="code">${esc(r.barcode)}</span>` : ""}</td><td>${r.kind === "equipment" ? "Equipment" : money(r.price)}</td><td>${r.stock ?? "—"}</td><td>${esc(actionText(r))}</td></tr>`);
     html += `<div class="table-wrap import-table"><table><thead><tr><th>Item</th><th>Price</th><th>Stock</th><th>Change</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
     if (res.rows.length > SHOWN) html += `<p class="hint">…and ${plural(res.rows.length - SHOWN, "more row")}.</p>`;
   }
@@ -50,6 +50,7 @@ const doneText = (s) => s.created + s.updated ? `Imported: ${s.created} new, ${s
 // What each column means (ADR 0014)
 const GUIDE = [
   ["name", "Required. The item's name."],
+  ["brand", "Optional. Who makes it, shown with the item's name (for example Glad or 3M). Blank keeps an item's brand."],
   ["price", "Required for supplies. What a client is charged for one each, before tax. Blank for equipment."],
   ["barcode", "Matches items already in inventory. Leave blank if the item has none."],
   ["kind", "supply (used up and charged, the default when blank) or equipment (company equipment that goes to jobs and comes back, not charged)."],
@@ -63,7 +64,7 @@ export function openImport(api, teamId, save) {
   const path = `/teams/${encodeURIComponent(teamId)}/imports`;
   let csv = "", importId = "";
   openModal(`<h2>Import inventory</h2>
-    <p class="hint">Choose a CSV file whose first row names its columns: <strong>name</strong> and <strong>price</strong>, and if you have them barcode, kind, cost, stock and pack_size. Items already in inventory are matched by barcode, or by name, and updated. Importing a file again doesn't add anything twice.</p>
+    <p class="hint">Choose a CSV file whose first row names its columns: <strong>name</strong> and <strong>price</strong>, and if you have them brand, barcode, kind, cost, stock and pack_size. Items already in inventory are matched by barcode, or by name, and updated. Importing a file again doesn't add anything twice.</p>
     <p><button type="button" class="btn" id="importTemplate">Download a template</button></p>
     <details class="import-guide"><summary>What goes in each column</summary><dl>${GUIDE.map(([c, d]) => `<dt>${c}</dt><dd>${d}</dd>`).join("")}</dl><p class="hint">An "each" is the smallest unit you take to a job: a bottle, a roll, a box of bags. The template's two example rows are made up; replace them with your items.</p></details>
     <div class="field"><label for="importFile">CSV file</label><input type="file" id="importFile" accept=".csv,text/csv"></div>

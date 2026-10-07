@@ -5,9 +5,9 @@ import { usedState } from "./fixtures.js";
 
 const seed = {
   ...usedState.seed,
-  "products/uncounted": { code: "UC1", name: "=HYPERLINK(\"x\")", price: 2.25 },
+  "products/uncounted": { code: "UC1", name: "=HYPERLINK(\"x\")", brand: "@Brand", price: 2.25 },
   "products/noname": { code: "", price: "3" },
-  "products/noprice": { code: "NP", name: "Rags", stock: 4 },
+  "products/noprice": { code: "NP", name: "Rags", brand: " Acme, Inc. ", stock: 4 },
   "projects/s2": { client: "Delta, \"Dry\" Cleaning", date: "2026-09-25", createdByName: "Sam", status: "closed", closedAt: "2026-09-25T18:00:00Z", items: {} },
   "projects/s3": { client: "", status: "open", items: { odd: { code: "", out: "4", returned: 9 } } },
 };
@@ -40,14 +40,15 @@ test("owners export every project and the inventory as CSV, and everything as JS
   await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(2);
   const inventory = await saved(page, 1);
   expect(inventory.filename).toMatch(/^Supply Checkout inventory \d{4}-\d{2}-\d{2}\.csv$/);
-  // By name, as the Inventory tab lists it; a formula-like name can't run in a spreadsheet
+  // By name, as the Inventory tab lists it, with each item's brand (blank for none); a
+  // formula-like name or brand can't run in a spreadsheet
   expect(inventory.data.split("\n")).toEqual([
-    "Item,Barcode,In storage,Price each,Value,Kind",
-    "\"'=HYPERLINK(\"\"x\"\")\",UC1,,2.25,,Supply",
-    "\"Paper towels, 6 roll\",SKU1,10,8.50,85.00,Supply",
-    "Rags,NP,4,0.00,0.00,Supply",
-    "\"Storage bins, 12 qt\",,2,5.00,10.00,Supply",
-    "Unnamed item,,,3.00,,Supply",
+    "Item,Brand,Barcode,In storage,Price each,Value,Kind",
+    "\"'=HYPERLINK(\"\"x\"\")\",'@Brand,UC1,,2.25,,Supply",
+    "\"Paper towels, 6 roll\",,SKU1,10,8.50,85.00,Supply",
+    "Rags,\"Acme, Inc.\",NP,4,0.00,0.00,Supply",
+    "\"Storage bins, 12 qt\",,,2,5.00,10.00,Supply",
+    "Unnamed item,,,,3.00,,Supply",
   ]);
 
   await modal(page).getByRole("button", { name: "Everything (JSON)" }).click();
@@ -60,6 +61,8 @@ test("owners export every project and the inventory as CSV, and everything as JS
   expect(json.projects[2]).toMatchObject({ client: "Echo Studio", preparedBy: "Test User", items: seed["projects/s1"].items, totals: { taken: 5, returned: 1, used: 4, charge: 27 } });
   expect(json.inventory.map((p) => p.key)).toEqual(["uncounted", "SKU1", "noprice", "nb-bins", "noname"]);
   expect(json.inventory[1]).toEqual({ key: "SKU1", ...seed["products/SKU1"] });
+  // A brand is in the backup as stored
+  expect(json.inventory[2]).toEqual({ key: "noprice", ...seed["products/noprice"] });
 
   await modal(page).getByRole("button", { name: "Close" }).click();
   await expect(page.locator("#overlay")).toBeHidden();

@@ -66,7 +66,7 @@ test("receipt reading works with an empty inventory", { tag: ["@J5"] }, async ({
 test("receipt reading works with unnamed, unpriced inventory items", { tag: ["@J5"] }, async ({ page }) => {
   await openApp(page, { ...bare, receipt: { items: [{ name: "Rags", qty: 1, price: 2, match: "i1" }] } });
   await page.setInputFiles("#receiptFile", fakeImage);
-  expect(await page.evaluate(() => window.__mock.sampleCalls[0])).toContain("i1 |  | $0.00");
+  expect(await page.evaluate(() => window.__mock.sampleCalls[0])).toContain("i1 |  |  | $0.00");
   // The matched item has no price, so the receipt price differs
   await expect(page.locator(".rline").first()).toContainText("Price changed");
   await page.locator(".rline").first().getByRole("button", { name: /Keep the client price/ }).click();

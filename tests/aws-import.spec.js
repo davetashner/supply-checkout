@@ -14,7 +14,7 @@ const SUMMARY = { rows: 3, created: 1, updated: 1, unchanged: 1 };
 const PREVIEW = {
   status: "preview",
   rows: [
-    { line: 2, name: "Nitrile gloves", barcode: "0123", price: 13, stock: 10, key: "0123", action: "update", changes: ["price", "stock"] },
+    { line: 2, name: "Nitrile gloves", brand: "Ansell", barcode: "0123", price: 13, stock: 10, key: "0123", action: "update", changes: ["brand", "price", "stock"] },
     { line: 3, name: "Rags", barcode: "", price: 1.5, key: "nb-1", action: "create", changes: ["name", "price"] },
     { line: 4, name: "Bins <b>", barcode: "", price: 3, stock: 2, key: "nb-2", action: "unchanged", changes: [] },
   ],
@@ -47,7 +47,9 @@ test("an owner previews a file, imports it, and every retry sends the same impor
   await expect(result).toContainText("Not imported: “Notes”.");
   const rows = result.locator("tbody tr");
   await expect(rows).toHaveCount(3);
-  await expect(rows.nth(0)).toHaveText(/Nitrile gloves\s*0123\s*\$13\.00\s*10\s*Update price, stock/);
+  await expect(rows.nth(0)).toHaveText(/Nitrile gloves\s*Ansell\s*0123\s*\$13\.00\s*10\s*Update brand, price, stock/);
+  await expect(rows.nth(0).locator(".item-brand")).toHaveText("Ansell");
+  await expect(rows.nth(1).locator(".item-brand")).toHaveCount(0);
   await expect(rows.nth(1)).toHaveText(/Rags\s*\$1\.50\s*—\s*New/);
   await expect(rows.nth(2)).toContainText("Bins <b>");
   await expect(rows.nth(2)).toContainText("No change");
@@ -167,7 +169,7 @@ test("offers a template with a column guide, and the template goes through the p
   await openImport(page, backend);
   const guide = dialog(page).locator("details.import-guide");
   await guide.getByText("What goes in each column").click();
-  for (const column of ["name", "price", "barcode", "kind", "cost", "stock", "pack_size"]) await expect(guide.locator("dt", { hasText: new RegExp(`^${column}$`) })).toBeVisible();
+  for (const column of ["name", "brand", "price", "barcode", "kind", "cost", "stock", "pack_size"]) await expect(guide.locator("dt", { hasText: new RegExp(`^${column}$`) })).toBeVisible();
   await expect(guide).toContainText("before tax. It isn't shown on client projects.");
   expect(await modalViolations(page)).toEqual([]);
 
@@ -178,7 +180,7 @@ test("offers a template with a column guide, and the template goes through the p
   const text = await readFile(await file.path(), "utf8");
   expect(text).toBe(await readFile(new URL("../src/aws/import-template.csv", import.meta.url), "utf8"));
   const lines = text.trim().split("\n");
-  expect(lines[0]).toBe("name,barcode,kind,price,cost,stock,pack_size");
+  expect(lines[0]).toBe("name,brand,barcode,kind,price,cost,stock,pack_size");
   expect(lines).toHaveLength(4);
   expect(lines.slice(1).every((l) => l.startsWith("EXAMPLE "))).toBe(true);
 
