@@ -194,7 +194,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.beads_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 20 minutes for the tests plus the browser install's 10-minute bound
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       # Chosen by the changes job: see the "Choose the browser matrix" step
@@ -206,7 +207,73 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps ${{ matrix.browser }}
+      # Browsers and their OS packages come from caches when they can (see "Browsers
+      # in CI" in docs/testing.md). On 2026-10-01 the Ubuntu mirror served WebKit's
+      # OS packages so slowly that 'playwright install --with-deps webkit' ran into
+      # the job's timeout. The keys name the Playwright version, so a version bump
+      # starts fresh. These jobs hold no credentials, and a pull request's run can
+      # only save caches into its own branch's scope, never into main's.
+      - name: Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+      # Edge is a system package installed under /opt, so it has nothing to cache here
+      - name: Restore the Playwright browsers
+        id: browsers
+        if: matrix.browser != 'msedge'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-browsers-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ steps.pw.outputs.version }}
+      # The .deb files apt downloaded for the browser's OS packages. The runner image
+      # changes weekly, so the key names it, and an older image's files are restored
+      # first: apt downloads only what's newer.
+      - name: Restore the browser's OS packages
+        id: debs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/playwright-debs
+          key: playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ steps.pw.outputs.version }}-${{ env.ImageOS }}-${{ env.ImageVersion }}
+          restore-keys: |
+            playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ steps.pw.outputs.version }}-${{ env.ImageOS }}-
+            playwright-debs-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-
+      # Bounded, so a slow mirror or download can't eat the tests' time: each try
+      # gets 3 minutes (a normal install takes under one), then it tries again
+      - name: Install the browser and its OS packages
+        timeout-minutes: 10
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: |
+          debs="$HOME/.cache/playwright-debs"
+          mkdir -p "$debs"
+          if compgen -G "$debs/*.deb" > /dev/null; then sudo cp "$debs"/*.deb /var/cache/apt/archives/; fi
+          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries > /dev/null
+          cli="node_modules/playwright-core/cli.js"
+          node="$(command -v node)"
+          for try in 1 2 3; do
+            # As root, so the timeout also stops apt-get. A stopped try can leave dpkg
+            # half-configured, which the next try finishes first.
+            sudo dpkg --configure -a
+            if sudo timeout -k 15s 3m "$node" "$cli" install-deps "$BROWSER" &&
+              timeout -k 15s 3m "$node" "$cli" install "$BROWSER"; then
+              cp /var/cache/apt/archives/*.deb "$debs"/ 2> /dev/null || true
+              echo "Installed $BROWSER on try $try"
+              exit 0
+            fi
+            echo "::warning::Installing $BROWSER failed or took over 3 minutes (try $try of 3)"
+          done
+          exit 1
+      - name: Save the Playwright browsers
+        if: steps.browsers.outcome == 'success' && steps.browsers.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.browsers.outputs.cache-primary-key }}
+      - name: Save the browser's OS packages
+        if: steps.debs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/playwright-debs
+          key: ${{ steps.debs.outputs.cache-primary-key }}
       # Builds the app first (tests/global-setup.js)
       - run: npx playwright test --project=${{ matrix.project }}
         env:
