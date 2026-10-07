@@ -66,7 +66,8 @@ function record(eventName: "INSERT" | "MODIFY" | "REMOVE", keys: { PK: string; S
 }
 
 const product = (team: string, key: string) => ({ PK: `TEAM#${team}`, SK: `PRODUCT#${key}` });
-const sheet = (team: string, id: string) => ({ PK: `TEAM#${team}`, SK: `SHEET#${id}` });
+/** A project's item key: under PROJECT#, or (`legacy`) SHEET#, where it is until the rename's backfill moves it. */
+const sheet = (team: string, id: string, legacy = true) => ({ PK: `TEAM#${team}`, SK: `${legacy ? "SHEET" : "PROJECT"}#${id}` });
 const productItem = (key: string, version: number, fields: Item = {}) => ({ type: "product", key, version, name: "Drop cloth", stock: 4, ...fields });
 const sheetItem = (id: string, version: number, fields: Item = {}) => ({
   type: "sheet",
@@ -86,9 +87,16 @@ describe("documentChangeFromStream", () => {
     expect(change).toEqual({ teamId: TEAM, collection: "products", id: "012345", op: "put", version: 1 });
   });
 
-  it("maps a sheet update", () => {
+  it("maps a project update, under either key, to the projects collection", () => {
     const change = documentChangeFromStream(record("MODIFY", sheet(TEAM, "s1"), { old: sheetItem("s1", 3), new: sheetItem("s1", 4, { client: "Foxtrot" }) }));
-    expect(change).toEqual({ teamId: TEAM, collection: "sheets", id: "s1", op: "put", version: 4 });
+    expect(change).toEqual({ teamId: TEAM, collection: "projects", id: "s1", op: "put", version: 4 });
+    const moved = documentChangeFromStream(record("MODIFY", sheet(TEAM, "s1", false), { old: sheetItem("s1", 4), new: sheetItem("s1", 5) }));
+    expect(moved).toEqual({ teamId: TEAM, collection: "projects", id: "s1", op: "put", version: 5 });
+  });
+
+  it("maps the rename's backfill moving a project (a SHEET# REMOVE, then a PROJECT# INSERT) to a delete and a put of the same project", () => {
+    expect(documentChangeFromStream(record("REMOVE", sheet(TEAM, "s1"), { old: sheetItem("s1", 5) }))).toEqual({ teamId: TEAM, collection: "projects", id: "s1", op: "delete", version: 5 });
+    expect(documentChangeFromStream(record("INSERT", sheet(TEAM, "s1", false), { new: sheetItem("s1", 5) }))).toEqual({ teamId: TEAM, collection: "projects", id: "s1", op: "put", version: 5 });
   });
 
   it("maps a stock ADD, which keeps the version, to a put with the same version", () => {
@@ -101,7 +109,7 @@ describe("documentChangeFromStream", () => {
   it("maps a delete to the deleted document's last version", () => {
     expect(documentChangeFromStream(record("REMOVE", sheet(TEAM, "s1"), { old: sheetItem("s1", 5) }))).toEqual({
       teamId: TEAM,
-      collection: "sheets",
+      collection: "projects",
       id: "s1",
       op: "delete",
       version: 5,
@@ -127,6 +135,8 @@ describe("documentChangeFromStream", () => {
     ["a product under a partition with extra parts", { PK: `TEAM#${TEAM}#SHEETS`, SK: "PRODUCT#x" }],
     ["a bad team ID", { PK: "TEAM#bad id", SK: "PRODUCT#x" }],
     ["a bad sheet ID", { PK: `TEAM#${TEAM}`, SK: "SHEET#a#b" }],
+    ["a bad project ID", { PK: `TEAM#${TEAM}`, SK: "PROJECT#a#b" }],
+    ["a project under another team's index partition", { PK: `TEAM#${TEAM}#PROJECTS`, SK: "PROJECT#x" }],
     ["an empty product key", { PK: `TEAM#${TEAM}`, SK: "PRODUCT#" }],
   ])("ignores %s", (_, keys) => {
     expect(documentChangeFromStream(record("INSERT", keys, { new: { version: 1 } }))).toBeUndefined();
@@ -178,7 +188,7 @@ describe("channels", () => {
   });
 
   it("filters the stream on the document and audience keys the data module uses", () => {
-    expect([...DOCUMENT_SK_PREFIXES]).toEqual([prefixes.product, prefixes.sheet]);
+    expect([...DOCUMENT_SK_PREFIXES]).toEqual([prefixes.product, prefixes.project, prefixes.sheet]);
     expect(AUDIENCE_SK).toEqual({ exact: keys.team(TEAM).SK, prefix: prefixes.member });
   });
 
@@ -302,7 +312,13 @@ describe("the stream handler", () => {
       record("REMOVE", product(TEAM, "b"), { old: productItem("b", 4) }),
     ];
     expect(await run(records)).toEqual({ batchItemFailures: [] });
-    expect(byChannel()).toEqual({ [`/users/${A1}`]: ["put a", "delete b"], [`/users/${A2}`]: ["put a", "delete b"], [`/users/${B1}`]: ["put s1"] });
+    // A project's change goes out as `projects`, then again as `sheets` for clients on the old code
+    expect(byChannel()).toEqual({ [`/users/${A1}`]: ["put a", "delete b"], [`/users/${A2}`]: ["put a", "delete b"], [`/users/${B1}`]: ["put s1", "put s1"] });
+    expect(published.find((p) => p.channel === `/users/${B1}`)?.events.map((e) => [e.collection, e.eventId])).toEqual([
+      ["projects", records[2]?.eventID],
+      // The copy has its own ID: an old client records IDs before it checks the collection (src/aws/live.js)
+      ["sheets", `${records[2]?.eventID}#sheets`],
+    ]);
     // Each event says which team it's for: a user's channel carries all their teams
     expect(published.find((p) => p.channel === `/users/${B1}`)?.events[0]?.teamId).toBe(TEAM_B);
     expect(published.find((p) => p.channel === `/users/${A1}`)?.events.every((e) => e.teamId === TEAM)).toBe(true);
@@ -603,7 +619,8 @@ describe("the stream handler", () => {
       // In the first import record's place, ahead of the sheet change that came after it
       expect(list).toEqual([
         { v: 2, teamId: TEAM, eventId: `${imported[0]?.eventID}~${imported.at(-1)?.eventID}`, collection: "products", op: "list", changes: imported.length, at: AT * 1000 },
-        { v: 1, teamId: TEAM, eventId: records[3]?.eventID, collection: "sheets", id: "s1", op: "put", version: 2, at: AT * 1000 },
+        { v: 1, teamId: TEAM, eventId: records[3]?.eventID, collection: "projects", id: "s1", op: "put", version: 2, at: AT * 1000 },
+        { v: 1, teamId: TEAM, eventId: `${records[3]?.eventID}#sheets`, collection: "sheets", id: "s1", op: "put", version: 2, at: AT * 1000 },
       ]);
       expect(events(`/users/${A2}`)).toEqual(list);
       // Another team's single change is a document event as ever
@@ -625,7 +642,8 @@ describe("the stream handler", () => {
       ];
       await handler()({ Records: records });
       const list = events(`/users/${A1}`);
-      expect(list).toHaveLength(2 * COLLECTION_EVENT_AFTER);
+      // The projects' each go out twice (`projects` and `sheets`), each name counted on its own
+      expect(list).toHaveLength(3 * COLLECTION_EVENT_AFTER);
       expect(list.every((e) => e.v === 1)).toBe(true);
       expect(logs.at(-1)?.fields.collectionEvents).toBe(0);
     });
@@ -648,8 +666,8 @@ describe("the stream handler", () => {
 
     it("retries from its first record when it doesn't reach every member, counting every change it stands for", async () => {
       const records = [record("INSERT", sheet(TEAM, "s1"), { new: sheetItem("s1", 1) }), ...products(TEAM, 5)];
-      // Both events are in one chunk: the sheet reached A2, the collection event didn't
-      answer = async (channel, evs) => (channel === `/users/${A2}` ? { successful: [0], failed: [{ index: 1, code: "BadRequest" }] } : all(evs));
+      // All three events are in one chunk: the project (as `projects` and `sheets`) reached A2, the collection event didn't
+      answer = async (channel, evs) => (channel === `/users/${A2}` ? { successful: [0, 1], failed: [{ index: 2, code: "BadRequest" }] } : all(evs));
       const result = await handler({ collectionEventAfter: 3 })({ Records: records });
       expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: records[1]?.dynamodb?.SequenceNumber }] });
       expect(counts).toEqual({ LiveUpdates: 6, LiveUpdateFailures: 5 });

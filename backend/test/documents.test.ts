@@ -40,10 +40,12 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     const ctx = await team();
     const { after } = await setDocument(db, ctx, "sheets", "s1", { client: "Echo", date: "2026-09-01", status: "open", items: { a: { out: 2, returned: 0, name: "Gloves", price: 1, code: "A" } } });
     expect(after.version).toBe(1);
-    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1")).toMatchObject({
-      GSI1PK: `TEAM#${ctx.teamId}#SHEETS`,
+    // A new project's item: PROJECT#, in the #PROJECTS date index partition (supply-checkout-005.6)
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1")).toBeUndefined();
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#s1")).toMatchObject({
+      GSI1PK: `TEAM#${ctx.teamId}#PROJECTS`,
       GSI1SK: "2026-09-01#s1",
-      type: "sheet",
+      type: "project",
       id: "s1",
       version: 1,
       client: "Echo",
@@ -206,5 +208,51 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     expect(await getDocument(db, viewer, "products", "p1")).toBeUndefined();
     await expect(setDocument(db, owner, "products", "p1", { teamId: "other" })).rejects.toThrow(InvalidInputError);
     await expect(setDocument(db, owner, "sheets", "s1", { big: "x".repeat(MAX_DOCUMENT_BYTES) })).rejects.toThrow(TooLargeError);
+  });
+  it("lists projects under PROJECT# and SHEET# once each, by ID and by date, in pages of any size (supply-checkout-005.6)", async () => {
+    const ctx = await team();
+    const other = await team();
+    const put = (Item: Record<string, unknown>) => connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item }));
+    const old = (t: string, id: string, date: string, client = "Old") =>
+      put({ PK: `TEAM#${t}`, SK: `SHEET#${id}`, GSI1PK: `TEAM#${t}#SHEETS`, GSI1SK: `${date}#${id}`, type: "sheet", id, version: 1, client, date });
+    for (const [id, date] of [["c", "2026-10-03"], ["e", "2026-10-01"], ["t", "2026-10-06"]] as const) await setDocument(db, ctx, "projects", id, { client: "New", date });
+    for (const [id, date] of [["a", "2026-10-05"], ["b", "2026-10-02"], ["d", "2026-10-04"], ["t", "2026-10-06"]] as const) await old(ctx.teamId, id, date);
+    await old(other.teamId, "z", "2026-10-03");
+    await setDocument(db, other, "projects", "y", { client: "Other", date: "2026-10-03" });
+
+    const all = async (options: { orderBy?: "date"; descending?: boolean; limit?: number }) => {
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (let pages = 0; pages < 30; pages++) {
+        const page = await listDocuments(db, ctx, "sheets", { ...options, cursor });
+        if (options.limit !== undefined) expect(page.items.length).toBeLessThanOrEqual(options.limit);
+        seen.push(...page.items.map((d) => d.id));
+        cursor = page.cursor;
+        if (!cursor) break;
+      }
+      return seen;
+    };
+    const byDate = ["e", "b", "c", "d", "a", "t"];
+    for (const limit of [undefined, 1, 2, 3, 5]) {
+      expect(await all({ limit }), `limit ${limit}`).toEqual(["c", "e", "t", "a", "b", "d"]);
+      // GSI1 is eventually consistent: DynamoDB Local is not, so the order is exact here
+      expect(await all({ orderBy: "date", limit }), `date limit ${limit}`).toEqual(byDate);
+      expect(await all({ orderBy: "date", descending: true, limit }), `date desc limit ${limit}`).toEqual([...byDate].reverse());
+    }
+    // The twin is the PROJECT# copy
+    expect((await getDocument(db, ctx, "projects", "t"))?.data.client).toBe("New");
+    expect((await getDocument(db, ctx, "projects", "a"))?.data.client).toBe("Old");
+    // Another team's, under either key, is out of reach
+    expect(await getDocument(db, ctx, "projects", "z")).toBeUndefined();
+    expect(await getDocument(db, ctx, "projects", "y")).toBeUndefined();
+    // A change to the old one stays where it is
+    await updateDocument(db, ctx, "projects", "a", { client: "Changed", date: "2026-09-30" }, { expectedVersion: 1 });
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#a")).toMatchObject({ type: "sheet", GSI1PK: `TEAM#${ctx.teamId}#SHEETS`, GSI1SK: "2026-09-30#a", client: "Changed", version: 2 });
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#a")).toBeUndefined();
+    expect(await all({ orderBy: "date", limit: 2 })).toEqual(["a", "e", "b", "c", "d", "t"]);
+    // Deleted without a version, it's gone from both keys
+    await deleteDocument(db, ctx, "projects", "t");
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#t")).toBeUndefined();
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#t")).toBeUndefined();
   });
 });

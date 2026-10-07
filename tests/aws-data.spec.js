@@ -647,6 +647,8 @@ test.describe("live updates", { tag: ["@J4"] }, () => {
     await emit(page, "not json");
     await emit(page, { v: 2, collection: "projects", id: "s5", op: "put", version: 1 });
     await emit(page, { v: 1, collection: "notes", id: "n1", op: "put", version: 1 });
+    // The server's old-named copy of a project's event, for clients from before the rename
+    await emit(page, { v: 1, eventId: "e5#sheets", collection: "sheets", id: "s8", op: "put", version: 1 });
     // Names an object has without owning them: no error (the page fixture fails on one)
     await emit(page, { v: 1, collection: "constructor", id: "c1", op: "put", version: 1 });
     await emit(page, { v: 1, collection: "__proto__", id: "p1", op: "delete", version: 1 });
@@ -655,7 +657,8 @@ test.describe("live updates", { tag: ["@J4"] }, () => {
     await receive(page, { type: "data", id: "another-subscription", event: JSON.stringify({ v: 1, collection: "projects", id: "s6", op: "put", version: 1 }) });
     await receive(page, { type: "connection_error", errors: [] });
     await expect.poll(() => gets("s3") + gets("s4")).toBe(2);
-    expect(gets("s5") + gets("s6") + gets("s7")).toBe(0);
+    expect(gets("s5") + gets("s6") + gets("s7") + gets("s8")).toBe(0);
+    expect(backend.requests("GET", /\/sheets/)).toHaveLength(0);
     await expect(card(page, "Echo Studio")).toBeVisible();
   });
 

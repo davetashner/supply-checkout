@@ -219,10 +219,10 @@ describe("lost or broken", () => {
     await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1 });
     expect(items().ladder).toMatchObject({ lost: 3, lostCharge: 0.3 });
     expect(stockOf("ladder")).toBe(4);
-    expect(movements().map((m) => ({ reason: m.reason, delta: m.delta, tracked: m.tracked, quantity: m.quantity, charge: m.charge, sheetId: m.sheetId }))).toEqual([
-      { reason: "lost", delta: 0, tracked: true, quantity: 1, charge: 0.1, sheetId: "s1" },
-      { reason: "lost", delta: 0, tracked: true, quantity: 1, charge: 0.2, sheetId: "s1" },
-      { reason: "lost", delta: 0, tracked: true, quantity: 1, charge: undefined, sheetId: "s1" },
+    expect(movements().map((m) => ({ reason: m.reason, delta: m.delta, tracked: m.tracked, quantity: m.quantity, charge: m.charge, projectId: m.projectId }))).toEqual([
+      { reason: "lost", delta: 0, tracked: true, quantity: 1, charge: 0.1, projectId: "s1" },
+      { reason: "lost", delta: 0, tracked: true, quantity: 1, charge: 0.2, projectId: "s1" },
+      { reason: "lost", delta: 0, tracked: true, quantity: 1, charge: undefined, projectId: "s1" },
     ]);
     // A retry changes nothing and returns the first result
     const again = await call("POST", LOST, { operationId: id, productKey: "ladder", quantity: 1, charge: 0.1 });

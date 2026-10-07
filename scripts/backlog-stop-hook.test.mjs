@@ -1,4 +1,4 @@
-// Tests for scripts/backlog-stop-hook.mjs and `npm run backlog:published`:
+// Tests for scripts/backlog-stop-hook.mjs:
 // npm run test:scripts
 //
 // Each test runs the hook in a throwaway git repo (the "main checkout", with a
@@ -67,72 +67,68 @@ function run(r, input, env = {}) {
   });
   return { status: res.status, stdout: res.stdout, stderr: res.stderr, json: res.stdout ? JSON.parse(res.stdout) : null };
 }
-// Records the page as published, the way the lead does after republishing
-const published = (r) => execFileSync(process.execPath, [pageScript, "--published", "--out", r.page], { encoding: "utf8" });
+const env = () => ({ ...process.env, PATH: bin + delimiter + process.env.PATH });
+const hashOf = (r) => readFileSync(join(r.dir, "dist", "backlog", ".hash"), "utf8");
 
-test("never published: rebuilds the page and blocks, asking to republish it", () => {
+test("no page yet: builds it silently", () => {
   const r = repo();
   const res = run(r);
   assert.equal(res.status, 0);
-  assert.equal(res.json.decision, "block");
-  assert.match(res.json.reason, /Republish that file with the Artifact tool/);
-  assert.match(res.json.reason, /dist\/backlog\/index\.html/);
-  assert.match(res.json.reason, /npm run backlog:published/);
-  assert.doesNotMatch(res.json.reason, /beads:pr/, "the export is current");
+  assert.equal(res.stdout, "", "doesn't block: the export is current");
   assert.ok(existsSync(r.page), "wrote the page");
   assert.ok(readFileSync(r.page, "utf8").includes("supply-checkout-a"));
 });
 
-test("stamp matches the data: silent", () => {
+test("page current: silent, and leaves the page alone", () => {
   const r = repo();
   run(r);
-  assert.match(published(r), /Recorded .* as published/);
+  writeFileSync(r.page, "untouched");
   const res = run(r);
   assert.equal(res.status, 0);
   assert.equal(res.stdout, "");
+  assert.equal(readFileSync(r.page, "utf8"), "untouched", "didn't rebuild it");
 });
 
 test("the build time alone doesn't count as a change", () => {
   const r = repo();
-  run(r);
-  published(r);
-  // Rebuild the page later: a new `generated`, the same data
-  execFileSync(process.execPath, [pageScript, "--out", r.page], { env: { ...process.env, PATH: bin + delimiter + process.env.PATH, FAKE_BEADS: r.fake } });
+  // Built by hand earlier: a different `generated`, the same data
+  execFileSync(process.execPath, [pageScript, "--out", r.page], { env: { ...env(), FAKE_BEADS: r.fake } });
+  writeFileSync(r.page, "untouched");
   assert.equal(run(r).stdout, "");
+  assert.equal(readFileSync(r.page, "utf8"), "untouched");
 });
 
-test("bead data changed since publishing: blocks and rebuilds the page", () => {
+test("bead data changed: rebuilds the page silently", () => {
   const r = repo();
   run(r);
-  published(r);
+  const before = hashOf(r);
   r.edit({ title: "Renamed" });
   r.exportNow();
   const res = run(r);
-  assert.equal(res.json.decision, "block");
-  assert.match(res.json.reason, /changed since the backlog page was last published/);
+  assert.equal(res.status, 0);
+  assert.equal(res.stdout, "");
   assert.ok(readFileSync(r.page, "utf8").includes("Renamed"), "rebuilt the page");
+  assert.notEqual(hashOf(r), before);
 });
 
-test("stale export: mentions npm run beads:pr", () => {
+test("stale export: rebuilds the page and blocks, asking for npm run beads:pr", () => {
   const r = repo();
   run(r);
-  published(r);
-  r.edit({ status: "closed" });
+  r.edit({ status: "closed", title: "Done" });
   const res = run(r);
   assert.equal(res.json.decision, "block");
   assert.match(res.json.reason, /npm run beads:pr/);
-  assert.match(res.json.reason, /npm run backlog:published/, "the page changed too");
+  assert.doesNotMatch(res.json.reason, /Artifact|publish/i);
+  assert.ok(readFileSync(r.page, "utf8").includes("Done"), "rebuilt the page");
 });
 
-test("stale export with the page current: only asks for beads:pr", () => {
+test("stale export with the page current: blocks, asking for beads:pr", () => {
   const r = repo();
   run(r);
-  published(r);
   writeFileSync(join(r.dir, ".beads", "issues.jsonl"), "");
   const res = run(r);
   assert.equal(res.json.decision, "block");
   assert.match(res.json.reason, /npm run beads:pr/);
-  assert.doesNotMatch(res.json.reason, /Artifact tool/);
 });
 
 test("in a worktree: silent, and builds nothing", () => {
@@ -177,11 +173,4 @@ test("not a git repo, or bad input: silent, exit 0", () => {
   const res = spawnSync(process.execPath, [hook], { input: "not json", encoding: "utf8" });
   assert.equal(res.status, 0);
   assert.equal(res.stdout, "");
-});
-
-test("backlog:published without a page fails and says how to build one", () => {
-  const r = repo();
-  const res = spawnSync(process.execPath, [pageScript, "--published", "--out", r.page], { encoding: "utf8" });
-  assert.equal(res.status, 1);
-  assert.match(res.stderr, /npm run backlog:page/);
 });

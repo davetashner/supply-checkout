@@ -1,30 +1,27 @@
 // Builds the backlog page (Upcoming and Completed tabs) from the beads
-// database, for the lead to republish to the private backlog artifact after
-// merges and bead edits: `npm run backlog:page`. `npm run land` and the
+// database, for people to open locally after merges and bead edits:
+// `npm run backlog:page`. `npm run land` and the
 // Claude Code Stop hook (scripts/backlog-stop-hook.mjs) run it too. Works from
 // the main checkout or any worktree (bd finds the database in the main
 // checkout), and always writes to the main checkout's dist/backlog/index.html.
 // Prints the path it wrote.
 //
 // Next to the page it writes .hash, a hash of the page's data without its
-// `generated` time. `npm run backlog:published` (--published), run by the lead
-// right after republishing the page, copies it to .published, so the Stop
-// hook and land can tell whether the published page is current. Both files are
-// gitignored with the rest of dist/.
+// `generated` time, so the Stop hook can tell whether the page is current
+// without rebuilding it. Both files are gitignored with the rest of dist/.
 //
 // Only the fields listed in pick() reach the page. bd's owner and created_by
-// hold people's emails, and this page is shared, so any email address left in
+// hold people's emails, and this page may be shared, so any email address left in
 // free text is masked too.
 //
 //   node scripts/backlog-page.mjs [--from-json <file>] [--out <file>]
-//   node scripts/backlog-page.mjs --published [--out <file>]
 //
 // --from-json reads {"all": [...], "ready": [...], "blocked": [...]} (what
 // `bd list --all`, `bd ready` and `bd blocked` print with --json) instead of
 // running bd. The tests use it.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,10 +34,9 @@ export function mainCheckout(cwd = here) {
   return dirname(common);
 }
 
-// Where the page goes, and its hash and published stamp next to it
+// Where the page goes, and its hash next to it
 export const pagePath = (main) => join(main, "dist", "backlog", "index.html");
 export const hashPath = (page) => join(dirname(page), ".hash");
-export const stampPath = (page) => join(dirname(page), ".published");
 
 export function readBeads(file, { cwd, timeout } = {}) {
   if (file) return JSON.parse(readFileSync(file, "utf8"));
@@ -105,9 +101,9 @@ export function writePage(out, data) {
   return hash;
 }
 
-// The hash of the page last published, or "" if none was recorded
-export function publishedHash(out) {
-  try { return readFileSync(stampPath(out), "utf8").trim(); } catch { return ""; }
+// The hash of the page last built, or "" if there is none
+export function builtHash(out) {
+  try { return readFileSync(hashPath(out), "utf8").trim(); } catch { return ""; }
 }
 
 export function buildPage(data) {
@@ -118,16 +114,7 @@ export function buildPage(data) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const out = resolve(arg("--out") || pagePath(mainCheckout()));
-  if (process.argv.includes("--published")) {
-    if (!existsSync(out) || !existsSync(hashPath(out))) {
-      console.error(`No backlog page at ${out}. Build it with npm run backlog:page, publish it, then run this again.`);
-      process.exit(1);
-    }
-    copyFileSync(hashPath(out), stampPath(out));
-    console.log(`Recorded ${out} as published`);
-  } else {
-    const data = buildData(readBeads(arg("--from-json")));
-    writePage(out, data);
-    console.log(`Wrote the backlog page (${data.items.length} beads): ${out}`);
-  }
+  const data = buildData(readBeads(arg("--from-json")));
+  writePage(out, data);
+  console.log(`Wrote the backlog page (${data.items.length} beads): ${out}`);
 }

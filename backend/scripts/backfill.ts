@@ -7,6 +7,7 @@
 //   npm run backfill -- ops-index      --table <table> --region <region> --profile <profile> --apply
 //   npm run backfill -- members        --table <table> --region <region> --profile <profile> --apply
 //   npm run backfill -- notice-address --table <table> --region <region> --profile <profile> --apply
+//   npm run backfill -- projects-rename --table <table> --region <region> --profile <profile> [--team <id>] [--reverse] [--limit <n>] [--export-to <path>] [--apply]
 //
 // notice-address lists the app user pool of the table's environment: its ID
 // from SSM (/supply-checkout/<env>/identity/user-pool-id, the identity stack's
@@ -16,13 +17,16 @@
 //
 // --endpoint points it at DynamoDB Local instead (tests, local development).
 
+import { spawnSync } from "node:child_process";
+import { existsSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { createDb, type Db, type DbOptions } from "../src/data/index.js";
-import { BACKFILL_MODES, type BackfillMode, type BackfillReport, type NoticeAddressCandidate, runBackfill } from "../src/data/backfill.js";
+import { BACKFILL_MODES, type BackfillMode, type BackfillReport, type ExportedTeam, type NoticeAddressCandidate, type ProjectsRenameOptions, type ProjectsRenameReport, RENAME_MAX_ATTEMPTS, renameProjects, runBackfill } from "../src/data/backfill.js";
 import { cognitoRequest, listPoolUsers, type PoolUser } from "../src/identity/cognito-admin.js";
 import { noticeAddressOf } from "../src/identity/notice-address.js";
 
@@ -36,10 +40,21 @@ Modes (run in this order after the deploy):
   notice-address  record the address an email change is told to, for every app pool user
                   whose verified address the API trusts and who has none (the table's env's app pool)
 
+  projects-rename move SHEET# items to PROJECT# keys and rename sheetId on movements, then verify
+                  (docs/infrastructure.md, "Projects rename"). Its options:
+    --team <id>         one team (a Query); all teams (a key-only Scan) without it
+    --reverse           PROJECT# back to SHEET#: the rollback
+    --limit <n>         stop after n items (movements are left for a run without it)
+    --export-to <path>  first write the team's SHEET#, PROJECT# and MOVE# items to a new file outside the repo
+--expect-account <id> (any mode) stops before reading unless the profile signs in to that account.
+
 Without --apply it's a dry run: it reads the table and writes nothing.
 It prints the AWS account the profile signs in to before it reads or writes.
 --endpoint <url> uses DynamoDB Local instead of AWS (then --profile isn't needed and any table name goes,
 except for notice-address, which lists a real user pool and so needs --profile).`;
+
+const RENAME = "projects-rename";
+const MODES: readonly string[] = [...BACKFILL_MODES, RENAME];
 
 /** An app table's name (tableName in src/data/schema.ts), so a typo can't point the backfill at another table. */
 export const APP_TABLE = /^supply-checkout-([a-z0-9-]+)-app$/;
@@ -58,6 +73,115 @@ export interface Deps {
   readonly appPool?: (region: string, envName: string, credentials: Credentials | undefined) => Promise<FoundPool>;
   /** Every user in the pool (ListUsers); listUsers below unless given. */
   readonly listUsers?: (region: string, userPoolId: string, credentials: Credentials | undefined) => AsyncIterable<PoolUser>;
+  /** projects-rename: its options beyond the CLI's (tests: no pauses, a short index wait). */
+  readonly renameOptions?: Partial<ProjectsRenameOptions>;
+  /** The git checkouts an export may not be written into; repoRoots below unless given. */
+  readonly repoRoots?: () => string[];
+}
+
+/** A path as the filesystem spells it: symlinks resolved and, on a case-insensitive disk, its real case. */
+function canonical(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/** The main checkout of the repo a folder is in (the parent of git's common dir), so a worktree's main checkout counts too. */
+function mainCheckout(dir: string): string | undefined {
+  // Without the variables that would point git at another repository than the folder's own
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"].includes(name)));
+  const git = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, encoding: "utf8", timeout: 5_000, env });
+  const common = git.status === 0 ? git.stdout.trim() : "";
+  return common ? dirname(common) : undefined;
+}
+
+/** The checkouts an export must stay out of: the current folder's and this script's, and their main checkouts. */
+function repoRoots(): string[] {
+  const dirs = [process.cwd(), dirname(fileURLToPath(import.meta.url))];
+  return dirs.map(mainCheckout).filter((r): r is string => r !== undefined);
+}
+
+/**
+ * Where an export may go: a new file, in a folder that exists, outside every
+ * checkout (the file holds client names and prices, and the repo is public).
+ * Refused under any of `roots`, and under any folder with a .git entry (a
+ * checkout, or a worktree inside one), compared as the filesystem spells it.
+ * Returns the resolved path, or why not.
+ */
+export function exportPath(path: string, roots: readonly string[]): { path: string } | { problem: string } {
+  const absolute = resolve(path);
+  let folder: string;
+  try {
+    folder = realpathSync.native(dirname(absolute));
+  } catch {
+    return { problem: `--export-to's folder doesn't exist: ${dirname(absolute)}` };
+  }
+  const target = join(folder, basename(absolute));
+  const inside = (root: string) => target === root || target.startsWith(root.endsWith(sep) ? root : root + sep);
+  const refused = (root: string) => ({ problem: `--export-to must be outside the repo (${root}): the export holds client names and prices` });
+  for (const root of roots.map(canonical)) if (inside(root)) return refused(root);
+  for (let dir = folder; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, ".git"))) return refused(dir);
+    if (dirname(dir) === dir) break;
+  }
+  if (existsSync(target)) return { problem: `--export-to names a file that exists; give a new one: ${target}` };
+  return { path: target };
+}
+
+/** Sets and binary as JSON can't hold them, so the export keeps every attribute. */
+function exportReplacer(_key: string, value: unknown): unknown {
+  if (value instanceof Set) return { $set: [...value] };
+  if (value instanceof Uint8Array) return { $b64: Buffer.from(value).toString("base64") };
+  return value;
+}
+
+/** Writes the export: owner-only, and never over an existing file. */
+function writeExport(path: string, table: string, region: string, reverse: boolean) {
+  return async (teams: readonly ExportedTeam[]) => {
+    const body = { exportedAt: new Date().toISOString(), table, region, mode: RENAME, direction: reverse ? "reverse" : "forward", teams };
+    writeFileSync(path, `${JSON.stringify(body, exportReplacer, 2)}\n`, { flag: "wx", mode: 0o600 });
+  };
+}
+
+/** The projects-rename report: counts and check names only. */
+export function formatRenameReport(r: ProjectsRenameReport): string[] {
+  const wouldBe = r.apply ? "" : " (dry run: would be)";
+  const lines = [`${r.from} to ${r.to}, teams: ${r.teams}`];
+  if (r.teamMissing) lines.push("No team META item for --team: check the team ID");
+  if (r.skippedTeams) lines.push(`Teams left alone (no META item, closed or being purged): ${r.skippedTeams}`);
+  if (r.invalidTeams) lines.push(`Team partitions whose ID isn't a valid ID, left alone: ${r.invalidTeams}`);
+  if (r.exported !== undefined) lines.push(`Exported ${r.exported} items to the file first`);
+  lines.push(`Items under ${r.from}: ${r.found} (about ${r.bytes} bytes; the largest about ${r.largest})`);
+  lines.push(`  moved: ${r.moved}${wouldBe}`);
+  if (r.duplicates) lines.push(`  an equal ${r.to} copy already there, old item removed: ${r.duplicates}${wouldBe}`);
+  if (r.conflicts) lines.push(`  conflicts: a different ${r.to} copy exists, both left alone: ${r.conflicts}`);
+  if (r.gone) lines.push(`  gone before it was read, left alone: ${r.gone}`);
+  if (r.failed) lines.push(`  still changing after ${RENAME_MAX_ATTEMPTS} tries, left alone: ${r.failed}`);
+  if (r.retries) lines.push(`  retried after someone changed it: ${r.retries}`);
+  if (r.invalid) lines.push(`  keys that aren't valid IDs, left alone: ${r.invalid}`);
+  if (r.leftByLimit) lines.push(`  not read (--limit): ${r.leftByLimit}`);
+  const m = r.movements;
+  if (m.skipped) lines.push("Movements: left for a run without --limit");
+  else {
+    lines.push(`Movements with old attribute names: ${m.found}`);
+    lines.push(`  renamed: ${m.renamed}${wouldBe}`);
+    if (m.conflicts) lines.push(`  already have the new names too, left alone: ${m.conflicts}`);
+    if (m.raced) lines.push(`  changed by something else first, left alone: ${m.raced}`);
+  }
+  if (!r.verification) {
+    lines.push("Dry run: nothing was written. Run again with --apply to write.");
+    return lines;
+  }
+  lines.push("Verification:");
+  for (const c of r.verification.checks) lines.push(`  ${c.ok ? "ok" : "FAILED"}: ${c.check}`);
+  lines.push(
+    r.verification.ok && !r.conflicts && !r.failed && !r.leftByLimit && !r.invalid && !r.invalidTeams && !r.teamMissing && !r.skippedTeams
+      ? "Done."
+      : "Not done: see above. Run it again (it skips what's moved), or roll back with --reverse.",
+  );
+  return lines;
 }
 
 /** Every user in the app pool, with the profile's credentials (the owner's: no Lambda role may list the pool for this). */
@@ -161,6 +285,11 @@ export async function main(
         profile: { type: "string" },
         endpoint: { type: "string" },
         apply: { type: "boolean", default: false },
+        team: { type: "string" },
+        reverse: { type: "boolean", default: false },
+        limit: { type: "string" },
+        "export-to": { type: "string" },
+        "expect-account": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
       },
     });
@@ -174,13 +303,39 @@ export async function main(
     return 0;
   }
   const [mode, ...extra] = positionals;
-  if (!BACKFILL_MODES.includes(mode as BackfillMode) || extra.length) {
+  if (!MODES.includes(mode as string) || extra.length) {
     err(`${mode ? `Unknown mode: ${[mode, ...extra].join(" ")}` : "No mode given"}\n\n${USAGE}`);
     return 2;
   }
   if (!values.table || !values.region) {
     err(`--table and --region are required\n\n${USAGE}`);
     return 2;
+  }
+  const renameFlags = values.team !== undefined || values.reverse || values.limit !== undefined || values["export-to"] !== undefined;
+  if (mode !== RENAME && renameFlags) {
+    err(`--team, --reverse, --limit and --export-to are for ${RENAME} only\n\n${USAGE}`);
+    return 2;
+  }
+  if (values.team !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(values.team)) {
+    err(`--team must be a team ID\n\n${USAGE}`);
+    return 2;
+  }
+  let limit: number | undefined;
+  if (values.limit !== undefined) {
+    limit = /^[1-9]\d{0,8}$/.test(values.limit) ? Number(values.limit) : NaN;
+    if (Number.isNaN(limit)) {
+      err(`--limit must be a whole number from 1\n\n${USAGE}`);
+      return 2;
+    }
+  }
+  let exportFile: string | undefined;
+  if (values["export-to"] !== undefined) {
+    const found = exportPath(values["export-to"], (deps.repoRoots ?? repoRoots)());
+    if ("problem" in found) {
+      err(`${found.problem}\n\n${USAGE}`);
+      return 2;
+    }
+    exportFile = found.path;
   }
 
   // notice-address finds its pool from the table's environment, so it needs an app table's name even with --endpoint
@@ -206,12 +361,23 @@ export async function main(
     return 2;
   }
 
+  const expectAccount = values["expect-account"];
+  if (expectAccount !== undefined && (!/^\d{12}$/.test(expectAccount) || values.endpoint)) {
+    err(`--expect-account takes a 12-digit account ID, and needs --profile (not --endpoint)\n\n${USAGE}`);
+    return 2;
+  }
+
   const credentials = values.profile && !values.endpoint ? defaultProvider({ profile: values.profile }) : undefined;
   let where = `at ${values.endpoint}`;
   if (credentials) {
     try {
       // Before anything is read or written, so the owner sees which account this is
-      where = `in account ${await deps.callerAccount(values.region, credentials)} (profile ${values.profile})`;
+      const account = await deps.callerAccount(values.region, credentials);
+      if (expectAccount !== undefined && account !== expectAccount) {
+        err(`The profile signs in to account ${account}, not ${expectAccount} (--expect-account): nothing was read or written`);
+        return 1;
+      }
+      where = `in account ${account} (profile ${values.profile})`;
     } catch (e) {
       err(`Failed to identify the profile's account: ${(e as Error).name}: ${(e as Error).message}`);
       return 1;
@@ -242,6 +408,25 @@ export async function main(
   }
   const db = deps.connect({ tableName: values.table, region: values.region, endpoint: values.endpoint, env: {}, ...(credentials ? { credentials } : {}) });
   out(`${mode} on ${values.table}${pool ? ` and pool ${pool}` : ""} in ${values.region} ${where}${values.apply ? "" : " (dry run)"}`);
+  if (mode === RENAME) {
+    try {
+      const report = await renameProjects(db, {
+        apply: values.apply,
+        reverse: values.reverse,
+        ...(values.team !== undefined ? { team: values.team } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+        ...(exportFile ? { exportTo: writeExport(exportFile, values.table, values.region, values.reverse) } : {}),
+        ...deps.renameOptions,
+      });
+      const lines = formatRenameReport(report);
+      for (const line of lines) out(line);
+      // A failed check or anything left after an apply: non-zero, so a script running it stops
+      return report.verification && lines.at(-1) !== "Done." ? 1 : 0;
+    } catch (e) {
+      err(`Failed: ${(e as Error).name}: ${(e as Error).message}`);
+      return 1;
+    }
+  }
   try {
     const sources = pool ? { accounts: candidates((deps.listUsers ?? listUsers)(values.region, pool, credentials)) } : {};
     const report = await runBackfill(db, mode as BackfillMode, { apply: values.apply }, sources);

@@ -103,9 +103,9 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     expect(await line(ctx)).toMatchObject({ name: "Nitrile gloves", out: 5 });
     expect(await line(ctx, "k-7")).toEqual({ code: "", name: "Item 7", price: 2.5, cost: 1.25, out: 2, returned: 0 });
     expect(await stock(ctx)).toBe(99);
-    const before = await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1");
+    const before = await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#s1");
     expect(await addLines(db, ctx, input)).toEqual({ result: first.result, replayed: true });
-    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1")).toEqual(before);
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#s1")).toEqual(before);
     // A sheet without an items map gets one
     await setDocument(db, ctx, "sheets", "s2", { client: "Echo", status: "open" });
     await addLines(db, ctx, { operationId: randomUUID(), sheetId: "s2", lines: [{ productKey: "constructor", quantity: 3, name: "Odd key", price: 1 }] });
@@ -116,11 +116,11 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     const ctx = await team();
     const input = { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 4 };
     const first = await checkout(db, ctx, input);
-    const sheetBefore = await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1");
+    const sheetBefore = await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#s1");
     const productBefore = await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#0123");
     const again = await checkout(db, ctx, input, new Date(Date.now() + 60_000));
     expect(again).toEqual({ result: first.result, replayed: true });
-    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1")).toEqual(sheetBefore);
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#s1")).toEqual(sheetBefore);
     expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#0123")).toEqual(productBefore);
     expect(await history(ctx)).toHaveLength(1);
     // The same ID for a different request is refused
@@ -174,7 +174,7 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
   it("leaves nothing half-saved when one part of the transaction fails", async () => {
     const ctx = await team();
     await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 2 });
-    const sheetBefore = await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1");
+    const sheetBefore = await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#s1");
     // The movement item this return will write already exists, so its
     // condition (history is never overwritten) fails on every attempt, after
     // the operation record, the line and the stock have been staged
@@ -183,7 +183,7 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.movement(ctx.teamId, "0123", now.toISOString(), operationId), type: "movement" } }));
     await expect(returnItems(db, ctx, { operationId, sheetId: "s1", productKey: "0123", quantity: 1 }, now)).rejects.toThrow(ConflictError);
     expect(await rawItem(db, `TEAM#${ctx.teamId}`, `OP#${operationId}`)).toBeUndefined();
-    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1")).toEqual(sheetBefore);
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#s1")).toEqual(sheetBefore);
     expect(await stock(ctx)).toBe(98);
   });
 
@@ -312,12 +312,12 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
 
   it("refuses with TooLargeError, having written nothing, a change that takes a sheet past DynamoDB's item limit", async () => {
     const ctx = await team();
-    const Key = keys.sheet(ctx.teamId, "s1");
+    const Key = keys.project(ctx.teamId, "s1");
     const put = (pad: number) =>
       connection(db).doc.send(
         new PutCommand({
           TableName: db.tableName,
-          Item: { ...Key, type: "sheet", id: "s1", version: 1, status: "open", items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1 } }, pad: "x".repeat(pad) },
+          Item: { ...Key, type: "project", id: "s1", version: 1, status: "open", items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1 } }, pad: "x".repeat(pad) },
         }),
       );
     // The largest sheet DynamoDB takes, to the byte: a line's first return adds a field to it
@@ -347,11 +347,11 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     expect(refusal?.name).toBe("TransactionCanceledException");
     expect(refusal?.CancellationReasons).toEqual([{ Code: "ValidationError", Message: expect.stringMatching(/^Item size to update has exceeded the maximum allowed size/) }]);
     expect(ITEM_TOO_LARGE_MESSAGES).toContain("Item size to update has exceeded the maximum allowed size");
-    const before = await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1");
+    const before = await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#s1");
     await expect(returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 1 })).rejects.toThrow(TooLargeError);
     // A new line is refused before the transaction
     await expect(checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "one-off", quantity: 1, name: "Bins", price: 4 })).rejects.toThrow(TooLargeError);
-    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1")).toEqual(before);
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#s1")).toEqual(before);
     expect(await stock(ctx)).toBe(100);
     expect(await history(ctx)).toEqual([]);
   });

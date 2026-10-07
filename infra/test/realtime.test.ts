@@ -98,7 +98,7 @@ describe("the stream consumer", () => {
     expect(JSON.stringify(publish[0]?.Resource)).toMatch(/\/channelNamespace\/users"\]\]\}$/);
   });
 
-  it("reads the table's stream from SSM, filtered to products, sheets, members and team metadata, with partial batch failures and a dead-letter queue", () => {
+  it("reads the table's stream from SSM, filtered to products, projects (under both prefixes), members and team metadata, with partial batch failures and a dead-letter queue", () => {
     const t = realtime();
     const [[, mapping]] = resources(t, "AWS::Lambda::EventSourceMapping") as [[string, Resource]];
     expect(mapping.Properties).toMatchObject({
@@ -118,10 +118,13 @@ describe("the stream consumer", () => {
     const patterns = (mapping.Properties.FilterCriteria as { Filters: { Pattern: string }[] }).Filters.map((f) => JSON.parse(f.Pattern));
     expect(patterns).toEqual([
       { dynamodb: { Keys: { SK: { S: [{ prefix: "PRODUCT#" }] } } } },
+      { dynamodb: { Keys: { SK: { S: [{ prefix: "PROJECT#" }] } } } },
       { dynamodb: { Keys: { SK: { S: [{ prefix: "SHEET#" }] } } } },
       { dynamodb: { Keys: { SK: { S: [{ prefix: "MEMBER#" }] } } } },
       { dynamodb: { Keys: { SK: { S: ["META"] } } } },
     ]);
+    // Lambda's limit on filters per event source mapping
+    expect(patterns.length).toBeLessThanOrEqual(5);
   });
 
   it("may read only who gets a team's changes: team partitions, and only the audience attributes", () => {

@@ -130,7 +130,7 @@ describe("checkout", () => {
         delta: -3,
         tracked: true,
         quantity: 3,
-        sheetId: "s1",
+        projectId: "s1",
         operationId: id,
         userId: CONTRIBUTOR,
       }),
@@ -329,7 +329,7 @@ describe("return", () => {
     expect(line()).toMatchObject({ out: 5, returned: 4 });
     expect(stock()).toBe(13);
     expect(table.get("TEAM#team-a", "PRODUCT#0123")?.version).toBe(4);
-    expect(movements()).toEqual([expect.objectContaining({ reason: "return", delta: 3, sheetId: "s1" })]);
+    expect(movements()).toEqual([expect.objectContaining({ reason: "return", delta: 3, projectId: "s1" })]);
     expect(counts).toMatchObject({ Returns: 3, Writes: 1 });
   });
 

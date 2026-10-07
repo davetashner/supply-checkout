@@ -116,7 +116,7 @@ export const bundling: BundlingOptions = {
  * every region (ADR 0006, 0010), at `api.<env domain>`.
  *
  * - Data routes (backend/src/api/routes.ts, docs/api/openapi.yaml): the app's
- *   products and sheets documents, and the checkout, return and stock
+ *   products and projects documents, and the checkout, return and stock
  *   commands next to them, behind the Cognito JWT authorizer, served by the
  *   `data` function.
  * - Account routes (/me, POST /teams, POST /invites/{inviteId}/accept, and a
@@ -129,7 +129,9 @@ export const bundling: BundlingOptions = {
  * - Team isolation, second layer (ADR 0005): the data function's own role
  *   can't reach the table. For each request it assumes the data-access role
  *   with the session tag `teamId=<path team>`, and that role may only touch
- *   items whose partition key is `TEAM#<tag>` or `TEAM#<tag>#SHEETS`
+ *   items whose partition key is `TEAM#<tag>`, or the team's date index
+ *   partition `TEAM#<tag>#PROJECTS` (or `TEAM#<tag>#SHEETS`, its name before
+ *   the projects rename, until the backfill has moved every item)
  *   (dynamodb:LeadingKeys). The first layer, the membership check, is in the
  *   handler.
  * - The account function can't use the data-access role: creating a team or
@@ -256,6 +258,9 @@ export class ApiStack extends SupplyCheckoutStack {
             new PolicyStatement({
               sid: "TeamItemsOnly",
               effect: Effect.ALLOW,
+              // The team's partition and its two date index partitions: projects'
+              // (`#PROJECTS`) and, until the sheets-to-projects rename's backfill
+              // has moved every item, the old name's (`#SHEETS`, supply-checkout-005.6).
               // GetItem also covers TransactGetItems (the membership check).
               // Put, Update and ConditionCheck cover the inventory commands'
               // TransactWriteItems (backend/src/data/commands.ts), whose items
@@ -263,7 +268,7 @@ export class ApiStack extends SupplyCheckoutStack {
               actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:Query"],
               resources: [tableArn, `${tableArn}/index/${GSI1}`],
               conditions: {
-                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`TEAM#${teamTag}`, `TEAM#${teamTag}#SHEETS`] },
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`TEAM#${teamTag}`, `TEAM#${teamTag}#PROJECTS`, `TEAM#${teamTag}#SHEETS`] },
               },
             }),
             // Owners read what operators did to their team (ADR 0015): read

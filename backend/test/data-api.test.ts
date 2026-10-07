@@ -101,8 +101,10 @@ const WRITES = ["PUT", "PATCH", "DELETE"];
 /** The stored version of the document at `path` (0 if there's none), read from the table. */
 function storedVersion(path: string): number {
   const [, , team, collection, id] = path.split("/");
-  const sk = `${collection === "products" ? "PRODUCT" : "SHEET"}#${safeDecode(id ?? "")}`;
-  const version = table.get(`TEAM#${team}`, sk)?.version;
+  const key = safeDecode(id ?? "");
+  // A project's item is under PROJECT#, or still under SHEET# until the rename's backfill moves it
+  const item = collection === "products" ? table.get(`TEAM#${team}`, `PRODUCT#${key}`) : (table.get(`TEAM#${team}`, `PROJECT#${key}`) ?? table.get(`TEAM#${team}`, `SHEET#${key}`));
+  const version = item?.version;
   return typeof version === "number" ? version : 0;
 }
 
@@ -474,8 +476,8 @@ describe("documents (the app's db contract)", () => {
     expect(await call("DELETE", "/teams/team-a/sheets/s1", { unversioned: true })).toEqual(required);
     expect(await call("DELETE", "/teams/team-a/sheets/s1", { unversioned: true, query: { other: "1" } })).toEqual(required);
     // Nothing was written
-    expect(table.get("TEAM#team-a", "SHEET#s1")).toMatchObject({ client: "Echo", date: "2026-09-01", version: 1 });
-    expect(table.get("TEAM#team-a", "SHEET#s2")).toBeUndefined();
+    expect(table.get("TEAM#team-a", "PROJECT#s1")).toMatchObject({ client: "Echo", date: "2026-09-01", version: 1 });
+    expect(table.get("TEAM#team-a", "PROJECT#s2")).toBeUndefined();
     // Membership and role are still checked first: another team's route is refused as before
     expect((await call("PATCH", "/teams/team-b/sheets/b1", { unversioned: true, body: { data: { client: "X" } } })).body.error.code).toBe("permission_denied");
     expect((await call("DELETE", "/teams/team-a/sheets/s1", { unversioned: true, user: VIEWER })).body.error).toMatchObject({ code: "permission_denied", reason: "view_only" });
@@ -485,7 +487,8 @@ describe("documents (the app's db contract)", () => {
     await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01", { a: { out: 1, returned: 0 } }) } });
     let raced = 0;
     table.afterGet = (item) => {
-      if (raced++ || !item) return;
+      // Counts the reads that found it (a project is looked for under PROJECT# and SHEET#)
+      if (!item || raced++) return;
       // Another user's write lands between our read and our put
       table.put({ ...item, version: 2, items: { a: { out: 1, returned: 0 }, b: { out: 5, returned: 0 } } });
     };
@@ -493,7 +496,7 @@ describe("documents (the app's db contract)", () => {
     expect(lost).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
     expect(raced).toBe(1);
     // The other user's write stands; ours can be made again on their version
-    expect(table.get("TEAM#team-a", "SHEET#s1")).toMatchObject({ version: 2, items: { a: { out: 1, returned: 0 }, b: { out: 5, returned: 0 } } });
+    expect(table.get("TEAM#team-a", "PROJECT#s1")).toMatchObject({ version: 2, items: { a: { out: 1, returned: 0 }, b: { out: 5, returned: 0 } } });
     const { body } = await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { a: { returned: 1 } } }, expectedVersion: 2 } });
     expect(body).toMatchObject({ version: 3, data: { items: { a: { out: 1, returned: 1 }, b: { out: 5, returned: 0 } } } });
   });
@@ -562,7 +565,7 @@ describe("documents (the app's db contract)", () => {
     await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01") } });
     expect((await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { GSI1SK: "9999-12-31#x" } } })).status).toBe(400);
     expect((await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { GSI1PK: "TEAM#team-b#SHEETS" } } })).status).toBe(400);
-    expect(table.get("TEAM#team-a", "SHEET#s1")).toMatchObject({ GSI1PK: "TEAM#team-a#SHEETS", GSI1SK: "2026-09-01#s1" });
+    expect(table.get("TEAM#team-a", "PROJECT#s1")).toMatchObject({ GSI1PK: "TEAM#team-a#PROJECTS", GSI1SK: "2026-09-01#s1", type: "project" });
   });
 
   it("never lets a document put itself in the operators' index (GSI3) or any other index, by PUT or PATCH", async () => {
@@ -627,9 +630,9 @@ describe("documents (the app's db contract)", () => {
   });
 
   it("counts writes, checkouts and returns for the dashboard", async () => {
-    await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01", { a: { out: 3, returned: 0 } }) } });
-    await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { a: { out: 5 }, b: { out: 2, returned: 0 } } } } });
-    await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { a: { returned: 4 } } } } });
+    await call("PUT", "/teams/team-a/projects/s1", { body: { data: sheet("2026-09-01", { a: { out: 3, returned: 0 } }) } });
+    await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { items: { a: { out: 5 }, b: { out: 2, returned: 0 } } } } });
+    await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { items: { a: { returned: 4 } } } } });
     await call("PUT", "/teams/team-a/products/p", { body: { data: product } });
     await call("DELETE", "/teams/team-a/products/p");
     expect(counts).toEqual({ Writes: 5, Checkouts: 7, Returns: 4 });
@@ -708,8 +711,8 @@ describe("team isolation (negative tests)", () => {
     expect(await call("PUT", "/teams/team-a/sheets/s2", { user: VIEWER, body: { data: sheet("2026-09-01") } })).toEqual(viewOnly);
     expect(await call("PATCH", "/teams/team-a/sheets/s1", { user: VIEWER, body: { data: { client: "Viewer" } } })).toEqual(viewOnly);
     expect(await call("DELETE", "/teams/team-a/sheets/s1", { user: VIEWER })).toEqual(viewOnly);
-    expect(table.get("TEAM#team-a", "SHEET#s1")).toMatchObject({ client: "Echo", version: 1 });
-    expect(table.get("TEAM#team-a", "SHEET#s2")).toBeUndefined();
+    expect(table.get("TEAM#team-a", "PROJECT#s1")).toMatchObject({ client: "Echo", version: 1 });
+    expect(table.get("TEAM#team-a", "PROJECT#s2")).toBeUndefined();
     // Contributors can
     expect((await call("PATCH", "/teams/team-a/sheets/s1", { user: CONTRIBUTOR, body: { data: { client: "C" } } })).status).toBe(200);
   });
@@ -729,6 +732,7 @@ describe("team isolation (negative tests)", () => {
       expect(await call("PUT", "/teams/team-a/sheets/s9", { user, body: { data: sheet("2026-09-01") } }), user).toEqual(denied);
       expect(await call("DELETE", "/teams/team-a/sheets/s9", { user }), user).toEqual(denied);
     }
+    expect(table.get("TEAM#team-a", "PROJECT#s9")).toBeUndefined();
     expect(table.get("TEAM#team-a", "SHEET#s9")).toBeUndefined();
   });
 
@@ -754,7 +758,7 @@ describe("team isolation (negative tests)", () => {
     await call("GET", "/teams/team-b/products");
     expect(table.calls.length).toBeGreaterThan(5);
     for (const c of table.calls.slice(0, -1)) {
-      for (const p of c.partitions) expect(["TEAM#team-a", "TEAM#team-a#SHEETS"]).toContain(p);
+      for (const p of c.partitions) expect(["TEAM#team-a", "TEAM#team-a#PROJECTS", "TEAM#team-a#SHEETS"]).toContain(p);
     }
     // The refused request checked membership in team B's partition, and stopped there
     expect(table.calls.at(-1)).toEqual({ command: "TransactGetCommand", partitions: ["TEAM#team-b", "TEAM#team-b"] });
