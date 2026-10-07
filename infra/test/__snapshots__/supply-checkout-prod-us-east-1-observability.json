@@ -1838,7 +1838,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Welcome emails refused (J1, us-east-1). WelcomeEmailsRefused at least 3 in an hour: SES refused that many welcome emails (sending paused, suppressed addresses, or, until SES production access (supply-checkout-3sv.18), its sandbox refusing unverified addresses). A rate, not any, so the sandbox's occasional refusal doesn't keep it on; lower it to 1 once production access is granted (supply-checkout-6uw.25). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Welcome emails refused (J1, us-east-1). WelcomeEmailsRefused at least 1 in an hour: SES refused a welcome email (sending paused, or a suppressed address). Counted apart from WelcomeEmailFailures; SES is out of the sandbox, so it no longer refuses unverified addresses and any refusal is worth a look (supply-checkout-6uw.25, supply-checkout-3sv.21). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-welcome-emails-refused",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
@@ -1891,7 +1891,7 @@
             "Value": "cdk"
           }
         ],
-        "Threshold": 2,
+        "Threshold": 0,
         "TreatMissingData": "notBreaching"
       }
     },
@@ -7898,18 +7898,6 @@
                         "Ref": "AWS::AccountId"
                       },
                       ":configuration-set/supply-checkout-prod-transactional"
-                    ]
-                  ]
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:aws:ses:us-east-1:",
-                      {
-                        "Ref": "AWS::AccountId"
-                      },
-                      ":identity/*"
                     ]
                   ]
                 },

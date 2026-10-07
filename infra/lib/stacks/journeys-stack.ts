@@ -46,8 +46,9 @@ export const journeysOutputParameters = (envName: string) => {
  *
  * - **The test mail subdomain**, `e2e.<env domain>`: an MX record to SES
  *   inbound in this region, and an SES domain identity with Easy DKIM (its
- *   CNAMEs in the zone), so Cognito's codes and the app's mail can reach it
- *   while SES is in the sandbox (supply-checkout-3sv.18).
+ *   CNAMEs in the zone): SES receives mail only for a verified domain. (It
+ *   also let Cognito's codes and the app's mail reach it while SES was in the
+ *   sandbox, supply-checkout-3sv.18; prod is out since 2026-10-07.)
  * - **An SES receipt rule set** with one rule: recipient the subdomain only
  *   (not its subdomains, not any other domain), TLS required, spam and virus
  *   scanning on (the verdicts go into the stored message's headers), one

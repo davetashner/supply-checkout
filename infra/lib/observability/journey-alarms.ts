@@ -71,12 +71,12 @@ export interface JourneyAlarmsProps {
 
 /**
  * Welcome emails SES refused in an hour at which "Welcome emails refused"
- * alarms (supply-checkout-6uw.25). Until SES production access
- * (supply-checkout-3sv.18), its sandbox refuses every unverified address, so
- * one refusal is normal; several in an hour is sending paused or something
- * wrong. Lower it to 1 once production access is granted.
+ * alarms (supply-checkout-6uw.25). SES is out of the sandbox (production
+ * access, supply-checkout-3sv.18), so it no longer refuses unverified
+ * addresses: any refusal is sending paused or a suppressed address, worth a
+ * look (supply-checkout-3sv.21).
  */
-export const WELCOME_REFUSALS_ALARM_PER_HOUR = 3;
+export const WELCOME_REFUSALS_ALARM_PER_HOUR = 1;
 
 /** Invites sent in an hour, across every team, that "Invite surge" alarms above. */
 export const INVITE_SURGE_PER_HOUR = 300;
@@ -299,7 +299,7 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       title: "Welcome emails refused",
       journeys: "J1",
       severity: "P2",
-      rule: `WelcomeEmailsRefused at least ${WELCOME_REFUSALS_ALARM_PER_HOUR} in an hour: SES refused that many welcome emails (sending paused, suppressed addresses, or, until SES production access (supply-checkout-3sv.18), its sandbox refusing unverified addresses). A rate, not any, so the sandbox's occasional refusal doesn't keep it on; lower it to 1 once production access is granted (supply-checkout-6uw.25).`,
+      rule: `WelcomeEmailsRefused at least ${WELCOME_REFUSALS_ALARM_PER_HOUR} in an hour: SES refused a welcome email (sending paused, or a suppressed address). Counted apart from WelcomeEmailFailures; SES is out of the sandbox, so it no longer refuses unverified addresses and any refusal is worth a look (supply-checkout-6uw.25, supply-checkout-3sv.21).`,
       metric: business(BusinessMetric.WelcomeEmailsRefused, region, Duration.hours(1)),
       threshold: WELCOME_REFUSALS_ALARM_PER_HOUR - 1,
       primaryOnly: true,

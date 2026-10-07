@@ -957,7 +957,8 @@ describe("alarms added with the email code routes, the live update budget, team 
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
       AlarmDescription: Match.stringLikeRegexp("^P2 Welcome emails dropped \\(J1"),
     });
-    // SES's refusals apart, at a rate (the sandbox refuses unverified addresses until production access)
+    // SES's refusals apart; out of the sandbox, any one alarms (supply-checkout-3sv.21)
+    expect(WELCOME_REFUSALS_ALARM_PER_HOUR).toBe(1);
     t.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-welcome-emails-refused",
       Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.WelcomeEmailsRefused }), Stat: "Sum", Period: 3600 }) })],

@@ -51,7 +51,7 @@ The pilot's data is safe by construction: the test accounts are members of test 
 
 ### The test mailbox
 
-SES receives mail for the test subdomain only (a receipt rule set with one rule, recipient the subdomain), and writes each message to a private S3 bucket, `supply-checkout-prod-journey-mail-<region>-<account>` (block public access, SSE, a 1-day lifecycle rule). The subdomain is also verified as an SES identity, so that while SES is in the sandbox (`supply-checkout-3sv.18`) Cognito's codes, invites and welcome emails can reach it; after production access that's harmless.
+SES receives mail for the test subdomain only (a receipt rule set with one rule, recipient the subdomain), and writes each message to a private S3 bucket, `supply-checkout-prod-journey-mail-<region>-<account>` (block public access, SSE, a 1-day lifecycle rule). The subdomain is also verified as an SES identity: SES receives mail only for a verified domain. While SES was in the sandbox (`supply-checkout-3sv.18`, out since 2026-10-07) it was also what let Cognito's codes, invites and welcome emails reach it.
 
 The harness's mailbox reader lists the bucket under the run's prefix, waits up to 60 seconds for a message to an address, and accepts it only when SES's receipt verdicts say SPF and DKIM passed and the sender is the app's no-reply address. Anyone can send mail to the subdomain; only our own lands as a code. It extracts the code or link, `::add-mask::`s it, and never logs the body.
 
@@ -179,7 +179,7 @@ The local specs can't simply be pointed at prod with a `BASE_URL` switch. They l
 | J1, J3, J5, J11 (throwaway accounts, three emails, one receipt) | about 4 minutes | — |
 | J7, J8, J10 (sandbox, before go-live) | about 4 minutes | — |
 
-About 13 minutes wall time with the two projects in parallel, plus a minute each for setup and cleanup: roughly 15 minutes after `apply`, inside its existing 60-minute budget. Cost per run: GitHub-hosted runner minutes (free for a public repository); Lambda, API Gateway, DynamoDB and S3 in fractions of a cent; one Bedrock read (under a cent); about six SES messages (well under the sandbox's 200 a day); two Cognito users a run, within the Essentials tier's free monthly active users. Under a dollar a month at a few deploys a week.
+About 13 minutes wall time with the two projects in parallel, plus a minute each for setup and cleanup: roughly 15 minutes after `apply`, inside its existing 60-minute budget. Cost per run: GitHub-hosted runner minutes (free for a public repository); Lambda, API Gateway, DynamoDB and S3 in fractions of a cent; one Bedrock read (under a cent); about six SES messages (prod's quota is 50,000 a day); two Cognito users a run, within the Essentials tier's free monthly active users. Under a dollar a month at a few deploys a week.
 
 ### Where it runs in the deploy
 
@@ -245,7 +245,7 @@ Split so each PR is small, and so the backend and IAM changes are separate PRs w
       "type": "feature",
       "priority": 1,
       "labels": ["mvp", "qa"],
-      "description": "infra/lib/stacks/journeys-stack.ts in the primary region: MX for the test subdomain to SES inbound, a receipt rule set accepting only that subdomain, writing to a private mail bucket (1-day lifecycle on inbox/, 30 days on runs/); the subdomain verified as an SES identity for the sandbox; a private results bucket (30-day lifecycle); the supply-checkout-prod-journeys OIDC role trusted only by environment production-journeys, with exactly the S3 permissions in the plan. Docs: infrastructure.md. Needs the security review (IAM). See docs/journey-tests-plan.md, The test mailbox and Credentials and secrets.",
+      "description": "infra/lib/stacks/journeys-stack.ts in the primary region: MX for the test subdomain to SES inbound, a receipt rule set accepting only that subdomain, writing to a private mail bucket (1-day lifecycle on inbox/, 30 days on runs/); the subdomain verified as an SES identity (needed to receive); a private results bucket (30-day lifecycle); the supply-checkout-prod-journeys OIDC role trusted only by environment production-journeys, with exactly the S3 permissions in the plan. Docs: infrastructure.md. Needs the security review (IAM). See docs/journey-tests-plan.md, The test mailbox and Credentials and secrets.",
       "acceptance_criteria": "cdk-nag clean with justified suppressions; template tests pin the role's trust subject and audience and every statement; buckets block public access and non-TLS; a message to the subdomain lands in the bucket in a deployed check; security review approves",
       "deps": []
     },
