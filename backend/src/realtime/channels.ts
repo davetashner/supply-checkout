@@ -122,6 +122,18 @@ export const CONSUMER_TIMEOUT_SECONDS = 10;
  */
 export const COLLECTION_EVENT_AFTER = 10;
 
+/**
+ * The collection an event names. A change to a project goes out twice through
+ * the sheets-to-projects rename's window (supply-checkout-005.6): as
+ * `projects`, and again as `sheets`, its old name, because a client still on
+ * the old code ignores a collection it doesn't know and would stop updating.
+ * LEGACY_EVENT_COLLECTIONS says which collections get the second event.
+ */
+export type EventCollection = "products" | "projects" | "sheets";
+
+/** The old collection name each collection's events are published under too, through the rename's window. */
+export const LEGACY_EVENT_COLLECTIONS: Readonly<Partial<Record<EventCollection, EventCollection>>> = { projects: "sheets" };
+
 /** The change event's format version. A client ignores events with a version it doesn't know. */
 export const CHANGE_EVENT_FORMAT = 1;
 
@@ -142,8 +154,8 @@ export interface ChangeEvent {
   readonly teamId: string;
   /** The DynamoDB stream record's ID. A retried batch publishes the same event again with the same ID. */
   readonly eventId: string;
-  readonly collection: "products" | "sheets";
-  /** The product key or sheet ID. */
+  readonly collection: EventCollection;
+  /** The product key or project ID. */
   readonly id: string;
   /** `put` for a create, replace, update or stock change; `delete` for a delete. */
   readonly op: "put" | "delete";
@@ -184,7 +196,7 @@ export interface CollectionEvent {
    * the same records, and with another if the retry starts part way through.
    */
   readonly eventId: string;
-  readonly collection: "products" | "sheets";
+  readonly collection: EventCollection;
   readonly op: "list";
   /** How many changes it stands for. */
   readonly changes: number;
@@ -199,12 +211,16 @@ export const COLLECTION_EVENT_FIELDS: readonly (keyof CollectionEvent)[] = ["v",
 export const EVENTS_PER_PUBLISH = 5;
 
 /**
- * Sort-key prefixes of the items that are documents (products and sheets).
- * The event source mapping's filter passes only these to the consumer. The
- * same as `prefixes.product` and `prefixes.sheet` in src/data/keys.ts (a test
- * checks), repeated because this file has no imports.
+ * Sort-key prefixes of the items that are documents (products and projects,
+ * whose items are under `PROJECT#`, or still under `SHEET#` until the
+ * rename's backfill moves them, supply-checkout-005.6). The event source
+ * mapping's filter passes only these to the consumer. The same as
+ * `prefixes.product`, `prefixes.project` and `prefixes.sheet` in
+ * src/data/keys.ts (a test checks), repeated because this file has no
+ * imports. With AUDIENCE_SK's two that's 5 filters, Lambda's limit per event
+ * source mapping.
  */
-export const DOCUMENT_SK_PREFIXES = ["PRODUCT#", "SHEET#"] as const;
+export const DOCUMENT_SK_PREFIXES = ["PRODUCT#", "PROJECT#", "SHEET#"] as const;
 
 /**
  * Sort keys of the items that decide who gets a team's changes: the team's

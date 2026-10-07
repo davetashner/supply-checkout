@@ -94,7 +94,8 @@ function seed() {
   product("0123", { code: "0123", name: "Nitrile gloves", price: 12.5, cost: 9.99, stock: 10 });
   sheet("s1");
 }
-const doc = (id: string) => table.get(TEAM, `SHEET#${id}`);
+// A project's item: under PROJECT# (new ones), or SHEET# (seeded the old way, as before the rename's backfill)
+const doc = (id: string) => table.get(TEAM, `PROJECT#${id}`) ?? table.get(TEAM, `SHEET#${id}`);
 const items = (id: string) => doc(id)?.items as Record<string, Line>;
 const adhoc = () => table.get(TEAM, "ADHOC");
 const stockOf = (key: string) => table.get(TEAM, `PRODUCT#${key}`)?.stock;
@@ -121,7 +122,7 @@ describe("quick take", () => {
     expect(doc("adhoc-1")?.version).toBe(3);
     expect(adhoc()).toMatchObject({ count: 1, open: "adhoc-1", version: 1 });
     expect([stockOf("0123"), stockOf("ladder")]).toEqual([5, 3]);
-    expect(movements().map((m) => [m.reason, m.sheetId, m.delta])).toEqual(expect.arrayContaining([["checkout", "adhoc-1", -2], ["checkout", "adhoc-1", -1], ["checkout", "adhoc-1", -3]]));
+    expect(movements().map((m) => [m.reason, m.projectId, m.delta])).toEqual(expect.arrayContaining([["checkout", "adhoc-1", -2], ["checkout", "adhoc-1", -1], ["checkout", "adhoc-1", -3]]));
     // Quick takes are checkouts (the Checkouts stopped alarm)
     expect(counts.Checkouts).toBe(6);
   });
@@ -301,7 +302,10 @@ describe("moving an ad hoc line to a job sheet", () => {
     expect(items("s1")["0123"]).toEqual({ code: "0123", name: "Nitrile gloves", price: 12.5, cost: 9.99, out: 5, returned: 1 });
     expect(stockOf("0123")).toBe(6);
     const moved = movements().find((m) => m.reason === "move");
-    expect(moved).toMatchObject({ productKey: "0123", delta: 0, tracked: true, quantity: 5, returned: 1, lost: 0, sheetId: "s1", fromSheetId: "adhoc-1", userId: CONTRIBUTOR });
+    expect(moved).toMatchObject({ productKey: "0123", delta: 0, tracked: true, quantity: 5, returned: 1, lost: 0, projectId: "s1", fromProjectId: "adhoc-1", userId: CONTRIBUTOR });
+    // Stored under the new names only (supply-checkout-005.6)
+    expect(moved?.sheetId).toBeUndefined();
+    expect(moved?.fromSheetId).toBeUndefined();
     expect(counts.Writes).toBeGreaterThan(0);
   });
 

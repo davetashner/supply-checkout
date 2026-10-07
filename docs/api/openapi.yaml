@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Supply Checkout API
   version: 1.0.0
-  summary: Team data (products and sheets), the signed-in user's teams and invites, and sign-in sessions for the web app.
+  summary: Team data (products and projects), the signed-in user's teams and invites, and sign-in sessions for the web app.
   description: |
     The HTTP API in front of the data Lambdas (ADR 0006). The browser adapter
     (supply-checkout-a2b) implements the app's `window.claude.use("db")` on
@@ -15,12 +15,20 @@ info:
     | App call (src/main.js) | Request |
     | --- | --- |
     | `db.collection("products").onSnapshot(cb)` | `GET /teams/{teamId}/products`, following `cursor` until absent; `snap.docs[i].id` = `id`, `.data()` = `data` |
-    | `db.collection("sheets").orderBy("date", "desc").onSnapshot(cb)` | `GET /teams/{teamId}/sheets?orderBy=date&direction=desc`, following `cursor` |
+    | `db.collection("projects").orderBy("date", "desc").onSnapshot(cb)` | `GET /teams/{teamId}/projects?orderBy=date&direction=desc`, following `cursor` |
     | `db.doc("<coll>/<id>").get()` | `GET /teams/{teamId}/<coll>/<id>`; 404 `not_found` means `exists: false` |
     | `db.doc("<coll>/<id>").set(data)` | `PUT /teams/{teamId}/<coll>/<id>` with `{"data": data}` |
     | `db.doc("<coll>/<id>").update(patch)` | `PATCH /teams/{teamId}/<coll>/<id>` with `{"data": patch}` (deep merge) |
     | `db.doc("<coll>/<id>").delete()` | `DELETE /teams/{teamId}/<coll>/<id>` |
-    | `db.collection("sheets").doc()` | no request: the adapter makes the ID (e.g. `crypto.randomUUID()`), then `set` PUTs it |
+    | `db.collection("projects").doc()` | no request: the adapter makes the ID (e.g. `crypto.randomUUID()`), then `set` PUTs it |
+
+    - **Projects were called sheets.** Through the rename's window
+      (supply-checkout-005.6) every `/teams/{teamId}/projects...` route also
+      answers under its old name, `/teams/{teamId}/sheets...` (the
+      deprecated `sheets` tag), and a project's live updates go out under
+      both collection names ([realtime.md](realtime.md)). New clients use
+      `projects`; the old names go once `LegacySheetsRouteCalls` stays at
+      zero.
 
     - **Checkout and return** don't use `PATCH` plus a stock update: they're
       the commands under the `commands` tag, each one transaction that's
@@ -123,8 +131,19 @@ security:
 tags:
   - name: products
     description: The team's inventory, the app's `products` collection.
+  - name: projects
+    description: |
+      Checkout projects per client job (formerly sheets), the app's
+      `projects` collection.
   - name: sheets
-    description: Checkout sheets per client job, the app's `sheets` collection.
+    description: |
+      Deprecated. The old names of the `projects` routes, from before the
+      sheets-to-projects rename. Each is served by the same code as its
+      `/projects` twin, with the same roles, bodies and answers, until old
+      clients are gone (the `LegacySheetsRouteCalls` metric is flat at zero),
+      then removed. Bodies take a renamed field under either name
+      (`toProjectId` or `toSheetId`), and answers carry both (`project` and
+      `sheet`, `projectId` and `sheetId`; see [commands.md](commands.md)).
   - name: commands
     description: |
       Checkout, return and stock adjustments as single transactions, each
@@ -405,12 +424,35 @@ paths:
           description: "`aborted`: items kept changing under the import (send the same request again to finish it), or it can't go on as staged: its plan expired, or a key it planned to create was taken by an item with another barcode (import the file again with a new `importId`). The message says which."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "413": { $ref: "#/components/responses/TooLarge" }
+  /teams/{teamId}/projects:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    get:
+      tags: [projects]
+      operationId: listProjects
+      summary: List the team's projects, by ID (consistent) or by date (from an index).
+      parameters:
+        - name: orderBy
+          in: query
+          description: "`date` for date order, which the app's project list uses."
+          schema: { type: string, enum: [date] }
+        - name: direction
+          in: query
+          description: With `orderBy`. Default `asc`.
+          schema: { type: string, enum: [asc, desc] }
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200": { $ref: "#/components/responses/DocumentList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /teams/{teamId}/sheets:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     get:
       tags: [sheets]
       operationId: listSheets
-      summary: List the team's sheets, by ID (consistent) or by date (from an index).
+      deprecated: true
+      summary: "Deprecated: the old name of `GET /teams/{teamId}/projects`, served by the same code, with the same roles, body and answers, through the rename's window. Calls are counted in `LegacySheetsRouteCalls`."
       parameters:
         - name: orderBy
           in: query
@@ -427,6 +469,59 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /teams/{teamId}/projects/{projectId}:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+    get:
+      tags: [projects]
+      operationId: getProject
+      summary: Read one project.
+      responses:
+        "200": { $ref: "#/components/responses/Document" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [projects]
+      operationId: setProject
+      summary: Create or replace a project (the app's `set`).
+      requestBody: { $ref: "#/components/requestBodies/Write" }
+      responses:
+        "200": { $ref: "#/components/responses/Document" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+    patch:
+      tags: [projects]
+      operationId: updateProject
+      summary: Deep-merge into an existing project (the app's `update`), e.g. `{"data":{"items":{"<key>":{"returned":3}}}}`.
+      requestBody: { $ref: "#/components/requestBodies/Write" }
+      responses:
+        "200": { $ref: "#/components/responses/Document" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+    delete:
+      tags: [projects]
+      operationId: deleteProject
+      summary: Delete a project. Deleting one that doesn't exist succeeds with `expectedVersion=0`.
+      parameters: [{ $ref: "#/components/parameters/expectedVersion" }]
+      responses:
+        "204": { description: "Deleted, or already gone." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /teams/{teamId}/sheets/{sheetId}:
     parameters:
       - $ref: "#/components/parameters/teamId"
@@ -437,7 +532,8 @@ paths:
     get:
       tags: [sheets]
       operationId: getSheet
-      summary: Read one sheet.
+      deprecated: true
+      summary: "Deprecated: the old name of `GET /teams/{teamId}/projects/{projectId}`, served by the same code, with the same roles, body and answers, through the rename's window. Calls are counted in `LegacySheetsRouteCalls`."
       responses:
         "200": { $ref: "#/components/responses/Document" }
         "400": { $ref: "#/components/responses/BadRequest" }
@@ -447,7 +543,8 @@ paths:
     put:
       tags: [sheets]
       operationId: setSheet
-      summary: Create or replace a sheet (the app's `set`).
+      deprecated: true
+      summary: "Deprecated: the old name of `PUT /teams/{teamId}/projects/{projectId}`, served by the same code, with the same roles, body and answers, through the rename's window. Calls are counted in `LegacySheetsRouteCalls`."
       requestBody: { $ref: "#/components/requestBodies/Write" }
       responses:
         "200": { $ref: "#/components/responses/Document" }
@@ -459,7 +556,8 @@ paths:
     patch:
       tags: [sheets]
       operationId: updateSheet
-      summary: Deep-merge into an existing sheet (the app's `update`), e.g. `{"data":{"items":{"<key>":{"returned":3}}}}`.
+      deprecated: true
+      summary: "Deprecated: the old name of `PATCH /teams/{teamId}/projects/{projectId}`, served by the same code, with the same roles, body and answers, through the rename's window. Calls are counted in `LegacySheetsRouteCalls`."
       requestBody: { $ref: "#/components/requestBodies/Write" }
       responses:
         "200": { $ref: "#/components/responses/Document" }
@@ -472,7 +570,8 @@ paths:
     delete:
       tags: [sheets]
       operationId: deleteSheet
-      summary: Delete a sheet. Deleting one that doesn't exist succeeds with `expectedVersion=0`.
+      deprecated: true
+      summary: "Deprecated: the old name of `DELETE /teams/{teamId}/projects/{projectId}`, served by the same code, with the same roles, body and answers, through the rename's window. Calls are counted in `LegacySheetsRouteCalls`."
       parameters: [{ $ref: "#/components/parameters/expectedVersion" }]
       responses:
         "204": { description: "Deleted, or already gone." }
@@ -480,17 +579,17 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
-  /teams/{teamId}/sheets/{sheetId}/checkout:
+  /teams/{teamId}/projects/{projectId}/checkout:
     parameters:
       - $ref: "#/components/parameters/teamId"
-      - $ref: "#/components/parameters/sheetId"
+      - $ref: "#/components/parameters/projectId"
     post:
       tags: [commands]
       operationId: checkoutItems
-      summary: Check out whole eaches of an item onto a sheet, and take them off stock, in one transaction.
+      summary: Check out whole eaches of an item onto a project, and take them off stock, in one transaction.
       description: |
         Adds `quantity` to the line's `out`, creating the line if it isn't on
-        the sheet yet, and takes `quantity` off the product's `stock` if the
+        the project yet, and takes `quantity` off the product's `stock` if the
         product tracks stock. A new line copies `code`, `name`, `price` and
         `cost` from the product as the transaction finds it (ADR 0014), and for
         company equipment (ADR 0017) `kind: "equipment"` instead of a `price`,
@@ -498,10 +597,28 @@ paths:
         of the line updates; the
         request's `name`, `price`, `code` and `cost` are used only for an item
         that isn't in inventory, and then `name` and `price` are required. An
-        existing line's copy never changes. The sheet must be open (any
-        `status` but `closed`), and a job sheet: the ad hoc sheet takes only
+        existing line's copy never changes. The project must be open (any
+        `status` but `closed`), and a client project: the General Use project takes only
         quick takes (400). Contributors and owners only. Idempotent by
         `operationId`: see [commands.md](commands.md).
+      requestBody: { $ref: "#/components/requestBodies/Checkout" }
+      responses:
+        "200": { $ref: "#/components/responses/CommandDone" }
+        "400": { $ref: "#/components/responses/CommandRefused" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/CommandConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+  /teams/{teamId}/sheets/{sheetId}/checkout:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - $ref: "#/components/parameters/sheetId"
+    post:
+      tags: [sheets]
+      operationId: checkoutItemsOnSheet
+      deprecated: true
+      summary: "Deprecated: the old name of `POST /teams/{teamId}/projects/{projectId}/checkout`, served by the same code, with the same roles, body and answers, through the rename's window. Calls are counted in `LegacySheetsRouteCalls`."
       requestBody: { $ref: "#/components/requestBodies/Checkout" }
       responses:
         "200": { $ref: "#/components/responses/CommandDone" }
@@ -524,7 +641,7 @@ paths:
         one, `adhoc-<n>` (`kind: "adhoc"`, no client, `date` as sent or
         today in UTC), and makes it the open one. Two first takes at once end
         on one sheet: one transaction makes it, and the other adds to it.
-        `result.sheetId` names the sheet, `result.sheetCreated` says whether
+        `result.projectId` (and `sheetId`) names it, `result.projectCreated` (and `sheetCreated`) says whether
         this take started it, and a retry returns the same. Otherwise as a
         checkout: the line, its snapshot, stock and the movement
         (`reason: "checkout"`). Contributors and owners only. Idempotent by
@@ -537,25 +654,43 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/CommandConflict" }
         "413": { $ref: "#/components/responses/TooLarge" }
+  /teams/{teamId}/projects/{projectId}/move:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - $ref: "#/components/parameters/projectId"
+    post:
+      tags: [commands]
+      operationId: moveLine
+      summary: Move a whole line from the open General Use project to an open client project, in one transaction, without moving stock.
+      description: |
+        `projectId` is the open General Use project and `toProjectId` an open client project
+        (ADR 0017, section 5). The line comes off the General Use project, on the
+        condition that the project is unchanged since the server read it, and
+        its `out`, `returned` and `lost` are added to the client project's line for
+        the item, which keeps its own snapshot; without one, the line arrives
+        as it is, with the price it was taken at. Lines of different kinds
+        are refused (400). Stock doesn't move: a movement with
+        `reason: "move"`, `delta: 0`, `fromProjectId` and the counts records
+        it. Both projects get a new version. Contributors and owners only.
+        Idempotent by `operationId`.
+      requestBody: { $ref: "#/components/requestBodies/Move" }
+      responses:
+        "200": { $ref: "#/components/responses/LineMoved" }
+        "400": { $ref: "#/components/responses/CommandRefused" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/CommandConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
   /teams/{teamId}/sheets/{sheetId}/move:
     parameters:
       - $ref: "#/components/parameters/teamId"
       - $ref: "#/components/parameters/sheetId"
     post:
-      tags: [commands]
-      operationId: moveLine
-      summary: Move a whole line from the open ad hoc sheet to an open job sheet, in one transaction, without moving stock.
-      description: |
-        `sheetId` is the open ad hoc sheet and `toSheetId` an open job sheet
-        (ADR 0017, section 5). The line comes off the ad hoc sheet, on the
-        condition that the sheet is unchanged since the server read it, and
-        its `out`, `returned` and `lost` are added to the job sheet's line for
-        the item, which keeps its own snapshot; without one, the line arrives
-        as it is, with the price it was taken at. Lines of different kinds
-        are refused (400). Stock doesn't move: a movement with
-        `reason: "move"`, `delta: 0`, `fromSheetId` and the counts records
-        it. Both sheets get a new version. Contributors and owners only.
-        Idempotent by `operationId`.
+      tags: [sheets]
+      operationId: moveLineOnSheet
+      deprecated: true
+      summary: "Deprecated: the old name of `POST /teams/{teamId}/projects/{projectId}/move`, served by the same code, with the same roles, body and answers, through the rename's window. Calls are counted in `LegacySheetsRouteCalls`."
       requestBody: { $ref: "#/components/requestBodies/Move" }
       responses:
         "200": { $ref: "#/components/responses/LineMoved" }
@@ -695,18 +830,18 @@ paths:
                   usage: { $ref: "#/components/schemas/ReceiptUsage" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-  /teams/{teamId}/sheets/{sheetId}/lines:
+  /teams/{teamId}/projects/{projectId}/lines:
     parameters:
       - $ref: "#/components/parameters/teamId"
-      - $ref: "#/components/parameters/sheetId"
+      - $ref: "#/components/parameters/projectId"
     post:
       tags: [commands]
       operationId: addLines
-      summary: Add a receipt's lines for a client to a sheet, in one transaction, without moving stock.
+      summary: Add a receipt's lines for a client to a project, in one transaction, without moving stock.
       description: |
-        Adds each line's `quantity` to the sheet's `out` for its product,
+        Adds each line's `quantity` to the project's `out` for its product,
         creating the line, with the request's `code`, `name`, `price` and
-        `cost`, if the sheet doesn't have it. An existing line keeps its copy.
+        `cost`, if the project doesn't have it. An existing line keeps its copy.
         A line whose product is company equipment (read in the transaction)
         is bought for the client (ADR 0017, section 2a): it goes on the line
         `<productKey>:bought` with `purchased: true`, at the request's `price`
@@ -717,12 +852,55 @@ paths:
         `priceSet`, is refused with 400.
         Every line changes or none does. Stock doesn't move: the items were
         bought for the client and never were in storage. 1 to 40 lines, each
-        product at most once. The sheet must be open, and a job sheet (not the
-        ad hoc sheet: 400). Contributors and owners only. Idempotent by
+        product at most once. The project must be open, and a client project (not the
+        General Use project: 400). Contributors and owners only. Idempotent by
         `operationId`: see [commands.md](commands.md).
       requestBody: { $ref: "#/components/requestBodies/AddLines" }
       responses:
         "200": { $ref: "#/components/responses/LinesAdded" }
+        "400": { $ref: "#/components/responses/CommandRefused" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/CommandConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+  /teams/{teamId}/sheets/{sheetId}/lines:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - $ref: "#/components/parameters/sheetId"
+    post:
+      tags: [sheets]
+      operationId: addLinesToSheet
+      deprecated: true
+      summary: "Deprecated: the old name of `POST /teams/{teamId}/projects/{projectId}/lines`, served by the same code, with the same roles, body and answers, through the rename's window. Calls are counted in `LegacySheetsRouteCalls`."
+      requestBody: { $ref: "#/components/requestBodies/AddLines" }
+      responses:
+        "200": { $ref: "#/components/responses/LinesAdded" }
+        "400": { $ref: "#/components/responses/CommandRefused" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/CommandConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+  /teams/{teamId}/projects/{projectId}/return:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - $ref: "#/components/parameters/projectId"
+    post:
+      tags: [commands]
+      operationId: returnItems
+      summary: Record whole eaches of a line coming back, and put them back in stock, in one transaction.
+      description: |
+        Adds `quantity` to the line's `returned`, which with `lost` can never
+        go above `out`, and adds `quantity` to the product's `stock` if the product
+        tracks stock. Prices aren't touched. The project must be open: a closed
+        project takes no returns (reopen it first, or correct the line's counts
+        with a `PATCH`, which doesn't move stock). A line bought for the
+        client (`purchased: true`) doesn't come back: 400. Contributors and
+        owners only. Idempotent by `operationId`.
+      requestBody: { $ref: "#/components/requestBodies/Return" }
+      responses:
+        "200": { $ref: "#/components/responses/CommandDone" }
         "400": { $ref: "#/components/responses/CommandRefused" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -734,18 +912,36 @@ paths:
       - $ref: "#/components/parameters/teamId"
       - $ref: "#/components/parameters/sheetId"
     post:
-      tags: [commands]
-      operationId: returnItems
-      summary: Record whole eaches of a line coming back, and put them back in stock, in one transaction.
-      description: |
-        Adds `quantity` to the line's `returned`, which with `lost` can never
-        go above `out`, and adds `quantity` to the product's `stock` if the product
-        tracks stock. Prices aren't touched. The sheet must be open: a closed
-        sheet takes no returns (reopen it first, or correct the line's counts
-        with a `PATCH`, which doesn't move stock). A line bought for the
-        client (`purchased: true`) doesn't come back: 400. Contributors and
-        owners only. Idempotent by `operationId`.
+      tags: [sheets]
+      operationId: returnItemsOnSheet
+      deprecated: true
+      summary: "Deprecated: the old name of `POST /teams/{teamId}/projects/{projectId}/return`, served by the same code, with the same roles, body and answers, through the rename's window. Calls are counted in `LegacySheetsRouteCalls`."
       requestBody: { $ref: "#/components/requestBodies/Return" }
+      responses:
+        "200": { $ref: "#/components/responses/CommandDone" }
+        "400": { $ref: "#/components/responses/CommandRefused" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/CommandConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+  /teams/{teamId}/projects/{projectId}/lost:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - $ref: "#/components/parameters/projectId"
+    post:
+      tags: [commands]
+      operationId: markLost
+      summary: Record company equipment lost or broken on the job, in one transaction, without moving stock.
+      description: |
+        Adds `quantity` to an equipment line's `lost`, which with `returned`
+        can never go above `out`, and records a movement with `reason: "lost"`
+        and `delta: 0` (stock went down at checkout). With `charge` (dollars
+        for the lot, a client project only), adds it to the line's `lostCharge`,
+        which the project charges the client (ADR 0017, section 3). Equipment
+        lines only, and the project must be open. Contributors and owners only.
+        Idempotent by `operationId`.
+      requestBody: { $ref: "#/components/requestBodies/Lost" }
       responses:
         "200": { $ref: "#/components/responses/CommandDone" }
         "400": { $ref: "#/components/responses/CommandRefused" }
@@ -759,17 +955,10 @@ paths:
       - $ref: "#/components/parameters/teamId"
       - $ref: "#/components/parameters/sheetId"
     post:
-      tags: [commands]
-      operationId: markLost
-      summary: Record company equipment lost or broken on the job, in one transaction, without moving stock.
-      description: |
-        Adds `quantity` to an equipment line's `lost`, which with `returned`
-        can never go above `out`, and records a movement with `reason: "lost"`
-        and `delta: 0` (stock went down at checkout). With `charge` (dollars
-        for the lot, a job sheet only), adds it to the line's `lostCharge`,
-        which the sheet charges the client (ADR 0017, section 3). Equipment
-        lines only, and the sheet must be open. Contributors and owners only.
-        Idempotent by `operationId`.
+      tags: [sheets]
+      operationId: markLostOnSheet
+      deprecated: true
+      summary: "Deprecated: the old name of `POST /teams/{teamId}/projects/{projectId}/lost`, served by the same code, with the same roles, body and answers, through the rename's window. Calls are counted in `LegacySheetsRouteCalls`."
       requestBody: { $ref: "#/components/requestBodies/Lost" }
       responses:
         "200": { $ref: "#/components/responses/CommandDone" }
@@ -2278,10 +2467,17 @@ components:
       required: true
       description: The product key, percent-encoded. Up to 256 characters, no `/` or control characters, and not `__proto__`.
       schema: { type: string, minLength: 1, maxLength: 256 }
+    projectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
     sheetId:
       name: sheetId
       in: path
       required: true
+      deprecated: true
+      description: The old name of `projectId`.
       schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
     limit:
       name: limit
@@ -2384,11 +2580,13 @@ components:
           schema:
             type: object
             additionalProperties: false
-            required: [operationId, productKey, toSheetId]
+            required: [operationId, productKey]
+            description: "`toProjectId`, or its old name `toSheetId`, is required; both may be sent only with the same value."
             properties:
               operationId: { $ref: "#/components/schemas/OperationId" }
-              productKey: { type: string, minLength: 1, maxLength: 256, description: The ad hoc sheet's line. }
-              toSheetId: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$", description: The open job sheet it goes to. }
+              productKey: { type: string, minLength: 1, maxLength: 256, description: The General Use project's line. }
+              toProjectId: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$", description: The open client project it goes to. }
+              toSheetId: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$", deprecated: true, description: The old name of `toProjectId`. }
     AddLines:
       required: true
       content:
@@ -2698,9 +2896,12 @@ components:
         command: { type: string, enum: [checkout, quickTake, return, lost, move, stockAdjust] }
         reason: { type: string, enum: [checkout, return, lost, move, receipt, count, uncount] }
         productKey: { type: string }
-        sheetId: { type: string, description: "Checkout, return and lost; for a quick take the ad hoc sheet it went on, and for a move the ad hoc sheet it came off." }
-        toSheetId: { type: string, description: "Move only: the job sheet the line went to." }
-        sheetCreated: { type: boolean, description: "Quick take only: this take started the ad hoc sheet." }
+        projectId: { type: string, description: "Checkout, return and lost; for a quick take the General Use project it went on, and for a move the General Use project it came off." }
+        toProjectId: { type: string, description: "Move only: the client project the line went to." }
+        projectCreated: { type: boolean, description: "Quick take only: this take started the General Use project." }
+        sheetId: { type: string, deprecated: true, description: "The old name of `projectId`, with the same value." }
+        toSheetId: { type: string, deprecated: true, description: "The old name of `toProjectId`, with the same value." }
+        sheetCreated: { type: boolean, deprecated: true, description: "The old name of `projectCreated`, with the same value." }
         returned: { type: integer, description: "Move only: the line's `returned` that moved." }
         lost: { type: integer, description: "Move only: the line's `lost` that moved." }
         quantity: { type: integer, description: "Eaches checked out, returned or received; for a move, the line's `out`. Absent for a count or uncount." }
@@ -2719,13 +2920,15 @@ components:
       properties:
         type: { const: movement }
         productKey: { type: string }
-        reason: { type: string, enum: [checkout, return, receipt, count, uncount, import, delete, lost, move], description: "`import`: a CSV import set the stock (`count`). `uncount`: someone stopped counting the item, removing its stock, recorded as taking it to 0. `delete`: the item was deleted, taking its stock to 0. `lost`: company equipment lost or broken on a job (`delta` 0: stock went down at checkout). `move`: a whole line moved from the ad hoc sheet (`fromSheetId`) to a job sheet (`sheetId`), with its `quantity` (out), `returned` and `lost` (`delta` 0: stock went down at the quick take)." }
+        reason: { type: string, enum: [checkout, return, receipt, count, uncount, import, delete, lost, move], description: "`import`: a CSV import set the stock (`count`). `uncount`: someone stopped counting the item, removing its stock, recorded as taking it to 0. `delete`: the item was deleted, taking its stock to 0. `lost`: company equipment lost or broken on a job (`delta` 0: stock went down at checkout). `move`: a whole line moved from the General Use project (`fromProjectId`) to a client project (`projectId`), with its `quantity` (out), `returned` and `lost` (`delta` 0: stock went down at the quick take)." }
         delta: { type: integer, description: The change to `stock`. 0 when the item didn't track stock. }
         tracked: { type: boolean, description: Whether the item tracked stock. }
         quantity: { type: integer }
         count: { type: integer }
-        sheetId: { type: string, description: "The sheet; for a move, the job sheet the line went to." }
-        fromSheetId: { type: string, description: "Move only: the ad hoc sheet the line came off." }
+        projectId: { type: string, description: "The project; for a move, the client project the line went to." }
+        fromProjectId: { type: string, description: "Move only: the General Use project the line came off." }
+        sheetId: { type: string, deprecated: true, description: "The old name of `projectId`, with the same value." }
+        fromSheetId: { type: string, deprecated: true, description: "The old name of `fromProjectId`, with the same value." }
         returned: { type: integer, description: "Move only: the line's `returned` that moved." }
         lost: { type: integer, description: "Move only: the line's `lost` that moved." }
         unitCost: { type: number }
@@ -3019,8 +3222,9 @@ components:
       description: |
         Done, now or by an earlier request with the same `operationId`
         (`replayed: true`, and nothing changed this time). `result` is what
-        the first run did; `sheet` and `product` are the documents as they
-        are now, read after the command.
+        the first run did; `project` (also as `sheet`, its old name, through
+        the rename's window) and `product` are the documents as they are now,
+        read after the command.
       content:
         application/json:
           schema:
@@ -3030,8 +3234,12 @@ components:
               operationId: { type: string, format: uuid }
               replayed: { type: boolean }
               result: { $ref: "#/components/schemas/CommandResult" }
+              project:
+                description: Every command on a project, and a quick take. `null` if the project has since been deleted.
+                oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }]
               sheet:
-                description: Checkout and return only. `null` if the sheet has since been deleted.
+                deprecated: true
+                description: The old name of `project`, the same document.
                 oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }]
               product:
                 description: "`null` for an item that isn't in inventory."
@@ -3040,41 +3248,47 @@ components:
       description: |
         Done, now or by an earlier request with the same `operationId`
         (`replayed: true`, and nothing changed this time). `result` is what
-        the first run did; `sheet` (the ad hoc sheet) and `toSheet` (the job
-        sheet) are as they are now, read after the command (`null` if since
-        deleted). No item changed, so `product` is `null`.
+        the first run did; `project` (the General Use project) and
+        `toProject` (the client project) are as they are now, read after the
+        command (`null` if since deleted), and through the rename's window
+        also under their old names, `sheet` and `toSheet`. No item changed, so
+        `product` is `null`.
       content:
         application/json:
           schema:
             type: object
-            required: [operationId, replayed, result, sheet, toSheet, product]
+            required: [operationId, replayed, result, project, toProject, sheet, toSheet, product]
             properties:
               operationId: { type: string, format: uuid }
               replayed: { type: boolean }
               result: { $ref: "#/components/schemas/CommandResult" }
-              sheet: { oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }] }
-              toSheet: { oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }] }
+              project: { oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }] }
+              toProject: { oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }] }
+              sheet: { deprecated: true, description: "The old name of `project`.", oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }] }
+              toSheet: { deprecated: true, description: "The old name of `toProject`.", oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }] }
               product: { type: "null" }
     LinesAdded:
       description: |
         Done, now or by an earlier request with the same `operationId`
         (`replayed: true`, and nothing changed this time). `result` is what
-        the first run did; `sheet` is as it is now, read after the command.
+        the first run did; `project` (also as `sheet`, its old name, through
+        the rename's window) is as it is now, read after the command.
       content:
         application/json:
           schema:
             type: object
-            required: [operationId, replayed, result, sheet]
+            required: [operationId, replayed, result, project, sheet]
             properties:
               operationId: { type: string, format: uuid }
               replayed: { type: boolean }
               result:
                 type: object
-                required: [operationId, command, sheetId, lines, userId, at]
+                required: [operationId, command, projectId, sheetId, lines, userId, at]
                 properties:
                   operationId: { type: string, format: uuid }
                   command: { const: addLines }
-                  sheetId: { type: string }
+                  projectId: { type: string }
+                  sheetId: { type: string, deprecated: true, description: "The old name of `projectId`, with the same value." }
                   lines:
                     type: array
                     items:
@@ -3088,8 +3302,12 @@ components:
                         purchased: { const: true }
                   userId: { type: string }
                   at: { type: string, format: date-time }
+              project:
+                description: "`null` if the project has since been deleted."
+                oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }]
               sheet:
-                description: "`null` if the sheet has since been deleted."
+                deprecated: true
+                description: The old name of `project`, the same document.
                 oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }]
     CommandRefused:
       description: |

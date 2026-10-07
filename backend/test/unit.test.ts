@@ -36,11 +36,16 @@ describe("keys (ADR 0005)", () => {
     expect(keys.invite("t1", "i1")).toEqual({ PK: "TEAM#t1", SK: "INVITE#i1" });
     expect(keys.product("t1", "0123 456")).toEqual({ PK: "TEAM#t1", SK: "PRODUCT#0123 456" });
     expect(keys.sheet("t1", "s1")).toEqual({ PK: "TEAM#t1", SK: "SHEET#s1" });
+    expect(keys.project("t1", "s1")).toEqual({ PK: "TEAM#t1", SK: "PROJECT#s1" });
+    expect(() => keys.project("t1", "a#b")).toThrow(InvalidInputError);
     expect(keys.usage("t1", "2026-09")).toEqual({ PK: "TEAM#t1", SK: "USAGE#2026-09" });
     expect(keys.audit("t1", "2026-09-25T00:00:00.000Z", "e1")).toEqual({ PK: "TEAM#t1", SK: "AUDIT#2026-09-25T00:00:00.000Z#e1" });
     expect(keys.stripe("cus_1")).toEqual({ PK: "STRIPE#cus_1", SK: "TEAM" });
     expect(keys.webhook("evt_1")).toEqual({ PK: "WEBHOOK#evt_1", SK: "DONE" });
     expect(gsi1.sheetsByDate("t1", "2026-09-25", "s1")).toEqual({ GSI1PK: "TEAM#t1#SHEETS", GSI1SK: "2026-09-25#s1" });
+    expect(gsi1.projectsByDate("t1", "2026-09-25", "s1")).toEqual({ GSI1PK: "TEAM#t1#PROJECTS", GSI1SK: "2026-09-25#s1" });
+    expect(gsi1.projectsPartition("t1")).toBe("TEAM#t1#PROJECTS");
+    expect(() => gsi1.projectsByDate("t1", "25/09/2026", "s1")).toThrow(InvalidInputError);
     expect(gsi1.inviteToken("abc")).toEqual({ GSI1PK: "INVITE#abc", GSI1SK: "INVITE" });
   });
 

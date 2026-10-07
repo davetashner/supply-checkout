@@ -395,8 +395,8 @@ describe.skipIf(!endpoint)("the artifact import (DynamoDB Local)", () => {
     const put = (Item: Record<string, unknown>) => connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item }));
     await put({ ...keys.product(ctx.teamId, "p-gloves-m"), type: "product", key: "p-gloves-m", code: "", name: "Nitrile gloves (M), box", price: 9, stock: 2, version: 3 });
     await put({ ...keys.product(ctx.teamId, "p-mop-heads"), type: "product", key: "p-mop-heads", code: "", name: "Mop heads", price: 7.25, stock: 4, version: 3 });
-    await put({ ...keys.sheet(ctx.teamId, "Vb2Nc6Xz0Aq4Ws8Ed1Rf"), type: "sheet", id: "Vb2Nc6Xz0Aq4Ws8Ed1Rf", items: { a: { name: "A", price: 1, out: 1, returned: 0 } }, version: 2 });
-    await put({ ...keys.sheet(ctx.teamId, "Tq9Ps4MmC7dE1fG5hJ8k"), type: "sheet", id: "Tq9Ps4MmC7dE1fG5hJ8k", version: 2 });
+    await put({ ...keys.project(ctx.teamId, "Vb2Nc6Xz0Aq4Ws8Ed1Rf"), type: "project", id: "Vb2Nc6Xz0Aq4Ws8Ed1Rf", items: { a: { name: "A", price: 1, out: 1, returned: 0 } }, version: 2 });
+    await put({ ...keys.project(ctx.teamId, "Tq9Ps4MmC7dE1fG5hJ8k"), type: "project", id: "Tq9Ps4MmC7dE1fG5hJ8k", version: 2 });
     const check = await verifyArtifactImport(db, ctx, parsed);
     expect(check.mismatches).toEqual([
       { at: 'item key "p-mop-heads"', message: "stock is 4, not not tracked" },
