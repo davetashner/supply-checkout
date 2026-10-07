@@ -1,6 +1,7 @@
 // Keeps `npm run dev` working: serves the app with the mock runtime, demo data
 // and the query-string options documented in scripts/dev-server.mjs.
 import { test, expect } from "./helpers.js";
+import { goToInventory } from "./ui/index.js";
 import { createDevServer } from "../scripts/dev-server.mjs";
 
 let server, base;
@@ -22,7 +23,7 @@ test("serves the app with demo projects and inventory", async ({ page }) => {
   await expect(page.getByRole("button", { name: /Acme Offices/ })).toBeVisible();
   await page.getByRole("button", { name: "Returned" }).click();
   await expect(page.getByRole("button", { name: /Harbor Dental/ })).toBeVisible();
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await expect(page.locator("#main tbody tr")).toHaveCount(4);
 });
 
@@ -36,7 +37,7 @@ test("demo receipt reading matches inventory", async ({ page }) => {
 test("?seed=empty starts with no data", async ({ page }) => {
   await open(page, "?seed=empty");
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await expect(page.getByText("No items yet.")).toBeVisible();
 });
 

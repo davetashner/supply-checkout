@@ -2,7 +2,8 @@
 // must not break the app or the demo. Each build is served with that header, and a test
 // fails on any violation: the page fixture already fails on the console error a browser
 // logs, and each test also collects securitypolicyviolation events.
-import { test, expect, createProject, enterBarcode, modal } from "./helpers.js";
+import { test, expect } from "./helpers.js";
+import { modal, createProject, openProject, enterBarcode } from "./ui/index.js";
 import { DEMO, builtFiles } from "../scripts/builds.mjs";
 import { installMockClaude } from "./mock-claude.js";
 import { fakeImage } from "./fixtures.js";
@@ -121,7 +122,7 @@ test("the web app signs in, loads its data from the API and reports to RUM under
 test("the demo runs under the policy at /demo/, including its barcode reader, CSV download and receipt", async ({ page }) => {
   await serve(page, DEMO_SITE, builtFiles(DEMO), "/demo");
   await page.goto(DEMO_SITE + "/demo/");
-  await page.getByRole("button", { name: /Acme Offices/ }).click();
+  await openProject(page, "Acme Offices");
   await expect(page.getByRole("heading", { name: "Acme Offices" })).toBeVisible();
 
   // ZXing's chunk resolves under /demo/ too

@@ -1,6 +1,7 @@
 // Projects and items saved by older versions, or edited elsewhere, can be
 // missing fields. The app fills in sensible defaults instead of breaking.
-import { test, expect, openApp, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, goToInventory, openProject, enterBarcode, addToProject, startReturn, lineRow, inventoryRow, uploadReceipt, continueReview } from "./ui/index.js";
 import { fakeImage } from "./fixtures.js";
 
 const bare = {
@@ -16,15 +17,15 @@ const bare = {
 
 test("a project with no date or items opens and takes checkouts", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, bare);
-  await page.getByRole("button", { name: /Old Project/ }).click();
+  await openProject(page, "Old Project");
   await expect(page.getByText("No supplies on this project yet.")).toBeVisible();
 
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "NP1");
   await expect(modal(page).getByRole("heading", { name: "Not on this project" })).toBeVisible();
   await modal(page).getByRole("button", { name: "Check it out instead" }).click();
   await expect(modal(page)).toContainText("$0.00 each");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(page.locator("#projectBody tbody tr")).toHaveCount(1);
   await expect(page.locator("#projectBody tbody tr")).toContainText("Unnamed item");
 
@@ -36,7 +37,7 @@ test("a project with no date or items opens and takes checkouts", { tag: ["@J4"]
 
 test("lines and items without names or prices use placeholders", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, bare);
-  await page.getByRole("button", { name: /Nameless Lines/ }).click();
+  await openProject(page, "Nameless Lines");
   await lineRow(page, "Unnamed item").click();
   await expect(modal(page).getByRole("heading", { name: "Item", exact: true })).toBeVisible();
   await expect(modal(page).getByLabel("Price each on this project ($)")).toHaveValue("0");
@@ -44,13 +45,13 @@ test("lines and items without names or prices use placeholders", { tag: ["@J4"] 
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(lineRow(page, "Unnamed item")).toContainText("$0.00");
 
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await page.getByRole("button", { name: "Return item without a barcode" }).click();
   await modal(page).locator(".pick button").click();
   await expect(modal(page).locator("#sum")).toContainText("Charge $0.00");
   await modal(page).getByRole("button", { name: "Cancel" }).click();
 
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await expect(inventoryRow(page, "Unnamed item")).toContainText("Barcode NP1");
   await inventoryRow(page, "Unnamed item").click();
   await expect(modal(page).getByLabel("Price each ($)")).toHaveValue("0");
@@ -58,8 +59,7 @@ test("lines and items without names or prices use placeholders", { tag: ["@J4"] 
 
 test("receipt reading works with an empty inventory", { tag: ["@J5"] }, async ({ page }) => {
   await openApp(page, { receipt: { items: [{ name: "Rags", qty: 1, price: 2 }] } });
-  await page.setInputFiles("#receiptFile", fakeImage);
-  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+  await uploadReceipt(page, fakeImage);
   expect(await page.evaluate(() => window.__mock.sampleCalls[0])).toContain("(empty)");
 });
 
@@ -98,10 +98,10 @@ test("a receipt line that matches inventory exactly needs no choices", { tag: ["
 
 test("a barcode made only of dots still gets a safe key", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, bare);
-  await page.getByRole("button", { name: /Old Project/ }).click();
+  await openProject(page, "Old Project");
   await enterBarcode(page, "...");
   await modal(page).getByLabel("Item name").fill("Dots");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "Dots")).toContainText("Barcode ...");
   expect(await page.evaluate(() => window.__mock.docs.has("products/x..."))).toBe(true);
 });
@@ -110,7 +110,7 @@ const otherProject = { "projects/o": { client: "Other", date: "2026-09-03", crea
 
 test("projects by people without a profile name export as Someone", { tag: ["@J6"] }, async ({ page }) => {
   await openApp(page, { seed: otherProject });
-  await page.getByRole("button", { name: /Other/ }).click();
+  await openProject(page, "Other");
   await page.getByRole("button", { name: "Download CSV" }).click();
   expect(await page.evaluate(() => window.__mock.saves[0].data)).toContain("Prepared by,Someone");
 });
@@ -120,7 +120,7 @@ test("projects export as Someone when profiles can't be loaded", { tag: ["@J6"] 
     userErrors: ["profiles"],
     seed: otherProject,
   });
-  await page.getByRole("button", { name: /Other/ }).click();
+  await openProject(page, "Other");
   await page.getByRole("button", { name: "Download CSV" }).click();
   expect(await page.evaluate(() => window.__mock.saves[0].data)).toContain("Prepared by,Someone");
 });
@@ -132,6 +132,6 @@ test("a saved review missing newer fields still opens", { tag: ["@J5"] }, async 
     lines: [{ id: "l1", name: "Rags", raw: "", qty: 1, price: 2, dest: "d1", code: "", match: "", useName: "inv", usePrice: "receipt" }],
   })));
   await openApp(page);
-  await page.getByRole("button", { name: "Continue review" }).click();
+  await continueReview(page);
   await expect(page.locator(".rline")).toHaveCount(1);
 });

@@ -1,7 +1,8 @@
 // The logo in the header goes home: the project list on Out now, with no project or dialog open,
 // as the app opens (supplycheckout.com redirects to it). It's a link to the app's root, so in
 // the web build a Ctrl/Cmd click opens the app in a new tab. A dialog that's saving stays open.
-import { test, expect, openApp, enterBarcode, modal } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, goToInventory, openProject, enterBarcode, addToProject } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 
 const logo = (page) => page.getByRole("link", { name: "Supply Checkout home" });
@@ -9,7 +10,7 @@ const pressed = (page, name) => page.getByRole("button", { name, exact: true });
 
 async function openEcho(page) {
   await openApp(page, usedState);
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
 }
 
@@ -43,13 +44,13 @@ test("a click on the logo goes from another view back to Projects on Out now", a
   await openApp(page, usedState);
   await page.getByRole("button", { name: "Returned", exact: true }).click();
   await expect(page.getByRole("button", { name: "Returned", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await logo(page).click();
   await expectHome(page);
   await expect(page).toHaveURL(/\/$/);
 
   // And from an open project
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await expect(page.locator("#projectView")).toBeVisible();
   await logo(page).click();
   await expectHome(page);
@@ -69,7 +70,7 @@ test("the logo leaves a dialog that's saving open, so what was entered isn't los
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await page.evaluate(() => window.__mock.hold());
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(modal(page).getByRole("button", { name: "Saving…" })).toBeDisabled();
   await logo(page).focus();
   await page.keyboard.press("Enter");

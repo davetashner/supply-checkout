@@ -1,6 +1,7 @@
 // Several people use the app at once. These tests change the shared data
 // "from another device" while a form is open, and check nothing breaks.
-import { test, expect, openApp, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, waitUntilConnected, goToInventory, openProject, enterBarcode, addToProject, startReturn, saveReturn, lineRow, inventoryRow } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 
 // Acts as another user: changes the stored data, then fires live updates
@@ -8,8 +9,8 @@ const elsewhere = (page, fn) => page.evaluate(`(${fn})(window.__mock.docs); wind
 
 const openEcho = async (page) => {
   await openApp(page, usedState);
-  await page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await waitUntilConnected(page);
+  await openProject(page, "Echo Studio");
 };
 
 test("a project deleted by someone else closes and returns to the list", { tag: ["@J4"] }, async ({ page }) => {
@@ -22,17 +23,17 @@ test("checking out again adds to the latest count", { tag: ["@J4.2"] }, async ({
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await elsewhere(page, (docs) => { docs.get("projects/s1").items.SKU1.out = 5; });
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("6");
 });
 
 test("a return saved after someone else removed the line says so, and doesn't make a partial line", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   await elsewhere(page, (docs) => { delete docs.get("projects/s1").items.SKU1; });
   await expect(lineRow(page, "Paper towels")).toHaveCount(0);
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(page.locator("#toast")).toHaveText("Someone else removed this item from the project, so the return wasn't saved.");
   await expect(page.locator("#overlay")).toBeHidden();
   const [line, stock] = await page.evaluate(() => [window.__mock.docs.get("projects/s1").items.SKU1, window.__mock.docs.get("products/SKU1").stock]);
@@ -106,20 +107,20 @@ test("a line removed as a null line doesn't show or count", { tag: ["@J4"] }, as
   seed["projects/s1"].items["nb-bins"] = null;
   await openApp(page, { ...usedState, seed });
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toContainText("1 item · 3 taken");
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await expect(lineRow(page, "Paper towels")).toHaveCount(1);
   await expect(page.locator("#projectBody tbody tr")).toHaveCount(1);
   // Checking the item out again makes a new line
   await page.getByRole("button", { name: "Add item without a barcode" }).click();
   await modal(page).getByRole("button", { name: /Storage bins/ }).click();
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "Storage bins").locator("td").nth(2)).toHaveText("1");
   expect(await page.evaluate(() => window.__mock.docs.get("projects/s1").items["nb-bins"])).toMatchObject({ out: 1, returned: 0 });
 });
 
 test("where the runtime refuses a null value, removing a line saves the project without it", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, { ...usedState, rejectsNull: true });
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await lineRow(page, "Storage bins").click();
   await modal(page).getByRole("button", { name: "Remove" }).click();
   await modal(page).getByRole("button", { name: "Tap to remove" }).click();
@@ -144,7 +145,7 @@ test("a checkout adds to the saved line when this page hasn't heard of a change 
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await page.evaluate(() => { window.__mock.docs.get("projects/s1").items.SKU1.out = 5; });
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(page.locator("#toast")).toHaveText("Checked out 1 × Paper towels, 6 roll");
   expect(await page.evaluate(() => window.__mock.docs.get("projects/s1").items.SKU1)).toMatchObject({ out: 6, returned: 1 });
   await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("6");
@@ -152,10 +153,10 @@ test("a checkout adds to the saved line when this page hasn't heard of a change 
 
 test("a return adds to the saved line when this page hasn't heard of a change yet", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   await page.evaluate(() => { window.__mock.docs.get("projects/s1").items.SKU1.returned = 2; });
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(page.locator("#toast")).toHaveText("1 returned · 3 of 3 back");
   expect(await page.evaluate(() => [window.__mock.docs.get("projects/s1").items.SKU1.returned, window.__mock.docs.get("products/SKU1").stock])).toEqual([3, 11]);
 });
@@ -177,7 +178,7 @@ test("a checkout on a project someone else deleted doesn't bring it back or move
   const stock = await page.evaluate(() => window.__mock.docs.get("products/SKU1").stock);
   await elsewhere(page, (docs) => docs.delete("projects/s1"));
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   // It says the project was deleted, and the page stays writable
   await stillDeleted(page);
   expect(await page.evaluate(() => [window.__mock.docs.has("projects/s1"), window.__mock.docs.get("products/SKU1").stock])).toEqual([false, stock]);
@@ -185,12 +186,12 @@ test("a checkout on a project someone else deleted doesn't bring it back or move
 
 test("a return on a project someone else deleted doesn't bring it back or move stock", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   const stock = await page.evaluate(() => window.__mock.docs.get("products/SKU1").stock);
   await elsewhere(page, (docs) => docs.delete("projects/s1"));
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   // It says the project was deleted, and the page stays writable
   await stillDeleted(page);
   expect(await page.evaluate(() => [window.__mock.docs.has("projects/s1"), window.__mock.docs.get("products/SKU1").stock])).toEqual([false, stock]);
@@ -202,7 +203,7 @@ test.describe("an item's count changed while its form is open", { tag: ["@J4"] }
   const STOCK = "Single items in storage now";
   const openItem = async (page) => {
     await openEcho(page);
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
     await expect(modal(page).getByLabel(STOCK)).toHaveValue("10");
   };

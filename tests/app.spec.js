@@ -1,4 +1,5 @@
-import { test, expect, openApp, createProject, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, goToInventory, goToProjects, createProject, openProject, enterBarcode, addToProject, startReturn, saveReturn, finishReturn, lineRow, inventoryRow } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 
 test("creates a project recording client, date and who prepared it", { tag: ["@J4.1"] }, async ({ page }) => {
@@ -21,22 +22,22 @@ test("checks out a new barcode, returns part of it, and finishes the return", { 
     await modal(page).getByLabel("Item name").fill("Nitrile gloves");
     await modal(page).getByLabel("Price each ($)").fill("12.50");
     await modal(page).locator("#fQty").fill("3");
-    await modal(page).getByRole("button", { name: "Add 3 to project" }).click();
+    await addToProject(page, 3);
 
     await expect(lineRow(page, "Nitrile gloves")).toContainText("Barcode 012345678905");
     await expect(page.locator(".totals .charge")).toHaveText("$37.50");
   });
 
   await test.step("J4.3 Return what came back unused and finish the return", async () => {
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await enterBarcode(page, "012345678905");
     await modal(page).locator("#fRet").fill("1");
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
 
     await expect(page.locator(".totals")).toContainText("Returned1");
     await expect(page.locator(".totals .charge")).toHaveText("$25.00");
 
-    await page.getByRole("button", { name: "Finished Return" }).click();
+    await finishReturn(page);
     await expect(page.locator(".project-head .pill")).toHaveText("Returned");
     await expect(page.locator("#scanbar")).toBeHidden();
   });
@@ -49,21 +50,21 @@ test("storage counts go down on checkout and back up on return", { tag: ["@J4.2"
   await enterBarcode(page, "SKU1");
   await expect(modal(page)).toContainText("In storage");
   await modal(page).locator("#fQty").fill("3");
-  await modal(page).getByRole("button", { name: "Add 3 to project" }).click();
+  await addToProject(page, 3);
   await expect(lineRow(page, "Paper towels")).toBeVisible();
 
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await expect(inventoryRow(page, "Paper towels").locator("td").nth(1)).toHaveText("7");
 
-  await page.getByRole("button", { name: "Projects" }).click();
-  await page.getByRole("button", { name: /Beta LLC/ }).click();
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await goToProjects(page);
+  await openProject(page, "Beta LLC");
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   await modal(page).locator("#fRet").fill("1");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(page.locator(".totals")).toContainText("Returned1");
 
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await expect(inventoryRow(page, "Paper towels").locator("td").nth(1)).toHaveText("8");
 });
 
@@ -76,12 +77,12 @@ test("adds an item that has no barcode", { tag: ["@J4.2"] }, async ({ page }) =>
   await modal(page).getByLabel("Item name").fill("Leftover bins");
   await modal(page).getByLabel("Price each ($)").fill("4");
   await modal(page).locator("#fQty").fill("3");
-  await modal(page).getByRole("button", { name: "Add 3 to project" }).click();
+  await addToProject(page, 3);
 
   await expect(lineRow(page, "Leftover bins")).toContainText("No barcode");
   await expect(page.locator(".totals .charge")).toHaveText("$12.00");
 
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await expect(inventoryRow(page, "Leftover bins")).toBeVisible();
 });
 
@@ -125,7 +126,7 @@ test("receipt review merges duplicates and splits items between a client and sto
     await expect(page.getByRole("heading", { name: "Delta Inc" })).toBeVisible();
     await expect(lineRow(page, "Painter's tape")).toContainText("$6.25");
 
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     const binsRow = inventoryRow(page, "Storage bins, 12 qt");
     await expect(binsRow.locator("td").nth(1)).toHaveText("6");
     await expect(binsRow.locator("td").nth(2)).toHaveText("$5.00");
@@ -143,7 +144,7 @@ test("exports a project as CSV", { tag: ["@J6.1", "@J6.2"] }, async ({ page }) =
     },
   });
   await test.step("J6.1 Open the project", async () => {
-    await page.getByRole("button", { name: /Echo Studio/ }).click();
+    await openProject(page, "Echo Studio");
   });
   await test.step("J6.2 Download CSV", async () => {
     await page.getByRole("button", { name: "Download CSV" }).click();
@@ -201,12 +202,12 @@ test("returning the same item again adds to what's already been returned", { tag
       },
     },
   });
-  await page.getByRole("button", { name: /Kilo Kitchens/ }).click();
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await openProject(page, "Kilo Kitchens");
+  await startReturn(page);
 
   await enterBarcode(page, "SKU1");
   await modal(page).locator("#fRet").fill("2");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(page.locator(".totals")).toContainText("Returned2");
 
   // Second return starts from what's left and adds to the count
@@ -215,7 +216,7 @@ test("returning the same item again adds to what's already been returned", { tag
   await expect(modal(page).locator("#fRet")).toHaveAttribute("max", "3");
   await modal(page).locator("#fRet").fill("3");
   await expect(modal(page).locator("#sum")).toContainText("Returned 5 of 5");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(page.locator(".totals")).toContainText("Returned5");
   await expect(page.locator(".totals .charge")).toHaveText("$0.00");
 
@@ -225,20 +226,20 @@ test("returning the same item again adds to what's already been returned", { tag
   await modal(page).getByRole("button", { name: "Close" }).click();
 
   // Both returns went back into storage
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await expect(inventoryRow(page, "Paper towels").locator("td").nth(1)).toHaveText("5");
 });
 
 test("Enter on a project line or inventory row opens its editor and keeps it open", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, usedState);
   await expect(page.locator("#notice")).toBeHidden();
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await lineRow(page, "Storage bins").press("Enter");
   await expect(modal(page).getByRole("heading", { name: "Storage bins, 12 qt" })).toBeVisible();
   await expect(page.locator("#toast")).toBeHidden();
   await modal(page).getByRole("button", { name: "Cancel" }).click();
 
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await inventoryRow(page, "Paper towels").press("Enter");
   await expect(modal(page).getByRole("heading", { name: "Edit item" })).toBeVisible();
   await expect(page.locator("#toast")).toBeHidden();
@@ -246,7 +247,7 @@ test("Enter on a project line or inventory row opens its editor and keeps it ope
 
 test("inventory search matches barcodes in any case", { tag: ["@J2"] }, async ({ page }) => {
   await openApp(page, usedState);
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await page.getByRole("button", { name: "Add item without a barcode" }).click();
   await modal(page).getByLabel("Or pick from inventory").fill("sku1");
   await expect(modal(page).locator("#pick button")).toHaveCount(1);

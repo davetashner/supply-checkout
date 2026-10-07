@@ -2,7 +2,8 @@
 // prepared it and items; finished projects grouped by month under year headings, with counts
 // and, for owners, total charges; and a year filter that also scopes the owner's projects CSV.
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect, openApp, modal } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, waitUntilConnected, goToInventory, openProject } from "./ui/index.js";
 
 const Y = String(new Date().getFullYear()), OLD = String(Number(Y) - 1);
 const line = (name, price, out, returned = 0) => ({ code: "", name, price, out, returned });
@@ -22,7 +23,7 @@ const seed = {
 
 async function open(page, opts = {}) {
   await openApp(page, { seed, ...opts });
-  await page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
+  await waitUntilConnected(page);
 }
 const search = (page) => page.getByRole("searchbox", { name: "Search projects" });
 const cards = (page) => page.locator("#main .project-card:visible h3");
@@ -65,12 +66,12 @@ test("search finds projects by client, who prepared them and their items, in eac
 
   // The search stays when a project is opened and closed
   await search(page).fill("charlie");
-  await page.getByRole("button", { name: /Charlie Cafe/ }).click();
+  await openProject(page, "Charlie Cafe");
   await page.getByRole("button", { name: "← All projects" }).click();
   await expect(search(page)).toHaveValue("charlie");
   await expect(cards(page)).toHaveText(["Charlie Cafe"]);
   // and after the Inventory, which draws the list afresh
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await page.getByRole("button", { name: "Projects", exact: true }).click();
   await expect(search(page)).toHaveValue("charlie");
   await expect(cards(page)).toHaveText(["Charlie Cafe"]);
@@ -129,7 +130,7 @@ test("Returned groups projects by month under year headings, with counts and the
   await page.getByRole("button", { name: "All", exact: true }).click();
   await expect(cards(page)).toHaveText(["General Use (no job)", "Foxtrot <Flooring>", "Delta Dental", "Echo Old", "Nodate Co"]);
   await expect(toggle(page, Y)).toHaveAttribute("aria-expanded", "false");
-  await page.getByRole("button", { name: /Delta Dental/ }).click();
+  await openProject(page, "Delta Dental");
   await page.getByRole("button", { name: "← All projects" }).click();
   await expect(toggle(page, OLD)).toHaveAttribute("aria-expanded", "true");
 
@@ -156,7 +157,7 @@ test("the year filter scopes the list and the owner's projects CSV", { tag: ["@J
   // The year picked is open, though it's an older one
   await expect(page.locator(".year-head")).toHaveText([`${OLD}2 projects · $10.00`]);
   await expect(cards(page)).toHaveText(["Delta Dental", "Echo Old"]);
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await page.getByRole("button", { name: "Projects", exact: true }).click();
   await expect(year).toHaveValue(OLD);
   await expect(cards(page)).toHaveText(["Delta Dental", "Echo Old"]);

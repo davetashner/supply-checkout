@@ -2,7 +2,8 @@
 // closed meanwhile, nothing shows as saved before it is, a failed save keeps what was entered
 // and offers Try again, and going offline and back says so (saving() in src/main.js). The web
 // build's operation IDs and lost answers are in tests/aws-save-states.spec.js.
-import { test, expect, openApp, enterBarcode, modal, lineRow, createProject } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, goToInventory, createProject, openProject, enterBarcode, addToProject, startReturn, saveReturn, finishReturn, lineRow, startAddItem } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 
 const toast = (page) => page.locator("#toast");
@@ -17,7 +18,7 @@ const hideToast = (page) => page.locator("#toast").evaluate((t) => { t.hidden = 
 
 async function openEcho(page, opts = usedState) {
   await openApp(page, opts);
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
 }
 
@@ -25,7 +26,7 @@ test("a slow checkout says it's saving, can't be sent twice or closed, and shows
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await hold(page);
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   const go = modal(page).getByRole("button", { name: "Saving…" });
   await expect(go).toBeDisabled();
   await expect(modal(page).getByRole("button", { name: "Cancel" })).toBeDisabled();
@@ -54,10 +55,10 @@ test("a slow checkout says it's saving, can't be sent twice or closed, and shows
 
 test("a slow return says it's saving and counts once", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   await hold(page);
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(modal(page).getByRole("button", { name: "Saving…" })).toBeDisabled();
   await modal(page).locator("form").evaluate((f) => f.requestSubmit());
   await expect(toast(page)).toBeHidden();
@@ -75,7 +76,7 @@ test("a checkout that didn't save keeps what was entered, says so, and saves onc
   await modal(page).getByRole("button", { name: "More" }).click();
   await modal(page).getByRole("button", { name: "More" }).click();
   await failWrites(page, "unavailable");
-  await modal(page).getByRole("button", { name: "Add 3 to project" }).click();
+  await addToProject(page, 3);
   await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
   await expect(failedNote(page)).toHaveText("Not saved. Check your connection, then tap Try again.");
   const again = modal(page).getByRole("button", { name: "Try again" });
@@ -112,7 +113,7 @@ test("a checkout whose answer was lost counts once on Try again, on the line and
   await openEcho(page, { ...usedState, seed: { ...usedState.seed, "projects/s1": { ...s1, items: { ...s1.items, SKU1: { ...s1.items.SKU1, ops: old } } } } });
   await enterBarcode(page, "SKU1");
   await loseWrites(page, "projects/");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
   const lost = (await doc(page, "projects/s1")).items.SKU1;
   expect(lost.out).toBe(4);
@@ -128,10 +129,10 @@ test("a checkout whose answer was lost counts once on Try again, on the line and
 
 test("a return whose answer was lost counts once on Try again", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   await loseWrites(page, "projects/");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(modal(page).getByRole("button", { name: "Try again" })).toBeVisible();
   expect((await doc(page, "projects/s1")).items.SKU1.returned).toBe(2);
   await loseWrites(page, null);
@@ -155,7 +156,7 @@ test("a checkout whose storage count didn't save keeps the form open, and Try ag
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await failWrites(page, { prefix: "products/", code: "unavailable" });
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(failedNote(page)).toHaveText(OWING);
   await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
   await qtyLocked(page, "fQty");
@@ -181,7 +182,7 @@ test("a checkout whose storage count is owed warns before Cancel closes it", { t
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await failWrites(page, { prefix: "products/", code: "unavailable" });
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(failedNote(page)).toHaveText(OWING);
   // Escape and a tap outside don't close it
   await page.keyboard.press("Escape");
@@ -200,10 +201,10 @@ test("a checkout whose storage count is owed warns before Cancel closes it", { t
 
 test("a return whose storage count is owed can still be finished after Cancel warns", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   await failWrites(page, { prefix: "products/", code: "unavailable" });
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(failedNote(page)).toHaveText(OWING);
   const cancel = modal(page).locator("#cancel");
   await cancel.click();
@@ -217,11 +218,11 @@ test("a return whose storage count is owed can still be finished after Cancel wa
 
 test("a return whose storage count was refused or lost is finished once by trying again", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   // Refused for a reason trying again won't fix: no Try again note, but the quantity is fixed
   await failWrites(page, { prefix: "products/", code: "quota_exceeded" });
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(toast(page)).toHaveText("Storage is full. Delete old projects or items to make room.");
   await expect(failedNote(page)).toHaveCount(0);
   await qtyLocked(page, "fRet");
@@ -229,7 +230,7 @@ test("a return whose storage count was refused or lost is finished once by tryin
   // Saved, but the answer is lost
   await failWrites(page, null);
   await loseWrites(page, "products/");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(failedNote(page)).toHaveText(OWING);
   expect((await doc(page, "products/SKU1")).stock).toBe(11);
   await loseWrites(page, null);
@@ -248,11 +249,11 @@ test("changing the quantity after a failure names the new request on the button"
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await failWrites(page, "unavailable");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(modal(page).getByRole("button", { name: "Try again" })).toBeVisible();
   await modal(page).getByRole("button", { name: "More" }).click();
   await failWrites(page, "quota_exceeded");
-  await modal(page).getByRole("button", { name: "Add 2 to project" }).click();
+  await addToProject(page, 2);
   // Storage is full: trying again won't help, so no Try again, and the form is as it was
   await expect(toast(page)).toHaveText("Storage is full. Delete old projects or items to make room.");
   await expect(failedNote(page)).toHaveCount(0);
@@ -262,10 +263,10 @@ test("changing the quantity after a failure names the new request on the button"
 
 test("a failure after a Try again that trying again won't fix goes back to the form's own button", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   await failWrites(page, "unavailable");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await failWrites(page, "quota_exceeded");
   await modal(page).getByRole("button", { name: "Try again" }).click();
   await expect(toast(page)).toHaveText("Storage is full. Delete old projects or items to make room.");
@@ -281,11 +282,11 @@ test("offline, nothing is sent and the form says so; back online, Try again save
   await context.setOffline(false);
   await expect(notice).toBeHidden();
 
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
   await modal(page).getByRole("button", { name: "More" }).click();
   await context.setOffline(true);
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(toast(page)).toHaveText("You're offline, so that wasn't saved. Try again when you're back online.");
   await expect(failedNote(page)).toHaveText("Not saved: you're offline. Tap Try again when you're back online.");
   await expect(notice).toBeVisible();
@@ -338,8 +339,8 @@ test("editing a project, a line or an item says it's saving", { tag: ["@J4"] }, 
 
   await page.getByRole("button", { name: "← All projects" }).click();
   await createProject(page, "Hotel Nine");
-  await page.getByRole("button", { name: "Inventory" }).click();
-  await page.getByRole("button", { name: "+ Add item" }).click();
+  await goToInventory(page);
+  await startAddItem(page);
   await modal(page).getByLabel("Item name").fill("Sponges");
   await failWrites(page, "unavailable");
   await modal(page).getByRole("button", { name: "Save" }).click();
@@ -357,7 +358,7 @@ test("editing a project, a line or an item says it's saving", { tag: ["@J4"] }, 
 test("finishing and reopening a project say they're saving, and a second tap sends nothing", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await hold(page);
-  await page.getByRole("button", { name: "Finished Return" }).click();
+  await finishReturn(page);
   const saving = page.getByRole("button", { name: "Saving…" });
   await expect(saving).toBeDisabled();
   await expect(saving).toHaveAttribute("aria-busy", "true");
@@ -430,7 +431,7 @@ test("removing a line or deleting an item keeps the form busy and writes once", 
   await expect(modal(page)).toBeEmpty();
   await expect(lineRow(page, "Paper towels")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await page.locator("#main tbody tr", { hasText: "Paper towels" }).click();
   await failWrites(page, "unavailable");
   await modal(page).getByRole("button", { name: "Delete" }).click();

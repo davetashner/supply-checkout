@@ -3,7 +3,8 @@
 // the item is out, moving an ad hoc line to a client project, and finishing the General Use project. In both
 // builds against the claude.ai runtime's mock (the artifact build's writes, section 6), then the
 // web build's commands against tests/fake-aws.js.
-import { test, expect, openApp, modal, lineRow } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, waitUntilConnected, goToInventory, startReturn, saveReturn, finishReturn, lineRow, continueReview } from "./ui/index.js";
 import { FakeBackend, openAws, connected } from "./fake-aws.js";
 
 const gloves = { code: "G1", name: "Nitrile gloves", price: 12.5, cost: 9, stock: 50 };
@@ -15,7 +16,7 @@ const delta = { client: "Delta Dental", date: "2026-09-25", createdByName: "Sam"
 const adhoc1 = (items, extra = {}) => ({ kind: "adhoc", client: "", date: "2026-09-30", createdBy: "u_test", status: "open", items, ...extra });
 const seed = { ...products, "projects/s1": echo, "projects/s2": delta };
 
-const ready = (page) => page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
+const ready = waitUntilConnected;
 async function open(page, opts = {}) {
   await openApp(page, { seed, ...opts });
   await ready(page);
@@ -108,7 +109,7 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
     await page.locator("#manualCode").press("Enter");
     await expect(modal(page).locator("h2")).toHaveText("Return");
     await expect(modal(page).locator("#sum")).not.toContainText("Charge");
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(toast(page)).toHaveText("1 returned · 1 of 4 back");
     // Something not on it can't be checked out onto it
     await page.locator("#manualCode").fill("SKU1");
@@ -132,7 +133,7 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
     expect((await doc(page, "projects/adhoc-1")).items.G1).toMatchObject({ out: 5, returned: 1, price: 12.5 });
 
     // Finished Return asks about the ladder, with no charge to anyone
-    await page.getByRole("button", { name: "Finished Return" }).click();
+    await finishReturn(page);
     await expect(modal(page).locator("fieldset.finish")).toHaveCount(1);
     await modal(page).getByLabel("Lost or broken", { exact: true }).fill("1");
     await modal(page).getByLabel("Lost or broken", { exact: true }).dispatchEvent("input");
@@ -182,40 +183,40 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
     const finished = { ...delta, client: "Foxtrot", status: "closed", items: { G1: { code: "G1", name: "Nitrile gloves", price: 12.5, out: 5, returned: 0 } } };
     await open(page, { seed: { ...seed, "projects/s1": bought, "projects/s9": finished, "projects/adhoc-1": adhoc1({ SKU1: { code: "SKU1", name: "Paper towels", price: 8.5, out: 3, returned: 0 }, G1: { code: "G1", name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 }, rags: { code: "", name: "Rags", price: 1, out: 4, returned: 0 } }) } });
     // Out on one project: its return form, named
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await typeCode(page, "G1");
     await expect(modal(page).locator("h2")).toHaveText("Return to General Use (no job), Sep 30, 2026");
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(toast(page)).toHaveText("1 returned · 1 of 2 back");
     // The project it went to opens
     await expect(page.locator(".project-head h2")).toHaveText("General Use (no job)");
     await page.getByRole("button", { name: "Projects", exact: true }).click();
 
     // Out on two: pick one, the General Use project first
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await typeCode(page, "SKU1");
     await expect(modal(page).locator("h2")).toHaveText("Which project?");
     await expect(modal(page).locator("[data-i]")).toHaveText([/General Use \(no job\).*3 out/, /Echo Studio.*2 out/]);
     await modal(page).locator("[data-i='1']").click();
     await expect(modal(page).locator("h2")).toHaveText("Return to Echo Studio, Sep 24, 2026");
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(toast(page)).toHaveText("1 returned · 1 of 2 back");
     expect((await doc(page, "projects/s1")).items.SKU1.returned).toBe(1);
     await page.getByRole("button", { name: "Projects", exact: true }).click();
 
     // From the pick list, without a barcode
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await expect(modal(page).locator(".pick [data-k]")).toHaveText([/Nitrile gloves/, /Paper towels/, /Rags/]);
     await modal(page).locator(".pick [data-k='G1']").click();
     await expect(modal(page).locator("h2")).toHaveText("Return to General Use (no job), Sep 30, 2026");
     await modal(page).getByRole("button", { name: "Cancel" }).click();
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await modal(page).locator(".pick [data-k='rags']").click();
     await expect(modal(page).locator(".code")).toHaveText("No barcode");
     await modal(page).getByRole("button", { name: "Cancel" }).click();
 
     // Out nowhere
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await typeCode(page, "LAD-1");
     await expect(toast(page)).toHaveText("Nothing of this is checked out right now.");
     await expect(page.locator("#overlay")).toBeHidden();
@@ -228,7 +229,7 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
       window.createImageBitmap = async () => Object.assign(document.createElement("canvas"), { width: 10, height: 10 });
     });
     await open(page, { seed: products });
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await expect(modal(page)).toContainText("Nothing is checked out right now.");
     // A photo that isn't a barcode finds nothing, and the form stays
     await modal(page).locator("#qScan").setInputFiles({ name: "x.png", mimeType: "image/png", buffer: Buffer.from("not an image") });
@@ -255,12 +256,12 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
   test("a client project's \"Not on this project\" offers to return it where it's out", { tag: ["@J14.2"] }, async ({ page }) => {
     await open(page, { seed: { ...seed, "projects/adhoc-1": adhoc1({ G1: { code: "G1", name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 }, SKU1: { code: "SKU1", name: "Paper towels", price: 8.5, out: 1, returned: 0 } }) } });
     await card(page, "Delta Dental").click();
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await page.locator("#manualCode").fill("G1");
     await page.locator("#manualCode").press("Enter");
     await expect(modal(page)).toContainText("It's out on another project.");
     await modal(page).getByRole("button", { name: "Return it to General Use (no job), Sep 30, 2026" }).click();
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await saveReturn(page);
     await expect(toast(page)).toHaveText("1 returned · 1 of 2 back");
     await expect(page.locator(".project-head h2")).toHaveText("General Use (no job)");
     // Out on two others: a pick list
@@ -429,12 +430,12 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
     const draft = { store: "", receiptDate: "2026-09-30", date: "2026-09-30", savePrices: true, by: "", dests: [{ id: "d1", projectId: "", client: "" }], lines: [{ id: "l1", name: "Tape", raw: "", qty: 1, price: 2, dest: "d1", code: "", match: "", suggested: false, useName: "inv", usePrice: "", perEach: false }] };
     await page.addInitScript((d) => localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify(d)), draft);
     await open(page, { seed: { ...seed, "projects/adhoc-1": adhoc1({ "LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", out: 1, returned: 0 } }) } });
-    await page.getByRole("button", { name: "Inventory" }).click();
+    await goToInventory(page);
     await page.getByRole("button", { name: "Equipment", exact: true }).click();
     await page.getByRole("button", { name: "Out on jobs" }).click();
     await expect(page.locator("#main table.out tbody tr")).toContainText("General Use (no job)");
     await page.getByRole("button", { name: "Projects", exact: true }).click();
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     await expect(page.locator("#rBody [data-dsel] option")).toHaveText(["New project", "Add to Delta Dental (Sep 25, 2026)", "Add to Echo Studio (Sep 24, 2026)"]);
   });
 });

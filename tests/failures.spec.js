@@ -1,13 +1,14 @@
 // Saves that fail leave the screen as it was, so nothing is lost and the
 // user can try again.
-import { test, expect, openApp, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, goToInventory, openProject, enterBarcode, addToProject, startReturn, saveReturn, lineRow, inventoryRow } from "./ui/index.js";
 import { usedState, fakeImage } from "./fixtures.js";
 
 const failing = { ...usedState, writeError: "unavailable" };
 const failed = (page) => expect(page.locator("#toast")).toHaveText("That didn't save. Check your connection and try again.");
 const openEcho = async (page, opts = failing) => {
   await openApp(page, opts);
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
 };
 
 test("a failed project delete keeps the project open", { tag: ["@J4"] }, async ({ page }) => {
@@ -49,18 +50,18 @@ test("an edit someone else saved over first closes the editor and says so", { ta
 // `refused` is the web build's code for a checkout or return the API refused (src/aws/db.js)
 test("a return refused for what's saved now closes the form and says why, not to check the connection", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "projects/", code: "refused" } });
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(page.locator("#toast")).toHaveText("simulated refused");
   await expect(modal(page)).toBeEmpty();
 });
 
 test("any other refusal from the runtime keeps the form open with the usual message", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "projects/", code: "failed_precondition" } });
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await enterBarcode(page, "SKU1");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await failed(page);
   await expect(modal(page).getByRole("button", { name: "Try again" })).toBeVisible();
 });
@@ -69,7 +70,7 @@ test("a new item that can't be saved to inventory isn't added to the project", {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "products/", code: "unavailable" } });
   await enterBarcode(page, "NEW1");
   await modal(page).getByLabel("Item name").fill("Wax");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await failed(page);
   await expect(lineRow(page, "Wax")).toHaveCount(0);
   await expect(modal(page).getByLabel("Item name")).toHaveValue("Wax");
@@ -79,7 +80,7 @@ test("a checkout that fails after saving a new item doesn't save the item again 
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "projects/", code: "unavailable" } });
   await enterBarcode(page, "NEW1");
   await modal(page).getByLabel("Item name").fill("Wax");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await failed(page);
   expect(await page.evaluate(() => window.__mock.docs.get("products/NEW1").name)).toBe("Wax");
   // Gone by the retry: if the retry saved it again, it would be back
@@ -92,7 +93,7 @@ test("a checkout that fails after saving a new item doesn't save the item again 
 
 test("a failed item delete keeps the item", { tag: ["@J2.3"] }, async ({ page }) => {
   await openApp(page, failing);
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await inventoryRow(page, "Storage bins").click();
   await modal(page).getByRole("button", { name: "Delete" }).click();
   await modal(page).getByRole("button", { name: "Tap to delete" }).click();

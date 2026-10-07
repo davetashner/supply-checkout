@@ -3,7 +3,8 @@
 // charged the receipt price, or a typed one), and in the web build against tests/fake-aws.js:
 // the server works the markup out, only owners have the percentage, and owners set it in Team
 // settings.
-import { test, expect, openApp, modal, lineRow, modalViolations } from "./helpers.js";
+import { test, expect, openApp, modalViolations } from "./helpers.js";
+import { modal, startReturn, lineRow, continueReview, enterBarcode } from "./ui/index.js";
 import { FakeBackend, TEAM, USER, openAws, connected } from "./fake-aws.js";
 
 const ladder = { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, stock: 3 };
@@ -32,7 +33,7 @@ async function review(page, draft, opts = {}) {
     localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify(d));
   }, draft);
   await openApp(page, { seed, ...opts });
-  await page.getByRole("button", { name: "Continue review" }).click();
+  await continueReview(page);
   await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
 }
 
@@ -87,12 +88,11 @@ test.describe("equipment bought on a receipt for a client", { tag: ["@J5.3", "@J
     await expect(row).toContainText("Price typed by Test User");
     await expect(page.locator("#projectBody .totals .charge")).toHaveText("$149.50");
     // It isn't in any return list, and scanning the item returns the one on loan
-    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await startReturn(page);
     await page.getByRole("button", { name: "Return item without a barcode" }).click();
     await expect(modal(page).locator("[data-k]")).toHaveCount(1);
     await modal(page).getByRole("button", { name: "Cancel" }).click();
-    await page.getByPlaceholder("Or type the barcode").fill("LAD-1");
-    await page.getByPlaceholder("Or type the barcode").press("Enter");
+    await enterBarcode(page, "LAD-1");
     await expect(modal(page)).toContainText("1 taken");
     await modal(page).getByRole("button", { name: "Cancel" }).click();
     // The line editor changes how many and the price, never returned
@@ -127,7 +127,7 @@ test.describe("the web build: the server prices it, and only owners have the mar
     const backend = new FakeBackend({ docs: docs(), settings: { t1: { equipmentMarkup: 25, version: 3 } } });
     await openAws(page, backend, local(draftOf([{ price: 130 }, { id: "l2", name: "Cord", match: "LAD-1", price: 20, typed: "31", dest: "d2" }], [{ id: "d1", projectId: "s1", client: "" }, { id: "d2", projectId: "", client: "Golf" }])));
     await connected(page);
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     await expect(rline(page, 0).locator("[data-charged]")).toHaveText("Charged: $162.50 each (receipt price + 25% markup)");
     await expect(rline(page, 0).locator("[data-total]")).toHaveText("$162.50");
     await saveReceipt(page);
@@ -152,7 +152,7 @@ test.describe("the web build: the server prices it, and only owners have the mar
     await openAws(page, backend, local(draftOf([{ price: 130 }], [{ id: "d1", projectId: "s1", client: "" }])));
     await connected(page);
     backend.teams[0].role = "contributor";
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     await expect(rline(page).locator("[data-charged]")).toHaveText("Charged: receipt price + team markup");
     await expect(rline(page).locator("[data-total]")).toHaveText("$130.00 (before markup)");
     await expect(page.locator("#rSum tr").first().locator("td").last()).toHaveText("$130.00 (before markup)");
@@ -177,7 +177,7 @@ test.describe("the web build: the server prices it, and only owners have the mar
     await openAws(page, backend, local(draftOf([{ price: 130 }], [{ id: "d1", projectId: "s1", client: "" }])));
     await connected(page);
     await expect(page.locator(".teambar").getByRole("button", { name: "Team settings" })).toHaveCount(0);
-    await page.getByRole("button", { name: "Continue review" }).click();
+    await continueReview(page);
     await expect(rline(page).locator("[data-charged]")).toHaveText("Charged: receipt price + team markup");
     await saveReceipt(page);
     await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();

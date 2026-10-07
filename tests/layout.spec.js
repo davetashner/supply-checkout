@@ -1,4 +1,5 @@
-import { test, expect, openApp, enterBarcode, modal } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, goToInventory, goToProjects, openProject, enterBarcode, uploadReceipt } from "./ui/index.js";
 import { usedState, fakeImage } from "./fixtures.js";
 
 // The page body must never scroll sideways on a phone or tablet; only tables may, inside their own container.
@@ -25,7 +26,7 @@ async function checkEveryScreen(page) {
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
   await expectNoSideways(page);
 
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   await expect(page.locator("#projectBody tbody tr")).toHaveCount(2);
   await expectNoSideways(page);
 
@@ -35,19 +36,18 @@ async function checkEveryScreen(page) {
   await page.keyboard.press("Escape");
   await expect(page.locator("#overlay")).toBeHidden();
 
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   await expect(page.locator("#main tbody tr")).toHaveCount(2);
   await expectNoSideways(page);
 
-  await page.getByRole("button", { name: "Projects" }).click();
+  await goToProjects(page);
   await page.getByRole("button", { name: "+ New project" }).click();
   await expect(modal(page).getByRole("heading", { name: "New project" })).toBeVisible();
   await expectNoSideways(page);
   await page.keyboard.press("Escape");
   await expect(page.locator("#overlay")).toBeHidden();
 
-  await page.setInputFiles("#receiptFile", fakeImage);
-  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+  await uploadReceipt(page, fakeImage);
   await expectNoSideways(page);
 }
 

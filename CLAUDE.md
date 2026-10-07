@@ -87,7 +87,7 @@ npm run test:coverage    # desktop Chrome with the 98% coverage gate, for both b
 - `npm run build:demo` builds `dist/demo/`, the labeled demo for supplycheckout.com (entry and data in `demo/`, outside `src/`). `BUILD=web` runs also build it and run `tests/demo.spec.js`.
 - CI fails if lines, statements, functions or branches of `src/` drop below 98%, in either build. When it does, `coverage/<build>/uncovered.txt` lists every gap by `src/` file and line. Branch coverage has little headroom, so new code needs tests that take both sides of each condition.
 - Tests run against `tests/mock-claude.js`. It has opt-in failure modes (see the options at its top), and `window.__mock.notify()` acts as another user after a test edits `window.__mock.docs`.
-- Before interacting, wait until the page has connected: the "Connecting…" notice clears once both collections have loaded, and the page redraws. See `openEcho` in `tests/projects.spec.js`.
+- Before interacting, wait until the page has connected: the "Connecting…" notice clears once both collections have loaded, and the page redraws. Use `waitUntilConnected` from `tests/ui/app.js`, as `openEcho` in `tests/projects.spec.js` does.
 - Load the page once per test. Coverage from before a navigation or reload is lost.
 - Every test fails on an uncaught page error or console error.
 - To see the app, run `npm run dev` (Vite dev server at http://localhost:5173, demo data, mock runtime). Query options are listed at the top of `scripts/dev-server.mjs`. `tests/dev-server.spec.js` keeps it working.

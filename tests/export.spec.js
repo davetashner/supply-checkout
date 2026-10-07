@@ -1,6 +1,7 @@
 // Exporting all of a team's data (supply-checkout-zuv): owners download every project and
 // the inventory as CSV, or everything as JSON, from what the app shows.
-import { test, expect, openApp, modal } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, waitUntilConnected, openProject } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 
 const seed = {
@@ -14,7 +15,7 @@ const seed = {
 
 async function openOwner(page, opts = {}) {
   await openApp(page, { seed, ...opts });
-  await page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
+  await waitUntilConnected(page);
 }
 const saved = (page, i) => page.evaluate((i) => window.__mock.saves[i], i);
 
@@ -86,7 +87,7 @@ test("the JSON export leaves out the marks of recent saves", { tag: ["@J6"] }, a
 
 test("a single project's CSV guards formula-like text too", { tag: ["@J6.2"] }, async ({ page }) => {
   await openOwner(page, { seed: { "projects/f": { client: "@Risky", date: "2026-09-01", status: "open", items: { a: { code: "-1", name: "+Plus", price: 1, out: 1, returned: 0 } } } } });
-  await page.getByRole("button", { name: /Risky/ }).click();
+  await openProject(page, "Risky");
   await page.getByRole("button", { name: "Download CSV" }).click();
   await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
   const { data, filename } = await saved(page, 0);

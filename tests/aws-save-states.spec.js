@@ -3,7 +3,8 @@
 // tried again with the same operation ID, offline sends nothing and the latest shows when the
 // connection is back, and a new project or item whose answer was lost is saved once. The same
 // states on the mock runtime are in tests/save-states.spec.js.
-import { test, expect, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
+import { test, expect } from "./helpers.js";
+import { modal, goToInventory, openProject, enterBarcode, addToProject, startReturn, saveReturn, lineRow, inventoryRow, addItem } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, openAws, connected, sockets } from "./fake-aws.js";
 import { TIMEOUT } from "../src/aws/http.js";
@@ -21,7 +22,7 @@ async function openEcho(page) {
   await connected(page);
   // The first list, and the re-list once subscribed
   await expect.poll(() => lists(backend)).toBe(2);
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await openProject(page, "Echo Studio");
   return backend;
 }
 
@@ -29,7 +30,7 @@ test("a slow checkout is one request however it's tapped, and shows saved once t
   const backend = await openEcho(page);
   const release = backend.hold("POST", CHECKOUT);
   await enterBarcode(page, "SKU1");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   const go = modal(page).getByRole("button", { name: "Saving…" });
   await expect(go).toBeDisabled();
   await go.dispatchEvent("click");
@@ -48,11 +49,11 @@ test("a slow checkout is one request however it's tapped, and shows saved once t
 test("a return that times out, though the server saved it, counts once on Try again", { tag: ["@J4.3"] }, async ({ page }) => {
   await page.clock.install();
   const backend = await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   // The server gets the return but doesn't answer in time
   const release = backend.hold("POST", RETURN);
   await enterBarcode(page, "SKU1");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await saveReturn(page);
   await expect(modal(page).getByRole("button", { name: "Saving…" })).toBeDisabled();
   await expect.poll(() => backend.requests("POST", RETURN).length).toBe(1);
   await page.clock.fastForward(TIMEOUT - 1000);
@@ -77,7 +78,7 @@ test("offline, nothing is sent; back online, the latest shows and Try again chec
   await enterBarcode(page, "SKU1");
   await modal(page).getByRole("button", { name: "More" }).click();
   await context.setOffline(true);
-  await modal(page).getByRole("button", { name: "Add 2 to project" }).click();
+  await addToProject(page, 2);
   await expect(failedNote(page)).toHaveText("Not saved: you're offline. Tap Try again when you're back online.");
   await expect(page.locator("#notice")).toHaveText("You're offline. Nothing can be saved until the connection is back.");
   expect(backend.requests("POST", CHECKOUT)).toHaveLength(0);
@@ -136,11 +137,9 @@ test("a new project saved again over someone else's copy of it still says so", {
 
 test("a new item without a barcode whose answer was lost is saved once on Try again", { tag: ["@J4.2"] }, async ({ page }) => {
   const backend = await openEcho(page);
-  await page.getByRole("button", { name: "Inventory" }).click();
+  await goToInventory(page);
   backend.on("PUT", /^\/teams\/t1\/products\//, { lost: true });
-  await page.getByRole("button", { name: "+ Add item" }).click();
-  await modal(page).getByLabel("Item name").fill("Sponges");
-  await modal(page).getByRole("button", { name: "Save" }).click();
+  await addItem(page, { name: "Sponges" });
   await expect(failedNote(page)).toBeVisible();
   await modal(page).getByRole("button", { name: "Try again" }).click();
   await expect(toast(page)).toHaveText("Saved");

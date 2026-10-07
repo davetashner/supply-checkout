@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect, openApp, modal } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, goToInventory, openProject, finishReturn, uploadReceipt, enterBarcode } from "./ui/index.js";
 import { usedState, fakeImage } from "./fixtures.js";
 
 async function expectAccessible(page) {
@@ -23,12 +24,11 @@ for (const colorScheme of ["light", "dark"]) {
 
     test("project detail and checkout dialog", async ({ page }) => {
       await openApp(page, usedState);
-      await page.getByRole("button", { name: /Echo Studio/ }).click();
+      await openProject(page, "Echo Studio");
       await expect(page.locator("#projectBody tbody tr")).toHaveCount(2);
       await expectAccessible(page);
 
-      await page.getByPlaceholder("Or type the barcode").fill("SKU1");
-      await page.getByPlaceholder("Or type the barcode").press("Enter");
+      await enterBarcode(page, "SKU1");
       await expect(modal(page).getByRole("heading", { name: "Check out" })).toBeVisible();
       await expectAccessible(page);
     });
@@ -36,17 +36,17 @@ for (const colorScheme of ["light", "dark"]) {
     test("company equipment: the project's section, the item editor and Inventory's Out view", async ({ page }) => {
       const ladder = { code: "LAD-1", name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 1, takenBy: "u_test", takenAt: "2026-09-24T13:05:00.000Z" };
       await openApp(page, { ...usedState, seed: { ...usedState.seed, "products/LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, stock: 2 }, "projects/s1": { ...usedState.seed["projects/s1"], items: { ...usedState.seed["projects/s1"].items, "LAD-1": ladder } } } });
-      await page.getByRole("button", { name: /Echo Studio/ }).click();
+      await openProject(page, "Echo Studio");
       await expect(page.locator("#projectBody table.equipment tbody tr")).toHaveCount(1);
       await expectAccessible(page);
       // Finished Return's question about the piece still out, with the charge field showing
-      await page.getByRole("button", { name: "Finished Return" }).click();
+      await finishReturn(page);
       await modal(page).getByLabel("Lost or broken", { exact: true }).fill("1");
       await modal(page).getByLabel("Lost or broken", { exact: true }).dispatchEvent("input");
       await expect(modal(page).getByLabel(/Charge the client/)).toBeVisible();
       await expectAccessible(page);
       await modal(page).getByRole("button", { name: "Cancel" }).click();
-      await page.getByRole("button", { name: "Inventory" }).click();
+      await goToInventory(page);
       await page.getByRole("button", { name: "Equipment", exact: true }).click();
       await page.getByRole("button", { name: "Out on jobs" }).click();
       await expect(page.locator("#main table.out tbody tr")).toHaveCount(1);
@@ -59,15 +59,14 @@ for (const colorScheme of ["light", "dark"]) {
 
     test("inventory", async ({ page }) => {
       await openApp(page, usedState);
-      await page.getByRole("button", { name: "Inventory" }).click();
+      await goToInventory(page);
       await expect(page.locator("#main tbody tr")).toHaveCount(2);
       await expectAccessible(page);
     });
 
     test("receipt review", async ({ page }) => {
       await openApp(page, usedState);
-      await page.setInputFiles("#receiptFile", fakeImage);
-      await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+      await uploadReceipt(page, fakeImage);
       await expectAccessible(page);
     });
   });

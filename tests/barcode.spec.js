@@ -1,4 +1,5 @@
-import { test, expect, openApp, createProject, modal, lineRow } from "./helpers.js";
+import { test, expect, openApp } from "./helpers.js";
+import { modal, goToInventory, createProject, addToProject, startReturn, lineRow, startAddItem } from "./ui/index.js";
 import { crc32, deflateSync } from "node:zlib";
 import { BarcodeFormat, QRCodeWriter } from "@zxing/library";
 import { usedState } from "./fixtures.js";
@@ -267,7 +268,7 @@ test("a photo read while someone else deletes the project opens nothing", { tag:
 
 test("scanning in return mode opens the return for that item", { tag: ["@J4.3"] }, async ({ page }) => {
   await openProject(page, { detector: "SKU1" });
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await page.setInputFiles("#scanFile", png);
   await expect(modal(page).getByRole("heading", { name: "Return" })).toBeVisible();
 });
@@ -275,8 +276,8 @@ test("scanning in return mode opens the return for that item", { tag: ["@J4.3"] 
 test("an item's barcode can be scanned when adding it to inventory", { tag: ["@J2.2"] }, async ({ page }) => {
   await page.addInitScript(installScanner, { detector: "5550001" });
   await openApp(page);
-  await page.getByRole("button", { name: "Inventory" }).click();
-  await page.getByRole("button", { name: "+ Add item" }).click();
+  await goToInventory(page);
+  await startAddItem(page);
   await modal(page).locator("#fScan").setInputFiles(png);
   await expect(modal(page).getByPlaceholder("Type, scan, or leave blank")).toHaveValue("5550001");
 
@@ -293,7 +294,7 @@ test("a scanned item can be checked out on a new project", { tag: ["@J4.2"] }, a
   await createProject(page, "November Co");
   await page.setInputFiles("#scanFile", png);
   await modal(page).getByLabel("Item name").fill("Degreaser");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(lineRow(page, "Degreaser")).toContainText("Barcode 7770001");
 });
 
@@ -514,7 +515,7 @@ test("a misread barcode can be corrected before it's checked out", { tag: ["@J4.
   await modal(page).getByRole("button", { name: "Use this number" }).click();
   await expect(modal(page)).toContainText("Barcode SKU1");
   await expect(modal(page)).toContainText("Paper towels, 6 roll");
-  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await addToProject(page);
   await expect(page.locator("#overlay")).toBeHidden();
   await expect(lineRow(page, "Paper towels")).toContainText("4");
   expect(await page.evaluate(() => window.__mock.docs.has("products/9990001"))).toBe(false);
@@ -524,7 +525,7 @@ test("a misread barcode can be corrected on a return", { tag: ["@J4.3"] }, async
   await openProject(page, { detector: "SKU1" });
   // everything taken has come back
   await page.evaluate(() => { window.__mock.docs.get("projects/s1").items.SKU1.returned = 3; window.__mock.notify(); });
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await page.setInputFiles("#scanFile", png);
   await expect(modal(page).getByRole("heading", { name: "Already returned" })).toBeVisible();
   await correct(page, "SKU1", "9990001");
@@ -548,7 +549,7 @@ test("a misread barcode can be corrected on a quick take", { tag: ["@J14.1"] }, 
 test("a misread barcode can be corrected on a return from the project list", { tag: ["@J14.2"] }, async ({ page }) => {
   await page.addInitScript(installScanner, { detector: "SKU1" });
   await openApp(page, usedState);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await startReturn(page);
   await modal(page).locator("#qScan").setInputFiles(png);
   await expect(modal(page).getByRole("heading", { name: "Return to Echo Studio" })).toBeVisible();
   await correct(page, "SKU1", "9990001");
