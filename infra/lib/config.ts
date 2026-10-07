@@ -267,6 +267,14 @@ export const GITHUB_STATEFUL_DEPLOY_ENVIRONMENT = "production-stateful";
  */
 export const webPublisherRoleName = (envName: string) => `supply-checkout-${envName}-web-publisher`;
 
+/**
+ * The GitHub environment the prod journey tests run in (supply-checkout-o60.3, o60.4): the only
+ * subject the journeys role (lib/stacks/journeys-stack.ts) trusts. It deploys nothing, so it has
+ * no required reviewer, but `main` only and no admin bypass, like the deploy environments. The
+ * deploy role doesn't trust it.
+ */
+export const GITHUB_JOURNEYS_ENVIRONMENT = "production-journeys";
+
 /** Every GitHub environment whose jobs may assume the deploy role. */
 export const GITHUB_DEPLOY_ENVIRONMENTS = [GITHUB_DEPLOY_ENVIRONMENT, GITHUB_STATEFUL_DEPLOY_ENVIRONMENT] as const;
 

@@ -8,7 +8,7 @@ import { Bucket } from "aws-cdk-lib/aws-s3";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
 import { APPROVED_REGIONS, DEFAULT_GITHUB_REPOSITORY, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
-import { addBackupAccount, addGithubDeploy, addSupplyCheckout, type SupplyCheckoutStacks } from "../lib/supply-checkout.js";
+import { addBackupAccount, addGithubDeploy, addJourneys, addSupplyCheckout, type SupplyCheckoutStacks } from "../lib/supply-checkout.js";
 import { OPS_INDEX_ATTRIBUTES } from "../../backend/src/data/schema.js";
 
 // No account: tests synth account-agnostic templates, exactly as CI does, so
@@ -154,7 +154,9 @@ describe("template snapshots", () => {
   // So is GitHub Actions' deploy role (bin/github-deploy.ts)
   const githubDeployApp = testApp();
   const githubDeploy = addGithubDeploy(githubDeployApp, config, DEFAULT_GITHUB_REPOSITORY);
-  const snapshotted: Stack[] = [...stacks.all, backupAccount, githubDeploy];
+  // And the journey tests' mailbox and role (bin/journeys.ts)
+  const journeys = addJourneys(testApp(), config, DEFAULT_GITHUB_REPOSITORY);
+  const snapshotted: Stack[] = [...stacks.all, backupAccount, githubDeploy, journeys];
   const snapshots = join(dirname(fileURLToPath(import.meta.url)), "__snapshots__");
 
   it.each(snapshotted.map((stack) => [stack.stackName, stack] as const))("%s matches its snapshot", async (name, stack) => {

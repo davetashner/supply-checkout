@@ -517,6 +517,98 @@
             {
               "Action": "s3:PutObject",
               "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":s3:::supply-checkout-prod-journey-mail-us-east-1-",
+                        {
+                          "Ref": "AWS::AccountId"
+                        }
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "logging.s3.amazonaws.com"
+              },
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Fn::GetAtt": [
+                        "LogsBucket9C4D8843",
+                        "Arn"
+                      ]
+                    },
+                    "/s3/journey-mail/*"
+                  ]
+                ]
+              },
+              "Sid": "JourneyMailBucketAccessLogs"
+            },
+            {
+              "Action": "s3:PutObject",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":s3:::supply-checkout-prod-journey-results-us-east-1-",
+                        {
+                          "Ref": "AWS::AccountId"
+                        }
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "logging.s3.amazonaws.com"
+              },
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Fn::GetAtt": [
+                        "LogsBucket9C4D8843",
+                        "Arn"
+                      ]
+                    },
+                    "/s3/journey-results/*"
+                  ]
+                ]
+              },
+              "Sid": "JourneyResultsBucketAccessLogs"
+            },
+            {
+              "Action": "s3:PutObject",
+              "Condition": {
                 "ArnLike": {
                   "aws:SourceArn": {
                     "Fn::GetAtt": [
