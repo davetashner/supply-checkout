@@ -480,6 +480,8 @@ Why not the other two ways:
 
 **When the live table is gone** (a new account after losing the workload account): deploy the stacks first (`cdk deploy --all`, with `-c backupCopy=false` until step 4 of [Setting it up](#setting-it-up) is done in the new account; see [infrastructure](infrastructure.md)). That creates an empty live table with every setting, publishes its stream ARN to `/supply-checkout/<env>/data/table-stream-arn`, and the realtime stack, which reads that parameter at deploy time, points the event source mapping at it. Then restore into the new account and copy back as below. If a table's stream is ever turned off and on by hand, it gets a new ARN: redeploy the data stack and then the realtime stack so the mapping follows it.
 
+**After the projects rename.** Sheets were moved from `SHEET#` to `PROJECT#` keys, and movements' `sheetId` renamed, by the `projects-rename` backfill ([Projects rename](infrastructure.md#projects-rename), `supply-checkout-005.6`). A recovery point from before a team's migration still holds `SHEET#` items. After restoring one, and before writes are back on, run the migration again on the restored data (`npm run backfill -- projects-rename ... --apply`, once per team or without `--team`), or a release that reads only `PROJECT#` won't see those projects. The mode stays in the repo for as long as such recovery points exist: the 35 days of PITR and the copies' 90 days.
+
 **What's lost.** Everything written to the live table after the recovery point: sheets, stock changes, new teams, memberships. Accounts created after it still sign in (Cognito isn't restored) but have no teams. Deletions after it are re-applied (step 4), so they stay deleted.
 
 ### Expected downtime
