@@ -56,14 +56,14 @@ test("a new owner is guided through the checklist to a team ready to use", { tag
   await expect(list).toContainText("2 of 3 done");
   expect(await stored(page, team)).toEqual({ invited: true });
 
-  // A first sheet: it opens, and the checklist waits behind it
-  await list.getByRole("button", { name: "Create a sheet" }).click();
+  // A first project: it opens, and the checklist waits behind it
+  await list.getByRole("button", { name: "Create a project" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Foxtrot Dental");
-  await page.getByRole("button", { name: "Create sheet" }).click();
-  await expect(page.locator("#sheetView")).toBeVisible();
+  await page.getByRole("button", { name: "Create project" }).click();
+  await expect(page.locator("#projectView")).toBeVisible();
   await expect(list).toBeHidden();
   expect(await stored(page, team)).toEqual({ invited: true, done: true });
-  await page.getByRole("button", { name: "← All sheets" }).click();
+  await page.getByRole("button", { name: "← All projects" }).click();
   await expect(list.getByRole("heading", { name: "You're all set" })).toBeVisible();
   await expectAccessible(page);
   await list.getByRole("button", { name: "Close" }).click();
@@ -104,13 +104,13 @@ test("dismissing it is remembered for the team", { tag: ["@J1"] }, async ({ page
   // A tap on its text does nothing
   await list.getByText("Invite the people who take supplies to jobs.").click();
   await expect(page.locator("#overlay")).toBeHidden();
-  // Not over a sheet or a receipt: only the sheet list and inventory
+  // Not over a project or a receipt: only the project list and inventory
   await page.locator("#tab-prices").click();
   await expect(list).toBeVisible();
   await list.getByRole("button", { name: "Dismiss the getting started checklist" }).click();
   await expect(list).toBeHidden();
   expect(await stored(page, "t1")).toEqual({ done: true });
-  await page.locator("#tab-sheets").click();
+  await page.locator("#tab-projects").click();
   await expect(list).toBeHidden();
 });
 
@@ -146,10 +146,10 @@ test("it hides when a write is refused because another owner closed the team mea
   await expect(checklist(page).getByRole("button", { name: "Invite people" })).toBeVisible();
   const before = backend.requests("GET", "/me").length;
   backend.teams[0] = { ...backend.teams[0], closedAt: "2026-09-26T12:00:00.000Z", deletesAt: "2026-10-26T12:00:00.000Z" };
-  backend.on("PUT", /^\/teams\/t1\/sheets\//, { status: 403, body: { error: { code: "permission_denied", message: "permission_denied", reason: "team_closed" } } });
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  backend.on("PUT", /^\/teams\/t1\/projects\//, { status: 403, body: { error: { code: "permission_denied", message: "permission_denied", reason: "team_closed" } } });
+  await page.getByRole("button", { name: "+ New project" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Delta");
-  await page.getByRole("button", { name: "Create sheet" }).click();
+  await page.getByRole("button", { name: "Create project" }).click();
   await expect(page.locator("#notice")).toHaveText("This team is closed, so nothing in it can be changed.");
   await expect.poll(() => backend.requests("GET", "/me").length).toBe(before + 1);
   await expect(page.locator(".teambar .closed-note")).toBeVisible();

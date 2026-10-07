@@ -15,7 +15,7 @@ test("a capability the user declines is treated as unavailable", async ({ page }
   await openApp(page, { ...usedState, rejects: ["sample", "downloads"] });
   await page.getByRole("button", { name: /Echo Studio/ }).click();
   await expect(page.getByRole("button", { name: "Download CSV" })).toHaveCount(0);
-  await page.getByRole("button", { name: "← All sheets" }).first().click();
+  await page.getByRole("button", { name: "← All projects" }).first().click();
   await expect(page.getByText("Scan receipt")).toHaveCount(0);
 });
 
@@ -34,7 +34,7 @@ test("hides receipt scanning when limits can't be checked", async ({ page }) => 
 test("keeps working when the user's identity or permissions can't be read", async ({ page }) => {
   await openApp(page, { userErrors: ["id", "can", "profiles"], ...usedState });
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toContainText("Someone");
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByRole("button", { name: "+ New project" }).click();
   await expect(modal(page).getByLabel("Prepared by")).toBeVisible();
 });
 
@@ -43,10 +43,10 @@ test("reports a lost connection to shared storage", async ({ page }) => {
   await expect(page.locator("#toast")).toHaveText("Lost connection to shared storage. Reload the page.");
 });
 
-test("CSV export quotes commas and quotes, and names untitled sheets", { tag: ["@J6.2"] }, async ({ page }) => {
+test("CSV export quotes commas and quotes, and names untitled projects", { tag: ["@J6.2"] }, async ({ page }) => {
   await openApp(page, {
     seed: {
-      "sheets/q": {
+      "projects/q": {
         client: "", date: "2026-09-01", status: "closed", createdBy: "u_test",
         items: {
           a: { code: "", name: 'Tape, 2" wide', price: "x", out: 2, returned: 5 },
@@ -59,7 +59,7 @@ test("CSV export quotes commas and quotes, and names untitled sheets", { tag: ["
   await page.getByRole("button", { name: /Untitled/ }).click();
   await page.getByRole("button", { name: "Download CSV" }).click();
   const save = await page.evaluate(() => window.__mock.saves[0]);
-  expect(save.filename).toBe("sheet 2026-09-01.csv");
+  expect(save.filename).toBe("project 2026-09-01.csv");
   expect(save.data).toContain("Status,Returned");
   expect(save.data).toContain('"Tape, 2"" wide",,0.00,2,2,0,0.00');
   expect(save.data).toContain('"Line\nbreak",,1.50,1,0,1,1.50');

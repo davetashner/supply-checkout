@@ -26,7 +26,7 @@ async function checkEveryScreen(page) {
   await expectNoSideways(page);
 
   await page.getByRole("button", { name: /Echo Studio/ }).click();
-  await expect(page.locator("#sheetBody tbody tr")).toHaveCount(2);
+  await expect(page.locator("#projectBody tbody tr")).toHaveCount(2);
   await expectNoSideways(page);
 
   await enterBarcode(page, "SKU1");
@@ -39,9 +39,9 @@ async function checkEveryScreen(page) {
   await expect(page.locator("#main tbody tr")).toHaveCount(2);
   await expectNoSideways(page);
 
-  await page.getByRole("button", { name: "Sheets" }).click();
-  await page.getByRole("button", { name: "+ New sheet" }).click();
-  await expect(modal(page).getByRole("heading", { name: "New sheet" })).toBeVisible();
+  await page.getByRole("button", { name: "Projects" }).click();
+  await page.getByRole("button", { name: "+ New project" }).click();
+  await expect(modal(page).getByRole("heading", { name: "New project" })).toBeVisible();
   await expectNoSideways(page);
   await page.keyboard.press("Escape");
   await expect(page.locator("#overlay")).toBeHidden();

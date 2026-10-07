@@ -80,7 +80,7 @@ test.describe("reading a receipt on the receipt endpoint", { tag: ["@J5", "@J5.1
     const backend = new FakeBackend({ docs: seeded(), receipt, receiptLimit: 1 });
     await scan(page, backend);
     await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
-    await page.getByRole("button", { name: "← All sheets" }).click();
+    await page.getByRole("button", { name: "← All projects" }).click();
     await page.setInputFiles("#receiptFile", photo);
     await expect(failure(page)).toContainText("Your team has read all the receipts included this month. Enter the items by hand, or ask an owner about your plan.");
     expect(backend.requests("POST", READ)).toHaveLength(2);
@@ -88,7 +88,7 @@ test.describe("reading a receipt on the receipt endpoint", { tag: ["@J5", "@J5.1
     await page.getByRole("button", { name: "Enter items by hand" }).click();
     await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
     // What's left was read again: none
-    await page.getByRole("button", { name: "← All sheets" }).click();
+    await page.getByRole("button", { name: "← All projects" }).click();
     await expect(left(page)).toHaveText("No receipt scans left this month");
   });
 
@@ -121,7 +121,7 @@ test.describe("reading a receipt on the receipt endpoint", { tag: ["@J5", "@J5.1
     await scan(page, backend, { name: "IMG_0001.heic", mimeType: "image/heic", buffer: Buffer.from("not a jpeg") });
     await expect(failure(page)).toContainText("That image couldn't be used. Try a JPEG or PNG photo.");
     // Over 1.5 MB (a photo the browser couldn't shrink)
-    await page.getByRole("button", { name: "← All sheets" }).click();
+    await page.getByRole("button", { name: "← All projects" }).click();
     await page.setInputFiles("#receiptFile", { ...photo, buffer: Buffer.concat([JPEG, Buffer.alloc(1_500_001)]) });
     await expect(failure(page)).toContainText("That image couldn't be used. Try a JPEG or PNG photo.");
     expect(backend.requests("POST", READ)).toEqual([]);
@@ -205,7 +205,7 @@ test.describe("receipt scans left, and the limits", { tag: ["@J5", "@J5.1"] }, (
     expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize().width);
     await page.setInputFiles("#receiptFile", photo);
     await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
-    await page.getByRole("button", { name: "← All sheets" }).click();
+    await page.getByRole("button", { name: "← All projects" }).click();
     // From the read's own answer: no second request
     await expect(left(page)).toHaveText("199 of 200 receipt scans left this month");
     expect(backend.requests("GET", USAGE)).toHaveLength(1);
@@ -218,7 +218,7 @@ test.describe("receipt scans left, and the limits", { tag: ["@J5", "@J5.1"] }, (
     await expect(left(page)).toHaveText("1 of 1 free trial receipt scans left");
     await page.setInputFiles("#receiptFile", photo);
     await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
-    await page.getByRole("button", { name: "← All sheets" }).click();
+    await page.getByRole("button", { name: "← All projects" }).click();
     await expect(left(page)).toHaveText("No free trial receipt scans left. An owner can subscribe to scan more.");
     await page.setInputFiles("#receiptFile", photo);
     await expect(failure(page)).toContainText("Your team has used all the receipt scans included in its free trial. Enter the items by hand, or ask an owner to subscribe to keep scanning receipts.");
@@ -236,7 +236,7 @@ test.describe("receipt scans left, and the limits", { tag: ["@J5", "@J5.1"] }, (
       await expect(failure(page)).toContainText("Couldn't read that receipt");
       await expect(failure(page)).toContainText(message);
       // Not counted against the team
-      await page.getByRole("button", { name: "← All sheets" }).click();
+      await page.getByRole("button", { name: "← All projects" }).click();
       await expect(left(page)).toHaveText("200 of 200 receipt scans left this month");
     });
   }
@@ -248,7 +248,7 @@ test.describe("receipt scans left, and the limits", { tag: ["@J5", "@J5.1"] }, (
     backend.on("POST", READ, { status: 200, body: { ...receipt, usage: { period: "month", month: "2026-09", used: 1, limit: 200 } } });
     await scan(page, backend);
     await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
-    await page.getByRole("button", { name: "← All sheets" }).click();
+    await page.getByRole("button", { name: "← All projects" }).click();
     await expect(page.locator("#main .bar")).toBeVisible();
     await expect(left(page)).toHaveCount(0);
     expect(backend.requests("GET", USAGE)).toHaveLength(1);
@@ -259,7 +259,7 @@ test.describe("receipt scans left, and the limits", { tag: ["@J5", "@J5.1"] }, (
     backend.on("GET", USAGE, { status: 503, body: { error: { code: "unavailable", message: "down" } } });
     await scan(page, backend);
     await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
-    await page.getByRole("button", { name: "← All sheets" }).click();
+    await page.getByRole("button", { name: "← All projects" }).click();
     // The read's answer had them
     await expect(left(page)).toHaveText("199 of 200 receipt scans left this month");
   });

@@ -18,7 +18,7 @@ test("reports an error with the release version, signed with the pool's guest cr
   await expect(page.locator("#account")).toContainText("Sign in with the email address your invite was sent to");
   // What the browser dispatches for an uncaught error, with a URL and an address in it
   await page.evaluate(() => {
-    const error = new Error("Couldn't load https://supply-checkout.test/?invite=i1&token=invite-secret#frag and /teams/t1/sheets?cursor=page-secret for pat@example.com with eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1LXBhdCJ9.sig-part");
+    const error = new Error("Couldn't load https://supply-checkout.test/?invite=i1&token=invite-secret#frag and /teams/t1/projects?cursor=page-secret for pat@example.com with eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1LXBhdCJ9.sig-part");
     window.dispatchEvent(new ErrorEvent("error", { message: error.message, filename: "https://supply-checkout.test/?code=sign-in-code", lineno: 3, colno: 7, error }));
   });
 
@@ -27,7 +27,7 @@ test("reports an error with the release version, signed with the pool's guest cr
   const error = rum.events().find((e) => e.type === "com.amazon.rum.js_error_event");
   expect(error.details).toMatchObject({
     type: "Error",
-    message: "Couldn't load https://supply-checkout.test/ and /teams/t1/sheets for [email] with [token]",
+    message: "Couldn't load https://supply-checkout.test/ and /teams/t1/projects for [email] with [token]",
   });
   // Chromium and WebKit report the event's position; Firefox takes it from the stack, which here is the evaluated code
   if (browserName !== "firefox") expect(error.details).toMatchObject({ filename: "https://supply-checkout.test/", lineno: 3, colno: 7 });

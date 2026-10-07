@@ -1,6 +1,6 @@
 # Moving from the claude.ai artifact to the web app
 
-If your business has been using Supply Checkout inside claude.ai, you can bring your inventory and sheets into the web app at [app.supplycheckout.com](https://app.supplycheckout.com). You download one file from the artifact and send it to us, and we bring it into your new team. It takes a few minutes, and nothing is lost from the artifact.
+If your business has been using Supply Checkout inside claude.ai, you can bring your inventory and sheets into the web app at [app.supplycheckout.com](https://app.supplycheckout.com), where sheets are called **projects**. You download one file from the artifact and send it to us, and we bring it into your new team. It takes a few minutes, and nothing is lost from the artifact.
 
 ## Before you start
 
@@ -26,22 +26,22 @@ Once you've downloaded the file, stop recording checkouts in the artifact. Anyth
 
 We check the whole file first, without changing anything in your team. If something doesn't fit, such as an item in your team that already has one of the file's barcodes, we tell you and nothing is imported until it's sorted out.
 
-Then we import it and check that every stock count and every sheet's totals match your file exactly. After that, your items and sheets are in the web app.
+Then we import it and check that every stock count and every sheet's totals match your file exactly. After that, your items are in the web app, and each sheet is a project there.
 
 ## What comes across
 
 - **Inventory:** every item with its name, barcode, price, cost, pack size and how many are in storage. Each item's stock history starts with one "import" entry for its count.
-- **Sheets:** every sheet, open or returned, with its client, date, who prepared it, what was taken and returned, and the price of each line. Totals and charges stay the same, to the cent.
+- **Sheets, as projects:** every sheet, open or returned, becomes a project with its client, date, who prepared it, what was taken and returned, and the price of each line. Totals and charges stay the same, to the cent.
 
 ## What doesn't come across
 
-- **People.** Your team members don't move automatically. Invite each of them from **Members** in the web app. Old sheets still show who prepared them, by name.
+- **People.** Your team members don't move automatically. Invite each of them from **Members** in the web app. Projects that came from the artifact still show who prepared them, by name.
 - **Unsaved receipts.** A receipt still being reviewed in the artifact (see [Before you start](#before-you-start)).
 - **Anything changed after the export.** Only what was in the file.
 
 ## Size limits
 
-A file can hold up to 5,000 items and 5,000 sheets, and be up to 20 MB. That's far more than most businesses have. If yours is bigger, tell us and we'll work it out with you.
+A file can hold up to 5,000 items and 5,000 sheets (projects), and be up to 20 MB. That's far more than most businesses have. If yours is bigger, tell us and we'll work it out with you.
 
 ## What happens to the artifact
 

@@ -304,15 +304,15 @@ export class FakeBackend {
     m = path.match(/^\/teams\/([^/]+)\/invites(?:\/([^/]+)(\/resend)?)?$/);
     if (m) return this.teamInvite(decodeURIComponent(m[1]), m[2] && decodeURIComponent(m[2]), !!m[3], method, call.body, err);
 
-    m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/(checkout|return|lost)$/);
+    m = path.match(/^\/teams\/([^/]+)\/projects\/([^/]+)\/(checkout|return|lost)$/);
     if (m && method === "POST") return this.command(decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3], call.body);
 
     m = path.match(/^\/teams\/([^/]+)\/adhoc\/checkout$/);
     if (m && method === "POST") return this.quickTake(decodeURIComponent(m[1]), call.body);
-    m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/move$/);
+    m = path.match(/^\/teams\/([^/]+)\/projects\/([^/]+)\/move$/);
     if (m && method === "POST") return this.move(decodeURIComponent(m[1]), decodeURIComponent(m[2]), call.body);
 
-    m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/lines$/);
+    m = path.match(/^\/teams\/([^/]+)\/projects\/([^/]+)\/lines$/);
     if (m && method === "POST") return this.addLines(decodeURIComponent(m[1]), decodeURIComponent(m[2]), call.body);
 
     m = path.match(/^\/teams\/([^/]+)\/products\/([^/]+)\/stock$/);
@@ -346,18 +346,18 @@ export class FakeBackend {
     const data = method === "PUT" ? clone(call.body.data) : clone(cur.data);
     if (method === "PATCH") merge(data, call.body.data);
     if (coll === "products" && stored !== undefined) data.stock = stored;
-    // A sheet line's cost each is an amount in whole cents (ADR 0014), as backend/src/data/documents.ts checks
+    // A project line's cost each is an amount in whole cents (ADR 0014), as backend/src/data/documents.ts checks
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
-    const badCost = coll === "sheets" && Object.values(data.items || {}).some((l) => l && typeof l === "object" && "cost" in l && !cents(l.cost));
+    const badCost = coll === "projects" && Object.values(data.items || {}).some((l) => l && typeof l === "object" && "cost" in l && !cents(l.cost));
     if (badCost) return err(400, "bad_request");
-    // No sheet closes while company equipment is still out on it (ADR 0017, documents.ts)
+    // No project closes while company equipment is still out on it (ADR 0017, documents.ts)
     const stillOut = (l) => l && l.kind === "equipment" && (l.out || 0) - (l.returned || 0) - (l.lost || 0) > 0;
-    if (coll === "sheets" && data.status === "closed" && cur?.data.status !== "closed" && Object.values(data.items || {}).some(stillOut)) {
-      return [409, { error: { code: "aborted", message: "Equipment is still out on this sheet", reason: "equipment_out" } }];
+    if (coll === "projects" && data.status === "closed" && cur?.data.status !== "closed" && Object.values(data.items || {}).some(stillOut)) {
+      return [409, { error: { code: "aborted", message: "Equipment is still out on this project", reason: "equipment_out" } }];
     }
-    // One open ad hoc sheet per team (ADR 0017, documents.ts)
-    if (coll === "sheets" && data.kind === "adhoc" && data.status !== "closed" && cur?.data.status === "closed" && this.openAdhoc(team)) {
-      return [409, { error: { code: "aborted", message: "Another ad hoc sheet is open. Finish it before reopening this one.", reason: "adhoc_open" } }];
+    // One open General Use project per team (ADR 0017, documents.ts)
+    if (coll === "projects" && data.kind === "adhoc" && data.status !== "closed" && cur?.data.status === "closed" && this.openAdhoc(team)) {
+      return [409, { error: { code: "aborted", message: "Another General Use project is open. Finish it before reopening this one.", reason: "adhoc_open" } }];
     }
     this.write(team, coll, id, data);
     return [200, out()];
@@ -365,7 +365,7 @@ export class FakeBackend {
 
   // Checkout and return as the API runs them (docs/api/commands.md, backend/src/data/commands.ts):
   // the line and the stock change together, by adding to what's stored, and each gives the
-  // sheet (and a product that tracks stock) a new version. An operation ID that's been used
+  // project (and a product that tracks stock) a new version. An operation ID that's been used
   // returns its first result and changes nothing; used for another request, it's refused.
   // The members routes as the API runs them: owners list, change roles and remove; anyone
   // can leave; the team always keeps an owner
@@ -525,34 +525,34 @@ export class FakeBackend {
     return [201, { invite: clone(invite) }];
   }
 
-  command(team, sheetId, name, body) {
+  command(team, projectId, name, body) {
     // With the API's messages where the app shows them (a refused checkout or return)
     const err = (status, code, message = code, reason) => [status, { error: { code, message, ...(reason ? { reason } : {}) } }];
     const member = this.teams.find((t) => t.id === team);
     if (!member) return err(403, "permission_denied", "permission_denied", "not_member");
     if (member.role === "viewer") return err(403, "permission_denied", "permission_denied", "view_only");
     const { operationId, productKey: key, quantity: qty, ...oneOff } = body;
-    // Not part of the request: the quick take's own marker that it may check out onto the ad hoc sheet
+    // Not part of the request: the quick take's own marker that it may check out onto the General Use project
     const quick = oneOff.quickTake === true;
     delete oneOff.quickTake;
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) || typeof key !== "string" || !Number.isInteger(qty) || qty < 1) return err(400, "bad_request");
-    const sheetKey = `${team}/sheets/${sheetId}`, productKey = `${team}/products/${key}`;
+    const projectKey = `${team}/projects/${projectId}`, productKey = `${team}/products/${key}`;
     const out = (k) => { const d = this.docs.get(k); return d ? { id: k.slice(k.lastIndexOf("/") + 1), version: d.version, data: d.data } : null; };
-    const answer = (result, replayed) => [200, { operationId, replayed, result, sheet: out(sheetKey), product: out(productKey) }];
-    const request = JSON.stringify([name, sheetId, key, qty, oneOff]);
+    const answer = (result, replayed) => [200, { operationId, replayed, result, project: out(projectKey), product: out(productKey) }];
+    const request = JSON.stringify([name, projectId, key, qty, oneOff]);
     const prior = this.operations.get(`${team}/${operationId}`);
     if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
 
-    const sheet = this.docs.get(sheetKey), product = this.docs.get(productKey);
-    if (!sheet) return err(404, "not_found", "No such sheet");
-    if (sheet.data.status === "closed") return err(409, "aborted");
-    const items = (sheet.data.items ||= {});
+    const project = this.docs.get(projectKey), product = this.docs.get(productKey);
+    if (!project) return err(404, "not_found", "No such project");
+    if (project.data.status === "closed") return err(409, "aborted");
+    const items = (project.data.items ||= {});
     const line = Object.hasOwn(items, key) ? items[key] : undefined;
     let delta;
     // Company equipment (ADR 0017): its line has kind and no price, and names who took it last and when
     const taken = { takenBy: this.user.id, takenAt: new Date().toISOString() };
-    // The ad hoc sheet takes only quick takes (ADR 0017)
-    if (name === "checkout" && sheet.data.kind === "adhoc" && !quick) return err(400, "bad_request", "Take items for no job with Quick take, not onto the ad hoc sheet");
+    // The General Use project takes only quick takes (ADR 0017)
+    if (name === "checkout" && project.data.kind === "adhoc" && !quick) return err(400, "bad_request", "Take items for no job with Quick take, not onto the General Use project");
     if (name === "checkout") {
       if (line) { line.out += qty; if (line.kind === "equipment") Object.assign(line, taken); }
       else {
@@ -571,30 +571,30 @@ export class FakeBackend {
       if (body.charge !== undefined) line.lostCharge = Math.round(((line.lostCharge || 0) + body.charge) * 100) / 100;
       delta = 0;
     } else {
-      if (!line) return err(400, "bad_request", "This item isn't on this sheet");
+      if (!line) return err(400, "bad_request", "This item isn't on this project");
       if (line.purchased) return err(400, "bad_request", "This was bought for the client, so it doesn't come back");
       const left = line.out - (line.returned || 0) - (line.lost || 0);
       if (qty > left) return err(400, "bad_request", `Only ${left} of this item ${left === 1 ? "is" : "are"} left to return`);
       line.returned = (line.returned || 0) + qty;
       delta = qty;
     }
-    sheet.version++;
+    project.version++;
     const tracked = !!product && typeof product.data.stock === "number";
     if (tracked && delta) { product.data.stock += delta; product.version++; }
-    const result = { operationId, command: name, reason: name, productKey: key, sheetId, quantity: qty, stockDelta: tracked ? delta : 0, userId: this.user.id, at: new Date().toISOString() };
+    const result = { operationId, command: name, reason: name, productKey: key, projectId, quantity: qty, stockDelta: tracked ? delta : 0, userId: this.user.id, at: new Date().toISOString() };
     this.operations.set(`${team}/${operationId}`, { request, result });
     return answer(result, false);
   }
 
-  // The team's open ad hoc sheet's ID, if there is one
+  // The team's open General Use project's ID, if there is one
   openAdhoc(team) {
-    const prefix = `${team}/sheets/`;
+    const prefix = `${team}/projects/`;
     const hit = [...this.docs].find(([k, d]) => k.startsWith(prefix) && d.data.kind === "adhoc" && d.data.status !== "closed");
     return hit && hit[0].slice(prefix.length);
   }
 
   // Quick take as the API runs it (quickTake in backend/src/data/commands.ts): a checkout onto the
-  // team's open ad hoc sheet, or onto the next adhoc-<n>, which it starts. Replays as for checkout.
+  // team's open General Use project, or onto the next adhoc-<n>, which it starts. Replays as for checkout.
   quickTake(team, body) {
     const err = (status, code, message = code, reason) => [status, { error: { code, message, ...(reason ? { reason } : {}) } }];
     const member = this.teams.find((t) => t.id === team);
@@ -602,57 +602,57 @@ export class FakeBackend {
     if (member.role === "viewer") return err(403, "permission_denied", "permission_denied", "view_only");
     const { date, ...take } = body;
     const prior = this.operations.get(`${team}/${body.operationId}`);
-    if (prior) return this.command(team, prior.result.sheetId, "checkout", { ...take, quickTake: true });
-    let sheetId = this.openAdhoc(team), created = false;
-    if (!sheetId) {
-      const prefix = `${team}/sheets/adhoc-`;
+    if (prior) return this.command(team, prior.result.projectId, "checkout", { ...take, quickTake: true });
+    let projectId = this.openAdhoc(team), created = false;
+    if (!projectId) {
+      const prefix = `${team}/projects/adhoc-`;
       const n = Math.max(0, ...[...this.docs.keys()].filter((k) => k.startsWith(prefix)).map((k) => Number(k.slice(prefix.length)) || 0)) + 1;
-      sheetId = `adhoc-${n}`;
+      projectId = `adhoc-${n}`;
       created = true;
-      this.write(team, "sheets", sheetId, { kind: "adhoc", client: "", date, status: "open", createdBy: this.user.id, createdAt: new Date().toISOString(), items: {} });
+      this.write(team, "projects", projectId, { kind: "adhoc", client: "", date, status: "open", createdBy: this.user.id, createdAt: new Date().toISOString(), items: {} });
     }
-    const [status, answer] = this.command(team, sheetId, "checkout", { ...take, quickTake: true });
+    const [status, answer] = this.command(team, projectId, "checkout", { ...take, quickTake: true });
     if (status !== 200) return [status, answer];
-    Object.assign(answer.result, { command: "quickTake", ...(created ? { sheetCreated: true } : {}) });
+    Object.assign(answer.result, { command: "quickTake", ...(created ? { projectCreated: true } : {}) });
     return [status, answer];
   }
 
-  // Moving an ad hoc line to a job sheet as the API runs it (moveLine in commands.ts): both
-  // sheets change together, the job sheet's line keeps its own price, and no stock moves
+  // Moving an ad hoc line to a client project as the API runs it (moveLine in commands.ts): both
+  // projects change together, the client project's line keeps its own price, and no stock moves
   move(team, fromId, body) {
     const err = (status, code, message = code, reason) => [status, { error: { code, message, ...(reason ? { reason } : {}) } }];
     const member = this.teams.find((t) => t.id === team);
     if (!member) return err(403, "permission_denied", "permission_denied", "not_member");
     if (member.role === "viewer") return err(403, "permission_denied", "permission_denied", "view_only");
-    const { operationId, productKey: key, toSheetId: toId } = body;
-    const fromKey = `${team}/sheets/${fromId}`, toKey = `${team}/sheets/${toId}`;
+    const { operationId, productKey: key, toProjectId: toId } = body;
+    const fromKey = `${team}/projects/${fromId}`, toKey = `${team}/projects/${toId}`;
     const out = (k) => { const d = this.docs.get(k); return d ? { id: k.slice(k.lastIndexOf("/") + 1), version: d.version, data: d.data } : null; };
-    const answer = (result, replayed) => [200, { operationId, replayed, result, sheet: out(fromKey), toSheet: out(toKey), product: null }];
+    const answer = (result, replayed) => [200, { operationId, replayed, result, project: out(fromKey), toProject: out(toKey), product: null }];
     const request = JSON.stringify(["move", fromId, key, toId]);
     const prior = this.operations.get(`${team}/${operationId}`);
     if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
     const from = this.docs.get(fromKey), to = this.docs.get(toKey);
-    if (!from || from.data.kind !== "adhoc" || this.openAdhoc(team) !== fromId) return err(400, "bad_request", "Only a line on the open ad hoc sheet moves to a job sheet");
-    if (!to) return err(404, "not_found", "No such job sheet");
-    if (to.data.status === "closed") return err(409, "aborted", "This sheet is closed. Reopen it to move a line to it.");
+    if (!from || from.data.kind !== "adhoc" || this.openAdhoc(team) !== fromId) return err(400, "bad_request", "Only a line on the open General Use project moves to another project");
+    if (!to) return err(404, "not_found", "No such project");
+    if (to.data.status === "closed") return err(409, "aborted", "This project is closed. Reopen it to move a line to it.");
     const line = Object.hasOwn(from.data.items || {}, key) ? from.data.items[key] : undefined;
-    if (!line) return err(400, "bad_request", "This item isn't on this sheet");
+    if (!line) return err(400, "bad_request", "This item isn't on this project");
     const items = (to.data.items ||= {}), cur = Object.hasOwn(items, key) ? items[key] : undefined;
-    if (cur && cur.kind !== line.kind) return err(400, "bad_request", cur.kind === "equipment" ? "The job sheet has this item as company equipment; correct the lines by hand" : "The job sheet has this item as a supply; correct the lines by hand");
+    if (cur && cur.kind !== line.kind) return err(400, "bad_request", cur.kind === "equipment" ? "The project has this item as company equipment; correct the lines by hand" : "The project has this item as a supply; correct the lines by hand");
     if (cur) Object.assign(cur, { out: cur.out + line.out, returned: (cur.returned || 0) + (line.returned || 0), ...(line.lost ? { lost: (cur.lost || 0) + line.lost } : {}) });
     else items[key] = clone(line);
     delete from.data.items[key];
     from.version++;
     to.version++;
-    const result = { operationId, command: "move", reason: "move", productKey: key, sheetId: fromId, toSheetId: toId, quantity: line.out, returned: line.returned || 0, lost: line.lost || 0, stockDelta: 0, lineCreated: !cur, userId: this.user.id, at: new Date().toISOString() };
+    const result = { operationId, command: "move", reason: "move", productKey: key, projectId: fromId, toProjectId: toId, quantity: line.out, returned: line.returned || 0, lost: line.lost || 0, stockDelta: 0, lineCreated: !cur, userId: this.user.id, at: new Date().toISOString() };
     this.operations.set(`${team}/${operationId}`, { request, result });
     return answer(result, false);
   }
 
   // A receipt's lines for a client as the API adds them (addLines in backend/src/data/commands.ts):
   // all or none, a new line with the request's copy, an existing one adding to its out, no stock
-  // moved, and the sheet a new version. Replays and reused IDs as for checkout.
-  addLines(team, sheetId, body) {
+  // moved, and the project a new version. Replays and reused IDs as for checkout.
+  addLines(team, projectId, body) {
     const err = (status, code, message = code, reason) => [status, { error: { code, message, ...(reason ? { reason } : {}) } }];
     const member = this.teams.find((t) => t.id === team);
     if (!member) return err(403, "permission_denied", "permission_denied", "not_member");
@@ -664,18 +664,18 @@ export class FakeBackend {
       && lines.every((l) => typeof l.productKey === "string" && Number.isInteger(l.quantity) && l.quantity >= 1 && typeof l.name === "string" && l.name.trim() && (l.price === undefined || cents(l.price)) && (l.cost === undefined || cents(l.cost))
         && (l.priceSet === undefined || (l.priceSet === "manual" && l.price !== undefined)));
     if (!valid) return err(400, "bad_request");
-    const sheetKey = `${team}/sheets/${sheetId}`;
+    const projectKey = `${team}/projects/${projectId}`;
     const answer = (result, replayed) => {
-      const d = this.docs.get(sheetKey);
-      return [200, { operationId, replayed, result, sheet: d ? { id: sheetId, version: d.version, data: d.data } : null }];
+      const d = this.docs.get(projectKey);
+      return [200, { operationId, replayed, result, project: d ? { id: projectId, version: d.version, data: d.data } : null }];
     };
-    const request = JSON.stringify(["addLines", sheetId, lines]);
+    const request = JSON.stringify(["addLines", projectId, lines]);
     const prior = this.operations.get(`${team}/${operationId}`);
     if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
-    const sheet = this.docs.get(sheetKey);
-    if (!sheet) return err(404, "not_found", "No such sheet");
-    if (sheet.data.status === "closed") return err(409, "aborted", "This sheet is closed. Reopen it to add to it.");
-    const items = (sheet.data.items ||= {});
+    const project = this.docs.get(projectKey);
+    if (!project) return err(404, "not_found", "No such project");
+    if (project.data.status === "closed") return err(409, "aborted", "This project is closed. Reopen it to add to it.");
+    const items = (project.data.items ||= {});
     // Company equipment bought for the client (ADR 0017, section 2a): its own line, priced by the
     // server from the receipt price and the team's markup, or at a typed price ("manual")
     const markup = (this.settings[team] || { equipmentMarkup: 0 }).equipmentMarkup;
@@ -696,8 +696,8 @@ export class FakeBackend {
       else items[key] = fresh;
       return { ...result, lineCreated: !line };
     });
-    sheet.version++;
-    const result = { operationId, command: "addLines", sheetId, lines: done, userId: this.user.id, at: new Date().toISOString() };
+    project.version++;
+    const result = { operationId, command: "addLines", projectId, lines: done, userId: this.user.id, at: new Date().toISOString() };
     this.operations.set(`${team}/${operationId}`, { request, result });
     return answer(result, false);
   }

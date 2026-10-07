@@ -10,7 +10,7 @@ const NOW = Date.parse("2026-10-01T12:00:30Z");
 const INDEXES = [{ IndexName: "GSI1", IndexStatus: "ACTIVE" }, { IndexName: "GSI2", IndexStatus: "ACTIVE" }, { IndexName: "GSI3", IndexStatus: "ACTIVE" }];
 const ITEMS = [
   { PK: { S: "TEAM#a" }, SK: { S: "META" }, name: { S: "Acme" } },
-  { PK: { S: "TEAM#a" }, SK: { S: "SHEET#1" }, qty: { N: "3" } },
+  { PK: { S: "TEAM#a" }, SK: { S: "PROJECT#1" }, qty: { N: "3" } },
   { PK: { S: "TEAM#b" }, SK: { S: "META" }, name: { S: "Bolt" } },
 ];
 

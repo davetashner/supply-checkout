@@ -22,7 +22,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 | Persona | Who they are | Role in the app |
 | --- | --- | --- |
 | **Owner** | Runs a small cleaning, maintenance or contracting business. Sets things up on a laptop, pays the bill. | Owner: everything, including billing and members |
-| **Crew member** | Takes supplies from storage to client jobs, usually on a phone, often early in the morning. | Contributor: scan, check out, return, read receipts, edit sheets and inventory |
+| **Crew member** | Takes supplies from storage to client jobs, usually on a phone, often early in the morning. | Contributor: scan, check out, return, read receipts, edit projects and inventory |
 | **Bookkeeper** | Checks what was used and what to charge clients. | Viewer: sees everything, changes nothing |
 
 ## Journeys
@@ -42,7 +42,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 | [J3](#j3-invite-the-crew) | Invite the crew | Owner, crew member | No | Tested; still to come: opening the mobile app from the invite link (phase 2) |
 | [J4](#j4-check-supplies-out-and-back-in) | Check supplies out and back in | Crew member | Yes | Tested |
 | [J5](#j5-read-a-receipt) | Read a receipt | Crew member, owner | No | Tested; still to come: a subscribe link in the trial's receipt limit message, once the in-app plan picker exists |
-| [J6](#j6-export-a-sheet-to-bill-a-client) | Export a sheet to bill a client | Owner, bookkeeper | No | Tested |
+| [J6](#j6-export-a-project-to-bill-a-client) | Export a project to bill a client | Owner, bookkeeper | No | Tested |
 | [J7](#j7-subscribe-add-seats-and-see-invoices) | Subscribe, add seats and see invoices | Owner | Yes | Partly built |
 | [J8](#j8-a-payment-fails-and-is-fixed) | A payment fails and is fixed | Owner | Yes | Partly built |
 | [J9](#j9-a-viewer-can-see-but-not-change) | A viewer can see but not change | Bookkeeper | No | Tested |
@@ -50,7 +50,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 | [J11](#j11-delete-an-account) | Delete an account | Anyone | No | Tested |
 | [J12](#j12-choose-a-plan-in-the-mobile-app) | Choose a plan in the mobile app | Owner | No | Planned (phase 2) |
 | [J13](#j13-take-company-equipment-to-a-job-and-bring-it-back) | Take company equipment to a job and bring it back | Crew member | Yes | Tested |
-| [J14](#j14-take-supplies-without-a-job-sheet) | Take supplies without a job sheet | Crew member | Yes | Tested |
+| [J14](#j14-take-supplies-without-a-job) | Take supplies without a job | Crew member | Yes | Tested |
 <!-- /journeys:table -->
 
 ---
@@ -65,7 +65,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 - **J0.3** If the person belongs to more than one team, pick the team.
 <!-- /journeys:steps J0 -->
 
-**Expected:** the team's sheets appear within 3 seconds. Staying signed in lasts 30 days on the same device. Signing in with Apple or Google using the verified email of an existing account, at an address that provider runs (Gmail or the account's own Workspace domain; iCloud or an Apple relay address), opens that same account and its teams (`supply-checkout-0b1`: `backend/test/account-link.test.ts`, and the retry in `tests/aws-account.spec.js`). A person removed from a team no longer sees it on their next request.
+**Expected:** the team's projects appear within 3 seconds. Staying signed in lasts 30 days on the same device. Signing in with Apple or Google using the verified email of an existing account, at an address that provider runs (Gmail or the account's own Workspace domain; iCloud or an Apple relay address), opens that same account and its teams (`supply-checkout-0b1`: `backend/test/account-link.test.ts`, and the retry in `tests/aws-account.spec.js`). A person removed from a team no longer sees it on their next request.
 
 **Status:** tested (`supply-checkout-zsm`: Cognito and Managed Login; `supply-checkout-l5y`: the team switcher). The tests use a fake Managed Login: `tests/aws-account.spec.js`, `aws-session-tabs.spec.js` and `aws-two-step.spec.js`, and `backend/test/auth-api.test.ts`.
 
@@ -79,7 +79,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 - **J1.3** Name the team.
 <!-- /journeys:steps J1 -->
 
-**Expected:** an empty team ready to use in under a minute, with a 14-day trial and no card needed. The terms acceptance time is stored. Every new account, however it signed up (an email code, Google or Apple), gets one welcome email within a minute: greeting them by name if the account has one, linking to the app, with the next step (create a team, with its 14-day trial and no card needed; or, for someone invited, accept the invite) and the support address. A password reset or a later sign-in never sends another, and a failed send never holds up sign-up (`supply-checkout-6uw.25`: `backend/test/welcome.test.ts`). In the web app, the new team opens with a short **Get your team started** checklist above the sheets and inventory: add supplies (by hand, or import a CSV using the import's template), invite the crew from Members, and create a first sheet. Each step ticks itself off from what's saved, and the checklist shows to the team's owners on that device until every step is done or they dismiss it (`supply-checkout-dhc`: `tests/aws-first-run.spec.js`, including accessibility in light and dark mode and a phone-width layout).
+**Expected:** an empty team ready to use in under a minute, with a 14-day trial and no card needed. The terms acceptance time is stored. Every new account, however it signed up (an email code, Google or Apple), gets one welcome email within a minute: greeting them by name if the account has one, linking to the app, with the next step (create a team, with its 14-day trial and no card needed; or, for someone invited, accept the invite) and the support address. A password reset or a later sign-in never sends another, and a failed send never holds up sign-up (`supply-checkout-6uw.25`: `backend/test/welcome.test.ts`). In the web app, the new team opens with a short **Get your team started** checklist above the projects and inventory: add supplies (by hand, or import a CSV using the import's template), invite the crew from Members, and create a first project. Each step ticks itself off from what's saved, and the checklist shows to the team's owners on that device until every step is done or they dismiss it (`supply-checkout-dhc`: `tests/aws-first-run.spec.js`, including accessibility in light and dark mode and a phone-width layout).
 
 **Status:** partly built. Sign-in (`supply-checkout-zsm`), team creation (`supply-checkout-l5y`: `GET /me` and `POST /teams`, see [docs/api/onboarding.md](api/onboarding.md)), the trial (`supply-checkout-x0l`) and the checklist (`supply-checkout-dhc`) are built. The landing and pricing pages, and accepting the terms at sign-up, are `supply-checkout-21q`.
 
@@ -110,7 +110,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 - **J3.2** The crew member gets an email, taps the link on their phone and signs up or signs in.
 <!-- /journeys:steps J3 -->
 
-**Expected:** the email arrives within a minute. The link works once and expires after 7 days. The crew member sees the team's sheets right away, and the seat count on the subscription goes up.
+**Expected:** the email arrives within a minute. The link works once and expires after 7 days. The crew member sees the team's projects right away, and the seat count on the subscription goes up.
 
 **Status:** tested. Inviting, the email, accepting, resending, revoking and failed deliveries are in `tests/aws-invites.spec.js` and `tests/aws-account.spec.js` (the web build) and `backend/test/invites-api.test.ts` (`supply-checkout-5tp`, `supply-checkout-5hx`, `supply-checkout-dj6`). The seat count follows the members (`supply-checkout-l50`, see J7). The link opens the web app; opening the mobile app from it (universal links) comes with the phase 2 apps.
 
@@ -119,20 +119,20 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 **Persona:** crew member. **Critical:** this is the job the app does every morning.
 
 <!-- journeys:steps J4 -->
-- **J4.1** Create a sheet for the client and date, or open today's sheet.
+- **J4.1** Create a project for the client and date, or open today's project.
 - **J4.2** Scan each item's barcode with the phone camera (or type the number, or pick an item that has no barcode) and choose how many.
 - **J4.3** Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return** (which first asks where any company equipment still out is, J13.4).
 <!-- /journeys:steps J4 -->
 
-**Expected:** each checkout takes storage counts down and each return puts them back. The sheet shows taken, returned, used and the charge. Other people's phones show the changes within 2 seconds. Nothing is lost if two people work on the same sheet. On a slow or flaky connection, a checkout or return never shows as saved before the server confirms it, a double tap or a retry never counts twice, and one that didn't save keeps what was entered and says so, with Try again.
+**Expected:** each checkout takes storage counts down and each return puts them back. The project shows taken, returned, used and the charge. Other people's phones show the changes within 2 seconds. Nothing is lost if two people work on the same project. On a slow or flaky connection, a checkout or return never shows as saved before the server confirms it, a double tap or a retry never counts twice, and one that didn't save keeps what was entered and says so, with Try again.
 
 **Status:** tested.
 
 **Tests:**
-- `app.spec.js`: "creates a sheet recording client, date and who prepared it"; "checks out a new barcode, returns part of it, and finishes the return"; "storage counts go down on checkout and back up on return"; "adds an item that has no barcode"; "returning the same item again adds to what's already been returned"
+- `app.spec.js`: "creates a project recording client, date and who prepared it"; "checks out a new barcode, returns part of it, and finishes the return"; "storage counts go down on checkout and back up on return"; "adds an item that has no barcode"; "returning the same item again adds to what's already been returned"
 - `barcode.spec.js`: reading barcode photos, including when the photo can't be read
-- `sheets.spec.js`: editing sheets and lines, picking and returning items without barcodes, reopening and deleting
-- `concurrent.spec.js`: another person changing the same sheet at the same time
+- `projects.spec.js`: editing projects and lines, picking and returning items without barcodes, reopening and deleting
+- `concurrent.spec.js`: another person changing the same project at the same time
 - `failures.spec.js`: failed saves leave the screen as it was
 - `save-states.spec.js` and `aws-save-states.spec.js`: saving on a slow connection, double taps, timeouts, lost answers, and going offline and back
 
@@ -145,31 +145,31 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 <!-- journeys:steps J5 -->
 - **J5.1** Tap **Scan receipt** and photograph the receipt.
 - **J5.2** Check each line: name, quantity, price, and the suggested inventory match.
-- **J5.3** Assign each line to a client (a new or existing sheet) or to **General inventory**, then tap **Save**. Company equipment bought for a client is charged on their sheet (the receipt price plus the team's markup, or a price typed instead); in General inventory it adds to storage and isn't charged.
+- **J5.3** Assign each line to a client (a new or existing project) or to **General inventory**, then tap **Save**. Company equipment bought for a client is charged on their project (the receipt price plus the team's markup, or a price typed instead); in General inventory it adds to storage and isn't charged.
 <!-- /journeys:steps J5 -->
 
-**Expected:** lines appear within 60 seconds. Nothing is saved until **Save**. A line that matches company equipment, assigned to a client, says "Company equipment · bought for this client" and goes on their sheet as its own charged line, "<item> (bought for this client)", never returned or asked about at Finished Return; in the web app the server charges the receipt price plus the team's markup (only owners see the percentage), and in the claude.ai app the receipt price; the reviewer can type a price instead, and the sheet says who typed it ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md), section 2a). In General inventory it adds to storage and isn't charged. An item that comes in packs of n shows "1 case = n each" and adds eaches (cases × n) at a cost of the case price ÷ n, rounded to cents, unless the line is switched to **Priced per each**. Where the price differs from the item's, the line offers **Charge the receipt price** or **Keep the client price**, and keeps the client price by default when the item's cost is below its price (ADR 0014). Client items go on the sheets at the chosen price, with the receipt's cost; storage items raise storage counts; and the receipt's cost each is saved to the item. If reading fails, the person can enter the items by hand.
+**Expected:** lines appear within 60 seconds. Nothing is saved until **Save**. A line that matches company equipment, assigned to a client, says "Company equipment · bought for this client" and goes on their project as its own charged line, "<item> (bought for this client)", never returned or asked about at Finished Return; in the web app the server charges the receipt price plus the team's markup (only owners see the percentage), and in the claude.ai app the receipt price; the reviewer can type a price instead, and the project says who typed it ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md), section 2a). In General inventory it adds to storage and isn't charged. An item that comes in packs of n shows "1 case = n each" and adds eaches (cases × n) at a cost of the case price ÷ n, rounded to cents, unless the line is switched to **Priced per each**. Where the price differs from the item's, the line offers **Charge the receipt price** or **Keep the client price**, and keeps the client price by default when the item's cost is below its price (ADR 0014). Client items go on the projects at the chosen price, with the receipt's cost; storage items raise storage counts; and the receipt's cost each is saved to the item. If reading fails, the person can enter the items by hand.
 
 **Status:** tested in both builds. The claude.ai artifact reads receipts with claude.ai's `sample`; the web app sends the photo to `POST /teams/{teamId}/receipts/read`, which reads it with Claude on Bedrock with a 25-second deadline (`supply-checkout-kx8`). Each read counts against the person's own rate limit (10 a minute, 60 an hour, 200 a day, from all their teams) and the team's allowance, provisional until pricing is decided: 200 a month while it pays or has a comp, 25 in all for a trial, and at most 30 trial reads a day per person across their trial teams (`supply-checkout-wxx`). A read the model service refused with a throttle or a 503 is given back to the team. A team that subscribes mid-month has that month's trial reads counted against its 200. In the web app, **Stop** before the photo is sent sends nothing; once the read has been sent, Stop or the app's 40-second timeout only stops waiting for it: the server still reads the receipt, and it counts against the team's allowance.
 
 **Tests:** `app.spec.js`: "receipt review merges duplicates and splits items between a client and storage"; `receipts.spec.js` (all tests, including the default price choice and pack conversion); `aws-data.spec.js`: "a receipt's cases are stock commands in eaches at the cost of one each"; `aws-receipts.spec.js` (the web build on the receipt endpoint: the photo sent, product keys as matches, the model's text shown as text, the monthly and trial limits, the scans left under the bar and in Team settings, the per-person rate limit's messages, a model timeout, an unusable reply and the other failures); `backend/test/receipts-api.test.ts` (the endpoint); `resilience.spec.js`: failed reads, empty photos and resuming an unsaved review.
 
-### J6. Export a sheet to bill a client
+### J6. Export a project to bill a client
 
 **Persona:** owner or bookkeeper.
 
 <!-- journeys:steps J6 -->
-- **J6.1** Open a finished sheet.
+- **J6.1** Open a finished project.
 - **J6.2** Tap **Download CSV**.
 <!-- /journeys:steps J6 -->
 
 **Expected:** a CSV named after the client and date, with each item's price, taken, returned, used and charge, and a total row. Company equipment on loan isn't in it: it isn't charged (J13).
 
-The sheet list has a search box that matches a sheet's client ("Ad hoc" for the ad hoc sheet), who prepared it, or an item on it, in any filter, and says when nothing matches. On **Returned** and **All**, finished sheets are grouped by month under year headings, newest first, each with its count of sheets and, for owners, its total charge (the ad hoc sheet is counted but never charged). This year (or the newest year) is open; older years open and close with the keyboard, and stay as they were left for the session. A year filter beside the chips narrows the list to one year, and the owner's **Export data** button then says the year ("Export 2026") and its sheets CSV has only that year's sheets; the inventory CSV and the JSON stay whole. Out now and the open ad hoc card work as before.
+The project list has a search box that matches a project's client ("General Use" for the General Use project), who prepared it, or an item on it, in any filter, and says when nothing matches. On **Returned** and **All**, finished projects are grouped by month under year headings, newest first, each with its count of projects and, for owners, its total charge (the General Use project is counted but never charged). This year (or the newest year) is open; older years open and close with the keyboard, and stay as they were left for the session. A year filter beside the chips narrows the list to one year, and the owner's **Export data** button then says the year ("Export 2026") and its projects CSV has only that year's projects; the inventory CSV and the JSON stay whole. Out now and the open ad hoc card work as before.
 
-**Status:** tested. Owners can also export all of a team's data: on the sheet list, **Export data** offers every sheet (one CSV row per item), the inventory (CSV), or everything (JSON, each document as stored plus each sheet's totals). It's built in the browser from the collections the app has already loaded, so it matches the screens and needs no server route; 1,000 sheets take well under a second once listed. It shows for owners only (`user.isOwner()`), whether or not they can write, so it keeps working while a team is read-only.
+**Status:** tested. Owners can also export all of a team's data: on the project list, **Export data** offers every project (one CSV row per item), the inventory (CSV), or everything (JSON, each document as stored plus each project's totals). It's built in the browser from the collections the app has already loaded, so it matches the screens and needs no server route; 1,000 projects take well under a second once listed. It shows for owners only (`user.isOwner()`), whether or not they can write, so it keeps working while a team is read-only.
 
-**Tests:** `app.spec.js`: "exports a sheet as CSV"; `startup.spec.js`: "CSV export quotes commas and quotes, and names untitled sheets", "a declined download is silent", "a failed download explains"; `export.spec.js` (all tests); `find-sheets.spec.js` (search, year and month groups, the year filter and the export it scopes); `aws-data.spec.js`: "an owner exports 1,000 sheets, listed page by page, as a JSON download", "members who aren't owners get no Export data".
+**Tests:** `app.spec.js`: "exports a project as CSV"; `startup.spec.js`: "CSV export quotes commas and quotes, and names untitled projects", "a declined download is silent", "a failed download explains"; `export.spec.js` (all tests); `find-projects.spec.js` (search, year and month groups, the year filter and the export it scopes); `aws-data.spec.js`: "an owner exports 1,000 projects, listed page by page, as a JSON download", "members who aren't owners get no Export data".
 
 ### J7. Subscribe, add seats and see invoices
 
@@ -204,14 +204,14 @@ The sheet list has a search box that matches a sheet's client ("Ad hoc" for the 
 **Persona:** bookkeeper.
 
 <!-- journeys:steps J9 -->
-- **J9.1** Sign in and open sheets and inventory.
+- **J9.1** Sign in and open projects and inventory.
 <!-- /journeys:steps J9 -->
 
 **Expected:** everything is visible. No scan, edit, delete or receipt controls appear, and the server refuses any write that is attempted anyway.
 
 **Status:** tested, in the UI and on the server (`supply-checkout-dj6`: `backend/test/roles.test.ts`, and in the web app, `aws-data.spec.js`: "a checkout by someone made a viewer meanwhile is refused").
 
-**Tests:** `app.spec.js`: "view-only users can't make changes"; `sheets.spec.js`: "view-only users can open a sheet but not change it"; `inventory.spec.js`: "view-only users see inventory but can't change it"; `resilience.spec.js`: "a permission failure switches the page to view-only".
+**Tests:** `app.spec.js`: "view-only users can't make changes"; `projects.spec.js`: "view-only users can open a project but not change it"; `inventory.spec.js`: "view-only users see inventory but can't change it"; `resilience.spec.js`: "a permission failure switches the page to view-only".
 
 ### J10. Cancel and take the data
 
@@ -219,7 +219,7 @@ The sheet list has a search box that matches a sheet's client ("Ad hoc" for the 
 
 <!-- journeys:steps J10 -->
 - **J10.1** Open the Customer Portal from **Billing** and cancel.
-- **J10.2** Export all sheets and inventory.
+- **J10.2** Export all projects and inventory.
 - **J10.3** After 30 days read-only, and at least 7 days after a warning email, the team is closed and its data deleted.
 <!-- /journeys:steps J10 -->
 
@@ -260,32 +260,32 @@ The sheet list has a search box that matches a sheet's client ("Ad hoc" for the 
 
 <!-- journeys:steps J13 -->
 - **J13.1** In **Inventory**, mark items that go to jobs and come back (ladders, vacuums, cords) as **Company equipment**, with what each is worth.
-- **J13.2** Check equipment out on a sheet like any item. It's listed under **Equipment (not charged)**, apart from the supplies, and isn't in the sheet's total or the client's CSV.
+- **J13.2** Check equipment out on a project like any item. It's listed under **Equipment (not charged)**, apart from the supplies, and isn't in the project's total or the client's CSV.
 - **J13.3** Back from the job, switch to **Return** and scan what came back.
 - **J13.4** Tap **Finished Return**: for each piece still out, say it's back, still at the job, or lost or broken (with an optional charge to the client).
-- **J13.5** See what's out, on which sheet, who took it and when, in **Inventory → Equipment → Out on jobs**.
+- **J13.5** See what's out, on which project, who took it and when, in **Inventory → Equipment → Out on jobs**.
 <!-- /journeys:steps J13 -->
 
-**Expected:** equipment checked out on a sheet takes storage counts down and its return puts them back, as for supplies, but the client isn't charged for it: it's listed apart, under **Equipment (not charged)**, isn't in the sheet's taken, used or charge totals, and isn't in the sheet's CSV ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md)). Unreturned equipment is still out, not used. **Inventory → Equipment → Out on jobs** lists every piece still out on an open sheet, with who took it last and when. The owner's **Export data** keeps equipment rows, with a **Kind** column.
+**Expected:** equipment checked out on a project takes storage counts down and its return puts them back, as for supplies, but the client isn't charged for it: it's listed apart, under **Equipment (not charged)**, isn't in the project's taken, used or charge totals, and isn't in the project's CSV ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md)). Unreturned equipment is still out, not used. **Inventory → Equipment → Out on jobs** lists every piece still out on an open project, with who took it last and when. The owner's **Export data** keeps equipment rows, with a **Kind** column.
 
-**Status:** tested (`supply-checkout-h9to`). **Finished Return** on a sheet with equipment still out asks first, for each piece, how many are back (a return), how many were lost or broken (the `lost` command, with an optional charge for the lot, which goes on the sheet as "<item> (lost or broken)", in its total and the client's CSV), and leaves the rest still at the job: the sheet stays open until nothing is out, and the server refuses to close it otherwise (409 `equipment_out`).
+**Status:** tested (`supply-checkout-h9to`). **Finished Return** on a project with equipment still out asks first, for each piece, how many are back (a return), how many were lost or broken (the `lost` command, with an optional charge for the lot, which goes on the project as "<item> (lost or broken)", in its total and the client's CSV), and leaves the rest still at the job: the project stays open until nothing is out, and the server refuses to close it otherwise (409 `equipment_out`).
 
 **Tests:** `equipment.spec.js` (all tests), and the server's in `backend/test/equipment-api.test.ts` and `backend/test/equipment.test.ts`.
 
-### J14. Take supplies without a job sheet
+### J14. Take supplies without a job
 
 **Persona:** crew member. **Critical:** a box of gloves for the van, or supplies for several small jobs, is taken every week, and without it storage counts drift.
 
 <!-- journeys:steps J14 -->
-- **J14.1** On the sheet list, tap **Quick take** and scan (or pick) what you're taking, and how many. It goes on the team's ad hoc sheet, shown above the job sheets.
-- **J14.2** Bringing something back, tap **Return** on the sheet list and scan it: it goes back to the sheet it's out on, or you pick the sheet when it's out on more than one.
-- **J14.3** To bill a client for something taken ad hoc, open the ad hoc sheet, tap the line and **Move to a job sheet**.
-- **J14.4** When the van is restocked, tap **Finished Return** on the ad hoc sheet. The next quick take starts a new one.
+- **J14.1** On the project list, tap **Quick take** and scan (or pick) what you're taking, and how many. It goes on **General Use (no job)**, shown above the other projects.
+- **J14.2** Bringing something back, tap **Return** on the project list and scan it: it goes back to the project it's out on, or you pick the project when it's out on more than one.
+- **J14.3** To bill a client for something taken ad hoc, open **General Use (no job)**, tap the line and **Move to a project**.
+- **J14.4** When the van is restocked, tap **Finished Return** on **General Use (no job)**. The next quick take starts a new one.
 <!-- /journeys:steps J14 -->
 
-**Expected:** a quick take checks items out as a checkout does, storage counts going down, onto the team's one open ad hoc sheet ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md), sections 4 to 6). The first starts it (`adhoc-<n>`), and two people's first takes at once end on the same sheet. The ad hoc sheet is a card of its own above the job sheets ("Ad hoc · Since Sep 30 · 6 items out"), and shows no money: nothing on it is charged to anyone. It takes returns but no checkouts, edits of its details or receipt lines. **Return** on the sheet list finds every open sheet the item is still out on, and a job sheet's "Not on this sheet" offers to return it where it's out. Moving a line takes the whole line with its counts to the job sheet, which keeps its own price if it already has the item, without moving stock, and a retried move counts once. **Finished Return** asks about equipment as on a job sheet, with no charge, and a finished ad hoc sheet can be reopened only while no other one is open.
+**Expected:** a quick take checks items out as a checkout does, storage counts going down, onto the team's one open General Use project ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md), sections 4 to 6). The first starts it (`adhoc-<n>`), and two people's first takes at once end on the same project. The General Use project is a card of its own above the client projects ("Ad hoc · Since Sep 30 · 6 items out"), and shows no money: nothing on it is charged to anyone. It takes returns but no checkouts, edits of its details or receipt lines. **Return** on the project list finds every open project the item is still out on, and a client project's "Not on this project" offers to return it where it's out. Moving a line takes the whole line with its counts to the client project, which keeps its own price if it already has the item, without moving stock, and a retried move counts once. **Finished Return** asks about equipment as on a client project, with no charge, and a finished General Use project can be reopened only while no other one is open.
 
-**Status:** tested (`supply-checkout-mdae`). The web build sends the quick take and the move as commands (`POST /teams/{teamId}/adhoc/checkout`, `POST /teams/{teamId}/sheets/{sheetId}/move`, [docs/api/commands.md](api/commands.md)); the claude.ai artifact build writes them as ADR 0017's section 6 describes.
+**Status:** tested (`supply-checkout-mdae`). The web build sends the quick take and the move as commands (`POST /teams/{teamId}/adhoc/checkout`, `POST /teams/{teamId}/projects/{projectId}/move`, [docs/api/commands.md](api/commands.md)); the claude.ai artifact build writes them as ADR 0017's section 6 describes.
 
 **Tests:** `adhoc.spec.js` (all tests), and the server's in `backend/test/adhoc-api.test.ts` and `backend/test/adhoc.test.ts`.
 
@@ -368,7 +368,7 @@ Every other alarm on this page waits for the resource or code it watches, and is
 
 | Alarm | Signal | Starting threshold | Severity |
 | --- | --- | --- | --- |
-| **Core journey canary failing** | CloudWatch Synthetics canary in us-east-1, every 5 minutes from 8am to 8pm Eastern: sign in as a test crew member, open the test sheet, check out and return one item, confirm the live update arrives | 2 failed runs out of 3 | P1 |
+| **Core journey canary failing** | CloudWatch Synthetics canary in us-east-1, every 5 minutes from 8am to 8pm Eastern: sign in as a test crew member, open the test project, check out and return one item, confirm the live update arrives | 2 failed runs out of 3 | P1 |
 | **Site down** | CloudFront `5xxErrorRate` on the web distribution | above 1% for 5 minutes (at least 50 requests) | P1 |
 | **Web router failing** | CloudFront `FunctionExecutionErrors`, `FunctionValidationErrors` and `FunctionThrottles` of the router function | 5 or more in 5 minutes | P1 |
 | **RUM events surge** | CloudWatch RUM `RumEventPayloadSize` `SampleCount` on the app monitor: events ingested, each billed. Not a blocked journey but a cost: anyone can send events with the public identity pool ([runbook](observability.md#when-rum-events-surge)) | above 100,000 in an hour | P2 |
@@ -677,7 +677,7 @@ The purge lists at most 100 closed teams' subscriptions a run (`CLOSED_TEAMS_TO_
 | --- | --- | --- | --- |
 | **Checkouts stopped** | `Checkouts` business metric across all teams: equipment is checked out with the same command as supplies, so it counts | as for J4 | P1 |
 
-### J14. Take supplies without a job sheet
+### J14. Take supplies without a job
 
 | Alarm | Signal | Starting threshold | Severity |
 | --- | --- | --- | --- |
@@ -698,6 +698,6 @@ Added with us-west-2. Until then, none of these exist.
 
 Several alarms above rely on metrics our own code sends (CloudWatch embedded metric format from Lambda), not ones AWS provides:
 
-`Checkouts`, `Returns`, `LiveUpdates` and `LiveUpdateFailures` (the stream consumer's publishes, for "Live updates failing"), `ReceiptReads` (every model call), `ReceiptReadFailures` (any model call that failed, a photo Bedrock refused included), `ReceiptReadLatency` (a gauge, each model call in milliseconds, on the dashboard at p95), `ReceiptRateLimited` and `ReceiptLimitReached` (receipt reads refused by the per-user rate limit or the team's allowance), `ReceiptTrialsNearLimit` (trial teams reaching 80% of their trial's receipts, for "Receipt trials near their limit") and `ReceiptPaidTeamsNearLimit` (paying teams reaching 80% of their month's, dashboard only), `ReceiptLines` (units a receipt adds to existing sheets, apart from `Checkouts` since they never were in storage), `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `BillingPortalErrors`, `InvoiceListErrors` (the invoice list failing, dashboard only), `WebhookSignatureFailures`, `ConditionalWriteConflicts`, `Writes` (the denominator for "Writes rejected"), `ReceiptTokens` (receipt token usage, with the team ID as metadata rather than a dimension), `SignOutRevokeFailures`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures` and `EmailCodeVerifyFailures` (for "Email codes failing"), `LiveUpdatesDeferred` (for "Live updates deferred"), `TeamClosedNoticeFailures` (for "Team closure emails failing"), `TeamReopenedNoticeFailures` (for "Team reopened emails failing"), `WelcomeEmails`, `WelcomeEmailFailures` and `WelcomeEmailsRefused` (a new account's welcome email sent once, by sign-up method; ones not handed over or not sent, for "Welcome emails failing"; and ones SES refused, for "Welcome emails refused"), `SecurityNotices` and `SecurityNoticeFailures` (security notices to an account's own verified address when a password is set or two-step sign-in is turned on, whether through the API or directly against Cognito, and to its previous address when its email changes, and ones not sent; those from CloudTrail carry `via: cloudtrail`; for "Security notices failing"), `OperatorAuditChanged` (the operator audit watch, primary region only, for "Operator audit changed", [Operators](infrastructure.md#operators)), `OperatorAuditWatchHeartbeat` (the watch's heartbeats, for "Operator audit watch silent"), `OperatorGroupChanged`, `OperatorGroupBaselineReset` and `OperatorGroupMembers` (the operator group watch, primary region only, for "Operator group changed" and "Operator group watch silent"), `DeletionRecordRewrites` (the deletion records watch, primary region only, for "Deletion record rewritten", [backups.md](backups.md#when-a-deletion-record-is-rewritten)), for seats (`supply-checkout-l50`) `SeatQuantityUpdates`, `SeatQuantityDrift` (for "Seat counts drifting") and `SeatSyncQueueFailures`, and `EntitlementDrift` (the nightly entitlement check, `supply-checkout-8jc.9`, for "Entitlements drifting"). Five are gauges, levels a scheduled function measures and sends with `gauge()`, read at their maximum: `StuckImports`, `EmailQuotaUsedPercent`, `ClosedTeamsOverdue` (for "Deletion overdue"), `ClosedTeamsSetAside` (for "Closed-team subscription set aside") and `SeatReconcileTeams` (for "Seat reconciliation not running"). Each has a `Region` dimension, even while there is only us-east-1, so they split cleanly when us-west-2 is added.
+`Checkouts`, `Returns`, `LiveUpdates` and `LiveUpdateFailures` (the stream consumer's publishes, for "Live updates failing"), `ReceiptReads` (every model call), `ReceiptReadFailures` (any model call that failed, a photo Bedrock refused included), `ReceiptReadLatency` (a gauge, each model call in milliseconds, on the dashboard at p95), `ReceiptRateLimited` and `ReceiptLimitReached` (receipt reads refused by the per-user rate limit or the team's allowance), `ReceiptTrialsNearLimit` (trial teams reaching 80% of their trial's receipts, for "Receipt trials near their limit") and `ReceiptPaidTeamsNearLimit` (paying teams reaching 80% of their month's, dashboard only), `ReceiptLines` (units a receipt adds to existing projects, apart from `Checkouts` since they never were in storage), `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `BillingPortalErrors`, `InvoiceListErrors` (the invoice list failing, dashboard only), `WebhookSignatureFailures`, `ConditionalWriteConflicts`, `Writes` (the denominator for "Writes rejected"), `ReceiptTokens` (receipt token usage, with the team ID as metadata rather than a dimension), `SignOutRevokeFailures`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures` and `EmailCodeVerifyFailures` (for "Email codes failing"), `LiveUpdatesDeferred` (for "Live updates deferred"), `TeamClosedNoticeFailures` (for "Team closure emails failing"), `TeamReopenedNoticeFailures` (for "Team reopened emails failing"), `WelcomeEmails`, `WelcomeEmailFailures` and `WelcomeEmailsRefused` (a new account's welcome email sent once, by sign-up method; ones not handed over or not sent, for "Welcome emails failing"; and ones SES refused, for "Welcome emails refused"), `SecurityNotices` and `SecurityNoticeFailures` (security notices to an account's own verified address when a password is set or two-step sign-in is turned on, whether through the API or directly against Cognito, and to its previous address when its email changes, and ones not sent; those from CloudTrail carry `via: cloudtrail`; for "Security notices failing"), `OperatorAuditChanged` (the operator audit watch, primary region only, for "Operator audit changed", [Operators](infrastructure.md#operators)), `OperatorAuditWatchHeartbeat` (the watch's heartbeats, for "Operator audit watch silent"), `OperatorGroupChanged`, `OperatorGroupBaselineReset` and `OperatorGroupMembers` (the operator group watch, primary region only, for "Operator group changed" and "Operator group watch silent"), `DeletionRecordRewrites` (the deletion records watch, primary region only, for "Deletion record rewritten", [backups.md](backups.md#when-a-deletion-record-is-rewritten)), for seats (`supply-checkout-l50`) `SeatQuantityUpdates`, `SeatQuantityDrift` (for "Seat counts drifting") and `SeatSyncQueueFailures`, and `EntitlementDrift` (the nightly entitlement check, `supply-checkout-8jc.9`, for "Entitlements drifting"). Five are gauges, levels a scheduled function measures and sends with `gauge()`, read at their maximum: `StuckImports`, `EmailQuotaUsedPercent`, `ClosedTeamsOverdue` (for "Deletion overdue"), `ClosedTeamsSetAside` (for "Closed-team subscription set aside") and `SeatReconcileTeams` (for "Seat reconciliation not running"). Each has a `Region` dimension, even while there is only us-east-1, so they split cleanly when us-west-2 is added.
 
 The names are in `backend/src/observability/names.ts`, which both the Lambda code and the dashboard and alarms import. Send them with `count()` from `backend/src/observability`, in namespace `SupplyCheckout`. The dashboard already has a graph for each; until the handlers exist, the graphs are empty and the alarms stay OK.

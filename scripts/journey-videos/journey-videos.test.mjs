@@ -15,7 +15,7 @@ const registry = () => ({
     {
       id: "J0", name: "Check out, and back", persona: "Crew", critical: true,
       steps: [
-        { id: "J0.1", text: "Open a **sheet**.", status: "built" },
+        { id: "J0.1", text: "Open a **project**.", status: "built" },
         { id: "J0.2", text: "Scan.", status: "built", simulated: "The camera is a fake" },
         { id: "J0.3", text: "Pay.", status: "built", tests: ["backend/test/pay.test.ts"] },
         { id: "J0.4", text: "Sign.", status: "planned", beads: ["supply-checkout-sig"] },
@@ -200,9 +200,9 @@ test("cards show the step text plain, the results and what's simulated", () => {
   assert.match(stepCard(j, { id: "J0.4", text: "Sign.", result: "planned", beads: ["supply-checkout-sig"] }), /Not built yet\. Planned in supply-checkout-sig\./);
   assert.match(stepCard(j, { id: "J0.4", text: "Sign.", result: "untested", untested: "a <real> card" }), /No automated test yet: a &lt;real&gt; card/);
   const failed = Array.from({ length: 6 }, (_, k) => ({ title: `t${k}`, result: "failed" }));
-  const html = endCard(j, [{ id: "J0.1", text: "Open a **sheet**.", result: "failed", tests: [...failed, { title: "ok", result: "passed" }] }], { passed: 0, failed: 1 });
+  const html = endCard(j, [{ id: "J0.1", text: "Open a **project**.", result: "failed", tests: [...failed, { title: "ok", result: "passed" }] }], { passed: 0, failed: 1 });
   assert.match(html, /Steps: <span class="count">1<\/span> failed/);
-  assert.match(html, /Open a sheet\. <span class="small">\(1 passed, 6 failed of 7 tests\)/);
+  assert.match(html, /Open a project\. <span class="small">\(1 passed, 6 failed of 7 tests\)/);
   assert.match(html, /<li>t3<\/li><li>and 2 more<\/li>/);
   assert.equal(plain("Tap **Save** in `Billing`"), "Tap Save in Billing");
 });

@@ -1,7 +1,7 @@
 // Saving on a slow or flaky connection in the web build (saving() in src/main.js, against the
 // fake backend): one request per checkout however it's tapped, a request that times out is
 // tried again with the same operation ID, offline sends nothing and the latest shows when the
-// connection is back, and a new sheet or item whose answer was lost is saved once. The same
+// connection is back, and a new project or item whose answer was lost is saved once. The same
 // states on the mock runtime are in tests/save-states.spec.js.
 import { test, expect, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
 import { usedState } from "./fixtures.js";
@@ -9,9 +9,9 @@ import { FakeBackend, openAws, connected, sockets } from "./fake-aws.js";
 import { TIMEOUT } from "../src/aws/http.js";
 
 
-const CHECKOUT = "/teams/t1/sheets/s1/checkout", RETURN = "/teams/t1/sheets/s1/return";
+const CHECKOUT = "/teams/t1/projects/s1/checkout", RETURN = "/teams/t1/projects/s1/return";
 const seeded = () => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`t1/${k}`, v]));
-const lists = (backend) => backend.requests("GET", "/teams/t1/sheets").filter((r) => !r.query.cursor).length;
+const lists = (backend) => backend.requests("GET", "/teams/t1/projects").filter((r) => !r.query.cursor).length;
 const toast = (page) => page.locator("#toast");
 const failedNote = (page) => modal(page).locator(".save-failed");
 
@@ -29,7 +29,7 @@ test("a slow checkout is one request however it's tapped, and shows saved once t
   const backend = await openEcho(page);
   const release = backend.hold("POST", CHECKOUT);
   await enterBarcode(page, "SKU1");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   const go = modal(page).getByRole("button", { name: "Saving…" });
   await expect(go).toBeDisabled();
   await go.dispatchEvent("click");
@@ -61,14 +61,14 @@ test("a return that times out, though the server saved it, counts once on Try ag
   await expect(failedNote(page)).toHaveText("Not saved. Check your connection, then tap Try again.");
   // It arrives after the page gave up on it: saved, but the answer is lost
   release();
-  await expect.poll(() => backend.doc("t1", "sheets", "s1").data.items.SKU1.returned).toBe(2);
+  await expect.poll(() => backend.doc("t1", "projects", "s1").data.items.SKU1.returned).toBe(2);
 
   await modal(page).getByRole("button", { name: "Try again" }).click();
   await expect(toast(page)).toHaveText("1 returned · 2 of 3 back");
   const [first, retry] = backend.requests("POST", RETURN).map((r) => r.body);
   expect(retry).toEqual(first);
   expect(backend.operations.size).toBe(1);
-  expect(backend.doc("t1", "sheets", "s1").data.items.SKU1).toMatchObject({ out: 3, returned: 2 });
+  expect(backend.doc("t1", "projects", "s1").data.items.SKU1).toMatchObject({ out: 3, returned: 2 });
   expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(11);
 });
 
@@ -77,15 +77,15 @@ test("offline, nothing is sent; back online, the latest shows and Try again chec
   await enterBarcode(page, "SKU1");
   await modal(page).getByRole("button", { name: "More" }).click();
   await context.setOffline(true);
-  await modal(page).getByRole("button", { name: "Add 2 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 2 to project" }).click();
   await expect(failedNote(page)).toHaveText("Not saved: you're offline. Tap Try again when you're back online.");
   await expect(page.locator("#notice")).toHaveText("You're offline. Nothing can be saved until the connection is back.");
   expect(backend.requests("POST", CHECKOUT)).toHaveLength(0);
 
   // Someone else checks one out meanwhile; this page misses the event
-  const sheet = structuredClone(backend.doc("t1", "sheets", "s1").data);
-  sheet.items.SKU1.out = 4;
-  backend.write("t1", "sheets", "s1", sheet);
+  const project = structuredClone(backend.doc("t1", "projects", "s1").data);
+  project.items.SKU1.out = 4;
+  backend.write("t1", "projects", "s1", project);
   const before = (await sockets(page)).length;
   await context.setOffline(false);
   await expect(page.locator("#notice")).toBeHidden();
@@ -97,41 +97,41 @@ test("offline, nothing is sent; back online, the latest shows and Try again chec
   await modal(page).getByRole("button", { name: "Try again" }).click();
   await expect(toast(page)).toHaveText("Checked out 2 × Paper towels, 6 roll");
   expect(backend.requests("POST", CHECKOUT)).toHaveLength(1);
-  expect(backend.doc("t1", "sheets", "s1").data.items.SKU1.out).toBe(6);
+  expect(backend.doc("t1", "projects", "s1").data.items.SKU1.out).toBe(6);
   await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("6");
 });
 
-test("a new sheet whose answer was lost is saved once on Try again", { tag: ["@J4.1"] }, async ({ page }) => {
+test("a new project whose answer was lost is saved once on Try again", { tag: ["@J4.1"] }, async ({ page }) => {
   const backend = await openEcho(page);
-  await page.getByRole("button", { name: "← All sheets" }).click();
-  backend.on("PUT", /^\/teams\/t1\/sheets\//, { lost: true });
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByRole("button", { name: "← All projects" }).click();
+  backend.on("PUT", /^\/teams\/t1\/projects\//, { lost: true });
+  await page.getByRole("button", { name: "+ New project" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Golf Clinic");
-  await page.getByRole("button", { name: "Create sheet" }).click();
+  await page.getByRole("button", { name: "Create project" }).click();
   await expect(failedNote(page)).toBeVisible();
   await modal(page).getByRole("button", { name: "Try again" }).click();
-  await expect(toast(page)).toHaveText("Sheet created");
+  await expect(toast(page)).toHaveText("Project created");
   await expect(page.getByRole("heading", { name: "Golf Clinic" })).toBeVisible();
-  const [first, again] = backend.requests("PUT", /^\/teams\/t1\/sheets\//);
+  const [first, again] = backend.requests("PUT", /^\/teams\/t1\/projects\//);
   expect(again.path).toBe(first.path);
   expect(again.body.data).toEqual(first.body.data);
-  expect([...backend.docs.keys()].filter((k) => k.startsWith("t1/sheets/"))).toHaveLength(2);
+  expect([...backend.docs.keys()].filter((k) => k.startsWith("t1/projects/"))).toHaveLength(2);
 });
 
-test("a new sheet saved again over someone else's copy of it still says so", { tag: ["@J4.1"] }, async ({ page }) => {
+test("a new project saved again over someone else's copy of it still says so", { tag: ["@J4.1"] }, async ({ page }) => {
   const backend = await openEcho(page);
-  await page.getByRole("button", { name: "← All sheets" }).click();
-  backend.on("PUT", /^\/teams\/t1\/sheets\//, { lost: true });
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByRole("button", { name: "← All projects" }).click();
+  backend.on("PUT", /^\/teams\/t1\/projects\//, { lost: true });
+  await page.getByRole("button", { name: "+ New project" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Golf Clinic");
-  await page.getByRole("button", { name: "Create sheet" }).click();
+  await page.getByRole("button", { name: "Create project" }).click();
   await expect(failedNote(page)).toBeVisible();
   // Changed before the retry arrives: it isn't this page's to overwrite
-  const id = backend.requests("PUT", /^\/teams\/t1\/sheets\//)[0].path.split("/").pop();
-  backend.write("t1", "sheets", id, { ...backend.doc("t1", "sheets", id).data, client: "Golf Clinic East" });
+  const id = backend.requests("PUT", /^\/teams\/t1\/projects\//)[0].path.split("/").pop();
+  backend.write("t1", "projects", id, { ...backend.doc("t1", "projects", id).data, client: "Golf Clinic East" });
   await modal(page).getByRole("button", { name: "Try again" }).click();
   await expect(toast(page)).toHaveText("Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed.");
-  expect(backend.doc("t1", "sheets", id).data.client).toBe("Golf Clinic East");
+  expect(backend.doc("t1", "projects", id).data.client).toBe("Golf Clinic East");
 });
 
 test("a new item without a barcode whose answer was lost is saved once on Try again", { tag: ["@J4.2"] }, async ({ page }) => {

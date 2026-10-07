@@ -20,7 +20,7 @@
       <h1>Supply Checkout</h1>
     </a>
     <nav class="tabs" aria-label="Sections">
-      <button type="button" id="tab-sheets" aria-pressed="true">Sheets</button>
+      <button type="button" id="tab-projects" aria-pressed="true">Projects</button>
       <button type="button" id="tab-prices" aria-pressed="false">Inventory</button>
     </nav>
     <div class="theme" id="theme" role="group" aria-label="Theme">
@@ -34,9 +34,9 @@
 
   <main id="main"></main>
 
-  <section id="sheetView" hidden>
-    <button type="button" class="btn ghost back" id="backBtn">← All sheets</button>
-    <div id="sheetHead"></div>
+  <section id="projectView" hidden>
+    <button type="button" class="btn ghost back" id="backBtn">← All projects</button>
+    <div id="projectHead"></div>
     <div class="scanbar" id="scanbar">
       <div class="mode" role="group" aria-label="What are you doing?">
         <button type="button" data-mode="out" aria-pressed="true">Check out</button>
@@ -57,11 +57,11 @@
       <button type="button" class="btn" id="noCodeBtn">Add item without a barcode</button>
       <p class="hint" id="modeHint">Take a photo of the barcode, then choose how many you're taking.</p>
     </div>
-    <div id="sheetBody"></div>
+    <div id="projectBody"></div>
   </section>
 
   <section id="receiptView" hidden>
-    <button type="button" class="btn ghost back" id="rBack">← All sheets</button>
+    <button type="button" class="btn ghost back" id="rBack">← All projects</button>
     <div id="rBody"></div>
   </section>
   <input class="vh" type="file" id="receiptFile" accept="image/*" aria-label="Receipt photo">

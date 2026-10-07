@@ -1,12 +1,12 @@
-// Sheets and items saved by older versions, or edited elsewhere, can be
+// Projects and items saved by older versions, or edited elsewhere, can be
 // missing fields. The app fills in sensible defaults instead of breaking.
 import { test, expect, openApp, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
 import { fakeImage } from "./fixtures.js";
 
 const bare = {
   seed: {
-    "sheets/old": { client: "Old Sheet", createdBy: "u_test", status: "open" },
-    "sheets/nameless": {
+    "projects/old": { client: "Old Project", createdBy: "u_test", status: "open" },
+    "projects/nameless": {
       client: "Nameless Lines", date: "2026-09-02", createdBy: "u_test", status: "open",
       items: { k1: { code: "", out: 2 } },
     },
@@ -14,23 +14,23 @@ const bare = {
   },
 };
 
-test("a sheet with no date or items opens and takes checkouts", { tag: ["@J4"] }, async ({ page }) => {
+test("a project with no date or items opens and takes checkouts", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, bare);
-  await page.getByRole("button", { name: /Old Sheet/ }).click();
-  await expect(page.getByText("No supplies on this sheet yet.")).toBeVisible();
+  await page.getByRole("button", { name: /Old Project/ }).click();
+  await expect(page.getByText("No supplies on this project yet.")).toBeVisible();
 
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "NP1");
-  await expect(modal(page).getByRole("heading", { name: "Not on this sheet" })).toBeVisible();
+  await expect(modal(page).getByRole("heading", { name: "Not on this project" })).toBeVisible();
   await modal(page).getByRole("button", { name: "Check it out instead" }).click();
   await expect(modal(page)).toContainText("$0.00 each");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
-  await expect(page.locator("#sheetBody tbody tr")).toHaveCount(1);
-  await expect(page.locator("#sheetBody tbody tr")).toContainText("Unnamed item");
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
+  await expect(page.locator("#projectBody tbody tr")).toHaveCount(1);
+  await expect(page.locator("#projectBody tbody tr")).toContainText("Unnamed item");
 
   await page.getByRole("button", { name: "Download CSV" }).click();
   const save = await page.evaluate(() => window.__mock.saves[0]);
-  expect(save.filename).toBe("Old Sheet.csv");
+  expect(save.filename).toBe("Old Project.csv");
   expect(save.data).toContain("Date,\n");
 });
 
@@ -39,8 +39,8 @@ test("lines and items without names or prices use placeholders", { tag: ["@J4"] 
   await page.getByRole("button", { name: /Nameless Lines/ }).click();
   await lineRow(page, "Unnamed item").click();
   await expect(modal(page).getByRole("heading", { name: "Item", exact: true })).toBeVisible();
-  await expect(modal(page).getByLabel("Price each on this sheet ($)")).toHaveValue("0");
-  await modal(page).getByLabel("Price each on this sheet ($)").fill("");
+  await expect(modal(page).getByLabel("Price each on this project ($)")).toHaveValue("0");
+  await modal(page).getByLabel("Price each on this project ($)").fill("");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(lineRow(page, "Unnamed item")).toContainText("$0.00");
 
@@ -77,10 +77,10 @@ test("receipt reading works with unnamed, unpriced inventory items", { tag: ["@J
   await expect(page.getByRole("heading", { name: "Bravo Two" })).toBeVisible();
 });
 
-test("adds receipt items to an existing sheet that has no items yet", { tag: ["@J5"] }, async ({ page }) => {
+test("adds receipt items to an existing project that has no items yet", { tag: ["@J5"] }, async ({ page }) => {
   await openApp(page, { ...bare, receipt: { items: [{ name: "Rags", qty: 3, price: 2 }] } });
   await page.setInputFiles("#receiptFile", fakeImage);
-  await page.locator("[data-dsel]").selectOption({ label: "Add to Old Sheet ()" });
+  await page.locator("[data-dsel]").selectOption({ label: "Add to Old Project ()" });
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(lineRow(page, "Rags").locator("td").nth(2)).toHaveText("3");
 });
@@ -98,27 +98,27 @@ test("a receipt line that matches inventory exactly needs no choices", { tag: ["
 
 test("a barcode made only of dots still gets a safe key", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, bare);
-  await page.getByRole("button", { name: /Old Sheet/ }).click();
+  await page.getByRole("button", { name: /Old Project/ }).click();
   await enterBarcode(page, "...");
   await modal(page).getByLabel("Item name").fill("Dots");
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
   await expect(lineRow(page, "Dots")).toContainText("Barcode ...");
   expect(await page.evaluate(() => window.__mock.docs.has("products/x..."))).toBe(true);
 });
 
-const otherSheet = { "sheets/o": { client: "Other", date: "2026-09-03", createdBy: "u_other", status: "open", items: {} } };
+const otherProject = { "projects/o": { client: "Other", date: "2026-09-03", createdBy: "u_other", status: "open", items: {} } };
 
-test("sheets by people without a profile name export as Someone", { tag: ["@J6"] }, async ({ page }) => {
-  await openApp(page, { seed: otherSheet });
+test("projects by people without a profile name export as Someone", { tag: ["@J6"] }, async ({ page }) => {
+  await openApp(page, { seed: otherProject });
   await page.getByRole("button", { name: /Other/ }).click();
   await page.getByRole("button", { name: "Download CSV" }).click();
   expect(await page.evaluate(() => window.__mock.saves[0].data)).toContain("Prepared by,Someone");
 });
 
-test("sheets export as Someone when profiles can't be loaded", { tag: ["@J6"] }, async ({ page }) => {
+test("projects export as Someone when profiles can't be loaded", { tag: ["@J6"] }, async ({ page }) => {
   await openApp(page, {
     userErrors: ["profiles"],
-    seed: otherSheet,
+    seed: otherProject,
   });
   await page.getByRole("button", { name: /Other/ }).click();
   await page.getByRole("button", { name: "Download CSV" }).click();
@@ -128,7 +128,7 @@ test("sheets export as Someone when profiles can't be loaded", { tag: ["@J6"] },
 test("a saved review missing newer fields still opens", { tag: ["@J5"] }, async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify({
     store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, savePrices: true,
-    dests: [{ id: "d1", sheetId: "", client: "" }],
+    dests: [{ id: "d1", projectId: "", client: "" }],
     lines: [{ id: "l1", name: "Rags", raw: "", qty: 1, price: 2, dest: "d1", code: "", match: "", useName: "inv", usePrice: "receipt" }],
   })));
   await openApp(page);

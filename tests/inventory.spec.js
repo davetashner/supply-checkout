@@ -91,7 +91,7 @@ test("view-only users see inventory but can't change it", { tag: ["@J9.1"] }, as
 
 test("without shared storage, lists say they're loading and saves explain why they failed", { tag: ["@J2"] }, async ({ page }) => {
   await openApp(page, { unavailable: ["db"] });
-  await expect(page.getByText("Loading sheets…")).toBeVisible();
+  await expect(page.getByText("Loading projects…")).toBeVisible();
   await page.getByRole("button", { name: "Inventory" }).click();
   await expect(page.getByText("Loading…")).toBeVisible();
   await page.getByRole("button", { name: "+ Add item" }).click();

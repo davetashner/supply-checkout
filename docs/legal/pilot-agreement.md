@@ -36,7 +36,7 @@ Together these are the **pilot terms**. They are drafts: we will have them revie
 
 ## 4. Your data and how we handle it
 
-- **Your team owns its data**: inventory, sheets, client and job names, prices and anything else your team puts in. We use it only to run, secure, back up and support the Service for you, as the draft Privacy Policy describes. We don't sell it and don't use it to train AI models.
+- **Your team owns its data**: inventory, projects, client and job names, prices and anything else your team puts in. We use it only to run, secure, back up and support the Service for you, as the draft Privacy Policy describes. We don't sell it and don't use it to train AI models.
 - **Receipt photos aren't stored.** They're sent to be read and then discarded. Only the lines you choose to save are kept.
 - **Closing your team.** An owner can close the team in the app. Its data is deleted **30 days** after it's closed. In rare cases where billing can't be ended cleanly, it can take up to **44 days**. Until about an hour before deletion, an owner can reopen the team.
 - **Deleting your account.** A member can delete their own account in the app at any time, and it's deleted straight away.

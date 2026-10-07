@@ -1,5 +1,5 @@
-// Company equipment (ADR 0017): items that go to a job and come back, listed on the sheet but
-// not charged. The item editor's kind and value, the sheet's "Equipment (not charged)" section,
+// Company equipment (ADR 0017): items that go to a job and come back, listed on the project but
+// not charged. The item editor's kind and value, the project's "Equipment (not charged)" section,
 // returns, the line editor, the exports, Inventory's Supplies / Equipment filter and its Out view.
 // In both builds, against the claude.ai runtime's mock; the web build's checkout command is
 // against tests/fake-aws.js at the end.
@@ -8,7 +8,7 @@ import { FakeBackend, openAws, connected } from "./fake-aws.js";
 import { persona } from "./journey-video.js";
 
 const TAKEN = "2026-09-24T13:05:00.000Z";
-// The teammate on the seeded sheets: "Sam", or in the marketing clips a full name
+// The teammate on the seeded projects: "Sam", or in the marketing clips a full name
 const SAM = persona?.crew ?? "Sam";
 const ladder = { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, stock: 3 };
 const towels = { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, stock: 10 };
@@ -16,18 +16,18 @@ const seed = {
   "products/LAD-1": ladder,
   "products/SKU1": towels,
   "products/vac": { code: "", name: "Shop vacuum", kind: "equipment", cost: 210 },
-  "sheets/s1": {
+  "projects/s1": {
     client: "Echo Studio", date: "2026-09-24", createdBy: "u_test", createdAt: "2026-09-24T12:00:00Z", status: "open",
     items: {
       SKU1: { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, out: 3, returned: 1 },
       "LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 1, returned: 0, takenBy: "u_test", takenAt: TAKEN },
     },
   },
-  "sheets/s2": {
+  "projects/s2": {
     client: "Delta Dental", date: "2026-09-22", createdByName: SAM, status: "open",
     items: { "LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 3, returned: 0, lost: 1, takenBy: SAM } },
   },
-  "sheets/s3": {
+  "projects/s3": {
     client: "Foxtrot", date: "2026-09-20", createdByName: SAM, status: "closed",
     items: { vac: { code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 1 } },
   },
@@ -38,10 +38,10 @@ async function open(page, opts = {}) {
   await openApp(page, { seed, ...opts });
   await ready(page);
 }
-const openSheet = async (page, client) => page.getByRole("button", { name: new RegExp(client) }).click();
+const openProject = async (page, client) => page.getByRole("button", { name: new RegExp(client) }).click();
 const doc = (page, path) => page.evaluate((p) => window.__mock.docs.get(p), path);
 const inventory = async (page) => page.getByRole("button", { name: "Inventory" }).click();
-const equipmentRow = (page, name) => page.locator("#sheetBody table.equipment tbody tr", { hasText: name });
+const equipmentRow = (page, name) => page.locator("#projectBody table.equipment tbody tr", { hasText: name });
 
 test.describe("J13. Take company equipment to a job and bring it back", { tag: ["@J13"] }, () => {
   test("an item can be company equipment: no client price, and its cost is its value", { tag: ["@J13.1"] }, async ({ page }) => {
@@ -53,7 +53,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     await modal(page).getByLabel("Company equipment (reused, not charged)").check();
     await expect(modal(page).getByLabel("Price each ($)")).toBeHidden();
     await expect(modal(page).getByLabel("Value each ($)")).toBeVisible();
-    await expect(modal(page)).toContainText("It's listed on sheets but not charged.");
+    await expect(modal(page)).toContainText("It's listed on projects but not charged.");
     await modal(page).getByPlaceholder("Type, scan, or leave blank").fill("CORD-50");
     await modal(page).getByLabel("Item name").fill("Extension cord, 50 ft");
     await modal(page).getByLabel("Value each ($)").fill("34.99");
@@ -82,22 +82,22 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
 
   test("equipment checked out goes in its own section, not in the totals or the client's CSV", { tag: ["@J13.2", "@J6.2"] }, async ({ page }) => {
     await open(page);
-    // The sheet card counts supplies, and says what equipment is out
+    // The project card counts supplies, and says what equipment is out
     await expect(page.getByRole("button", { name: /Echo Studio/ })).toContainText("1 item · 3 taken · 1 back · 1 equipment out");
-    await openSheet(page, "Echo Studio");
-    await expect(page.locator("#sheetBody")).toContainText("Equipment (not charged)");
+    await openProject(page, "Echo Studio");
+    await expect(page.locator("#projectBody")).toContainText("Equipment (not charged)");
     await expect(equipmentRow(page, "Step ladder").locator("td")).toHaveText(["Step ladderBarcode LAD-1", "1", "0", "1"]);
-    await expect(page.locator("#sheetBody .totals")).toContainText("Taken3");
-    await expect(page.locator("#sheetBody .totals .charge")).toHaveText("$17.00");
+    await expect(page.locator("#projectBody .totals")).toContainText("Taken3");
+    await expect(page.locator("#projectBody .totals .charge")).toHaveText("$17.00");
 
     // Taking another: the item says it isn't charged, and the line keeps no price
     await enterBarcode(page, "LAD-1");
     await expect(modal(page)).toContainText("Company equipment · not charged");
-    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
     await expect(page.locator("#toast")).toHaveText("Checked out 1 × Step ladder");
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("2");
-    await expect(page.locator("#sheetBody .totals .charge")).toHaveText("$17.00");
-    const line = (await doc(page, "sheets/s1")).items["LAD-1"];
+    await expect(page.locator("#projectBody .totals .charge")).toHaveText("$17.00");
+    const line = (await doc(page, "projects/s1")).items["LAD-1"];
     expect(line).toMatchObject({ kind: "equipment", out: 2, returned: 0, takenBy: "u_test", takenAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) });
     expect(line).not.toHaveProperty("price");
     expect(line.takenAt).not.toBe(TAKEN);
@@ -112,21 +112,21 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
 
   test("a new piece of equipment from the pick list starts its own line with who took it", { tag: ["@J13.2"] }, async ({ page }) => {
     await open(page);
-    await openSheet(page, "Echo Studio");
+    await openProject(page, "Echo Studio");
     await page.getByRole("button", { name: "Add item without a barcode" }).click();
     await expect(modal(page).locator("[data-k=vac]")).toContainText("Equipment");
     await modal(page).locator("[data-k=vac]").click();
-    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
     await expect(equipmentRow(page, "Shop vacuum")).toBeVisible();
-    expect((await doc(page, "sheets/s1")).items.vac).toEqual({ code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 0, takenBy: "u_test", takenAt: expect.any(String), ops: expect.any(Array) });
+    expect((await doc(page, "projects/s1")).items.vac).toEqual({ code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 0, takenBy: "u_test", takenAt: expect.any(String), ops: expect.any(Array) });
   });
 
   test("returning equipment counts what's still out, not what's used", { tag: ["@J13.3"] }, async ({ page }) => {
     await open(page);
-    await openSheet(page, "Delta Dental");
+    await openProject(page, "Delta Dental");
     // Out 3, lost 1: two can come back
     await expect(equipmentRow(page, "Step ladder").locator("td")).toHaveText(["Step ladderBarcode LAD-1", "3", "0", "1", "2"]);
-    await expect(page.locator("#sheetBody thead").last()).toContainText("Lost or broken");
+    await expect(page.locator("#projectBody thead").last()).toContainText("Lost or broken");
     await page.getByRole("button", { name: "Return", exact: true }).click();
     await enterBarcode(page, "LAD-1");
     await expect(modal(page).locator("#sum")).toHaveText("Returned 1 of 3Still out 1");
@@ -135,7 +135,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     await modal(page).getByRole("button", { name: "Save return" }).click();
     await expect(page.locator("#toast")).toHaveText("2 returned · 2 of 3 back");
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("0");
-    expect((await doc(page, "sheets/s2")).items["LAD-1"]).toMatchObject({ out: 3, returned: 2, lost: 1 });
+    expect((await doc(page, "projects/s2")).items["LAD-1"]).toMatchObject({ out: 3, returned: 2, lost: 1 });
     expect((await doc(page, "products/LAD-1")).stock).toBe(5);
     // Nothing more is out
     await enterBarcode(page, "LAD-1");
@@ -144,7 +144,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
 
   test("the line editor has no price for equipment, and keeps returned and lost within taken", { tag: ["@J13.2"] }, async ({ page }) => {
     await open(page);
-    await openSheet(page, "Delta Dental");
+    await openProject(page, "Delta Dental");
     await equipmentRow(page, "Step ladder").click();
     await expect(modal(page)).toContainText("Company equipment: not charged.");
     await expect(modal(page).locator("#fPrice")).toHaveCount(0);
@@ -153,7 +153,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(page.locator("#overlay")).toBeHidden();
     // Taken can't go below the one lost, and nothing else is left to have come back
-    const line = (await doc(page, "sheets/s2")).items["LAD-1"];
+    const line = (await doc(page, "projects/s2")).items["LAD-1"];
     expect(line).toMatchObject({ out: 1, returned: 0, lost: 1 });
     expect(line).not.toHaveProperty("price");
   });
@@ -171,18 +171,18 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     await expect(page.locator("#main thead")).toContainText("Value each");
     await expect(inventoryRow(page, "Step ladder").locator("td").nth(4)).toHaveText("$360.00");
 
-    // Out: each open sheet with equipment still out, who took it last and when
+    // Out: each open project with equipment still out, who took it last and when
     await page.getByRole("button", { name: "Out on jobs" }).click();
     const rows = page.locator("#main table.out tbody tr");
     await expect(rows).toHaveCount(2);
     // As the browser formats it (WebKit says "Sep 24 at 9:05 AM", Chromium "Sep 24, 9:05 AM")
     const when = await page.evaluate((t) => new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }), TAKEN);
-    // By item, then the oldest sheet first. The artifact build saves a typed name when there's no
+    // By item, then the oldest project first. The artifact build saves a typed name when there's no
     // user, and an older line has no time
     // (The web build's lines name a user, and someone it has no profile for is "Someone")
     await expect(rows.nth(0).locator("td")).toHaveText(["Step ladderBarcode LAD-1", "2", "Delta DentalSep 22, 2026", persona?.crew ?? "Someone", "—"]);
     await expect(rows.nth(1).locator("td")).toHaveText(["Step ladderBarcode LAD-1", "1", "Echo StudioSep 24, 2026", persona?.user ?? "Test User", when]);
-    // The closed sheet's vacuum came back, so it isn't listed; a row opens its sheet
+    // The closed project's vacuum came back, so it isn't listed; a row opens its project
     await rows.nth(0).click();
     await expect(page.getByRole("heading", { name: "Delta Dental" })).toBeVisible();
     await page.getByRole("button", { name: "Inventory" }).click();
@@ -196,11 +196,11 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
   test("the Out view lists each piece by name, and lines from before who took it was kept", { tag: ["@J13.5"] }, async ({ page }) => {
     await open(page, { seed: {
       "products/vac": seed["products/vac"],
-      "sheets/s1": { client: "Echo", date: "2026-09-24", status: "open", items: {
+      "projects/s1": { client: "Echo", date: "2026-09-24", status: "open", items: {
         vac: { name: "Shop vacuum", kind: "equipment", out: 1, returned: 0 },
         cord: { name: "Extension cord", kind: "equipment", out: 2, returned: 0, takenAt: "soon" },
       } },
-      "sheets/s2": { date: "2026-09-25", status: "open", items: { z: { code: "", kind: "equipment", out: 1, returned: 0 } } },
+      "projects/s2": { date: "2026-09-25", status: "open", items: { z: { code: "", kind: "equipment", out: 1, returned: 0 } } },
     } });
     await inventory(page);
     await page.getByRole("button", { name: "Equipment", exact: true }).click();
@@ -208,25 +208,25 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     const rows = page.locator("#main table.out tbody tr");
     await expect(rows.nth(0).locator("td")).toHaveText(["Extension cordNo barcode", "2", "EchoSep 24, 2026", "—", "—"]);
     await expect(rows.nth(1).locator("td")).toHaveText(["Shop vacuumNo barcode", "1", "EchoSep 24, 2026", "—", "—"]);
-    // A line or sheet without a name, as older data may have
+    // A line or project without a name, as older data may have
     await expect(rows.nth(2).locator("td")).toHaveText(["Unnamed itemNo barcode", "1", "UntitledSep 25, 2026", "—", "—"]);
   });
 
-  test("without a signed-in user, equipment names who prepared the sheet, or no one", { tag: ["@J13.2"] }, async ({ page }) => {
-    await open(page, { userErrors: ["id"], seed: { ...seed, "sheets/s4": { client: "Golf", date: "2026-09-25", status: "open", items: {} } } });
-    for (const [client, sheet, taker] of [["Delta Dental", "s2", "Sam"], ["Golf", "s4", ""]]) {
-      await page.getByRole("button", { name: "Sheets", exact: true }).click();
-      await openSheet(page, client);
+  test("without a signed-in user, equipment names who prepared the project, or no one", { tag: ["@J13.2"] }, async ({ page }) => {
+    await open(page, { userErrors: ["id"], seed: { ...seed, "projects/s4": { client: "Golf", date: "2026-09-25", status: "open", items: {} } } });
+    for (const [client, project, taker] of [["Delta Dental", "s2", "Sam"], ["Golf", "s4", ""]]) {
+      await page.getByRole("button", { name: "Projects", exact: true }).click();
+      await openProject(page, client);
       await page.getByRole("button", { name: "Add item without a barcode" }).click();
       await modal(page).locator("[data-k=vac]").click();
-      await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+      await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
       await expect(equipmentRow(page, "Shop vacuum")).toBeVisible();
-      expect((await doc(page, `sheets/${sheet}`)).items.vac.takenBy).toBe(taker);
+      expect((await doc(page, `projects/${project}`)).items.vac.takenBy).toBe(taker);
     }
   });
 
   test("Inventory says when there's no equipment, none out, or no supplies", { tag: ["@J13.5"] }, async ({ page }) => {
-    await open(page, { seed: { "products/SKU1": towels, "sheets/s1": { client: "Echo", date: "2026-09-24", status: "open", items: { x: { name: "Old", kind: "equipment", out: 1, returned: 1 } } } } });
+    await open(page, { seed: { "products/SKU1": towels, "projects/s1": { client: "Echo", date: "2026-09-24", status: "open", items: { x: { name: "Old", kind: "equipment", out: 1, returned: 1 } } } } });
     await inventory(page);
     await page.getByRole("button", { name: "Equipment", exact: true }).click();
     await expect(page.locator("#main")).toContainText("No company equipment yet. Edit an item and choose Company equipment.");
@@ -239,15 +239,15 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
 
   test("the owner's export keeps equipment, with its kind; the inventory export values it at cost", { tag: ["@J13", "@J6"] }, async ({ page }) => {
     // Charged for what was lost: the ladder, and a piece without a name or barcode
-    const s2 = seed["sheets/s2"];
-    await open(page, { seed: { ...seed, "sheets/s2": { ...s2, items: { "LAD-1": { ...s2.items["LAD-1"], lostCharge: 50 }, odd: { kind: "equipment", out: 1, returned: 0, lost: 1, lostCharge: 5 } } } } });
+    const s2 = seed["projects/s2"];
+    await open(page, { seed: { ...seed, "projects/s2": { ...s2, items: { "LAD-1": { ...s2.items["LAD-1"], lostCharge: 50 }, odd: { kind: "equipment", out: 1, returned: 0, lost: 1, lostCharge: 5 } } } } });
     await page.getByRole("button", { name: "Export data" }).click();
-    await modal(page).getByRole("button", { name: "Sheets (CSV)" }).click();
+    await modal(page).getByRole("button", { name: "Projects (CSV)" }).click();
     await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
-    const sheets = (await page.evaluate(() => window.__mock.saves[0].data)).split("\n");
-    expect(sheets).toContain("Delta Dental,2026-09-22,Sam,Checked out,Step ladder,LAD-1,,3,0,,,s2,Equipment");
-    expect(sheets).toContain("Delta Dental,2026-09-22,Sam,Checked out,Step ladder (lost or broken),LAD-1,,,,1,50.00,s2,Equipment");
-    expect(sheets).toContain("Echo Studio,2026-09-24,Test User,Checked out,\"Paper towels, 6 roll\",SKU1,8.50,3,1,2,17.00,s1,Supply");
+    const projects = (await page.evaluate(() => window.__mock.saves[0].data)).split("\n");
+    expect(projects).toContain("Delta Dental,2026-09-22,Sam,Checked out,Step ladder,LAD-1,,3,0,,,s2,Equipment");
+    expect(projects).toContain("Delta Dental,2026-09-22,Sam,Checked out,Step ladder (lost or broken),LAD-1,,,,1,50.00,s2,Equipment");
+    expect(projects).toContain("Echo Studio,2026-09-24,Test User,Checked out,\"Paper towels, 6 roll\",SKU1,8.50,3,1,2,17.00,s1,Supply");
     await modal(page).getByRole("button", { name: "Inventory (CSV)" }).click();
     await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(2);
     const items = (await page.evaluate(() => window.__mock.saves[1].data)).split("\n");
@@ -255,7 +255,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     expect(items).toContain("Shop vacuum,,,,,Equipment");
     // The client's file has the charges, and the total
     await modal(page).getByRole("button", { name: "Close" }).click();
-    await openSheet(page, "Delta Dental");
+    await openProject(page, "Delta Dental");
     await page.getByRole("button", { name: "Download CSV" }).click();
     await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(3);
     const csv = (await page.evaluate(() => window.__mock.saves[2].data)).split("\n");
@@ -269,7 +269,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
       localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify(d));
     }, {
       store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "",
-      dests: [{ id: "d1", sheetId: "", client: "" }],
+      dests: [{ id: "d1", projectId: "", client: "" }],
       lines: [{ id: "l1", name: "Ladder", raw: "", qty: 1, price: 130, dest: "stock", code: "", match: "LAD-1", suggested: false, useName: "inv", usePrice: "receipt" }],
     });
     await open(page);
@@ -284,62 +284,62 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
 
 test.describe("the web build's checkout command", () => {
 
-  test("snapshots equipment on the server, and the sheet shows it apart", { tag: ["@J13.2"] }, async ({ page }) => {
+  test("snapshots equipment on the server, and the project shows it apart", { tag: ["@J13.2"] }, async ({ page }) => {
     const docs = Object.fromEntries(Object.entries(seed).map(([k, v]) => [`t1/${k}`, v]));
     const backend = new FakeBackend({ docs });
     await openAws(page, backend);
     await connected(page);
-    await openSheet(page, "Delta Dental");
+    await openProject(page, "Delta Dental");
     // A new line: the server copies the kind and value, and who took it
     await page.getByRole("button", { name: "Add item without a barcode" }).click();
     await modal(page).locator("[data-k=vac]").click();
-    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
     await expect(equipmentRow(page, "Shop vacuum")).toBeVisible();
-    const [checkout] = backend.requests("POST", "/teams/t1/sheets/s2/checkout");
+    const [checkout] = backend.requests("POST", "/teams/t1/projects/s2/checkout");
     expect(checkout.body).toEqual({ operationId: expect.any(String), productKey: "vac", quantity: 1 });
-    expect(backend.doc("t1", "sheets", "s2").data.items.vac).toEqual({ code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 0, takenBy: "u-pat", takenAt: expect.any(String) });
+    expect(backend.doc("t1", "projects", "s2").data.items.vac).toEqual({ code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 0, takenBy: "u-pat", takenAt: expect.any(String) });
     // More of a line someone else took: the latest person to take more
     await enterBarcode(page, "LAD-1");
-    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await modal(page).getByRole("button", { name: "Add 1 to project" }).click();
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("3");
-    expect(backend.doc("t1", "sheets", "s2").data.items["LAD-1"]).toMatchObject({ out: 4, lost: 1, takenBy: "u-pat" });
-    // Only the server wrote the sheet: no document write from the page
-    expect(backend.requests("PATCH", /^\/teams\/t1\/sheets\//)).toEqual([]);
+    expect(backend.doc("t1", "projects", "s2").data.items["LAD-1"]).toMatchObject({ out: 4, lost: 1, takenBy: "u-pat" });
+    // Only the server wrote the project: no document write from the page
+    expect(backend.requests("PATCH", /^\/teams\/t1\/projects\//)).toEqual([]);
     await expect(lineRow(page, "Step ladder")).toHaveCount(1);
   });
 
-  test("Finished Return sends the return and the lost command, then closes the sheet", { tag: ["@J13.4", "@J4.3"] }, async ({ page }) => {
+  test("Finished Return sends the return and the lost command, then closes the project", { tag: ["@J13.4", "@J4.3"] }, async ({ page }) => {
     const docs = Object.fromEntries(Object.entries(seed).map(([k, v]) => [`t1/${k}`, v]));
     const backend = new FakeBackend({ docs });
     await openAws(page, backend);
     await connected(page);
-    await openSheet(page, "Delta Dental");
+    await openProject(page, "Delta Dental");
     await page.getByRole("button", { name: "Finished Return" }).click();
     await finishBox(page, 0).locator("[data-step='1']").first().click();
     await finishBox(page, 0).locator("[data-step='1']").last().click();
     await modal(page).getByLabel(/Charge the client/).fill("80");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(page.locator("#toast")).toHaveText("Return finished");
-    expect(backend.requests("POST", "/teams/t1/sheets/s2/return").map((r) => r.body)).toEqual([{ operationId: expect.any(String), productKey: "LAD-1", quantity: 1 }]);
-    expect(backend.requests("POST", "/teams/t1/sheets/s2/lost").map((r) => r.body)).toEqual([{ operationId: expect.any(String), productKey: "LAD-1", quantity: 1, charge: 80 }]);
-    expect(backend.doc("t1", "sheets", "s2").data).toMatchObject({ status: "closed", items: { "LAD-1": { out: 3, returned: 1, lost: 2, lostCharge: 80 } } });
+    expect(backend.requests("POST", "/teams/t1/projects/s2/return").map((r) => r.body)).toEqual([{ operationId: expect.any(String), productKey: "LAD-1", quantity: 1 }]);
+    expect(backend.requests("POST", "/teams/t1/projects/s2/lost").map((r) => r.body)).toEqual([{ operationId: expect.any(String), productKey: "LAD-1", quantity: 1, charge: 80 }]);
+    expect(backend.doc("t1", "projects", "s2").data).toMatchObject({ status: "closed", items: { "LAD-1": { out: 3, returned: 1, lost: 2, lostCharge: 80 } } });
     // The return put one back in storage; the lost one didn't move it
     expect(backend.doc("t1", "products", "LAD-1").data.stock).toBe(4);
   });
 
-  test("a sheet someone took more equipment on meanwhile isn't finished, and says so", { tag: ["@J13.4"] }, async ({ page }) => {
+  test("a project someone took more equipment on meanwhile isn't finished, and says so", { tag: ["@J13.4"] }, async ({ page }) => {
     const docs = Object.fromEntries(Object.entries(seed).map(([k, v]) => [`t1/${k}`, v]));
-    docs["t1/sheets/s2"] = { ...seed["sheets/s2"], items: { "LAD-1": { ...seed["sheets/s2"].items["LAD-1"], returned: 2 } } };
+    docs["t1/projects/s2"] = { ...seed["projects/s2"], items: { "LAD-1": { ...seed["projects/s2"].items["LAD-1"], returned: 2 } } };
     const backend = new FakeBackend({ docs });
     await openAws(page, backend);
     await connected(page);
-    await openSheet(page, "Delta Dental");
+    await openProject(page, "Delta Dental");
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("0");
     // Another phone took one more, and this page hasn't heard yet
-    backend.doc("t1", "sheets", "s2").data.items["LAD-1"].out = 4;
+    backend.doc("t1", "projects", "s2").data.items["LAD-1"].out = 4;
     await page.getByRole("button", { name: "Finished Return" }).click();
-    await expect(page.locator("#toast")).toHaveText("Equipment is still out on this sheet, so it wasn't finished. Tap Finished Return again to say where each piece is.");
-    expect(backend.doc("t1", "sheets", "s2").data.status).toBe("open");
+    await expect(page.locator("#toast")).toHaveText("Equipment is still out on this project, so it wasn't finished. Tap Finished Return again to say where each piece is.");
+    expect(backend.doc("t1", "projects", "s2").data.status).toBe("open");
     // The latest is showing: one still out
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("1");
   });
@@ -348,9 +348,9 @@ test.describe("the web build's checkout command", () => {
 const finishBox = (page, i) => modal(page).locator(`fieldset.finish[data-i="${i}"]`);
 
 test.describe("J13.4 Finished Return asks about each piece of equipment still out", { tag: ["@J13.4", "@J4.3"] }, () => {
-  test("pieces back go into storage, the rest stay out at the job, and the sheet stays open", async ({ page }) => {
+  test("pieces back go into storage, the rest stay out at the job, and the project stays open", async ({ page }) => {
     await open(page);
-    await openSheet(page, "Delta Dental");
+    await openProject(page, "Delta Dental");
     await page.getByRole("button", { name: "Finished Return" }).click();
     await expect(modal(page).getByRole("heading", { name: "Before you finish" })).toBeVisible();
     await expect(finishBox(page, 0).locator("legend")).toHaveText("Step ladder · 2 still out");
@@ -359,16 +359,16 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
     await finishBox(page, 0).getByLabel("It's back").fill("1");
     await expect(finishBox(page, 0).locator("[data-left]")).toHaveText("Still at the job: 1");
     await modal(page).getByRole("button", { name: "Save" }).click();
-    await expect(page.locator("#toast")).toHaveText("Saved. 1 still at the job, so the sheet stays open.");
-    await expect(page.locator(".sheet-head .pill")).toHaveText("Checked out");
-    expect((await doc(page, "sheets/s2")).items["LAD-1"]).toMatchObject({ out: 3, returned: 1, lost: 1 });
+    await expect(page.locator("#toast")).toHaveText("Saved. 1 still at the job, so the project stays open.");
+    await expect(page.locator(".project-head .pill")).toHaveText("Checked out");
+    expect((await doc(page, "projects/s2")).items["LAD-1"]).toMatchObject({ out: 3, returned: 1, lost: 1 });
     expect((await doc(page, "products/LAD-1")).stock).toBe(4);
     await expect(page.getByRole("button", { name: "Inventory" })).toBeVisible();
   });
 
-  test("lost or broken, with a charge, goes on the sheet's total and the client's CSV, and then it closes", async ({ page }) => {
+  test("lost or broken, with a charge, goes on the project's total and the client's CSV, and then it closes", async ({ page }) => {
     await open(page);
-    await openSheet(page, "Delta Dental");
+    await openProject(page, "Delta Dental");
     await page.getByRole("button", { name: "Finished Return" }).click();
     await finishBox(page, 0).getByLabel("It's back").fill("1");
     await finishBox(page, 0).getByLabel("Lost or broken", { exact: true }).fill("1");
@@ -378,13 +378,13 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
     await finishBox(page, 0).getByLabel(/Charge the client/).fill("75.5");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(page.locator("#toast")).toHaveText("Return finished");
-    await expect(page.locator(".sheet-head .pill")).toHaveText("Returned");
-    const line = (await doc(page, "sheets/s2")).items["LAD-1"];
+    await expect(page.locator(".project-head .pill")).toHaveText("Returned");
+    const line = (await doc(page, "projects/s2")).items["LAD-1"];
     expect(line).toMatchObject({ out: 3, returned: 1, lost: 2, lostCharge: 75.5 });
     // The charge is its own row with the supplies, and in the total; stock didn't move for the lost one
-    const row = page.locator("#sheetBody table:not(.equipment) tbody tr", { hasText: "Step ladder (lost or broken)" });
+    const row = page.locator("#projectBody table:not(.equipment) tbody tr", { hasText: "Step ladder (lost or broken)" });
     await expect(row.locator("td")).toHaveText(["Step ladder (lost or broken)Barcode LAD-1", "", "", "", "2", "$75.50"]);
-    await expect(page.locator("#sheetBody .totals .charge")).toHaveText("$75.50");
+    await expect(page.locator("#projectBody .totals .charge")).toHaveText("$75.50");
     await expect(equipmentRow(page, "Step ladder").locator("td")).toHaveText(["Step ladderBarcode LAD-1", "3", "1", "2", "0"]);
     expect((await doc(page, "products/LAD-1")).stock).toBe(4);
     // Its row opens the equipment line
@@ -396,18 +396,18 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
     const csv = (await page.evaluate(() => window.__mock.saves[0].data)).split("\n");
     expect(csv.slice(-2)).toEqual(["Step ladder (lost or broken),LAD-1,,,,2,75.50", "Total,,,0,0,2,75.50"]);
     // The closed card shows what's charged
-    await page.getByRole("button", { name: "Sheets", exact: true }).click();
+    await page.getByRole("button", { name: "Projects", exact: true }).click();
     await page.getByRole("button", { name: "Returned" }).click();
     await expect(page.getByRole("button", { name: /Delta Dental/ })).toContainText("$75.50");
   });
 
   test("asks about each line on its own, refuses more than are out, and can be cancelled", async ({ page }) => {
-    const s1 = seed["sheets/s1"];
-    await open(page, { seed: { ...seed, "sheets/s1": { ...s1, items: { ...s1.items, cord: { code: "", name: "Extension cord", kind: "equipment", out: 2, returned: 0 } } } } });
-    await openSheet(page, "Echo Studio");
+    const s1 = seed["projects/s1"];
+    await open(page, { seed: { ...seed, "projects/s1": { ...s1, items: { ...s1.items, cord: { code: "", name: "Extension cord", kind: "equipment", out: 2, returned: 0 } } } } });
+    await openProject(page, "Echo Studio");
     await page.getByRole("button", { name: "Finished Return" }).click();
     await expect(modal(page).locator("fieldset.finish")).toHaveCount(2);
-    // The order of the sheet: the cord, then the ladder; each box's steppers move only its own count
+    // The order of the project: the cord, then the ladder; each box's steppers move only its own count
     await expect(finishBox(page, 0).locator("legend")).toHaveText("Extension cord · 2 still out");
     await finishBox(page, 1).locator("[data-step='1']").first().click();
     await expect(finishBox(page, 1).getByLabel("It's back")).toHaveValue("1");
@@ -419,43 +419,43 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
     await expect(finishBox(page, 0)).toContainText("Its value isn't known.");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(page.locator("#toast")).toHaveText("That's more Extension cord than are still out.");
-    expect((await doc(page, "sheets/s1")).items.cord).toMatchObject({ returned: 0 });
+    expect((await doc(page, "projects/s1")).items.cord).toMatchObject({ returned: 0 });
     await modal(page).getByRole("button", { name: "Cancel" }).click();
     await expect(page.locator("#overlay")).toBeHidden();
-    await expect(page.locator(".sheet-head .pill")).toHaveText("Checked out");
+    await expect(page.locator(".project-head .pill")).toHaveText("Checked out");
   });
 
-  test("Try again after a failed save records each piece once, and a sheet without equipment out closes at once", async ({ page }) => {
+  test("Try again after a failed save records each piece once, and a project without equipment out closes at once", async ({ page }) => {
     await open(page);
-    await openSheet(page, "Delta Dental");
+    await openProject(page, "Delta Dental");
     await page.getByRole("button", { name: "Finished Return" }).click();
     await finishBox(page, 0).getByLabel("It's back").fill("1");
     await finishBox(page, 0).getByLabel("Lost or broken", { exact: true }).fill("1");
-    // The sheet's writes fail for the connection, then work on Try again
-    await page.evaluate(() => { window.__mock.failWrites = { prefix: "sheets/s2", code: "unavailable" }; });
+    // The project's writes fail for the connection, then work on Try again
+    await page.evaluate(() => { window.__mock.failWrites = { prefix: "projects/s2", code: "unavailable" }; });
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(modal(page).getByRole("button", { name: "Try again" })).toBeVisible();
     await page.evaluate(() => { window.__mock.failWrites = null; });
     await modal(page).getByRole("button", { name: "Try again" }).click();
     await expect(page.locator("#toast")).toHaveText("Return finished");
-    expect((await doc(page, "sheets/s2")).items["LAD-1"]).toMatchObject({ out: 3, returned: 1, lost: 2 });
-    expect((await doc(page, "sheets/s2")).items["LAD-1"]).not.toHaveProperty("lostCharge");
+    expect((await doc(page, "projects/s2")).items["LAD-1"]).toMatchObject({ out: 3, returned: 1, lost: 2 });
+    expect((await doc(page, "projects/s2")).items["LAD-1"]).not.toHaveProperty("lostCharge");
     expect((await doc(page, "products/LAD-1")).stock).toBe(4);
 
-    // A sheet whose equipment is all back finishes as before
-    await page.getByRole("button", { name: "Sheets", exact: true }).click();
+    // A project whose equipment is all back finishes as before
+    await page.getByRole("button", { name: "Projects", exact: true }).click();
     await page.getByRole("button", { name: "Out now" }).click();
-    await page.evaluate(() => { const s = window.__mock.docs.get("sheets/s1"); s.items["LAD-1"].returned = 1; window.__mock.notify(); });
-    await openSheet(page, "Echo Studio");
+    await page.evaluate(() => { const s = window.__mock.docs.get("projects/s1"); s.items["LAD-1"].returned = 1; window.__mock.notify(); });
+    await openProject(page, "Echo Studio");
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("0");
     await page.getByRole("button", { name: "Finished Return" }).click();
     await expect(page.locator("#toast")).toHaveText("Return finished");
   });
   // Owner's report from an iPhone in portrait: side by side, each number box shrank to a sliver
   test("on a phone in portrait the two steppers stack, and each shows 3 digits with 44px buttons", async ({ page }) => {
-    const s2 = seed["sheets/s2"];
-    await open(page, { seed: { ...seed, "sheets/s2": { ...s2, items: { "LAD-1": { ...s2.items["LAD-1"], out: 250, lost: 0 } } } } });
-    await openSheet(page, "Delta Dental");
+    const s2 = seed["projects/s2"];
+    await open(page, { seed: { ...seed, "projects/s2": { ...s2, items: { "LAD-1": { ...s2.items["LAD-1"], out: 250, lost: 0 } } } } });
+    await openProject(page, "Delta Dental");
     await page.getByRole("button", { name: "Finished Return" }).click();
     const box = finishBox(page, 0);
     await expect(box.locator("legend")).toHaveText("Step ladder · 250 still out");

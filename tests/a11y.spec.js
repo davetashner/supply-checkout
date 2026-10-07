@@ -15,16 +15,16 @@ for (const colorScheme of ["light", "dark"]) {
     // Reduced motion: check the dialog at rest, not mid fade-in
     test.use({ colorScheme, reducedMotion: "reduce" });
 
-    test("sheet list", async ({ page }) => {
+    test("project list", async ({ page }) => {
       await openApp(page, usedState);
       await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
       await expectAccessible(page);
     });
 
-    test("sheet detail and checkout dialog", async ({ page }) => {
+    test("project detail and checkout dialog", async ({ page }) => {
       await openApp(page, usedState);
       await page.getByRole("button", { name: /Echo Studio/ }).click();
-      await expect(page.locator("#sheetBody tbody tr")).toHaveCount(2);
+      await expect(page.locator("#projectBody tbody tr")).toHaveCount(2);
       await expectAccessible(page);
 
       await page.getByPlaceholder("Or type the barcode").fill("SKU1");
@@ -33,11 +33,11 @@ for (const colorScheme of ["light", "dark"]) {
       await expectAccessible(page);
     });
 
-    test("company equipment: the sheet's section, the item editor and Inventory's Out view", async ({ page }) => {
+    test("company equipment: the project's section, the item editor and Inventory's Out view", async ({ page }) => {
       const ladder = { code: "LAD-1", name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 1, takenBy: "u_test", takenAt: "2026-09-24T13:05:00.000Z" };
-      await openApp(page, { ...usedState, seed: { ...usedState.seed, "products/LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, stock: 2 }, "sheets/s1": { ...usedState.seed["sheets/s1"], items: { ...usedState.seed["sheets/s1"].items, "LAD-1": ladder } } } });
+      await openApp(page, { ...usedState, seed: { ...usedState.seed, "products/LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, stock: 2 }, "projects/s1": { ...usedState.seed["projects/s1"], items: { ...usedState.seed["projects/s1"].items, "LAD-1": ladder } } } });
       await page.getByRole("button", { name: /Echo Studio/ }).click();
-      await expect(page.locator("#sheetBody table.equipment tbody tr")).toHaveCount(1);
+      await expect(page.locator("#projectBody table.equipment tbody tr")).toHaveCount(1);
       await expectAccessible(page);
       // Finished Return's question about the piece still out, with the charge field showing
       await page.getByRole("button", { name: "Finished Return" }).click();

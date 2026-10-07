@@ -1,9 +1,9 @@
-// Checking items out to a sheet and returning them. Every checkout and return goes through here.
+// Checking items out to a project and returning them. Every checkout and return goes through here.
 //
-// The web build's db (src/aws/db.js) has `command`: one request that changes the sheet line and
+// The web build's db (src/aws/db.js) has `command`: one request that changes the project line and
 // the storage count together, adding on the server, so two people checking out at once can't
 // lose a count and a retry can't count twice (docs/api/commands.md). claude.ai's db doesn't, so
-// the artifact build writes the sheet line, then the storage count (addStock below, a
+// the artifact build writes the project line, then the storage count (addStock below, a
 // read-then-write), as one attempt: if the storage count fails, trying again finds the line
 // saved and writes only the storage count.
 //
@@ -11,10 +11,10 @@
 // build's db gives each action an operation ID, and sends the same one on every attempt at the
 // same request, so a retry or a second tap is applied once.
 //
-// The request depends only on what the person entered, never on the latest copy of the sheet,
+// The request depends only on what the person entered, never on the latest copy of the project,
 // so a retry after a live update is still the same request.
 //
-// Each resolves, once the sheet and the storage count have saved, to { quantity, line }: for a
+// Each resolves, once the project and the storage count have saved, to { quantity, line }: for a
 // return, how many came back and the line as it is now.
 import { int, own, uid, hasStock, round2 } from "./format.js";
 
@@ -44,11 +44,11 @@ function attempt(action, fn) {
 // else's change yet: { patch, delta } (the line's change and the storage count's), and for a
 // return what it resolves to. partial: what a change to part of the line is called (a return),
 // which doesn't make a line someone else removed again; false for a checkout.
-async function move(db, action, command, sheetId, body, partial, plan) {
-  // Without commands (the demo and the tests' mock runtime), the code below saves the sheet itself
-  if (db.command) return db.command(command, sheetId, body, action);
+async function move(db, action, command, projectId, body, partial, plan) {
+  // Without commands (the demo and the tests' mock runtime), the code below saves the project itself
+  if (db.command) return db.command(command, projectId, body, action);
   // As with the web build's operation IDs, a changed request (another quantity) is a new action
-  const key = body.productKey, request = JSON.stringify([command, sheetId, body]), ref = db.doc("sheets/" + sheetId);
+  const key = body.productKey, request = JSON.stringify([command, projectId, body]), ref = db.doc("projects/" + projectId);
   if (action.request !== request) Object.assign(action, { request, mark: uid() });
   const mark = action.mark;
   return attempt(action, async () => {
@@ -58,7 +58,7 @@ async function move(db, action, command, sheetId, body, partial, plan) {
     // Saved already: what's left is what that attempt left to do, its storage count
     if (!marked(cur, mark)) {
       // A return changes part of the line, so it doesn't make a line someone else removed again
-      if (!cur && partial) throw { code: "refused", message: `Someone else removed this item from the sheet, so the ${partial} wasn't saved.` };
+      if (!cur && partial) throw { code: "refused", message: `Someone else removed this item from the project, so the ${partial} wasn't saved.` };
       const local = plan(cur);
       saved.set(action, local);
       await ref.update({ items: { [key]: { ...local.patch, ops: remember(cur, mark) } } });
@@ -84,18 +84,18 @@ async function addStock(db, key, delta, mark) {
 // item: the line as this page has it with the checkout added (its name, price and cost; the
 // artifact adds qty to the saved line's out). oneOff: the name, price and code of an item that
 // isn't in inventory, which the command needs to add its line ({} for an item in inventory).
-export const checkOut = (db, action, sheetId, key, qty, item, oneOff) =>
-  move(db, action, "checkout", sheetId, { productKey: key, quantity: qty, ...oneOff }, false,
+export const checkOut = (db, action, projectId, key, qty, item, oneOff) =>
+  move(db, action, "checkout", projectId, { productKey: key, quantity: qty, ...oneOff }, false,
     cur => {
-      // A line moved off the ad hoc sheet left a marker (moveLine below): taking it again starts afresh
+      // A line moved off the General Use project left a marker (moveLine below): taking it again starts afresh
       const live = cur && !cur.moved ? cur : undefined;
       return { patch: { ...item, out: int(live && live.out) + qty, returned: int(live && live.returned), ...(cur && cur.moved ? { moved: false, lost: 0 } : {}) }, delta: -qty };
     });
 // r: how many the person is returning. The command adds it on the server, which refuses more
 // than are left. The artifact writes the line's new returned count, added to the line as it's
 // saved now, in case someone else recorded a return meanwhile.
-export const recordReturn = (db, action, sheetId, key, r) =>
-  move(db, action, "return", sheetId, { productKey: key, quantity: r }, "return", cur => {
+export const recordReturn = (db, action, projectId, key, r) =>
+  move(db, action, "return", projectId, { productKey: key, quantity: r }, "return", cur => {
     // Never past what's neither back nor lost (company equipment lost or broken, ADR 0017)
     const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.max(before, Math.min(out - int(cur.lost), before + r));
     return { patch: { returned: back }, delta: back - before, quantity: back - before, line: { out, returned: back } };
@@ -105,61 +105,61 @@ export const recordReturn = (db, action, sheetId, key, r) =>
 // nothing). Stock doesn't move: it went down when they were taken. The web build's db sends
 // the lost command; the artifact writes the line's lost and lostCharge, added to the line as
 // it's saved now, never past what's still out, with the action's mark (see move above).
-export const markLost = (db, action, sheetId, key, q, charge) =>
-  move(db, action, "lost", sheetId, { productKey: key, quantity: q, ...(charge === undefined ? {} : { charge }) }, "change", cur => {
+export const markLost = (db, action, projectId, key, q, charge) =>
+  move(db, action, "lost", projectId, { productKey: key, quantity: q, ...(charge === undefined ? {} : { charge }) }, "change", cur => {
     const out = int(cur.out), back = Math.min(int(cur.returned), out), before = Math.min(int(cur.lost), out - back);
     const lost = Math.min(out - back, before + q);
     return { patch: { lost, ...(charge === undefined ? {} : { lostCharge: round2((Number(cur.lostCharge) || 0) + charge) }) }, delta: 0, quantity: lost - before };
   });
 
-// Quick take (ADR 0017, section 4): a checkout onto the team's open ad hoc sheet, without choosing
-// a sheet. start: { id, body, date }, the sheet it aims at (the open ad hoc sheet this page holds,
-// or the next `adhoc-<n>`), the sheet to make if it isn't there, and the person's date. Resolves
-// to the checkout's answer and the sheet it went on (sheetId).
+// Quick take (ADR 0017, section 4): a checkout onto the team's open General Use project, without choosing
+// a project. start: { id, body, date }, the project it aims at (the open General Use project this page holds,
+// or the next `adhoc-<n>`), the project to make if it isn't there, and the person's date. Resolves
+// to the checkout's answer and the project it went on (projectId).
 //
-// - The web build's db sends the quick-take command, which picks the sheet on the server, in the
-//   checkout's transaction, so two first takes at once end on one sheet (docs/api/commands.md).
-// - claude.ai's db has no transactions, so the artifact build reads the sheet it aims at, makes it
+// - The web build's db sends the quick-take command, which picks the project on the server, in the
+//   checkout's transaction, so two first takes at once end on one project (docs/api/commands.md).
+// - claude.ai's db has no transactions, so the artifact build reads the project it aims at, makes it
 //   if it isn't there (a `set` with no lines), or moves on to the next number if someone finished
 //   it meanwhile, then adds the line as a checkout does, with the action's mark. A `set` can't be
 //   conditional, so one from another page that read before this line landed can wipe it: the
-//   take reads the sheet again and, if its mark isn't there, writes the line again. Stock is
+//   take reads the project again and, if its mark isn't there, writes the line again. Stock is
 //   right either way: its mark is on the item (addStock).
 export async function quickTake(db, action, key, qty, item, oneOff, start) {
-  // Without commands (the demo and the tests' mock runtime), the code below saves the sheet itself
+  // Without commands (the demo and the tests' mock runtime), the code below saves the project itself
   if (db.quickTake) return db.quickTake({ productKey: key, quantity: qty, ...oneOff, date: start.date }, action);
-  let id = action.sheetId || start.id;
+  let id = action.projectId || start.id;
   for (;;) {
-    const got = await db.doc("sheets/" + id).get();
-    if (!got.exists) await db.doc("sheets/" + id).set(start.body);
+    const got = await db.doc("projects/" + id).get();
+    if (!got.exists) await db.doc("projects/" + id).set(start.body);
     // Finished by someone else meanwhile: the next one
-    // (or a sheet under that ID that isn't an ad hoc sheet): the next one
+    // (or a project under that ID that isn't a General Use project): the next one
     else if (got.data().status === "closed" || got.data().kind !== "adhoc") { id = "adhoc-" + (Number(id.slice(6)) + 1); continue; }
     break;
   }
-  action.sheetId = id;
+  action.projectId = id;
   const take = () => checkOut(db, action, id, key, qty, item, oneOff);
   let done = await take();
-  const after = await db.doc("sheets/" + id).get();
+  const after = await db.doc("projects/" + id).get();
   if (!marked(own(Object(after.data().items), key), action.mark)) done = await take();
-  return { ...done, sheetId: id };
+  return { ...done, projectId: id };
 }
 
-// Moving a whole line from the open ad hoc sheet to an open job sheet (ADR 0017, section 5): its
-// counts go onto the job sheet's line for the item, which keeps its own price, or the line goes
+// Moving a whole line from the open General Use project to an open client project (ADR 0017, section 5): its
+// counts go onto the client project's line for the item, which keeps its own price, or the line goes
 // as it is, with the price it was taken at. Stock doesn't move: it left storage at the quick take.
 //
-// - The web build's db sends the move command: both sheets change in one transaction.
-// - The artifact build makes two writes with the move's mark: the counts onto the job sheet, then
+// - The web build's db sends the move command: both projects change in one transaction.
+// - The artifact build makes two writes with the move's mark: the counts onto the client project, then
 //   the ad hoc line replaced by a hidden "moved" marker (shown nowhere, left out of exports, as a
-//   removed line is). A retry that finds the mark on the job sheet skips the first write, and one
+//   removed line is). A retry that finds the mark on the client project skips the first write, and one
 //   that finds it on the ad hoc line writes nothing.
 export async function moveLine(db, action, fromId, key, toId) {
-  // Without commands (the demo and the tests' mock runtime), the code below saves the sheet itself
+  // Without commands (the demo and the tests' mock runtime), the code below saves the project itself
   if (db.moveLine) return db.moveLine(fromId, key, toId, action);
-  const mark = markOf(action), from = db.doc("sheets/" + fromId), to = db.doc("sheets/" + toId);
+  const mark = markOf(action), from = db.doc("projects/" + fromId), to = db.doc("projects/" + toId);
   return attempt(action, async () => {
-    // A sheet that's gone has no lines (data() is undefined)
+    // A project that's gone has no lines (data() is undefined)
     const line = own(Object(Object((await from.get()).data()).items), key);
     if (!line || (line.moved && !marked(line, mark))) throw { code: "refused", message: "Someone else moved or removed this line, so it wasn't moved." };
     if (marked(line, mark)) return;
@@ -167,7 +167,7 @@ export async function moveLine(db, action, fromId, key, toId) {
     if (!there.exists) throw { code: "not_found" };
     const cur = own(Object(there.data().items), key);
     if (!marked(cur, mark)) {
-      if (cur && cur.kind !== line.kind) throw { code: "refused", message: "That sheet has this item as the other kind (a supply, or company equipment), so it wasn't moved. Correct the lines by hand." };
+      if (cur && cur.kind !== line.kind) throw { code: "refused", message: "That project has this item as the other kind (a supply, or company equipment), so it wasn't moved. Correct the lines by hand." };
       const moved = { ...line, ops: [mark] };
       const added = cur && { out: int(cur.out) + int(line.out), returned: int(cur.returned) + int(line.returned), ...(line.lost ? { lost: int(cur.lost) + int(line.lost) } : {}), ops: remember(cur, mark) };
       await to.update({ items: { [key]: added || moved } });
@@ -176,16 +176,16 @@ export async function moveLine(db, action, fromId, key, toId) {
   });
 }
 
-// A receipt's lines for a client, added to a sheet that already exists (saveReceipt in
+// A receipt's lines for a client, added to a project that already exists (saveReceipt in
 // src/main.js). items: { [key]: line }, each as a new line would be ({ code, name, price, cost
-// each from the receipt, out: how many were bought, returned: 0 }). A line already on the sheet keeps its name, price
+// each from the receipt, out: how many were bought, returned: 0 }). A line already on the project keeps its name, price
 // and cost, and adds to its out. No stock moves: these were bought for the client and never were
 // in storage. `action` is the receipt's destination, kept with the draft, so every attempt at
 // saving it (Try again, or after a reload) adds each line once:
 //
 // - The web build's db sends the addLines command, all the lines or none, 40 to a request, each
 //   request its own operation (docs/api/commands.md).
-// - claude.ai's db has no commands or transactions, so the artifact build reads the sheet, adds
+// - claude.ai's db has no commands or transactions, so the artifact build reads the project, adds
 //   the lines to the latest copy, and saves them in one update with the destination's mark on
 //   each line (see move above). An attempt that finds its mark on any of them was already saved
 //   by an earlier one whose answer was lost, and writes nothing.
@@ -197,15 +197,15 @@ export const MAX_LINES = 40;
 // item on loan. The web build sends the receipt price, and a price only with priceSet "manual":
 // the server works out the team's markup itself. The artifact build has no markup: the line
 // is charged the receipt price, or the typed price, which says who typed it and when.
-export async function addLines(db, action, sheetId, items, bought = {}) {
-  // Without commands (the demo and the tests' mock runtime), the code below saves the sheet itself
+export async function addLines(db, action, projectId, items, bought = {}) {
+  // Without commands (the demo and the tests' mock runtime), the code below saves the project itself
   if (db.addLines) {
     const lines = [
       ...Object.entries(items).map(([productKey, l]) => ({ productKey, quantity: l.out, code: l.code, name: l.name, price: l.price, cost: l.cost })),
       ...Object.entries(bought).map(([productKey, b]) => ({ productKey, quantity: b.out, code: b.code, name: b.name, cost: b.cost, ...(b.typed === undefined ? {} : { price: b.typed, priceSet: "manual" }) })),
     ];
     const parts = (action.parts ||= []);
-    for (let i = 0; i < lines.length; i += MAX_LINES) await db.addLines(sheetId, lines.slice(i, i + MAX_LINES), (parts[i / MAX_LINES] ||= {}));
+    for (let i = 0; i < lines.length; i += MAX_LINES) await db.addLines(projectId, lines.slice(i, i + MAX_LINES), (parts[i / MAX_LINES] ||= {}));
     return;
   }
   const at = new Date().toISOString();
@@ -216,7 +216,7 @@ export async function addLines(db, action, sheetId, items, bought = {}) {
       ...(b.typed === undefined ? {} : { priceSet: "manual", priceSetBy: b.by, priceSetAt: at }), out: b.out, returned: 0,
     }]),
   ];
-  const ref = db.doc("sheets/" + sheetId), mark = markOf(action);
+  const ref = db.doc("projects/" + projectId), mark = markOf(action);
   return attempt(action, async () => {
     const got = await ref.get();
     if (!got.exists) throw { code: "not_found" };
@@ -231,7 +231,7 @@ export async function addLines(db, action, sheetId, items, bought = {}) {
   });
 }
 
-// Saving an item whose stock changes outside a sheet: the inventory form (someone counted
+// Saving an item whose stock changes outside a project: the inventory form (someone counted
 // storage) and a receipt's general-inventory lines (stock bought in). body is the whole item,
 // with its new stock, which the artifact saves as it is. The web build's db saves the item
 // without stock (the server keeps what's stored) and sends the change as the stock command,

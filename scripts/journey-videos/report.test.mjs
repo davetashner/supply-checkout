@@ -23,7 +23,7 @@ const sidecar = () => ({
   duration: 92.5,
   summary: { passed: 1, failed: 1, simulated: 1, planned: 1, backend: 1, untested: 0, skipped: 0 },
   steps: [
-    { id: "J0.1", text: "Open a **sheet**.", status: "built", result: "passed", backendTests: [], tests: [
+    { id: "J0.1", text: "Open a **project**.", status: "built", result: "passed", backendTests: [], tests: [
       { file: "tests/a.spec.js", line: 3, title: "opens <script>alert(1)</script>", result: "passed", at: 5, shot: "evidence/t1-shot-0.jpg" },
     ] },
     { id: "J0.2", text: "Scan.", status: "built", simulated: "The camera is a fake", result: "failed", backendTests: [], tests: [
@@ -54,7 +54,7 @@ test("each step links its tests' results, video timestamps, screenshots, traces 
   assert.match(html, /<video [^>]*src="J0-check-out-and-back\.webm"/);
   const row = (id) => html.slice(html.indexOf(`id="step-${id.replace(".", "-")}"`), html.indexOf("</tr>", html.indexOf(`id="step-${id.replace(".", "-")}"`)));
   const j01 = row("J0.1");
-  assert.match(j01, /Open a sheet\./);
+  assert.match(j01, /Open a project\./);
   assert.match(j01, /class="tag passed">Passed</);
   assert.match(j01, /href="https:\/\/github\.com\/owner\/repo\/blob\/v1\.2\.3\/tests\/a\.spec\.js#L3"/);
   assert.match(j01, /href="J0-check-out-and-back\.webm#t=5" data-video="J0" data-t="5">0:05</);

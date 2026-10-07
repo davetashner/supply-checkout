@@ -29,8 +29,8 @@
       "journey": "J14",
       "slug": "quick-take",
       "file": "tests/adhoc.spec.js",
-      "test": "Quick take starts the team's ad hoc sheet, adds to it after, and takes stock down",
-      "caption": "A box of gloves for the van? Quick take, no job sheet."
+      "test": "Quick take starts the team's General Use project, adds to it after, and takes stock down",
+      "caption": "A box of gloves for the van? Quick take, no project needed."
     },
     {
       "journey": "J5",

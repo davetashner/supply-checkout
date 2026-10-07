@@ -5,9 +5,9 @@
 //   PORT=8080 npm run dev
 //
 // Query string options:
-//   ?seed=empty                      start with no sheets or inventory
+//   ?seed=empty                      start with no projects or inventory
 //   ?viewer                          view-only access
-//   ?nouser                          no signed-in user (asks who prepared sheets)
+//   ?nouser                          no signed-in user (asks who prepared projects)
 //   ?mock={"sampleError":"rate_limited"}
 //                                    any tests/mock-claude.js option, as JSON
 //

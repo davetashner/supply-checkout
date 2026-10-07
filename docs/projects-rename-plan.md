@@ -2,6 +2,14 @@
 
 Bead `supply-checkout-005.6`. Owner decision (2026-10-06): pilot users call these Projects, so rename everywhere (UI, code, API paths and fields, stored data keys, tests, docs), once, while the House Finch pilot team holds the only real data in prod. This page is the plan only; no code changes come with it.
 
+**Decisions (2026-10-06, owner, answering section 5):** these override the plan below where they differ.
+
+1. **The claude.ai artifact is retired** (PR #506, bead `supply-checkout-005.10`), so nothing keeps a `sheets` storage mapping for it. The artifact-compatibility steps below are dropped. `import-artifact` still accepts an old export with a `sheets` key (dual-accept on import only).
+2. **Exports change fully:** JSON key `sheets` becomes `projects` (and `sheet` becomes `project`), the CSV header "Sheet ID" becomes "Project ID", and the export file names say projects.
+3. **Movement records are renamed too:** `sheetId` becomes `projectId` and `fromSheetId` becomes `fromProjectId`.
+4. **The dual-accept window is about one week.**
+5. **"ad hoc sheet" becomes "General Use (no job)"** in the UI; elsewhere "Project" and "Projects", and "job sheet" becomes "project".
+
 Counts below are case-insensitive substring hits of `sheet` on `origin/main`, from `grep -rIio sheet <dir>` (node_modules and cdk.out excluded). "Third-party" hits are words that contain it but are not our concept and must stay.
 
 ## 1. Inventory
@@ -34,7 +42,6 @@ Counts below are case-insensitive substring hits of `sheet` on `origin/main`, fr
 | Realtime | `ChangeEvent.collection` and `CollectionEvent.collection` are `"products" \| "sheets"`; stream filter `DOCUMENT_SK_PREFIXES = ["PRODUCT#", "SHEET#"]`. The channel (`/users/<userId>`) has no `sheet` in it | `backend/src/realtime/channels.ts`; consumed by `infra/lib/stacks/realtime-stack.ts` |
 | IAM | `dynamodb:LeadingKeys` allows `TEAM#<tag>` and `TEAM#<tag>#SHEETS` | `infra/lib/stacks/api-stack.ts:266` |
 | Client runtime | `db.collection("sheets")`, `db.doc("sheets/<id>")`, `ui.tab = "sheets"`, `#tab-sheets` | `src/main.js`, `src/aws/db.js` |
-| Claude.ai artifact storage | Shared storage collection named `sheets`, written by every artifact user's data to date | the claude.ai runtime, via `window.claude` (ADR 0004) |
 | Export file | JSON key `sheets`; CSV header `Sheet ID`; file `sheetsCsv`/`sheetCsv`. The artifact's JSON export is the import format for `import-artifact` and `docs/moving-to-the-web-app.md` | `src/export.js`, `backend/src/data/artifact-import.ts` (`MAX_EXPORT_SHEETS`, `ArtifactSheet`, `SHEET_FIELDS`, `sheets.items.*` ignored-field names) |
 | Emails | About 13 sentences in `backend/src/email/templates.ts` ("your team's sheets and inventory", role blurbs, closing and lapse notices) | `email/templates.ts` |
 | Billing copy | Stripe product description "Supply checkout sheets, inventory..." (`backend/src/billing/catalog.ts:64`); this is a Stripe catalog value, so changing it needs the catalog script run (`backend/scripts/stripe-catalog.ts`) | `catalog.ts` |
@@ -115,11 +122,10 @@ Then the owner signs in as a House Finch user and looks at the list, opens one f
 
 ### The compatibility problem
 
-Three kinds of client are in use at once and don't deploy in lockstep:
+Two kinds of client were in use at once (the claude.ai artifact, a third, is retired; see Decisions) and don't deploy in lockstep:
 
 1. **The web app** (`app.supplycheckout.com`): a static bundle on CloudFront. A tab that was already open keeps running the old JS until reloaded (hours or days), and its service worker or HTTP cache can serve the old bundle after a deploy. It will keep calling `/sheets` and subscribing for `collection: "sheets"` events.
-2. **The claude.ai artifact**: a published single-file copy of `src/`. It is republished by hand (`docs/releases.md`) and old versions stay open in people's claude.ai until reload. It reads its data from claude.ai shared storage, **where the collection is named `sheets`** (see risk 1), and its JSON export has a `sheets` key that `import-artifact` reads.
-3. **The data in DynamoDB**, moved in one stroke by the migration.
+2. **The data in DynamoDB**, moved in one stroke by the migration.
 
 ### Options
 
@@ -128,7 +134,7 @@ Three kinds of client are in use at once and don't deploy in lockstep:
 
 ### Recommendation: B, with the shortest window that works
 
-Reasons: House Finch is a paying pilot (a broken screen on day 1 of feedback is the wrong moment to teach them to reload), the alias is a few lines in `routes.ts` and `commands.ts` input parsing, and it makes the migration safe to run any time in the window, including mid-day. Keep the window to one release cycle (about a week) and to the web app only; do not carry the alias for the artifact (see below).
+Reasons: House Finch is a paying pilot (a broken screen on day 1 of feedback is the wrong moment to teach them to reload), the alias is a few lines in `routes.ts` and `commands.ts` input parsing, and it makes the migration safe to run any time in the window, including mid-day. Keep the window to one release cycle (about a week) and to the web app only.
 
 Sequence:
 
@@ -140,7 +146,7 @@ Sequence:
 
 ### The artifact build
 
-The artifact's storage is claude.ai's, not ours; we can't migrate it. If the artifact's `src/` is renamed wholesale it will read an empty `projects` collection and every existing artifact user appears to lose their data. Recommended: keep the artifact's **storage collection name as `sheets`** through a one-line mapping in the artifact's runtime adapter (`src/runtime.js` or a collection-name constant in the artifact entry), so artifact users see "Projects" in the UI but their stored data and JSON export keep the old key, and `import-artifact` accepts both `sheets` and `projects` in the export (ADR 0004 already puts the runtime behind an adapter; the web build's adapter is `src/aws/db.js`). The `legacy-data.spec.js` test (seeds `sheets/old`) gets a twin that proves it. This is the open question the owner should confirm (section 5). The alternative, freezing the artifact at its last "sheets" release and retiring it once pilot users are on the web app, is simpler; the repo still publishes it today (`docs/releases.md`).
+Retired (PR #506), so there's no storage mapping to keep. See Decisions at the top.
 
 ## 4. PR split
 
@@ -149,20 +155,19 @@ The artifact's storage is claude.ai's, not ours; we can't migrate it. If the art
 | 1 | `docs: plan the sheets-to-projects rename` (this page) | docs | none |
 | 2 | `feat: server accepts projects and sheets` — dual routes, dual field aliases, dual-prefix reads, both prefixes in the stream filter and IAM, events for both collection names, canonical idempotency fingerprint, `LegacySheetsRouteCalls` metric, OpenAPI documents `/projects` with `/sheets` marked deprecated | `backend/`, `infra/` (IAM, stream filter, snapshots) | **Security review required** (backend, IAM). Focus: LeadingKeys still scoped to `TEAM#<tag>` and the two index partitions; no way for an ID in either spelling to reach another team's items; the new aliases get the same role checks (`routes.ts` `minRole`) and body validation; logs carry no new fields with names |
 | 3 | `feat: projects-rename backfill mode` — `projects-rename` and `--reverse` in `backfill`, DynamoDB Local tests (empty team, many sheets, conflicting item, re-run, concurrent edit, reverse), `docs/infrastructure.md` "Backfills" runbook with backup and verify steps | `backend/scripts`, `backend/src/data/backfill.ts`, docs | **Security review required** (backend; writes the table under owner credentials; counts-only output) |
-| 4 | `feat: rename sheets to projects in the app` — `src/`, `demo/`, `tests/`, `scripts/`, `journeys/`, `site/`, `README.md`, `CLAUDE.md`, docs, UI text, CSS, `data-testid`s, `sheet-math.js` to `project-math.js`, `sheets.spec.js` to `projects.spec.js`; artifact mapping to the `sheets` storage name; export JSON key `projects` (the CSV header "Project ID") with `import-artifact` accepting either; email text in `backend/src/email/templates.ts` and the Stripe description (copy only; see below) | `src/`, `tests/`, docs, and copy-only edits in `backend/` | Copy-only `backend/` lines still go to a reviewer (quick). Coverage gate must stay at 98%; this is a `feat:` (user-visible) |
+| 4 | `feat: rename sheets to projects in the app` — `src/`, `demo/`, `tests/`, `scripts/`, `journeys/`, `site/`, `README.md`, `CLAUDE.md`, docs, UI text, CSS, `data-testid`s, `sheet-math.js` to `project-math.js`, `sheets.spec.js` to `projects.spec.js`; export JSON key `projects` (the CSV header "Project ID"); "ad hoc sheet" becomes "General Use (no job)". The client speaks the new API only. Backend copy (emails, Stripe description) and `import-artifact` accepting either key go to PR 5 | `src/`, `tests/`, `scripts/`, `journeys/`, `site/`, user docs | No `backend/` lines, so no security review. Coverage gate must stay at 98%; this is a `feat:` (user-visible) |
 | 5 | `refactor: rename sheets to projects in the data layer` — `keys.sheet` to `keys.project`, `sheets.ts` to `projects.ts`, `Sheet` types and every `sheetId` in `backend/`; the dual-accept layer from PR 2 stays | `backend/` (large, mechanical) | **Security review required** (large diff in `backend/`; reviewer confirms it's a pure rename plus the aliases) |
 | 6 | `fix: remove the sheets aliases` after the window | `backend/`, `infra/` | **Security review required** (IAM narrowing) |
 | 7 | `docs: note the rename in the ADRs` (README note, ADR 0005 pointer) | docs | none |
 
 PRs 4 and 5 can be one if reviewers prefer; they are split so the mechanical backend rename can be reviewed apart from UI copy. Do PR 4's `backend/` copy edits (emails, catalog) in PR 5 instead if that keeps PR 4 out of security review entirely.
 
-Order: 1, then 2, then 3, then (owner) deploy 2, back up, dry run, apply 3, then 4 and 5 (deploy, publish web, republish the artifact), wait out the window, then 6 (deploy), then 7. Bead stays open until the owner confirms the prod migration; per the bead the acceptance criteria are "House Finch data migrated and verified in prod, backup and rollback documented, tests, coverage and security review pass".
+Order: 1, then 2, then 3, then (owner) deploy 2, back up, dry run, apply 3, then 4 and 5 (deploy server release 1 first, then publish the web app), wait out the window, then 6 (deploy), then 7. Bead stays open until the owner confirms the prod migration; per the bead the acceptance criteria are "House Finch data migrated and verified in prod, backup and rollback documented, tests, coverage and security review pass".
 
 ### Needs the owner
 
 - Approve **both prod deploys** (server release 1, and 6), and the web publish.
 - **Run the backup and the prod migration** (dry run output read first), or say go and run it with the owner's SSO profile.
-- Decide the artifact question (section 5, question 1).
 - Approve the Stripe catalog description change if it should be applied (it's a paid-surface change; the existing product keeps its old description until the catalog script is run).
 - Merge nothing without the usual: lead lands PRs; security reviews end with a verdict.
 
@@ -170,7 +175,7 @@ Order: 1, then 2, then 3, then (owner) deploy 2, back up, dry run, apply 3, then
 
 Risks:
 
-1. **The artifact's data.** Renaming its collection orphans every artifact user's saved data (it can't be migrated by us). Mitigation above; needs an owner decision.
+1. **The artifact's data.** Resolved: the artifact is retired (PR #506), so nothing reads its storage.
 2. **Old tabs and caches.** Mitigated by the dual-accept window and the realtime double publish; without them (option A) the pilot sees stale or empty lists until reload. CloudFront caching of the old `index.html` is the same risk on the other side: after the server drops the aliases, any tab still on the old bundle gets 404. Keep the window until the alias metric is flat zero.
 3. **Idempotency across the cutover** (operation records are keyed on a fingerprint that contains `sheetId`; section 2, point 8).
 4. **GSI1 lag.** The date index is eventually consistent, so the dual-prefix list that merges base-table and index reads can briefly omit a moved project from a date-ordered list. The web client lists by ID and sorts locally (`src/aws/db.js`), so it isn't affected; the verification step waits for the index to settle.
@@ -181,7 +186,7 @@ Risks:
 9. **Prod Stripe and email copy** are separate deploy surfaces from the code; they change only when the owner deploys.
 10. **Public repo hygiene.** The migration runbook uses profile, table and recovery-point placeholders; no account IDs, ARNs or team IDs go in committed text (`scripts/check-public-safety.mjs`).
 
-Open questions for the owner:
+Open questions for the owner (all answered 2026-10-06; see Decisions at the top):
 
 1. The artifact: keep its stored collection named `sheets` behind a mapping (recommended), freeze it at the last "sheets" release, or retire it? Is anyone besides the owner's own data still in it?
 2. Singular and plural in the UI: "Project" and "Projects" for both the tab and the "Create your first project" copy; is "job" still used anywhere ("Take supplies without a job sheet", "Out on jobs", "job sheet" vs "ad hoc sheet" in ADR 0017)? Proposed: "job sheet" becomes "project", "ad hoc sheet" becomes "ad hoc project" (or "Quick take list"; owner's call), and "Out on jobs" stays.

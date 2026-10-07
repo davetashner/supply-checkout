@@ -15,7 +15,7 @@ export const INVITE_KEY = "supplyCheckout.invite";
 // The team the user last chose (account.js)
 export const TEAM_KEY = "supplyCheckout.team";
 // The receipt being entered (DKEY in src/main.js), which names the team's items, prices
-// and sheets. The web build keeps one per team, at draftKey(teamId), and forgets them all
+// and projects. The web build keeps one per team, at draftKey(teamId), and forgets them all
 // on sign-out along with the team. The key without a team is the artifact's (and older
 // web builds'), and is forgotten the same way.
 export const DRAFT_KEY = "supplyCheckout.receiptDraft";

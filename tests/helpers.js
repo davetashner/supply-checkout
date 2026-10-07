@@ -50,17 +50,17 @@ export async function openApp(page, opts = {}) {
     return file ? r.fulfill(file) : r.fulfill({ status: 404 });
   });
   // The marketing clips' crew (tests/journey-video.js): the signed-in user, and the teammate
-  // seeded as "Sam" (a name typed on the sheet, which the web build has no profile for)
+  // seeded as "Sam" (a name typed on the project, which the web build has no profile for)
   const { persona } = journeyVideo;
   if (persona) opts = { userName: persona.user, avatarUrl: persona.avatarUrl, ...opts, names: { Sam: persona.crew, [persona.crew]: persona.crew, ...opts.names } };
   await page.addInitScript(installMockClaude, opts);
   await page.goto(ORIGIN);
 }
 
-export async function createSheet(page, client) {
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+export async function createProject(page, client) {
+  await page.getByRole("button", { name: "+ New project" }).click();
   await page.getByLabel("Client", { exact: true }).fill(client);
-  await page.getByRole("button", { name: "Create sheet" }).click();
+  await page.getByRole("button", { name: "Create project" }).click();
   await expect(page.getByRole("heading", { name: client })).toBeVisible();
 }
 
@@ -82,5 +82,5 @@ export async function modalViolations(page) {
   const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   return violations.map((v) => v.id);
 }
-export const lineRow = (page, name) => page.locator("#sheetBody tbody tr", { hasText: name });
+export const lineRow = (page, name) => page.locator("#projectBody tbody tr", { hasText: name });
 export const inventoryRow = (page, name) => page.locator("#main tbody tr", { hasText: name });

@@ -89,7 +89,7 @@
       "persona": "Crew member",
       "critical": true,
       "steps": [
-        { "id": "J4.1", "text": "Create a sheet for the client and date, or open today's sheet.", "status": "built" },
+        { "id": "J4.1", "text": "Create a project for the client and date, or open today's project.", "status": "built" },
         {
           "id": "J4.2",
           "text": "Scan each item's barcode with the phone camera (or type the number, or pick an item that has no barcode) and choose how many.",
@@ -119,7 +119,7 @@
         { "id": "J5.2", "text": "Check each line: name, quantity, price, and the suggested inventory match.", "status": "built" },
         {
           "id": "J5.3",
-          "text": "Assign each line to a client (a new or existing sheet) or to **General inventory**, then tap **Save**. Company equipment bought for a client is charged on their sheet (the receipt price plus the team's markup, or a price typed instead); in General inventory it adds to storage and isn't charged.",
+          "text": "Assign each line to a client (a new or existing project) or to **General inventory**, then tap **Save**. Company equipment bought for a client is charged on their project (the receipt price plus the team's markup, or a price typed instead); in General inventory it adds to storage and isn't charged.",
           "status": "built",
           "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
         }
@@ -128,11 +128,11 @@
     },
     {
       "id": "J6",
-      "name": "Export a sheet to bill a client",
+      "name": "Export a project to bill a client",
       "persona": "Owner, bookkeeper",
       "critical": false,
       "steps": [
-        { "id": "J6.1", "text": "Open a finished sheet.", "status": "built" },
+        { "id": "J6.1", "text": "Open a finished project.", "status": "built" },
         { "id": "J6.2", "text": "Tap **Download CSV**.", "status": "built" }
       ]
     },
@@ -194,7 +194,7 @@
       "steps": [
         {
           "id": "J9.1",
-          "text": "Sign in and open sheets and inventory.",
+          "text": "Sign in and open projects and inventory.",
           "status": "built",
           "beads": ["supply-checkout-dj6"],
           "tests": ["backend/test/roles.test.ts"]
@@ -215,7 +215,7 @@
           "simulated": "The Stripe Customer Portal is a fake in the tests",
           "tests": ["backend/test/billing-worker.test.ts"]
         },
-        { "id": "J10.2", "text": "Export all sheets and inventory.", "status": "built", "beads": ["supply-checkout-zuv"] },
+        { "id": "J10.2", "text": "Export all projects and inventory.", "status": "built", "beads": ["supply-checkout-zuv"] },
         {
           "id": "J10.3",
           "text": "After 30 days read-only, and at least 7 days after a warning email, the team is closed and its data deleted.",
@@ -269,7 +269,7 @@
         { "id": "J13.1", "text": "In **Inventory**, mark items that go to jobs and come back (ladders, vacuums, cords) as **Company equipment**, with what each is worth.", "status": "built", "beads": ["supply-checkout-h9to"] },
         {
           "id": "J13.2",
-          "text": "Check equipment out on a sheet like any item. It's listed under **Equipment (not charged)**, apart from the supplies, and isn't in the sheet's total or the client's CSV.",
+          "text": "Check equipment out on a project like any item. It's listed under **Equipment (not charged)**, apart from the supplies, and isn't in the project's total or the client's CSV.",
           "status": "built",
           "beads": ["supply-checkout-h9to"],
           "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
@@ -288,34 +288,34 @@
           "beads": ["supply-checkout-h9to"],
           "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
         },
-        { "id": "J13.5", "text": "See what's out, on which sheet, who took it and when, in **Inventory → Equipment → Out on jobs**.", "status": "built", "beads": ["supply-checkout-h9to"] }
+        { "id": "J13.5", "text": "See what's out, on which project, who took it and when, in **Inventory → Equipment → Out on jobs**.", "status": "built", "beads": ["supply-checkout-h9to"] }
       ]
     }
 ,
     {
       "id": "J14",
-      "name": "Take supplies without a job sheet",
+      "name": "Take supplies without a job",
       "persona": "Crew member",
       "critical": true,
       "steps": [
         {
           "id": "J14.1",
-          "text": "On the sheet list, tap **Quick take** and scan (or pick) what you're taking, and how many. It goes on the team's ad hoc sheet, shown above the job sheets.",
+          "text": "On the project list, tap **Quick take** and scan (or pick) what you're taking, and how many. It goes on **General Use (no job)**, shown above the other projects.",
           "status": "built",
           "beads": ["supply-checkout-mdae"],
           "tests": ["backend/test/adhoc-api.test.ts", "backend/test/adhoc.test.ts"]
         },
-        { "id": "J14.2", "text": "Bringing something back, tap **Return** on the sheet list and scan it: it goes back to the sheet it's out on, or you pick the sheet when it's out on more than one.", "status": "built", "beads": ["supply-checkout-mdae"] },
+        { "id": "J14.2", "text": "Bringing something back, tap **Return** on the project list and scan it: it goes back to the project it's out on, or you pick the project when it's out on more than one.", "status": "built", "beads": ["supply-checkout-mdae"] },
         {
           "id": "J14.3",
-          "text": "To bill a client for something taken ad hoc, open the ad hoc sheet, tap the line and **Move to a job sheet**.",
+          "text": "To bill a client for something taken ad hoc, open **General Use (no job)**, tap the line and **Move to a project**.",
           "status": "built",
           "beads": ["supply-checkout-mdae"],
           "tests": ["backend/test/adhoc-api.test.ts", "backend/test/adhoc.test.ts"]
         },
         {
           "id": "J14.4",
-          "text": "When the van is restocked, tap **Finished Return** on the ad hoc sheet. The next quick take starts a new one.",
+          "text": "When the van is restocked, tap **Finished Return** on **General Use (no job)**. The next quick take starts a new one.",
           "status": "built",
           "beads": ["supply-checkout-mdae"],
           "tests": ["backend/test/adhoc-api.test.ts", "backend/test/adhoc.test.ts"]

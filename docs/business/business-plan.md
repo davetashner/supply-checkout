@@ -5,7 +5,7 @@
 
 ## 1. Summary
 
-Supply Checkout helps small crews track the supplies they take to client jobs and bring back. Each job gets a sheet. Crews scan items out and back in. The sheet shows what was used and what to charge the client. Photographing a store receipt adds the items to inventory or straight to a job.
+Supply Checkout helps small crews track the supplies they take to client jobs and bring back. Each job gets a project. Crews scan items out and back in. The project shows what was used and what to charge the client. Photographing a store receipt adds the items to inventory or straight to a job.
 
 It started as a tool for one family business, running as a claude.ai artifact. The plan is to sell it as a multi-tenant web and mobile product on AWS, at about $3 per user per month, billed through Stripe.
 
@@ -32,7 +32,7 @@ The **buyer** is the owner or office manager. They set up the team on the web an
 
 What exists today (in the artifact):
 
-- **Sheets** per client and date: check out, return, totals, CSV export.
+- **Projects** per client and date: check out, return, totals, CSV export.
 - **Inventory** with prices and storage counts that move with checkouts and returns.
 - **Barcode scanning**, plus items without barcodes.
 - **Receipt reading**: photo in, line items out, matched to inventory, assigned to jobs, reviewed before saving.
@@ -51,7 +51,7 @@ What the MVP adds: teams and roles, sign-in, live sync across devices, subscript
 
 ## 6. Unit economics
 
-The numbers in this section come from the cost model spreadsheet, **[cost-model.xlsx](cost-model.xlsx)**. Every input is a named cell on its Assumptions sheet with a link to its source, and every result is a live formula, so changing an input (price, receipts per seat, overhead, team size) updates the tables. The sheets are:
+The numbers in this section come from the cost model spreadsheet, **[cost-model.xlsx](cost-model.xlsx)**. Every input is a named cell on its Assumptions sheet with a link to its source, and every result is a live formula, so changing an input (price, receipts per seat, overhead, team size) updates the tables. The projects are:
 
 - **Assumptions**: every input, its unit and its source
 - **Fixed AWS**: fixed monthly cost per environment
@@ -152,7 +152,7 @@ On these assumptions, the first profitable month is month 7, cumulative profit t
 
 ## 7. Go-to-market
 
-1. **Pilot** (bead `supply-checkout-3ww`): the family business plus 3–5 other teams, free during the pilot. Measure receipts per team, seats per team, weekly active users, and whether sheets are used to bill clients.
+1. **Pilot** (bead `supply-checkout-3ww`): the family business plus 3–5 other teams, free during the pilot. Measure receipts per team, seats per team, weekly active users, and whether projects are used to bill clients.
 2. **Referrals from pilot teams**: owners in these trades know each other. Offer a free month for each referred paying team.
 3. **Local and trade channels**: cleaning and property-management associations, local business groups, Facebook groups for cleaning business owners, and supply stores where crews shop.
 4. **Search**: short pages that answer specific searches, such as "track cleaning supplies per client" and "bill clients for job supplies".
@@ -176,7 +176,7 @@ Sources: [Workyard comparison](https://www.workyard.com/compare/cleaning-service
 
 | Risk | Effect | What we do |
 | --- | --- | --- |
-| Crews don't scan consistently | Sheets are wrong, owners stop trusting them | Make checkout faster than writing it down; measure in the pilot |
+| Crews don't scan consistently | Projects are wrong, owners stop trusting them | Make checkout faster than writing it down; measure in the pilot |
 | Receipt reading gets things wrong | Wrong client charges | Review screen before saving; eval set to choose the model (bead `supply-checkout-4gz`) |
 | Receipt costs above plan | Margin shrinks on heavy users | Per-team monthly limit, per-user rate limit, cost per team metric |
 | Price too low to cover support time | Owner time is the real cost | Minimum charge per team; self-serve billing; revisit after the pilot |

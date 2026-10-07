@@ -38,7 +38,7 @@ export function openDeleteAccount(api, email, onDeleted, twoStep) {
     <p>Signed in as <strong>${esc(email || "you")}</strong>.</p>
     ${twoStepSection(twoStep.mfa)}
     <h3>Delete your account</h3>
-    <p class="hint">This removes you from every team and deletes your sign-in, so you can't sign in again. A team you're the only member of is closed, and everything in it is deleted after 30 days. Teams other people are in keep their sheets and inventory. It can't be undone.</p>
+    <p class="hint">This removes you from every team and deletes your sign-in, so you can't sign in again. A team you're the only member of is closed, and everything in it is deleted after 30 days. Teams other people are in keep their projects and inventory. It can't be undone.</p>
     <p class="hint">If you're the only owner of a team other people are in, make someone else an owner or close the team first.</p>
     <form id="deleteForm" class="delete-form" novalidate>
       <div class="field"><label for="deleteConfirm">Type ${WORD} to confirm</label><input type="text" id="deleteConfirm" autocomplete="off" spellcheck="false" autocapitalize="characters"></div>

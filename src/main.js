@@ -2,29 +2,29 @@ import "./theme.js";
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, markLost, saveItem, addLines, markOf, quickTake, moveLine } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY } from "./format.js";
-import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts, lostRows, lineLabel, isAdhoc, sheetTitle, leftOut } from "./sheet-math.js";
+import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts, lostRows, lineLabel, isAdhoc, projectTitle, leftOut } from "./project-math.js";
 import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
 import { shrinkPhoto } from "./photo.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
-import { sheetCsv, sheetsCsv, inventoryCsv, allJson } from "./export.js";
+import { projectCsv, projectsCsv, inventoryCsv, allJson } from "./export.js";
 import { createFirstRun } from "./first-run.js";
 
 let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected = false, isOwner = false;
 // Keyed by product key, which can be any barcode's: no prototype, so a key like
 // "constructor" finds nothing until there's a product with that key
-let products = Object.create(null), sheets = [], people = {};
+let products = Object.create(null), projects = [], people = {};
 // kind: the Inventory's Supplies / Equipment filter ("all" shows both); equip: with Equipment
-// picked, what's in storage ("in") or still out on open sheets ("out")
-// q: the sheet list's search; year: its year filter ("" for all years); years: the year groups
-// someone opened (true) or closed (false) on the sheet list, for the session
-const ui = { tab: "sheets", sheetId: null, mode: "out", filter: "open", receipt: false, kind: "all", equip: "in", q: "", year: "", years: {} };
+// picked, what's in storage ("in") or still out on open projects ("out")
+// q: the project list's search; year: its year filter ("" for all years); years: the year groups
+// someone opened (true) or closed (false) on the project list, for the session
+const ui = { tab: "projects", projectId: null, mode: "out", filter: "open", receipt: false, kind: "all", equip: "in", q: "", year: "", years: {} };
 // The web build's first-run checklist for an owner's new team (src/first-run.js), or null
 let firstRun = null;
 
-// sheetId: the sheet this write changes, if any, so a write to a sheet someone else deleted
+// projectId: the project this write changes, if any, so a write to a project someone else deleted
 // says so. claude.ai's db refuses an update to a missing document as invalid_argument, the
-// same code as a viewer's write, so that asks whether the sheet is still there; the web
+// same code as a viewer's write, so that asks whether the project is still there; the web
 // build's db rejects it as not_found.
 //
 // Resolves to whether it saved. `retryable` then says whether it failed for the connection
@@ -33,24 +33,24 @@ let firstRun = null;
 //
 // The web build's requests give up after 15 s each (src/aws/http.js).
 let retryable = false;
-async function write(fn, okMsg, sheetId) {
+async function write(fn, okMsg, projectId) {
   retryable = false;
   if (!db) { toast("Not connected to shared storage."); return false; }
   if (!navigator.onLine) { retryable = true; toast(OFFLINE); return false; }
   try { await fn(); if (okMsg) toast(okMsg); return true; }
   catch (e) {
-    if (sheetId && e && (e.code === "not_found" || (e.code === "invalid_argument" && await sheetGone(sheetId)))) {
-      closeModal(); toast("Someone else deleted this sheet, so your change wasn't saved.");
+    if (projectId && e && (e.code === "not_found" || (e.code === "invalid_argument" && await projectGone(projectId)))) {
+      closeModal(); toast("Someone else deleted this project, so your change wasn't saved.");
     }
     else if (e && e.code === "invalid_argument") { canWrite = false; await readViewOnly(); render(); toast(viewOnly || "You have view-only access. Ask the owner for Contributor access to make changes."); }
-    else if (e && e.code === "quota_exceeded") toast("Storage is full. Delete old sheets or items to make room.");
+    else if (e && e.code === "quota_exceeded") toast("Storage is full. Delete old projects or items to make room.");
     // Someone else saved this first (the web build's versioned writes, ADR 0006). Close the
     // editor so the latest values show, rather than an edit made on the old ones.
-    // Finished Return on a sheet with equipment out that this page didn't know about (someone
+    // Finished Return on a project with equipment out that this page didn't know about (someone
     // took more meanwhile): the server refuses to close it (ADR 0017, docs/api/commands.md)
-    // Reopening an ad hoc sheet while another is open, which this page didn't know about
+    // Reopening a General Use project while another is open, which this page didn't know about
     else if (e && e.reason === "adhoc_open") { toast(ADHOC_OPEN); }
-    else if (e && e.reason === "equipment_out") { closeModal(); toast("Equipment is still out on this sheet, so it wasn't finished. Tap Finished Return again to say where each piece is."); }
+    else if (e && e.reason === "equipment_out") { closeModal(); toast("Equipment is still out on this project, so it wasn't finished. Tap Finished Return again to say where each piece is."); }
     else if (e && e.code === "aborted") { closeModal(); toast("Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed."); }
     // Refused for what's saved now, such as returning more than are left (the web build's
     // checkout and return commands, src/aws/db.js): the message says why. The latest is showing.
@@ -63,7 +63,7 @@ async function write(fn, okMsg, sheetId) {
     return false;
   }
 }
-const ADHOC_OPEN = "Another ad hoc sheet is open. Finish it before reopening this one.";
+const ADHOC_OPEN = "Another General Use project is open. Finish it before reopening this one.";
 const OFFLINE = "You're offline, so that wasn't saved. Try again when you're back online.";
 // Why the page is read-only, when the runtime says (the web build: an owner closed the team);
 // otherwise it's the viewer's role. Asked again when a write is refused, since the reason can
@@ -113,9 +113,9 @@ async function saving(form, fn) {
   go.focus();
 }
 
-// A checkout or return whose sheet line saved but whose storage count didn't (the artifact's
+// A checkout or return whose project line saved but whose storage count didn't (the artifact's
 // two writes, src/moves.js): the quantity can't change, so Try again finishes the same action,
-// and the note says the sheet has it.
+// and the note says the project has it.
 //
 // Until it's finished, Escape and tapping outside don't close the form (src/dom.js), and Cancel
 // asks for a second tap first, since closing it leaves the storage count unchanged.
@@ -124,7 +124,7 @@ function owing(m, action) {
   m.querySelectorAll(".stepper input, .stepper button").forEach(c => { c.disabled = true; });
   m.querySelector("#f").dataset.owing = "";
   const note = m.querySelector("#saveFailed");
-  if (note) note.textContent = "Saved on the sheet, but the storage count didn't save. Tap Try again to finish; nothing is counted twice. Cancel leaves storage as it is.";
+  if (note) note.textContent = "Saved on the project, but the storage count didn't save. Tap Try again to finish; nothing is counted twice. Cancel leaves storage as it is.";
 }
 // Cancel, which warns first while a storage count is owed (owing above)
 const cancelling = (m, action) => {
@@ -132,30 +132,30 @@ const cancelling = (m, action) => {
   b.addEventListener("click", () => (action.due ? arm(b, "Tap again to leave storage as it is", closeModal) : closeModal()));
 };
 
-const currentSheet = () => sheets.find(s => s.id === ui.sheetId);
-// The team's open ad hoc sheet (ADR 0017, section 4), if this page has one
-const openAdhoc = () => sheets.find(s => isAdhoc(s) && s.status !== "closed");
-// The sheet a quick take aims at: the open ad hoc sheet, or the next adhoc-<n> after every one this page holds
+const currentProject = () => projects.find(s => s.id === ui.projectId);
+// The team's open General Use project (ADR 0017, section 4), if this page has one
+const openAdhoc = () => projects.find(s => isAdhoc(s) && s.status !== "closed");
+// The project a quick take aims at: the open General Use project, or the next adhoc-<n> after every one this page holds
 function adhocStart() {
   const open = openAdhoc(), date = todayISO();
   // Only adhoc-<integer> IDs count, so it's never adhoc-NaN
-  const n = Math.max(0, ...sheets.filter(isAdhoc).map(s => Number(s.id.slice(6))).filter(Number.isInteger)) + 1;
+  const n = Math.max(0, ...projects.filter(isAdhoc).map(s => Number(s.id.slice(6))).filter(Number.isInteger)) + 1;
   return { id: open ? open.id : `adhoc-${n}`, date, body: { kind: "adhoc", client: "", date, createdBy: myId, createdAt: new Date().toISOString(), status: "open", items: {} } };
 }
-// Open sheets where an item still has something out, the ad hoc sheet first, then newest first (as held):
+// Open projects where an item still has something out, the General Use project first, then newest first (as held):
 // returns from anywhere (ADR 0017, section 5). The item is its key, or its barcode on a line.
 function outOn(key, code) {
-  return sheets.filter(s => s.status !== "closed")
+  return projects.filter(s => s.status !== "closed")
     .map(s => { const k = Object.keys(s.items || {}).find(k => k === key || (code && s.items[k].code === code)); return { s, k, left: k ? leftOut(s.items[k]) : 0 }; })
     .filter(x => x.left > 0)
     .sort((a, b) => Number(isAdhoc(b.s)) - Number(isAdhoc(a.s)));
 }
-const sheetName = s => `${sheetTitle(s)}, ${fmtDate(s.date)}`;
-async function sheetGone(id) {
-  try { return !(await db.doc("sheets/" + id).get()).exists; } catch { return false; }
+const projectName = s => `${projectTitle(s)}, ${fmtDate(s.date)}`;
+async function projectGone(id) {
+  try { return !(await db.doc("projects/" + id).get()).exists; } catch { return false; }
 }
-// Show a sheet we just created right away; the next snapshot replaces this copy
-const addLocalSheet = (id, body) => { if (!sheets.some(s => s.id === id)) sheets = [{ id, ...body }, ...sheets]; };
+// Show a project we just created right away; the next snapshot replaces this copy
+const addLocalProject = (id, body) => { if (!projects.some(s => s.id === id)) projects = [{ id, ...body }, ...projects]; };
 function personHTML(s) {
   if (s.createdBy) {
     const p = own(people, s.createdBy);
@@ -165,7 +165,7 @@ function personHTML(s) {
 }
 function personText(s) { return s.createdBy ? ((own(people, s.createdBy) || {}).name || "Someone") : (s.createdByName || "Unknown"); }
 // Who last took a piece of equipment (ADR 0017): a user ID (the web build, or claude.ai with a
-// signed-in user), or the name typed on the sheet when there's none. Missing on older lines.
+// signed-in user), or the name typed on the project when there's none. Missing on older lines.
 function takerText(id) {
   if (!id) return "—";
   const p = own(people, id);
@@ -178,10 +178,10 @@ let seq = 0;
 async function render() {
   const n = ++seq;
   if (userNs) {
-    // The sheets' preparers, and who took the equipment still out (Inventory, Equipment, Out)
-    const takers = sheets.flatMap(s => lines(s).filter(isEquipmentLine).map(l => l.takenBy));
-    const typers = sheets.flatMap(s => lines(s).map(l => l.priceSetBy));
-    const ids = [...new Set([...sheets.map(s => s.createdBy), ...takers, ...typers].filter(Boolean))];
+    // The projects' preparers, and who took the equipment still out (Inventory, Equipment, Out)
+    const takers = projects.flatMap(s => lines(s).filter(isEquipmentLine).map(l => l.takenBy));
+    const typers = projects.flatMap(s => lines(s).map(l => l.priceSetBy));
+    const ids = [...new Set([...projects.map(s => s.createdBy), ...takers, ...typers].filter(Boolean))];
     if (ids.length) { try { people = await userNs.profiles(ids); } catch {} }
   }
   if (n !== seq) return;
@@ -203,37 +203,37 @@ window.addEventListener("online", () => {
   const f = $("#saveFailed"); if (f) f.textContent = "Not saved yet. You're back online: tap Try again.";
 });
 
-// The view, then the first-run checklist above the sheet list or inventory (web build). Only
+// The view, then the first-run checklist above the project list or inventory (web build). Only
 // an owner of an open team gets one; if a write is refused because the team was closed
 // meanwhile, the page is read-only (canWrite) and it hides, as for a team that opens closed.
 function draw() {
   drawView();
-  if (firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, sheets.length);
+  if (firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, projects.length);
 }
 function drawView() {
-  $("#tab-sheets").setAttribute("aria-pressed", ui.tab === "sheets");
+  $("#tab-projects").setAttribute("aria-pressed", ui.tab === "projects");
   $("#tab-prices").setAttribute("aria-pressed", ui.tab === "prices");
   paintNotice();
 
   $("#receiptView").hidden = !ui.receipt;
-  if (ui.receipt) { $("#main").hidden = true; $("#sheetView").hidden = true; return; }
-  const sheet = ui.tab === "sheets" && ui.sheetId ? currentSheet() : null;
-  if (ui.tab === "sheets" && ui.sheetId && !sheet && connected) ui.sheetId = null;
-  $("#sheetView").hidden = !sheet;
-  $("#main").hidden = !!sheet;
-  if (sheet) drawSheet(sheet);
+  if (ui.receipt) { $("#main").hidden = true; $("#projectView").hidden = true; return; }
+  const project = ui.tab === "projects" && ui.projectId ? currentProject() : null;
+  if (ui.tab === "projects" && ui.projectId && !project && connected) ui.projectId = null;
+  $("#projectView").hidden = !project;
+  $("#main").hidden = !!project;
+  if (project) drawProject(project);
   else if (ui.tab === "prices") drawPrices();
   else drawList();
 }
 
-// #main (the sheet list and inventory) is redrawn on every snapshot. morph() keeps the
+// #main (the project list and inventory) is redrawn on every snapshot. morph() keeps the
 // elements that didn't change, so a tap in progress survives; its events are delegated
 // here instead of wired on each redraw.
 $("#main").addEventListener("click", e => {
-  const t = e.target.closest("button, tr[data-prod], tr[data-sheet]");
+  const t = e.target.closest("button, tr[data-prod], tr[data-project]");
   if (!t) return;
-  if (t.dataset.sheet) { openSheetFromInventory(t.dataset.sheet); return; }
-  if (t.id === "newSheet") newSheetModal();
+  if (t.dataset.project) { openProjectFromInventory(t.dataset.project); return; }
+  if (t.id === "newProject") newProjectModal();
   else if (t.id === "quickTake") quickTakeModal();
   else if (t.id === "returnAny") returnAnyModal();
   else if (t.id === "exportAll") exportAllModal();
@@ -243,36 +243,36 @@ $("#main").addEventListener("click", e => {
   else if (t.dataset.year) { const b = t.getAttribute("aria-expanded") === "true"; ui.years[t.dataset.year] = !b; draw(); }
   else if (t.dataset.kind) { ui.kind = t.dataset.kind; draw(); }
   else if (t.dataset.equip) { ui.equip = t.dataset.equip; draw(); }
-  else if (t.dataset.open) { ui.sheetId = t.dataset.open; draw(); window.scrollTo(0, 0); }
+  else if (t.dataset.open) { ui.projectId = t.dataset.open; draw(); window.scrollTo(0, 0); }
   else if (t.dataset.prod && canWrite) productModal(t.dataset.prod);
 });
 // preventDefault: otherwise this Enter press also submits the editor's form
 $("#main").addEventListener("keydown", e => {
   if (e.key !== "Enter") return;
-  const out = e.target.closest("tr[data-sheet]");
-  if (out) { e.preventDefault(); openSheetFromInventory(out.dataset.sheet); return; }
+  const out = e.target.closest("tr[data-project]");
+  if (out) { e.preventDefault(); openProjectFromInventory(out.dataset.project); return; }
   const tr = canWrite && e.target.closest("tr[data-prod]");
   if (tr) { e.preventDefault(); productModal(tr.dataset.prod); }
 });
-// A row of Inventory, Equipment, Out opens the sheet the equipment is out on
-function openSheetFromInventory(id) { ui.tab = "sheets"; ui.sheetId = id; draw(); window.scrollTo(0, 0); }
+// A row of Inventory, Equipment, Out opens the project the equipment is out on
+function openProjectFromInventory(id) { ui.tab = "projects"; ui.projectId = id; draw(); window.scrollTo(0, 0); }
 
-// A sheet's card on the list. The ad hoc sheet shows no money (nothing on it is charged), and
-// while it's open it's a card of its own above the job sheets: since when, and how many are out.
+// A project's card on the list. The General Use project shows no money (nothing on it is charged), and
+// while it's open it's a card of its own above the client projects: since when, and how many are out.
 function cardHTML(s) {
   const t = totals(s), closed = s.status === "closed", adhoc = isAdhoc(s);
   if (adhoc && !closed) {
     const n = lines(s).reduce((a, l) => a + leftOut(l), 0);
     return `
-        <button type="button" class="sheet-card adhoc" data-open="${esc(s.id)}">
-          <h3>Ad hoc</h3>
+        <button type="button" class="project-card adhoc" data-open="${esc(s.id)}">
+          <h3>${esc(projectTitle(s))}</h3>
           <div class="right"><span class="pill open">Taken for no job</span></div>
           <div class="meta"><span>Since ${esc(fmtDate(s.date))}</span><span>${n} item${n === 1 ? "" : "s"} out</span></div>
         </button>`;
   }
   return `
-        <button type="button" class="sheet-card" data-open="${esc(s.id)}">
-          <h3>${esc(sheetTitle(s))}</h3>
+        <button type="button" class="project-card" data-open="${esc(s.id)}">
+          <h3>${esc(projectTitle(s))}</h3>
           <div class="right">
             <span class="pill ${closed ? "closed" : "open"}">${closed ? "Returned" : "Checked out"}</span>
             ${adhoc ? "" : `<span class="num">${money(closed ? t.charge : t.value)}</span>`}
@@ -281,23 +281,23 @@ function cardHTML(s) {
         </button>`;
 }
 
-// Finding a sheet on the list (supply-checkout-005.5): a search over each sheet's client ("Ad
-// hoc" for the ad hoc sheet), who prepared it and its items' names; and a year filter, which
-// also scopes the owner's sheets CSV (exportAllModal). Finished sheets, on Returned and All,
+// Finding a project on the list (supply-checkout-005.5): a search over each project's client ("Ad
+// hoc" for the General Use project), who prepared it and its items' names; and a year filter, which
+// also scopes the owner's projects CSV (exportAllModal). Finished projects, on Returned and All,
 // are grouped by month under year headings, newest first. This year's group is open, and the
 // newest group too (early in January, when this year has none yet); an older one opens when
 // it's picked in the year filter or searched. ui.years keeps the years someone opened or
 // closed, for the session.
 const yearOf = s => /^\d{4}-(0[1-9]|1[0-2])/.test(s.date || "") ? s.date.slice(0, 4) : "";
-const sheetYears = () => [...new Set(sheets.map(yearOf).filter(Boolean))].sort().reverse();
-// The year picked in the year filter, while a sheet has it
-const pickedYear = () => sheetYears().includes(ui.year) ? ui.year : "";
-const matches = (s, q) => [sheetTitle(s), personText(s), ...lines(s).map(lineLabel)].join("\n").toLowerCase().includes(q);
+const projectYears = () => [...new Set(projects.map(yearOf).filter(Boolean))].sort().reverse();
+// The year picked in the year filter, while a project has it
+const pickedYear = () => projectYears().includes(ui.year) ? ui.year : "";
+const matches = (s, q) => [projectTitle(s), personText(s), ...lines(s).map(lineLabel)].join("\n").toLowerCase().includes(q);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-// A group's count, and for owners its total charge (the ad hoc sheet is never charged)
+// A group's count, and for owners its total charge (the General Use project is never charged)
 function groupMeta(list) {
   const cents = list.filter(s => !isAdhoc(s)).reduce((a, s) => a + Math.round(totals(s).charge * 100), 0);
-  return `${plural(list.length, "sheet")}${isOwner ? ` · ${money(cents / 100)}` : ""}`;
+  return `${plural(list.length, "project")}${isOwner ? ` · ${money(cents / 100)}` : ""}`;
 }
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 function groupedHTML(closed) {
@@ -324,18 +324,18 @@ function groupedHTML(closed) {
 }
 
 function drawList() {
-  const q = ui.q.trim().toLowerCase(), year = pickedYear(), years = sheetYears();
+  const q = ui.q.trim().toLowerCase(), year = pickedYear(), years = projectYears();
   const found = s => !q || matches(s, q);
   const adhocOpen = ui.filter === "closed" ? undefined : openAdhoc();
   const adhoc = adhocOpen && found(adhocOpen) ? adhocOpen : undefined;
-  const shown = sheets.filter(s => s !== adhocOpen && (ui.filter === "all" || (ui.filter === "open" ? s.status !== "closed" : s.status === "closed")) && (!year || yearOf(s) === year) && found(s));
-  const openCount = sheets.filter(s => s.status !== "closed").length;
-  // Out now is a flat list, as it always was; finished sheets are grouped by year and month
+  const shown = projects.filter(s => s !== adhocOpen && (ui.filter === "all" || (ui.filter === "open" ? s.status !== "closed" : s.status === "closed")) && (!year || yearOf(s) === year) && found(s));
+  const openCount = projects.filter(s => s.status !== "closed").length;
+  // Out now is a flat list, as it always was; finished projects are grouped by year and month
   const flat = shown.filter(s => s.status !== "closed"), grouped = shown.filter(s => s.status === "closed");
   morph($("#main"), `
     <div class="bar">
       <div class="chips">
-        <div class="chips" role="group" aria-label="Filter sheets">
+        <div class="chips" role="group" aria-label="Filter projects">
           <button type="button" class="chip" data-filter="open" aria-pressed="${ui.filter==="open"}">Out now (${openCount})</button>
           <button type="button" class="chip" data-filter="closed" aria-pressed="${ui.filter==="closed"}">Returned</button>
           <button type="button" class="chip" data-filter="all" aria-pressed="${ui.filter==="all"}">All</button>
@@ -345,24 +345,24 @@ function drawList() {
       <div class="chips">
         ${canWrite && receiptOK ? `<label class="btn" for="receiptFile">Scan receipt</label>` : ""}
         ${dl && isOwner && connected ? `<button type="button" class="btn" id="exportAll">${year ? `Export ${year}` : "Export data"}</button>` : ""}
-        ${canWrite ? `<button type="button" class="btn" id="returnAny">Return</button><button type="button" class="btn" id="quickTake">Quick take</button><button type="button" class="btn primary" id="newSheet">+ New sheet</button>` : ""}
+        ${canWrite ? `<button type="button" class="btn" id="returnAny">Return</button><button type="button" class="btn" id="quickTake">Quick take</button><button type="button" class="btn primary" id="newProject">+ New project</button>` : ""}
       </div>
     </div>
     ${canWrite && receiptOK && receiptUsage ? `<p class="muted receipts-left" id="receiptsLeft">${esc(receiptUsage.label)}</p>` : ""}
-    <div class="search-row"><input type="search" id="sheetSearch" aria-label="Search sheets" placeholder="Search by client, who prepared it, or item" autocomplete="off"></div>
+    <div class="search-row"><input type="search" id="projectSearch" aria-label="Search projects" placeholder="Search by client, who prepared it, or item" autocomplete="off"></div>
     ${draft && canWrite ? `<div class="notice resume"><span>You have a receipt that hasn't been saved yet.</span><button type="button" class="btn" id="resume">Continue review</button></div>` : ""}
     <div class="list">
       ${adhoc ? cardHTML(adhoc) : ""}
       ${flat.map(cardHTML).join("")}
-      ${shown.length || adhoc ? "" : `<div class="empty">${!connected ? "Loading sheets…" : q ? `No sheets match “${esc(ui.q.trim())}”.` : ui.filter === "open" ? "Nothing is checked out right now." : "No sheets here yet."}</div>`}
+      ${shown.length || adhoc ? "" : `<div class="empty">${!connected ? "Loading projects…" : q ? `No projects match “${esc(ui.q.trim())}”.` : ui.filter === "open" ? "Nothing is checked out right now." : "No projects here yet."}</div>`}
     </div>
     ${groupedHTML(grouped)}`);
   // Not in the HTML, so a redraw while someone types leaves the field (and its caret) alone;
   // set here when the list is drawn afresh (back from the Inventory)
-  const box = $("#sheetSearch");
+  const box = $("#projectSearch");
   if (box.value !== ui.q) box.value = ui.q;
 }
-$("#main").addEventListener("input", e => { if (e.target.id === "sheetSearch") { ui.q = e.target.value; draw(); } });
+$("#main").addEventListener("input", e => { if (e.target.id === "projectSearch") { ui.q = e.target.value; draw(); } });
 $("#main").addEventListener("change", e => { if (e.target.id === "yearFilter") { ui.year = e.target.value; draw(); } });
 
 // A line's row: tapping it opens the line editor (lineModal)
@@ -370,7 +370,7 @@ const rowAttrs = l => `class="${canWrite ? "click" : ""}" data-line="${esc(l.key
 // A typed price on a line bought for the client says who typed it and when (priceSetBy, priceSetAt)
 const typedNote = l => l.priceSet === "manual" && l.priceSetBy ? `<span class="code">Price typed by ${esc(takerText(l.priceSetBy))}, ${esc(whenText(l.priceSetAt))}</span>` : "";
 const itemCell = l => `<td>${esc(lineLabel(l))}<span class="code">${esc(codeText(l.code))}</span>${typedNote(l)}</td>`;
-// Company equipment on the sheet (ADR 0017): its own section below the supplies, with no price
+// Company equipment on the project (ADR 0017): its own section below the supplies, with no price
 // or charge, since taking it to a job isn't charged. Lost or broken shows once there is any.
 function equipmentHTML(eq) {
   if (!eq.length) return "";
@@ -384,20 +384,20 @@ function equipmentHTML(eq) {
     </table></div>`;
 }
 
-// What a sheet's scan bar does: the ad hoc sheet only takes returns (taking is Quick take)
+// What a project's scan bar does: the General Use project only takes returns (taking is Quick take)
 const modeOf = s => isAdhoc(s) ? "return" : ui.mode;
-function drawSheet(s) {
+function drawProject(s) {
   const closed = s.status === "closed", t = totals(s), all = lines(s), lost = lostRows(s), adhoc = isAdhoc(s), mode = modeOf(s);
   const ls = all.filter(l => !isEquipmentLine(l)), eq = all.filter(isEquipmentLine);
-  morph($("#sheetHead"), `
-    <div class="sheet-head">
-      <h2>${esc(sheetTitle(s))}</h2>
+  morph($("#projectHead"), `
+    <div class="project-head">
+      <h2>${esc(projectTitle(s))}</h2>
       <div class="meta"><span>${adhoc ? "Since " : ""}${esc(fmtDate(s.date))}</span><span>${adhoc ? "Started" : "Prepared"} by ${personHTML(s)}</span><span class="pill ${closed ? "closed" : "open"}">${closed ? "Returned" : "Checked out"}</span></div>
-      ${adhoc ? `<p class="hint">Taken for no job. Nothing here is charged; move a line to a client's sheet to bill it.</p>` : ""}
-      <div class="sheet-actions">
+      ${adhoc ? `<p class="hint">Taken for no job. Nothing here is charged; move a line to a client's project to bill it.</p>` : ""}
+      <div class="project-actions">
         ${dl && !adhoc ? `<button type="button" class="btn" id="exportCsv">Download CSV</button>` : ""}
-        ${canWrite && !adhoc ? `<button type="button" class="btn" id="editSheet">Edit details</button>` : ""}
-        ${canWrite ? (closed ? actionButton("reopen", "btn", "Reopen") : actionButton("closeSheet", "btn", "Finished Return")) : ""}
+        ${canWrite && !adhoc ? `<button type="button" class="btn" id="editProject">Edit details</button>` : ""}
+        ${canWrite ? (closed ? actionButton("reopen", "btn", "Reopen") : actionButton("closeProject", "btn", "Finished Return")) : ""}
       </div>
     </div>`);
   // Each only changes the DOM when its value changes (toggleAttribute too)
@@ -410,7 +410,7 @@ function drawSheet(s) {
     ? "Take a photo of the barcode, then choose how many you're taking."
     : "Scan an item you're bringing back and enter how many are unused. Whatever isn't returned counts as used. Tap Finished Return when everything is back.");
 
-  morph($("#sheetBody"), `
+  morph($("#projectBody"), `
     <div class="totals">
       <div><div class="k">Taken</div><div class="v">${t.out}</div></div>
       <div><div class="k">Returned</div><div class="v">${t.ret}</div></div>
@@ -428,12 +428,12 @@ function drawSheet(s) {
         </tr>`; }).join("")}${lost.map(r => `
         <tr ${rowAttrs(r)}>${itemCell(r)}<td></td><td></td><td></td><td>${r.used}</td><td class="charge">${money(r.charge)}</td></tr>`).join("")}</tbody>
       <tfoot><tr><td>Total</td><td></td><td>${t.out}</td><td>${t.ret}</td><td>${t.used}</td><td>${money(t.charge)}</td></tr></tfoot>
-    </table></div>` : eq.length ? "" : `<div class="empty">${adhoc ? "Nothing on the ad hoc sheet. Take items with Quick take on the sheet list." : "No supplies on this sheet yet. Scan a barcode to check one out."}</div>`}
+    </table></div>` : eq.length ? "" : `<div class="empty">${adhoc ? "Nothing on General Use yet. Take items with Quick take on the project list." : "No supplies on this project yet. Scan a barcode to check one out."}</div>`}
     ${equipmentHTML(eq)}
-    ${canWrite ? `<div class="sheet-actions" style="margin-top:18px">${actionButton("delSheet", "btn danger", "Delete sheet")}</div>` : ""}`);
+    ${canWrite ? `<div class="project-actions" style="margin-top:18px">${actionButton("delProject", "btn danger", "Delete project")}</div>` : ""}`);
 }
 
-// The ad hoc sheet's supplies: taken, returned and used, and no money (ADR 0017, section 4)
+// The General Use project's supplies: taken, returned and used, and no money (ADR 0017, section 4)
 const adhocTableHTML = (ls, t) => `
     <div class="table-wrap"><table>
       <thead><tr><th>Item</th><th>Taken</th><th>Returned</th><th>Used</th></tr></thead>
@@ -442,7 +442,7 @@ const adhocTableHTML = (ls, t) => `
       <tfoot><tr><td>Total</td><td>${t.out}</td><td>${t.ret}</td><td>${t.used}</td></tr></tfoot>
     </table></div>`;
 
-// Finishing, reopening or deleting the sheet, while its write is on its way: that button says
+// Finishing, reopening or deleting the project, while its write is on its way: that button says
 // Saving… and every one of them is disabled, redraws included, so a second tap sends nothing
 let pending = null;
 const actionButton = (id, cls, label) => `<button type="button" class="${cls}" id="${id}"${pending ? ` disabled${pending === id ? ' aria-busy="true"' : ""}` : ""}>${pending === id ? "Saving…" : label}</button>`;
@@ -453,18 +453,18 @@ async function once(id, fn) {
   pending = null; draw();
 }
 
-const finish = id => write(() => db.doc("sheets/" + id).update({ status: "closed", closedAt: new Date().toISOString() }), "Return finished", id);
+const finish = id => write(() => db.doc("projects/" + id).update({ status: "closed", closedAt: new Date().toISOString() }), "Return finished", id);
 
 // Before you finish: for each piece of equipment still out, how many are back, how many were
 // lost or broken (with what to charge the client for them, if anything), and the rest are still
 // at the job. Backs are returns and losses are the lost command (src/moves.js), each its own
-// action per line, so Try again after a failure saves each once. The sheet closes only when
+// action per line, so Try again after a failure saves each once. The project closes only when
 // nothing is left out; otherwise it stays open, and the next Finished Return asks again.
 function finishModal(s, out) {
   const acts = out.map(() => ({ back: {}, lost: {} }));
   openModal(`
     <h2>Before you finish</h2>
-    <p class="hint" style="margin-top:-6px">Some company equipment is still out. For each piece, say how many are back and how many were lost or broken; the rest stay out, still at the job, and the sheet stays open.</p>
+    <p class="hint" style="margin-top:-6px">Some company equipment is still out. For each piece, say how many are back and how many were lost or broken; the rest stay out, still at the job, and the project stays open.</p>
     <form id="f" style="display:grid;gap:14px">
       ${out.map((l, i) => { const still = equipmentCounts(l).still; return `
       <fieldset class="field finish" data-i="${i}"><legend>${esc(l.name || "Unnamed item")} · ${still} still out</legend>
@@ -485,7 +485,7 @@ function finishModal(s, out) {
       const paint = () => {
         const back = int(box.querySelector(`#fBack${i}`).value), lost = int(box.querySelector(`#fLost${i}`).value);
         setText(box.querySelector("[data-left]"), back + lost > still ? `That's more than the ${still} still out.` : `Still at the job: ${still - back - lost}`);
-        // The ad hoc sheet has no client to charge
+        // The General Use project has no client to charge
         const field = box.querySelector("[data-charge]");
         if (field) field.hidden = !lost;
       };
@@ -507,51 +507,51 @@ function finishModal(s, out) {
           if (p.back && !(await write(() => recordReturn(db, p.act.back, s.id, p.l.key, p.back), undefined, s.id))) return false;
           if (p.lost && !(await write(() => markLost(db, p.act.lost, s.id, p.l.key, p.lost, p.charge), undefined, s.id))) return false;
         }
-        if (left) { closeModal(); toast(`Saved. ${left} still at the job, so the sheet stays open.`); return true; }
+        if (left) { closeModal(); toast(`Saved. ${left} still at the job, so the project stays open.`); return true; }
         return closing(finish(s.id));
       });
     });
   });
 }
 
-// The sheet view is redrawn on every snapshot, with morph() like #main. Its events are
-// delegated here, and each looks up the sheet when it runs, so it acts on the latest copy.
-const sheetAction = {
-  exportCsv: () => exportCsv(currentSheet()),
-  editSheet: () => newSheetModal(currentSheet()),
+// The project view is redrawn on every snapshot, with morph() like #main. Its events are
+// delegated here, and each looks up the project when it runs, so it acts on the latest copy.
+const projectAction = {
+  exportCsv: () => exportCsv(currentProject()),
+  editProject: () => newProjectModal(currentProject()),
   // Company equipment still out stops it until each piece is accounted for (ADR 0017, section 3)
-  closeSheet: () => {
-    const s = currentSheet(), out = lines(s).filter(l => isEquipmentLine(l) && equipmentCounts(l).still > 0);
+  closeProject: () => {
+    const s = currentProject(), out = lines(s).filter(l => isEquipmentLine(l) && equipmentCounts(l).still > 0);
     if (out.length) finishModal(s, out);
-    else once("closeSheet", () => finish(s.id));
+    else once("closeProject", () => finish(s.id));
   },
   reopen: () => {
-    // A team has one open ad hoc sheet at a time (the web build's server refuses another too)
-    if (isAdhoc(currentSheet()) && openAdhoc()) { toast(ADHOC_OPEN); return; }
-    once("reopen", () => write(() => db.doc("sheets/" + ui.sheetId).update({ status: "open" }), "Sheet reopened", ui.sheetId));
+    // A team has one open General Use project at a time (the web build's server refuses another too)
+    if (isAdhoc(currentProject()) && openAdhoc()) { toast(ADHOC_OPEN); return; }
+    once("reopen", () => write(() => db.doc("projects/" + ui.projectId).update({ status: "open" }), "Project reopened", ui.projectId));
   },
-  delSheet: b => arm(b, "Tap again to delete", () => once("delSheet", async () => {
-    const id = ui.sheetId;
-    if (await write(() => db.doc("sheets/" + id).delete(), "Sheet deleted", id)) ui.sheetId = null;
+  delProject: b => arm(b, "Tap again to delete", () => once("delProject", async () => {
+    const id = ui.projectId;
+    if (await write(() => db.doc("projects/" + id).delete(), "Project deleted", id)) ui.projectId = null;
   })),
 };
-["#sheetHead", "#sheetBody"].forEach(sel => {
+["#projectHead", "#projectBody"].forEach(sel => {
   $(sel).addEventListener("click", e => {
     const t = e.target.closest("button, tr[data-line]");
     if (!t) return;
-    if (t.dataset.line) { if (canWrite) lineModal(currentSheet(), t.dataset.line); }
-    else sheetAction[t.id](t);
+    if (t.dataset.line) { if (canWrite) lineModal(currentProject(), t.dataset.line); }
+    else projectAction[t.id](t);
   });
 });
 // preventDefault: otherwise this Enter press also submits the editor's form
-$("#sheetBody").addEventListener("keydown", e => {
+$("#projectBody").addEventListener("keydown", e => {
   const tr = e.key === "Enter" && canWrite && e.target.closest("tr[data-line]");
-  if (tr) { e.preventDefault(); lineModal(currentSheet(), tr.dataset.line); }
+  if (tr) { e.preventDefault(); lineModal(currentProject(), tr.dataset.line); }
 });
 
 // Inventory: every item, or supplies or company equipment only (ADR 0017). With Equipment
-// picked, In lists what's in storage, and Out each open sheet with equipment still out on it:
-// how many, the sheet, who took it last and when (from the line, so it needs only the sheets).
+// picked, In lists what's in storage, and Out each open project with equipment still out on it:
+// how many, the project, who took it last and when (from the line, so it needs only the projects).
 const KINDS = [["all", "All"], ["supply", "Supplies"], ["equipment", "Equipment"]];
 const chip = (attr, value, label, on) => `<button type="button" class="chip" data-${attr}="${value}" aria-pressed="${on}">${label}</button>`;
 function drawPrices() {
@@ -571,34 +571,34 @@ function drawPrices() {
       <thead><tr><th>Item</th><th>In storage</th><th>Price each</th><th>${ui.kind === "equipment" ? "Value each" : "Cost each"}</th><th>Value</th></tr></thead>
       <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}<span class="code">${esc(codeText(p.code))}</span>${isEquipment(p) ? `<span class="kind">Company equipment</span>` : ""}</td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td>${isEquipment(p) ? `<td class="muted">Not charged</td>` : `<td>${money(p.price)}</td>`}<td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
       <tfoot><tr><td>Total in storage</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td></td><td>${money(list.reduce((a, p) => a + storageCents(p), 0) / 100)}</td></tr></tfoot>
-    </table></div>` : `<div class="empty">${!connected ? "Loading…" : !all.length ? "No items yet. Add one, or scan a barcode on a sheet." : ui.kind === "equipment" ? "No company equipment yet. Edit an item and choose Company equipment." : "No supplies yet."}</div>`}`);
+    </table></div>` : `<div class="empty">${!connected ? "Loading…" : !all.length ? "No items yet. Add one, or scan a barcode on a project." : ui.kind === "equipment" ? "No company equipment yet. Edit an item and choose Company equipment." : "No supplies yet."}</div>`}`);
 }
-// Inventory, Equipment, Out: one row per open sheet and piece of equipment still out on it
+// Inventory, Equipment, Out: one row per open project and piece of equipment still out on it
 function equipmentOutHTML() {
-  const rows = sheets.filter(s => s.status !== "closed")
+  const rows = projects.filter(s => s.status !== "closed")
     .flatMap(s => lines(s).filter(isEquipmentLine).map(l => ({ s, l, still: equipmentCounts(l).still })))
     .filter(r => r.still > 0)
     .sort((a, b) => String(a.l.name).localeCompare(String(b.l.name)) || String(a.s.date).localeCompare(String(b.s.date)));
   if (!rows.length) return `<div class="empty">No company equipment is out on a job right now.</div>`;
   return `<div class="table-wrap"><table class="equipment out">
-      <thead><tr><th>Item</th><th>Out</th><th>Sheet</th><th>Taken by</th><th>When</th></tr></thead>
-      <tbody>${rows.map(({ s, l, still }) => `<tr class="click" data-sheet="${esc(s.id)}" tabindex="0"><td>${esc(l.name || "Unnamed item")}<span class="code">${esc(codeText(l.code))}</span></td><td>${still}</td><td>${esc(sheetTitle(s))}<span class="code">${esc(fmtDate(s.date))}</span></td><td>${esc(takerText(l.takenBy))}</td><td>${esc(whenText(l.takenAt))}</td></tr>`).join("")}</tbody>
+      <thead><tr><th>Item</th><th>Out</th><th>Project</th><th>Taken by</th><th>When</th></tr></thead>
+      <tbody>${rows.map(({ s, l, still }) => `<tr class="click" data-project="${esc(s.id)}" tabindex="0"><td>${esc(l.name || "Unnamed item")}<span class="code">${esc(codeText(l.code))}</span></td><td>${still}</td><td>${esc(projectTitle(s))}<span class="code">${esc(fmtDate(s.date))}</span></td><td>${esc(takerText(l.takenBy))}</td><td>${esc(whenText(l.takenAt))}</td></tr>`).join("")}</tbody>
     </table></div>`;
 }
 
-function newSheetModal(existing) {
+function newProjectModal(existing) {
   const editing = existing && existing.id;
   const needName = !editing && !myId;
   openModal(`
-    <h2>${editing ? "Edit sheet" : "New sheet"}</h2>
+    <h2>${editing ? "Edit project" : "New project"}</h2>
     <form id="f" style="display:grid;gap:14px">
       <div class="field"><label for="fClient">Client</label><input type="text" id="fClient" required data-autofocus value="${esc(editing ? existing.client : "")}" placeholder="Client or job name"></div>
       <div class="field"><label for="fDate">Date</label><input type="date" id="fDate" required value="${esc(editing ? existing.date : todayISO())}"></div>
       ${needName ? `<div class="field"><label for="fBy">Prepared by</label><input type="text" id="fBy" required placeholder="Your name"></div>` : ""}
-      <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">${editing ? "Save" : "Create sheet"}</button></div>
+      <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">${editing ? "Save" : "Create project"}</button></div>
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
-    // One new sheet per form: trying again saves the same sheet, so a save whose answer was
+    // One new project per form: trying again saves the same project, so a save whose answer was
     // lost doesn't make a second one
     let ref, createdAt;
     const form = m.querySelector("#f");
@@ -606,22 +606,22 @@ function newSheetModal(existing) {
       const client = m.querySelector("#fClient").value.trim(), date = m.querySelector("#fDate").value;
       if (!client || !date) return;
       if (editing) {
-        saving(form, () => closing(write(() => db.doc("sheets/" + existing.id).update({ client, date }), "Saved", existing.id)));
+        saving(form, () => closing(write(() => db.doc("projects/" + existing.id).update({ client, date }), "Saved", existing.id)));
         return;
       }
       createdAt ||= new Date().toISOString();
       const body = { client, date, createdBy: myId || null, createdAt, status: "open", items: {} };
       if (needName) body.createdByName = m.querySelector("#fBy").value.trim();
       saving(form, async () => {
-        const ok = await write(() => (ref ||= db.collection("sheets").doc()).set(body), "Sheet created");
-        if (ok) { addLocalSheet(ref.id, body); closeModal(); ui.sheetId = ref.id; ui.mode = "out"; draw(); }
+        const ok = await write(() => (ref ||= db.collection("projects").doc()).set(body), "Project created");
+        if (ok) { addLocalProject(ref.id, body); closeModal(); ui.projectId = ref.id; ui.mode = "out"; draw(); }
         return ok;
       });
     });
   });
 }
 
-// s: the sheet, or null for a quick take onto the ad hoc sheet (ADR 0017, section 4)
+// s: the project, or null for a quick take onto the General Use project (ADR 0017, section 4)
 function checkoutModal(s, code, key = keyOf(code)) {
   const on = s || openAdhoc() || {}, prod = products[key], line = own(on.items || {}, key), action = {};
   openModal(`
@@ -633,11 +633,11 @@ function checkoutModal(s, code, key = keyOf(code)) {
                 <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required data-autofocus placeholder="${code ? "e.g. Nitrile gloves, box of 100" : "e.g. Leftover storage bins"}"></div>
                 <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money placeholder="0.00"></div>
                 ${code ? "" : `<label class="check"><input type="checkbox" id="fSave" checked> Save to inventory for next time</label>`}`}
-      ${line ? `<div class="summary"><span>Already on ${s ? "this sheet" : "the ad hoc sheet"}</span><b>${int(line.out)} taken</b></div>` : ""}
+      ${line ? `<div class="summary"><span>Already on ${s ? "this project" : "General Use"}</span><b>${int(line.out)} taken</b></div>` : ""}
       <div class="field"><label for="fQty">How many are you taking?</label>${stepperHTML("fQty", 1)}</div>
-      <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary" id="go">Add to sheet</button></div>
+      <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary" id="go">Add to project</button></div>
     </form>`, m => {
-    const goText = v => s ? `Add ${v} to sheet` : `Take ${v}`;
+    const goText = v => s ? `Add ${v} to project` : `Take ${v}`;
     const getQty = wireStepper(m, "fQty", v => setText(m.querySelector("#go"), goText(v)));
     m.querySelector("#go").textContent = goText(1);
     cancelling(m, action);
@@ -659,23 +659,23 @@ function checkoutModal(s, code, key = keyOf(code)) {
           if (!await write(() => db.doc("products/" + key).set({ code, name, price, updatedAt: new Date().toISOString() }))) return false;
           action.saved = true;
         }
-        const fresh = (s ? currentSheet() || s : openAdhoc()) || {}, cur = own(fresh.items || {}, key);
+        const fresh = (s ? currentProject() || s : openAdhoc()) || {}, cur = own(fresh.items || {}, key);
         // A new line copies the item's cost too (ADR 0014); an existing line keeps its snapshot
         const from = cur || prod, cost = from && hasCost(from) ? { cost: from.cost } : {};
         const counts = { out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
-        // Company equipment (ADR 0017) has no price on the sheet, and says who took it last and
+        // Company equipment (ADR 0017) has no price on the project, and says who took it last and
         // when. The artifact build writes this line; the web build's server makes the same one.
         const item = (cur ? isEquipmentLine(cur) : isEquipment(prod))
           ? { code, name: cur ? cur.name : name, kind: "equipment", ...cost, ...counts, takenBy: myId || fresh.createdByName || "", takenAt: new Date().toISOString() }
           : { code, name: cur ? cur.name : name, price: cur ? cur.price : price, ...cost, ...counts };
-        if (!s) return closing(write(() => quickTake(db, action, key, qty, item, oneOff, adhocStart()), `Took ${qty} × ${item.name} (ad hoc)`));
+        if (!s) return closing(write(() => quickTake(db, action, key, qty, item, oneOff, adhocStart()), `Took ${qty} × ${item.name} (General Use)`));
         return closing(write(() => checkOut(db, action, s.id, key, qty, item, oneOff), `Checked out ${qty} × ${item.name}`, s.id));
       }).then(() => owing(m, action));
     });
   });
 }
 
-// s: the sheet, or null for a quick take
+// s: the project, or null for a quick take
 function pickOutModal(s) {
   const all = Object.entries(products).map(([key, p]) => ({ key, ...p })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   openModal(`
@@ -704,16 +704,16 @@ function pickReturnModal(s) {
   openModal(`
     <h2>Return an item</h2>
     <p class="hint" style="margin-top:-6px">Pick the item you're bringing back.</p>
-    ${ls.length ? `<div class="pick">${ls.map(l => `<button type="button" data-k="${esc(l.key)}"><span>${esc(l.name)}<span class="code" style="display:block">${esc(codeText(l.code))}</span></span><span class="num">${int(l.out)} taken</span></button>`).join("")}</div>` : `<p>Nothing has been checked out on this sheet yet.</p>`}
+    ${ls.length ? `<div class="pick">${ls.map(l => `<button type="button" data-k="${esc(l.key)}"><span>${esc(l.name)}<span class="code" style="display:block">${esc(codeText(l.code))}</span></span><span class="num">${int(l.out)} taken</span></button>`).join("")}</div>` : `<p>Nothing has been checked out on this project yet.</p>`}
     <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     m.querySelectorAll("[data-k]").forEach(b => b.addEventListener("click", () => { const l = own(s.items || {}, b.dataset.k) || {}; returnModal(s, l.code || "", b.dataset.k); }));
   });
 }
 
-// named: opened from the sheet list's Return, so it says which sheet it returns to
-// The sheet list's Quick take and Return: a barcode (scanned or typed), or an item picked from a
-// list, without opening a sheet first
+// named: opened from the project list's Return, so it says which project it returns to
+// The project list's Quick take and Return: a barcode (scanned or typed), or an item picked from a
+// list, without opening a project first
 function codeEntryHTML(label) {
   return `<div class="scan-row">
       <label class="btn primary big" for="qScan">${esc(label)}</label>
@@ -727,11 +727,11 @@ function wireCodeEntry(m, onCode) {
   m.querySelector("#qForm").addEventListener("submit", e => { e.preventDefault(); const c = m.querySelector("#qCode").value.trim(); if (c) onCode(c); });
 }
 
-// Quick take (ADR 0017, section 4): what's taken goes on the team's ad hoc sheet
+// Quick take (ADR 0017, section 4): what's taken goes on the team's General Use project
 function quickTakeModal() {
   openModal(`
     <h2>Quick take</h2>
-    <p class="hint" style="margin-top:-6px">For supplies taken for no job, or before you know which job. They go on the team's ad hoc sheet.</p>
+    <p class="hint" style="margin-top:-6px">For supplies taken for no job, or before you know which job. They go on General Use (no job).</p>
     ${codeEntryHTML("Scan to take")}
     <button type="button" class="btn" id="qPick">Item without a barcode</button>
     <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
@@ -741,17 +741,17 @@ function quickTakeModal() {
   });
 }
 
-// Return from anywhere (ADR 0017, section 5): finds each open sheet where the item is still out
+// Return from anywhere (ADR 0017, section 5): finds each open project where the item is still out
 function returnAnyModal() {
   const out = new Map();
-  for (const s of sheets) {
+  for (const s of projects) {
     if (s.status === "closed") continue;
     for (const l of lines(s)) if (leftOut(l) > 0 && !out.has(l.key)) out.set(l.key, l);
   }
   const items = [...out.values()];
   openModal(`
     <h2>Return</h2>
-    <p class="hint" style="margin-top:-6px">Scan what you're bringing back, or pick it. It goes back to the sheet it's out on.</p>
+    <p class="hint" style="margin-top:-6px">Scan what you're bringing back, or pick it. It goes back to the project it's out on.</p>
     ${codeEntryHTML("Scan to return")}
     ${items.length ? `<div class="pick">${items.map(l => `<button type="button" data-k="${esc(l.key)}"><span>${esc(l.name)}<span class="code" style="display:block">${esc(codeText(l.code))}</span></span></button>`).join("")}</div>` : `<p>Nothing is checked out right now.</p>`}
     <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
@@ -760,14 +760,14 @@ function returnAnyModal() {
     wireCodeEntry(m, c => { const k = keyForCode(c); returnFrom(outOn(k, c), c); });
   });
 }
-// The return form for the one sheet the item is out on, or a list to pick from, the ad hoc sheet first
+// The return form for the one project the item is out on, or a list to pick from, the General Use project first
 function returnFrom(hits, code) {
   if (!hits.length) { closeModal(); toast("Nothing of this is checked out right now."); return; }
   if (hits.length === 1) { returnModal(hits[0].s, code, hits[0].k, true); return; }
   openModal(`
-    <h2>Which sheet?</h2>
-    <p class="hint" style="margin-top:-6px">${esc(own(hits[0].s.items, hits[0].k).name)} is out on more than one sheet. Pick the one it's coming back from.</p>
-    <div class="pick">${hits.map(({ s, left }, i) => `<button type="button" data-i="${i}"><span>${esc(sheetTitle(s))}<span class="code" style="display:block">${esc(fmtDate(s.date))}</span></span><span class="num">${left} out</span></button>`).join("")}</div>
+    <h2>Which project?</h2>
+    <p class="hint" style="margin-top:-6px">${esc(own(hits[0].s.items, hits[0].k).name)} is out on more than one project. Pick the one it's coming back from.</p>
+    <div class="pick">${hits.map(({ s, left }, i) => `<button type="button" data-i="${i}"><span>${esc(projectTitle(s))}<span class="code" style="display:block">${esc(fmtDate(s.date))}</span></span><span class="num">${left} out</span></button>`).join("")}</div>
     <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     m.querySelectorAll("[data-i]").forEach(b => b.addEventListener("click", () => { const h = hits[Number(b.dataset.i)]; returnModal(h.s, code, h.k, true); }));
@@ -777,13 +777,13 @@ function returnFrom(hits, code) {
 function returnModal(s, code, key = keyOf(code), named = false) {
   const line = own(s.items || {}, key), prod = products[key], action = {};
   if (!line) {
-    // Still out on another open sheet: return it there instead (ADR 0017, section 5)
+    // Still out on another open project: return it there instead (ADR 0017, section 5)
     const elsewhere = outOn(key, code).filter(x => x.s.id !== s.id);
-    const there = elsewhere.length === 1 ? `Return it to ${sheetName(elsewhere[0].s)}` : "Return it from another sheet";
+    const there = elsewhere.length === 1 ? `Return it to ${projectName(elsewhere[0].s)}` : "Return it from another project";
     openModal(`
-      <h2>Not on this sheet</h2>
+      <h2>Not on this project</h2>
       <div class="code">${esc(codeText(code))}</div>
-      <p style="margin:0">${prod ? `<strong>${esc(prod.name)}</strong> wasn't` : "This item wasn't"} checked out on this sheet, so there's nothing to return.${elsewhere.length ? " It's out on another sheet." : ""}</p>
+      <p style="margin:0">${prod ? `<strong>${esc(prod.name)}</strong> wasn't` : "This item wasn't"} checked out on this project, so there's nothing to return.${elsewhere.length ? " It's out on another project." : ""}</p>
       <div class="modal-actions"><button type="button" class="btn" id="cancel">Close</button>${elsewhere.length ? `<button type="button" class="btn" id="elsewhere">${esc(there)}</button>` : ""}${isAdhoc(s) ? "" : `<button type="button" class="btn primary" id="switch">Check it out instead</button>`}</div>`, m => {
       m.querySelector("#cancel").addEventListener("click", closeModal);
       const other = m.querySelector("#elsewhere"), sw = m.querySelector("#switch");
@@ -800,14 +800,14 @@ function returnModal(s, code, key = keyOf(code), named = false) {
     openModal(`
       <h2>Already returned</h2>
       <div class="code">${esc(codeText(code))}</div>
-      <p style="margin:0">${equip ? `None of <strong>${esc(line.name)}</strong> is still out.` : `All ${o} of <strong>${esc(line.name)}</strong> have been returned.`} To correct the counts, tap the item's row on the sheet.</p>
+      <p style="margin:0">${equip ? `None of <strong>${esc(line.name)}</strong> is still out.` : `All ${o} of <strong>${esc(line.name)}</strong> have been returned.`} To correct the counts, tap the item's row on the project.</p>
       <div class="modal-actions"><button type="button" class="btn primary" id="cancel">Close</button></div>`, m => {
       m.querySelector("#cancel").addEventListener("click", closeModal);
     });
     return;
   }
   openModal(`
-    <h2>${named ? `Return to ${esc(sheetName(s))}` : "Return"}</h2>
+    <h2>${named ? `Return to ${esc(projectName(s))}` : "Return"}</h2>
     <div class="code">${esc(codeText(code))}</div>
     <div class="item-known"><strong>${esc(line.name)}</strong><span class="num">${o} taken${already ? ` · ${already} back` : ""}</span></div>
     <form id="f" style="display:grid;gap:14px">
@@ -828,8 +828,8 @@ function returnModal(s, code, key = keyOf(code), named = false) {
       saving(form, async () => {
         return closing(write(async () => {
           const done = await recordReturn(db, action, s.id, key, r);
-          // Back on the sheet list (a return from anywhere), the sheet it went to opens
-          if (named) { ui.tab = "sheets"; ui.sheetId = s.id; draw(); }
+          // Back on the project list (a return from anywhere), the project it went to opens
+          if (named) { ui.tab = "projects"; ui.projectId = s.id; draw(); }
           toast(`${done.quantity} returned · ${int(done.line.returned)} of ${int(done.line.out)} back`);
         }, undefined, s.id));
       }).then(() => owing(m, action));
@@ -839,15 +839,15 @@ function returnModal(s, code, key = keyOf(code), named = false) {
 
 function lineModal(s, key) {
   const l = own(s.items || {}, key); if (!l) return;
-  // Company equipment on loan has no price on the sheet (ADR 0017), and nor does the ad hoc sheet
+  // Company equipment on loan has no price on the project (ADR 0017), and nor does the General Use project
   const equip = isEquipmentLine(l), bought = l.purchased === true, adhoc = isAdhoc(s);
-  // The open ad hoc sheet's line can move, whole, to an open job sheet (ADR 0017, section 5)
-  const jobs = adhoc && s.status !== "closed" ? sheets.filter(x => !isAdhoc(x) && x.status !== "closed") : null;
+  // The open General Use project's line can move, whole, to an open client project (ADR 0017, section 5)
+  const jobs = adhoc && s.status !== "closed" ? projects.filter(x => !isAdhoc(x) && x.status !== "closed") : null;
   openModal(`
     <h2>${esc(bought ? lineLabel(l) : l.name || "Item")}</h2>
     <div class="code">${esc(codeText(l.code))}</div>
     <form id="f" style="display:grid;gap:14px">
-      ${equip ? `<p class="hint" style="margin:0">Company equipment: not charged.</p>` : adhoc ? `<p class="hint" style="margin:0">Taken for no job: not charged.</p>` : `<div class="field"><label for="fPrice">Price each on this sheet ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>`}
+      ${equip ? `<p class="hint" style="margin:0">Company equipment: not charged.</p>` : adhoc ? `<p class="hint" style="margin:0">Taken for no job: not charged.</p>` : `<div class="field"><label for="fPrice">Price each on this project ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>`}
       <div class="row2">
         <div class="field"><label for="fOut">Taken</label><input type="number" id="fOut" min="0" inputmode="numeric" value="${int(l.out)}"></div>
         ${bought ? "" : `<div class="field"><label for="fRet">Returned</label><input type="number" id="fRet" min="0" inputmode="numeric" value="${int(l.returned)}"></div>`}
@@ -855,18 +855,18 @@ function lineModal(s, key) {
       <div class="modal-actions"><button type="button" class="btn danger" id="remove">Remove</button><span class="spacer"></span><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
     </form>
     ${jobs ? `<form id="mv" class="move" style="display:grid;gap:10px;margin-top:18px">
-      <h3>Move to a job sheet</h3>
-      ${jobs.length ? `<p class="hint" style="margin:0">The whole line, with its counts, goes to the client's sheet at the price it was taken at. Storage doesn't change.</p>
-      <div class="field"><label for="fTo">Job sheet</label><select id="fTo">${jobs.map(x => `<option value="${esc(x.id)}">${esc(sheetName(x))}</option>`).join("")}</select></div>
-      <div class="modal-actions"><button type="submit" class="btn primary">Move</button></div>` : `<p class="hint" style="margin:0">There's no open job sheet to move it to. Start one with + New sheet.</p>`}
+      <h3>Move to a project</h3>
+      ${jobs.length ? `<p class="hint" style="margin:0">The whole line, with its counts, goes to that project at the price it was taken at. Storage doesn't change.</p>
+      <div class="field"><label for="fTo">Project</label><select id="fTo">${jobs.map(x => `<option value="${esc(x.id)}">${esc(projectName(x))}</option>`).join("")}</select></div>
+      <div class="modal-actions"><button type="submit" class="btn primary">Move</button></div>` : `<p class="hint" style="margin:0">There's no open project to move it to. Start one with + New project.</p>`}
     </form>` : ""}`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const form = m.querySelector("#f"), mv = m.querySelector("#mv");
-    // One action per job sheet picked: Try again moves it once, and another pick is another move
+    // One action per client project picked: Try again moves it once, and another pick is another move
     const moves = Object.create(null);
     if (mv && jobs.length) onSubmit(mv, () => {
-      const to = m.querySelector("#fTo").value, x = sheets.find(j => j.id === to);
-      saving(mv, () => closing(write(() => moveLine(db, (moves[to] ||= {}), s.id, key, to), `Moved to ${sheetTitle(x)}`, s.id)));
+      const to = m.querySelector("#fTo").value, x = projects.find(j => j.id === to);
+      saving(mv, () => closing(write(() => moveLine(db, (moves[to] ||= {}), s.id, key, to), `Moved to ${projectTitle(x)}`, s.id)));
     });
     // The form is busy until it's removed, so it's removed once
     armButton(m.querySelector("#remove"), "Tap to remove", () => busy(form, () => closing(write(() => removeLine(s.id, key), "Removed", s.id))));
@@ -878,25 +878,25 @@ function lineModal(s, key) {
       // Typed prices are kept in whole cents (ADR 0014); the server records who typed one on a bought line
       const price = equip || adhoc ? {} : { price: Math.max(0, round2(m.querySelector("#fPrice").value)) };
       const patch = bought ? { out, ...price } : { out, returned, ...price };
-      saving(form, () => closing(write(() => db.doc("sheets/" + s.id).update({ items: { [key]: patch } }), "Saved", s.id)));
+      saving(form, () => closing(write(() => db.doc("projects/" + s.id).update({ items: { [key]: patch } }), "Saved", s.id)));
     });
   });
 }
 
-// Removes a line without making a sheet someone else deleted again. The web build's db saves the
-// sheet without it, on the version it read, so a sheet deleted since is refused (ADR 0006).
+// Removes a line without making a project someone else deleted again. The web build's db saves the
+// project without it, on the version it read, so a project deleted since is refused (ADR 0006).
 // claude.ai's db has no conditional writes, but its update refuses a document that's gone, so
 // the artifact build sets the line to null in one update: nothing is read first, so there's no
-// moment in which the sheet could be deleted and then saved again. A null line is a removed one
-// (sheets are read without them, liveSheet below). If the runtime refuses a null value, the
-// sheet is read and saved whole without the line, as long as it's still there: that leaves the
+// moment in which the project could be deleted and then saved again. A null line is a removed one
+// (projects are read without them, liveProject below). If the runtime refuses a null value, the
+// project is read and saved whole without the line, as long as it's still there: that leaves the
 // moment between the read and the write, as before.
 async function removeLine(id, key) {
-  const ref = db.doc("sheets/" + id);
+  const ref = db.doc("projects/" + id);
   // Without commands (the demo and the tests' mock runtime), the update comes first
   if (!db.command) {
     try { await ref.update({ items: { [key]: null } }); return; }
-    // Refused: the sheet is gone (not_found below), the runtime doesn't take a null value, or
+    // Refused: the project is gone (not_found below), the runtime doesn't take a null value, or
     // this user is a viewer (the set below is refused too)
     catch (e) { if (e.code !== "invalid_argument") throw e; }
   }
@@ -905,10 +905,10 @@ async function removeLine(id, key) {
   const body = got.data(); body.items = { ...(body.items || {}) }; delete body.items[key];
   await ref.set(body);
 }
-// A sheet as the app shows it: without lines the artifact build removed (removeLine above)
-function liveSheet(d) {
+// A project as the app shows it: without lines the artifact build removed (removeLine above)
+function liveProject(d) {
   const s = { id: d.id, ...d.data() };
-  // ...and without the markers of lines moved to a job sheet (moveLine in src/moves.js)
+  // ...and without the markers of lines moved to a client project (moveLine in src/moves.js)
   for (const [k, it] of Object.entries(Object(s.items))) {
     if (it === null || it.moved) delete s.items[k];
     else delete it.moved;
@@ -929,8 +929,8 @@ function packsText(n, size) {
   return loose ? `${packs} + ${loose} loose` : packs;
 }
 
-const SUPPLY_HINT = "Price is what a client is charged. Cost is what you paid each, before tax, and isn't shown on sheets.";
-const EQUIPMENT_HINT = "Company equipment goes to jobs and comes back. It's listed on sheets but not charged. Value is what you paid for one.";
+const SUPPLY_HINT = "Price is what a client is charged. Cost is what you paid each, before tax, and isn't shown on projects.";
+const EQUIPMENT_HINT = "Company equipment goes to jobs and comes back. It's listed on projects but not charged. Value is what you paid for one.";
 function productModal(key) {
   const p = key ? products[key] : null;
   // One count per form: every attempt at saving the same count is the same stock command.
@@ -953,7 +953,7 @@ function productModal(key) {
       <div class="field"><label for="fPack">Comes in packs of (optional)</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="Leave blank if bought one at a time" aria-describedby="fPackHint"><p class="hint" id="fPackHint">Receipts add packs × this many to storage.</p></div>
       <div class="field"><label for="fStock">Single items in storage now</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="Leave blank if not counted"><p class="hint" id="fPacks" aria-live="polite" hidden></p></div>
       <p class="hint" id="fKindHint">${equip ? EQUIPMENT_HINT : SUPPLY_HINT}</p>
-      ${p ? `<p class="hint">Price changes apply to new checkouts. Sheets keep the price they were checked out at; change it on a sheet by tapping the row. So does a change between supply and equipment.</p>` : ""}
+      ${p ? `<p class="hint">Price changes apply to new checkouts. Projects keep the price they were checked out at; change it on a project by tapping the row. So does a change between supply and equipment.</p>` : ""}
       <div class="modal-actions">${p ? `<button type="button" class="btn danger" id="remove">Delete</button><span class="spacer"></span>` : ""}<button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
@@ -1007,11 +1007,11 @@ function keyForCode(code) {
   return Object.keys(products).find(x => products[x].code === code) || k;
 }
 function handleCode(code) {
-  const s = currentSheet(); if (!s || !code) return;
+  const s = currentProject(); if (!s || !code) return;
   if (modeOf(s) === "out") { checkoutModal(s, code, keyForCode(code)); return; }
   const items = s.items || {};
-  const onSheet = Object.keys(items).find(k => items[k].purchased !== true && (k === keyOf(code) || items[k].code === code));
-  returnModal(s, code, onSheet || keyForCode(code));
+  const onProject = Object.keys(items).find(k => items[k].purchased !== true && (k === keyOf(code) || items[k].code === code));
+  returnModal(s, code, onProject || keyForCode(code));
 }
 
 /* ---------- export ---------- */
@@ -1020,21 +1020,21 @@ async function save(filename, data) {
   catch (e) { if (e && e.code !== "declined") toast("Couldn't prepare the download here."); return false; }
 }
 function exportCsv(s) {
-  return save(`${[(s.client || "sheet").replace(/[\\/:*?"<>|]/g, ""), s.date].filter(Boolean).join(" ").trim()}.csv`, sheetCsv(s, personText(s)));
+  return save(`${[(s.client || "project").replace(/[\\/:*?"<>|]/g, ""), s.date].filter(Boolean).join(" ").trim()}.csv`, projectCsv(s, personText(s)));
 }
 
-// Owners download every sheet and the inventory, whatever their write access (a team
+// Owners download every project and the inventory, whatever their write access (a team
 // that's read-only after cancelling can still take its data)
-// The sheets CSV has the sheets of the year picked in the sheet list's year filter, if one
+// The projects CSV has the projects of the year picked in the project list's year filter, if one
 // is; the inventory and the JSON (a backup) are always whole
 function exportAllModal() {
-  const year = pickedYear(), inYear = year ? sheets.filter(s => yearOf(s) === year) : sheets;
-  const n = sheets.length, k = Object.keys(products).length;
+  const year = pickedYear(), inYear = year ? projects.filter(s => yearOf(s) === year) : projects;
+  const n = projects.length, k = Object.keys(products).length;
   openModal(`
     <h2>Export all data</h2>
-    <p class="hint" style="margin-top:-6px">${n} sheet${n === 1 ? "" : "s"} and ${k} inventory item${k === 1 ? "" : "s"}, as the app shows them. CSV files open in a spreadsheet; the JSON file has everything, for a backup or another tool.</p>
+    <p class="hint" style="margin-top:-6px">${n} project${n === 1 ? "" : "s"} and ${k} inventory item${k === 1 ? "" : "s"}, as the app shows them. CSV files open in a spreadsheet; the JSON file has everything, for a backup or another tool.</p>
     <div style="display:grid;gap:10px">
-      <button type="button" class="btn" data-export="sheets">${year ? `Sheets from ${year} (CSV, ${plural(inYear.length, "sheet")})` : "Sheets (CSV)"}</button>
+      <button type="button" class="btn" data-export="projects">${year ? `Projects from ${year} (CSV, ${plural(inYear.length, "project")})` : "Projects (CSV)"}</button>
       <button type="button" class="btn" data-export="inventory">Inventory (CSV)</button>
       <button type="button" class="btn" data-export="json">Everything (JSON)</button>
     </div>
@@ -1042,26 +1042,26 @@ function exportAllModal() {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const day = todayISO();
     const files = {
-      sheets: () => [`Supply Checkout sheets ${year ? year + " " : ""}${day}.csv`, sheetsCsv(inYear, personText)],
+      projects: () => [`Supply Checkout projects ${year ? year + " " : ""}${day}.csv`, projectsCsv(inYear, personText)],
       inventory: () => [`Supply Checkout inventory ${day}.csv`, inventoryCsv(products)],
-      json: () => [`Supply Checkout export ${day}.json`, allJson(products, sheets, personText)],
+      json: () => [`Supply Checkout export ${day}.json`, allJson(products, projects, personText)],
     };
     m.querySelectorAll("[data-export]").forEach(b => b.addEventListener("click", () => save(...files[b.dataset.export]())));
   });
 }
 
 /* ---------- wiring ---------- */
-$("#tab-sheets").addEventListener("click", () => { ui.tab = "sheets"; ui.sheetId = null; ui.receipt = false; draw(); });
+$("#tab-projects").addEventListener("click", () => { ui.tab = "projects"; ui.projectId = null; ui.receipt = false; draw(); });
 $("#tab-prices").addEventListener("click", () => { ui.tab = "prices"; ui.receipt = false; draw(); });
-// The logo goes home: the sheet list on Out now, as the app opens, with no sheet or dialog
+// The logo goes home: the project list on Out now, as the app opens, with no project or dialog
 // open. It's a link to the app's root, so in the web build a Ctrl/Cmd or Shift click opens
 // the app in a new tab or window. Not while a dialog is saving (dismiss); a receipt being
-// entered stays as its draft, which the sheet list offers to resume.
+// entered stays as its draft, which the project list offers to resume.
 $("#home").addEventListener("click", e => {
   if ((e.ctrlKey || e.metaKey || e.shiftKey)) return;
   e.preventDefault();
   if (!dismiss()) return;
-  ui.tab = "sheets"; ui.sheetId = null; ui.receipt = false; ui.filter = "open"; draw(); window.scrollTo(0, 0);
+  ui.tab = "projects"; ui.projectId = null; ui.receipt = false; ui.filter = "open"; draw(); window.scrollTo(0, 0);
 });
 /* ---------- receipts ---------- */
 // The artifact keeps one draft. The web build's runtime names a key per team (use("drafts"),
@@ -1100,7 +1100,7 @@ function receiptPrompt() {
 
 function receiptError(msg) {
   $("#rBody").innerHTML = `<div class="reading"><h2>Couldn't read that receipt</h2><p>${esc(msg)}</p>
-    <div class="sheet-actions"><label class="btn primary" for="receiptFile">Try another photo</label><button type="button" class="btn" id="rManual">Enter items by hand</button></div></div>`;
+    <div class="project-actions"><label class="btn primary" for="receiptFile">Try another photo</label><button type="button" class="btn" id="rManual">Enter items by hand</button></div></div>`;
   $("#rManual").addEventListener("click", () => { draft = newDraft({ items: [{ name: "", qty: 1, price: 0 }] }); saveDraft(); renderReceipt(); });
 }
 
@@ -1144,7 +1144,7 @@ function newDraft(res) {
     store: typeof res.store === "string" ? res.store.trim() : "", receiptDate: date, date: todayISO(),
     subtotal: numOrNull(res.subtotal), tax: numOrNull(res.tax), total: numOrNull(res.total),
     savePrices: true, by: "",
-    dests: [{ id: d1, sheetId: "", client: "" }],
+    dests: [{ id: d1, projectId: "", client: "" }],
     lines: res.items.map(it => newLine({ name: String(it.name || "").trim(), raw: String(it.raw || "").trim(), qty: Math.max(1, Math.round(Number(it.qty) || 1)), price: round2(it.price), match: it.match || "", suggested: !!it.match, dest: d1 })),
   };
 }
@@ -1175,7 +1175,7 @@ async function startReceipt(file) {
 }
 
 function destLabel(x, i) {
-  if (x.sheetId) { const s = sheets.find(s => s.id === x.sheetId); return s ? `${s.client} (existing sheet)` : "Missing sheet"; }
+  if (x.projectId) { const s = projects.find(s => s.id === x.projectId); return s ? `${s.client} (existing project)` : "Missing project"; }
   return x.client.trim() || `Client ${i + 1}`;
 }
 function destOptions(sel) {
@@ -1185,11 +1185,11 @@ function destOptions(sel) {
 
 function renderReceipt() {
   const d = draft; if (!d) { ui.receipt = false; draw(); return; }
-  // Job sheets only: the ad hoc sheet takes no receipt lines (ADR 0017, section 4)
-  const openSheets = sheets.filter(s => s.status !== "closed" && !isAdhoc(s));
+  // Client projects only: the General Use project takes no receipt lines (ADR 0017, section 4)
+  const openProjects = projects.filter(s => s.status !== "closed" && !isAdhoc(s));
   $("#rBody").innerHTML = `
     <fieldset id="rForm" ${d.locked ? "disabled" : ""}>
-    <div class="sheet-head">
+    <div class="project-head">
       <h2>Review receipt</h2>
       <div class="meta">${d.store ? `<span>${esc(d.store)}</span>` : ""}<span>Purchased ${esc(fmtDate(d.receiptDate))}</span></div>
       <p class="hint">Check each item's name, quantity and price, then choose which client it's for, or General inventory for supplies going into storage. If one item is shared, tap Split and divide the quantity. Nothing is saved until you tap Save.</p>
@@ -1198,16 +1198,16 @@ function renderReceipt() {
       <h3>Clients on this trip</h3>
       <div class="dests">${d.dests.map((x, i) => `
         <div class="dest" data-d="${x.id}">
-          <select data-dsel aria-label="Sheet for client ${i + 1}">
-            <option value="">New sheet</option>
-            ${openSheets.map(s => `<option value="${esc(s.id)}" ${x.sheetId === s.id ? "selected" : ""}>Add to ${esc(s.client)} (${esc(fmtDate(s.date))})</option>`).join("")}
+          <select data-dsel aria-label="Project for client ${i + 1}">
+            <option value="">New project</option>
+            ${openProjects.map(s => `<option value="${esc(s.id)}" ${x.projectId === s.id ? "selected" : ""}>Add to ${esc(s.client)} (${esc(fmtDate(s.date))})</option>`).join("")}
           </select>
-          ${x.sheetId ? "" : `<input type="text" data-dname id="dname-${x.id}" placeholder="Client name" value="${esc(x.client)}" aria-label="Client name">`}
+          ${x.projectId ? "" : `<input type="text" data-dname id="dname-${x.id}" placeholder="Client name" value="${esc(x.client)}" aria-label="Client name">`}
           ${d.dests.length > 1 ? `<button type="button" class="btn ghost" data-drm aria-label="Remove this client">Remove</button>` : ""}
         </div>`).join("")}</div>
       <button type="button" class="btn" id="rAddDest">+ Add another client</button>
       <div class="row2">
-        <div class="field"><label for="rDate">Date for new sheets</label><input type="date" id="rDate" value="${esc(d.date)}"></div>
+        <div class="field"><label for="rDate">Date for new projects</label><input type="date" id="rDate" value="${esc(d.date)}"></div>
         ${myId ? "" : `<div class="field"><label for="rBy">Prepared by</label><input type="text" id="rBy" value="${esc(d.by)}" placeholder="Your name"></div>`}
       </div>
     </div>
@@ -1231,7 +1231,7 @@ function invOptions(sel) {
 // A receipt line for company equipment: where it goes says what it is, and a bought one's price
 function receiptEquipmentHTML(l) {
   if (l.dest === "stock") return `<p class="hint equip">Company equipment · added to storage, not charged</p>`;
-  return `<p class="hint equip">Company equipment · bought for this client: charged on their sheet, not kept in storage</p>
+  return `<p class="hint equip">Company equipment · bought for this client: charged on their project, not kept in storage</p>
         <p class="hint" data-charged>${esc(chargedText(l))}</p>
         <label class="lbl">Charge a different price ($)<input type="number" data-f="typed" id="t-${l.id}" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${esc(l.typed ?? "")}" placeholder="Leave blank"></label>`;
 }
@@ -1326,7 +1326,7 @@ $("#rBody").addEventListener("input", e => {
 });
 $("#rBody").addEventListener("change", e => {
   const d = draft, t = e.target; if (!editable(t)) return;
-  if (t.matches("[data-dsel]")) { const x = d.dests.find(x => x.id === t.closest("[data-d]").dataset.d); x.sheetId = t.value; saveDraft(); renderReceipt(); }
+  if (t.matches("[data-dsel]")) { const x = d.dests.find(x => x.id === t.closest("[data-d]").dataset.d); x.projectId = t.value; saveDraft(); renderReceipt(); }
   else if (t.dataset.f === "dest") {
     const l = d.lines.find(l => l.id === t.closest("[data-l]").dataset.l); l.dest = t.value; saveDraft();
     // Equipment says what it is where it goes: bought for a client, or into storage
@@ -1340,7 +1340,7 @@ $("#rBody").addEventListener("change", e => {
 $("#rBody").addEventListener("click", e => {
   const d = draft, t = e.target.closest("button"); if (!t || !editable(t)) return;
   const row = t.closest("[data-l]"), line = row && d.lines.find(l => l.id === row.dataset.l);
-  if (t.id === "rAddDest") { d.dests.push({ id: uid(), sheetId: "", client: "" }); saveDraft(); renderReceipt(); const x = d.dests[d.dests.length - 1]; const f = $("#dname-" + x.id); f && f.focus(); }
+  if (t.id === "rAddDest") { d.dests.push({ id: uid(), projectId: "", client: "" }); saveDraft(); renderReceipt(); const x = d.dests[d.dests.length - 1]; const f = $("#dname-" + x.id); f && f.focus(); }
   else if (t.matches("[data-drm]")) {
     const id = t.closest("[data-d]").dataset.d; d.dests = d.dests.filter(x => x.id !== id);
     d.lines.forEach(l => { if (l.dest === id) l.dest = d.dests[0].id; }); saveDraft(); renderReceipt();
@@ -1381,10 +1381,10 @@ async function saveReceipt() {
   const over = lines.find(l => Number(l.price) > MAX_MONEY);
   if (over) { toast(MONEY_LIMIT); const f = $("#p-" + over.id); f.setCustomValidity(MONEY_LIMIT); f.focus(); return; }
   const usedDests = d.dests.filter(x => lines.some(l => l.dest === x.id));
-  const unnamed = usedDests.find(x => !x.sheetId && !x.client.trim());
-  if (unnamed) { toast("Enter a client name for each new sheet."); const f = $("#dname-" + unnamed.id); f && f.focus(); return; }
-  if (usedDests.some(x => !x.sheetId) && !d.date) { toast("Choose a date for the new sheets."); return; }
-  if (!myId && usedDests.some(x => !x.sheetId) && !d.by.trim()) { toast("Enter who prepared these sheets."); $("#rBy") && $("#rBy").focus(); return; }
+  const unnamed = usedDests.find(x => !x.projectId && !x.client.trim());
+  if (unnamed) { toast("Enter a client name for each new project."); const f = $("#dname-" + unnamed.id); f && f.focus(); return; }
+  if (usedDests.some(x => !x.projectId) && !d.date) { toast("Choose a date for the new projects."); return; }
+  if (!myId && usedDests.some(x => !x.projectId) && !d.by.trim()) { toast("Enter who prepared these projects."); $("#rBy") && $("#rBy").focus(); return; }
   const toStock = lines.filter(l => l.dest === "stock");
   if (!usedDests.length && !toStock.length) { toast("Nothing to save. Assign each item to a client or to General inventory."); return; }
   // From the first attempt until it's saved, the draft is locked: each destination and stock
@@ -1397,7 +1397,7 @@ async function saveReceipt() {
   for (const x of usedDests) markOf(x);
   d.locked = true; rSaving = true; saveDraft(); renderReceipt();
   // Didn't save: the draft keeps what hasn't been saved. If it failed for the connection, it
-  // stays locked and the button says Try again. Refused (a sheet deleted, view-only, storage
+  // stays locked and the button says Try again. Refused (a project deleted, view-only, storage
   // full), nothing more was saved and what was is out of the draft, so it can be changed.
   const failed = () => { rSaving = false; if (!retryable) d.locked = false; saveDraft(); renderReceipt(); };
 
@@ -1445,32 +1445,32 @@ async function saveReceipt() {
       it.out += eaches(l);
     }
     let ok;
-    if (x.sheetId) {
-      if (!sheets.some(s => s.id === x.sheetId)) {
-        toast("One of the chosen sheets was deleted. Pick another and save again.");
+    if (x.projectId) {
+      if (!projects.some(s => s.id === x.projectId)) {
+        toast("One of the chosen projects was deleted. Pick another and save again.");
         d.lines = d.lines.filter(l => !usedDests.slice(0, usedDests.indexOf(x)).some(y => y.id === l.dest));
         retryable = false; failed(); return;
       }
-      ok = await write(() => addLines(db, x, x.sheetId, items, bought), undefined, x.sheetId);
-      if (ok) savedIds.push(x.sheetId);
+      ok = await write(() => addLines(db, x, x.projectId, items, bought), undefined, x.projectId);
+      if (ok) savedIds.push(x.projectId);
     } else {
-      // One new sheet per destination, whatever the attempt: its ID and creation time are kept
-      // with the draft. Once an attempt has been made, the next looks for the sheet first, so
+      // One new project per destination, whatever the attempt: its ID and creation time are kept
+      // with the draft. Once an attempt has been made, the next looks for the project first, so
       // one whose answer was lost isn't saved again.
       const tried = !!x.newId;
-      x.newId ||= db.collection("sheets").doc().id;
+      x.newId ||= db.collection("projects").doc().id;
       x.createdAt ||= new Date().toISOString();
       saveDraft();
-      const ref = db.collection("sheets").doc(x.newId);
+      const ref = db.collection("projects").doc(x.newId);
       const body = { client: x.client.trim(), date: d.date, createdBy: myId || null, createdAt: x.createdAt, status: "open", items };
       if (!myId) body.createdByName = d.by.trim();
       if (d.store) body.source = { store: d.store, receiptDate: d.receiptDate };
-      // A line bought for the client is added to the new sheet once it exists, as to any sheet
+      // A line bought for the client is added to the new project once it exists, as to any project
       ok = await write(async () => {
         if (!tried || !(await ref.get()).exists) await ref.set(body);
         if (Object.keys(bought).length) await addLines(db, x, ref.id, {}, bought);
       });
-      if (ok) addLocalSheet(ref.id, body);
+      if (ok) addLocalProject(ref.id, body);
       if (ok) savedIds.push(ref.id);
     }
     if (!ok) {
@@ -1480,20 +1480,20 @@ async function saveReceipt() {
     }
   }
   rSaving = false; draft = null; saveDraft(); ui.receipt = false;
-  if (savedIds.length === 1) ui.sheetId = savedIds[0];
-  ui.tab = "sheets"; draw(); window.scrollTo(0, 0);
+  if (savedIds.length === 1) ui.projectId = savedIds[0];
+  ui.tab = "projects"; draw(); window.scrollTo(0, 0);
   const nStock = toStock.reduce((a, l) => a + eaches(l), 0);
-  toast([savedIds.length ? `Saved to ${savedIds.length} sheet${savedIds.length === 1 ? "" : "s"}` : "", nStock ? `${nStock} added to storage` : ""].filter(Boolean).join(" · "));
+  toast([savedIds.length ? `Saved to ${savedIds.length} project${savedIds.length === 1 ? "" : "s"}` : "", nStock ? `${nStock} added to storage` : ""].filter(Boolean).join(" · "));
   if (!savedIds.length) { ui.tab = "prices"; draw(); }
 }
 
 $("#receiptFile").addEventListener("change", e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f && sampleFn) startReceipt(f); });
 $("#rBack").addEventListener("click", () => { ui.receipt = false; draw(); });
 
-$("#backBtn").addEventListener("click", () => { ui.sheetId = null; draw(); });
+$("#backBtn").addEventListener("click", () => { ui.projectId = null; draw(); });
 document.querySelectorAll(".mode button").forEach(b => b.addEventListener("click", () => { ui.mode = b.dataset.mode; draw(); }));
 $("#scanFile").addEventListener("change", async e => { const c = await scanFromInput(e.target); if (c) handleCode(c); });
-$("#noCodeBtn").addEventListener("click", () => { const s = currentSheet(); if (s) (modeOf(s) === "out" ? pickOutModal : pickReturnModal)(s); });
+$("#noCodeBtn").addEventListener("click", () => { const s = currentProject(); if (s) (modeOf(s) === "out" ? pickOutModal : pickReturnModal)(s); });
 $("#manualForm").addEventListener("submit", e => { e.preventDefault(); const i = $("#manualCode"); const c = i.value.trim(); i.value = ""; if (c) handleCode(c); });
 
 draw();
@@ -1504,7 +1504,7 @@ draw();
     const drafts = await use("drafts"); if (drafts) draftKeyNow = () => drafts.key; loadDraft();
     const fr = await use("firstRun");
     settingsCap = await use("settings");
-    if (fr) firstRun = createFirstRun(fr, { addItem: () => { ui.tab = "prices"; draw(); productModal(null); }, newSheet: () => { ui.tab = "sheets"; draw(); newSheetModal(); }, redraw: draw });
+    if (fr) firstRun = createFirstRun(fr, { addItem: () => { ui.tab = "prices"; draw(); productModal(null); }, newProject: () => { ui.tab = "projects"; draw(); newProjectModal(); }, redraw: draw });
   }
   if (sampleFn) { try { const lim = await sampleFn.limits(); receiptOK = !!(lim && lim.images); } catch {} }
   // Only the AWS runtime has usage(); the tests' mock runtime, in the web build too, hasn't
@@ -1525,8 +1525,8 @@ draw();
     products = Object.create(null); snap.docs.forEach(d => { if (d.id !== "__proto__") products[d.id] = d.data(); });
     if (pFirst) { pFirst = false; ready(); } else render();
   }, onErr);
-  db.collection("sheets").orderBy("date", "desc").onSnapshot(snap => {
-    sheets = snap.docs.map(liveSheet);
+  db.collection("projects").orderBy("date", "desc").onSnapshot(snap => {
+    projects = snap.docs.map(liveProject);
     if (sFirst) { sFirst = false; ready(); } else render();
   }, onErr);
 })();

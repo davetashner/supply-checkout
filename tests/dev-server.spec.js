@@ -17,7 +17,7 @@ const open = async (page, query = "") => {
   await page.goto(base + query);
 };
 
-test("serves the app with demo sheets and inventory", async ({ page }) => {
+test("serves the app with demo projects and inventory", async ({ page }) => {
   await open(page);
   await expect(page.getByRole("button", { name: /Acme Offices/ })).toBeVisible();
   await page.getByRole("button", { name: "Returned" }).click();
@@ -43,12 +43,12 @@ test("?seed=empty starts with no data", async ({ page }) => {
 test("?viewer gives view-only access", async ({ page }) => {
   await open(page, "?viewer");
   await expect(page.locator("#notice")).toContainText("view-only access");
-  await expect(page.getByRole("button", { name: "+ New sheet" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "+ New project" })).toHaveCount(0);
 });
 
-test("?nouser asks who prepared a new sheet", async ({ page }) => {
+test("?nouser asks who prepared a new project", async ({ page }) => {
   await open(page, "?nouser");
-  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByRole("button", { name: "+ New project" }).click();
   await expect(page.getByLabel("Prepared by")).toBeVisible();
 });
 
