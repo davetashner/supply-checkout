@@ -17,6 +17,7 @@ const SPOT_EVERY = 4; // frames between looks at the whole frame for spots
 const AIM_W = 0.8, AIM_H = 0.4; // the aiming box, as a part of the view (styles.css: .scanner .aim)
 const GROW = 1.25; // read a little past the aiming box: a code half in it still reads
 const MAX_EDGE = 960; // the longest edge a frame or its aiming box is read at
+const HAVE_CURRENT_DATA = 2; // a video's readyState once it has a picture
 
 const media = navigator.mediaDevices;
 // Whether the device has a camera, checked once: a tap must open the photo picker at once
@@ -122,7 +123,10 @@ async function start(session) {
     if (s !== session) throw stream;
     session.stream = stream;
     video.srcObject = stream;
-    await video.play();
+    // Not waited for: a camera that sends no picture would leave the scanner starting, with the
+    // camera on and no time limit. Frames are read once there's a picture (read below). Closing
+    // before then interrupts it, which is no error.
+    video.play().catch(() => {});
   } catch (e) {
     if (e === stream) { stream.getTracks().forEach((t) => t.stop()); return; }
     if (s !== session) return;
@@ -175,12 +179,15 @@ async function frame(session) {
 // A frame's codes, then whether separate frames now agree on one
 async function read(session) {
   session.frame++;
+  if (video.readyState < HAVE_CURRENT_DATA) return null; // no picture yet
   const found = [];
   if (session.detector) {
     try { for (const f of await session.detector.detect(video)) found.push({ fmt: f.format, text: f.rawValue }); } catch {}
   }
-  if (!found.length && video.videoWidth) {
+  if (!found.length) {
     const zx = await zxReader();
+    // Stopped while the detector read, or while ZXing loaded (the page hidden): no picture now
+    if (!session.stream) return null;
     const aim = grays(drawn(aimBox()));
     const r = zxRead(zx, zx.anyQuick, aim) || zxRead(zx, zx.lineQuick, turned(aim));
     if (r) found.push(r);
