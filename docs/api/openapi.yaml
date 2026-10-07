@@ -73,7 +73,14 @@ info:
       unchanged, is rounded to cents instead of refused. A product's
       optional `brand` must be a string of at most 100 characters (after
       trimming) with no control characters, or `null`; it's stored trimmed,
-      and a blank or `null` brand removes the field.
+      and a blank or `null` brand removes the field. A product's `name` and
+      `brand` can't have control or invisible characters (bidi controls,
+      default-ignorable characters such as zero-width, tag and variation
+      selector characters, or text that isn't well-formed UTF-16), except a
+      zero-width joiner in an emoji sequence, one variation selector after
+      an emoji, joiners in scripts that use them, and the England, Scotland
+      and Wales flags' tags; like money, only where the write changes the
+      field (supply-checkout-1dg.12).
     - A product's `stock` changes only through the stock commands (the
       `commands` tag) and the CSV import, which record a movement for every
       change. A product `set` or `update` keeps the stored `stock`: leave it
@@ -2985,8 +2992,8 @@ components:
       description: "`data` of a document in `products` (src/main.js). Other fields are kept as written."
       properties:
         code: { type: string, maxLength: 256, description: The barcode; empty for an item without one. }
-        name: { type: string }
-        brand: { type: string, maxLength: 100, description: "Optional (supply-checkout-005.9): who makes the item. Stored trimmed, no control characters; absent for none. A write with a blank or `null` brand removes it." }
+        name: { type: string, description: No control or invisible characters where a write changes it (supply-checkout-1dg.12). }
+        brand: { type: string, maxLength: 100, description: "Optional (supply-checkout-005.9): who makes the item. Stored trimmed, no control or invisible characters; absent for none. A write with a blank or `null` brand removes it." }
         price: { type: number, minimum: 0, description: The client price each. Absent for company equipment. }
         cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "What the business paid per each; for company equipment, its value each." }
         kind: { type: string, enum: [supply, equipment], description: "A supply (used up and charged; the default when absent) or company equipment (reused, and not charged), ADR 0017." }

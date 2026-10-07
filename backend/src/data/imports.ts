@@ -57,6 +57,7 @@ import { type Db, connection, storable } from "./client.js";
 import { type Movement, OPERATION_TTL_DAYS } from "./commands.js";
 import { parseCsv } from "./csv.js";
 import { MAX_DOCUMENT_BYTES, isReservedField } from "./documents.js";
+import { hiddenCharacterProblem } from "../text/hidden-characters.js";
 import { ConflictError, InvalidInputError, TooLargeError, isCancelledAsTooLarge, startsWithAny } from "./errors.js";
 import { MAX_CODE_LENGTH, gsi1, keys, prefixes, teamPartition } from "./keys.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
@@ -92,8 +93,6 @@ const MAX_COLUMNS = 50;
 const MAX_NUMBER_TEXT = 32;
 const MAX_ATTEMPTS = 6;
 const IMPORT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-// eslint-disable-next-line no-control-regex -- rejecting control characters is the point
-const CONTROL = /[\u0000-\u001f\u007f]/;
 
 type Field = "name" | "brand" | "barcode" | "kind" | "price" | "cost" | "stock" | "packSize" | "reorderAt" | "reorderQty";
 
@@ -231,7 +230,8 @@ const nameKey = (name: string) => name.normalize("NFKC").trim().toLowerCase();
 
 function textCell(field: Field, raw: string, max: number): string {
   if (raw.length > max) throw new CellError(field, `${LABEL[field]} is longer than ${max} characters`);
-  if (CONTROL.test(raw)) throw new CellError(field, `${LABEL[field]} has a control character in it`);
+  const problem = hiddenCharacterProblem(LABEL[field], raw);
+  if (problem) throw new CellError(field, problem);
   return raw;
 }
 

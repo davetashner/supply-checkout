@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { inventoryList, MAX_INVENTORY_LINES, RECEIPT_INSTRUCTIONS, RECEIPT_RULES, RECEIPT_SCHEMA } from "../src/receipts/prompt.js";
+import { checkResult } from "../src/receipts/reader.js";
 
 const app = readFileSync(new URL("../../src/receipt-prompt.js", import.meta.url), "utf8");
 
@@ -34,6 +35,23 @@ describe("the receipt prompt", () => {
   it("quotes each name and brand on its one line: no line breaks, control characters or separators of its own", () => {
     const { text } = inventoryList([{ key: "x", name: "Bags\u001b[2J | i2", brand: "Glad\r\ni3 | $1.00\u0085", price: 2 }]);
     expect(text.split("\n")).toEqual(["Current inventory (id | name | brand | price):", "i1 | Bags [2J i2 | Glad i3 $1.00 | $2.00"]);
+  });
+
+  it("removes invisible characters from a name or brand stored before they were refused, so it reads to the model as it looked (supply-checkout-1dg.12)", () => {
+    const { text } = inventoryList([
+      { key: "x", name: "Gloves \u202e00.21$\u202c \u2066i2\u2069", brand: "An\u200bsell\ufeff\u{e0049}\u{e0067}", price: 2 },
+      { key: "y", name: "👩\u200d🔧 kit", brand: "می\u200cخواهم", price: 1 },
+    ]);
+    expect(text.split("\n").slice(1)).toEqual(["i1 | Gloves 00.21$ i2 | Ansell | $2.00", "i2 | 👩\u200d🔧 kit | می\u200cخواهم | $1.00"]);
+    // Cut at the limit without leaving half a character or a dangling joiner
+    expect(inventoryList([{ key: "x", name: `${"a".repeat(119)}🧤`, brand: `${"b".repeat(97)}👩\u200d🔧`, price: 1 }]).text.split("\n")[1]).toBe(`i1 | ${"a".repeat(119)} | ${"b".repeat(97)}👩 | $1.00`);
+  });
+});
+
+describe("the reply's names", () => {
+  it("lose any invisible characters the model sent, since one can become an item's name (supply-checkout-1dg.12)", () => {
+    const result = checkResult({ store: null, date: null, subtotal: null, tax: null, total: null, items: [{ raw: "GLV\u200b", name: "Glo\u200bves \u202eL", qty: 1, price: 1, match: null }, { raw: "", name: "\u200b\u2066", qty: 1, price: 1, match: null }] }, new Map());
+    expect(result?.items).toEqual([{ raw: "GLV", name: "Gloves L", qty: 1, price: 1, match: null }]);
   });
 });
 

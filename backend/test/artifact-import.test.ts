@@ -240,10 +240,28 @@ describe("parseArtifactExport", () => {
     // Problems say where and what, never the brand itself
     expect(p.errors).toEqual([
       { at: 'inventory[3] key "d"', message: "brand is longer than 100 characters" },
-      { at: 'inventory[4] key "e"', message: "brand has a control character in it" },
+      { at: 'inventory[4] key "e"', message: "brand has an invisible or control character in it" },
       { at: 'inventory[5] key "f"', message: "brand must be text" },
     ]);
     expect(p.ignoredFields).toEqual({});
+  });
+
+  it("refuses control and invisible characters in an item's name and a line's, and keeps emoji and right-to-left text (supply-checkout-1dg.12)", () => {
+    const p = parseArtifactExport(
+      JSON.stringify({
+        app: "Supply Checkout",
+        inventory: [
+          { key: "a", name: "Gloves \u202e00.21$", price: 1 },
+          { key: "b", name: "Glo\u200bves", price: 1 },
+          { key: "c", name: "👩\u200d🔧 kit כפפות", brand: "قفازات", price: 1 },
+        ],
+        sheets: [{ id: "s1", date: "2026-01-02", items: { c: { name: "Bags\u2066", price: 1, out: 1 } } }],
+      }),
+    );
+    expect(p.products).toEqual([{ key: "c", code: "", name: "👩\u200d🔧 kit כפפות", brand: "قفازات", price: 1 }]);
+    // Problems say where and what, never the name itself
+    expect(p.errors.map((e) => e.message).filter((m) => m.startsWith("name"))).toEqual(Array(3).fill("name has an invisible or control character in it"));
+    expect(JSON.stringify(p.errors)).not.toMatch(/Gloves|Glo|Bags/);
   });
 
   it("refuses two items with one barcode, as the CSV import does", () => {

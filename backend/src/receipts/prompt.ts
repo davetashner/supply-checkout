@@ -7,6 +7,8 @@
 // The prompt is built here, never taken from the request: the browser sends
 // only the photo, so nobody can use the endpoint as a general model.
 
+import { withoutHiddenCharacters } from "../text/hidden-characters.js";
+
 /** The rules, as the app words them (src/receipt-prompt.js). */
 export const RECEIPT_RULES = [
   '- "price" is the price of ONE unit after any discount or coupon printed for that item. If a line shows a quantity and a line total, divide.',
@@ -46,10 +48,16 @@ export interface InventoryItem {
 /**
  * Text a team member typed, quoted on one line of the list: no newlines or
  * other control characters, and the "|" separators can't be faked from it.
+ * Invisible characters (bidi controls, zero-width and tag characters,
+ * src/text/hidden-characters.ts) are removed rather than made spaces: they have no
+ * width, so the text then reads to the model as it looked to the team. Names
+ * stored before they were refused can still have them.
  */
 function cellText(value: unknown, max: number): string {
-  // eslint-disable-next-line no-control-regex -- removing control characters is the point
-  return String(value ?? "").replace(/[\s|\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, max);
+  // Cut to a few times the limit first, so a long stored name isn't scanned whole
+  const flat = withoutHiddenCharacters(String(value ?? "").slice(0, 4 * max)).replace(/[\s|]+/g, " ").trim();
+  // Cut at a whole character: a pair cut in half would leave a lone surrogate
+  return withoutHiddenCharacters(flat.slice(0, max)).trim();
 }
 
 /**

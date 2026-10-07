@@ -25,6 +25,7 @@ import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aw
 import { type Db, connection, storable } from "./client.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
 import { brandOf } from "./brand.js";
+import { hiddenCharacterProblem } from "../text/hidden-characters.js";
 import { AdhocOpenError, ConflictError, EquipmentOutError, InvalidInputError, NotFoundError, TooLargeError, isCancelledAsTooLarge, isItemTooLarge } from "./errors.js";
 import { BOUGHT_SUFFIX, adhocNumber, barcode, id as checkId, isAdhocId, keys, prefixes, productKey, teamPartition } from "./keys.js";
 import { legacy } from "./legacy-sheets.js";
@@ -179,13 +180,21 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
   for (const field of Object.keys(data)) {
     if (isReservedField(field)) throw new InvalidInputError(`"${field}" is set by the server`);
   }
+  // Within the size limit before any field is read, so no check below scans more than that
+  checkSize(data);
   // `stock` changes with an atomic ADD elsewhere (adjustStock), so it has to be a number
   if (collection === "products") {
     if ("stock" in data && typeof data.stock !== "number") throw new InvalidInputError("Invalid stock");
     if ("code" in data) barcode(data.code);
+    // The name and brand have no control or invisible characters (src/text/hidden-characters.ts). One a
+    // product was stored with before they were refused doesn't block a write that leaves it as it is.
+    if (typeof data.name === "string" && data.name !== before?.data.name) {
+      const problem = hiddenCharacterProblem("name", data.name);
+      if (problem) throw new InvalidInputError(problem);
+    }
     // An optional brand (brand.ts): stored trimmed, and blank or null removes it
     if (Object.hasOwn(data, "brand")) {
-      const brand = brandOf(data.brand);
+      const brand = brandOf(data.brand, before?.data.brand);
       if (brand === undefined) delete data.brand;
       else data.brand = brand;
     }
@@ -207,10 +216,14 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
       for (const field of ["price", "cost"] as const) if (Object.hasOwn(line, field)) line[field] = writtenMoney(line[field], stored, field);
     }
   }
+  checkSize(data);
+  return data;
+}
+
+function checkSize(data: DocumentData): void {
   if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_DOCUMENT_BYTES) {
     throw new TooLargeError(`Documents are limited to ${MAX_DOCUMENT_BYTES} bytes`);
   }
-  return data;
 }
 
 const PRODUCT_KINDS = new Set(["supply", "equipment"]);

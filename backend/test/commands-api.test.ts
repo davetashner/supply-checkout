@@ -160,6 +160,20 @@ describe("checkout", () => {
     expect(movements()).toEqual([expect.objectContaining({ delta: 0, tracked: false, quantity: 2 })]);
   });
 
+  it("removes control and invisible characters from a line's name, keeping emoji, and refuses a name that's only those (supply-checkout-1dg.12)", async () => {
+    seed({ product: null });
+    const res = await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1, name: "\u202eRa\u200bgs\tbox 👩\u200d🔧\u2066", price: 1.5 });
+    expect(res.status).toBe(200);
+    expect(line()).toMatchObject({ name: "Rags box 👩\u200d🔧" });
+    const blank = await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1, name: "\u200b\u202e", price: 1.5 });
+    expect(blank.body.error).toEqual({ code: "bad_request", message: expect.stringMatching(/^name must be 1 to \d+ characters$/) });
+    // A name over the limit is refused before it's scanned, however it's made
+    const start = performance.now();
+    const long = await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1, name: "\u0915" + "\u093f".repeat(300_000), price: 1.5 });
+    expect(long.body.error).toEqual({ code: "bad_request", message: expect.stringMatching(/^name must be 1 to \d+ characters$/) });
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
   it("leaves stock alone for an item that doesn't track it, and rounds a legacy price to cents", async () => {
     seed({ product: { code: "0123", name: "Gloves", price: 2.345 } });
     const res = await call("POST", "/teams/team-a/projects/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });

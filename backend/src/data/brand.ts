@@ -5,37 +5,38 @@
 // the artifact import (artifact-import.ts).
 //
 // Its rules follow the item name's (MAX_NAME_LENGTH in imports.ts): text,
-// trimmed, with no control characters, and shorter, since a brand is a word
-// or two. Blank or null means no brand, and the field is left out.
+// trimmed, with no control or invisible characters (src/text/hidden-characters.ts),
+// and shorter, since a brand is a word or two. Blank or null means no brand,
+// and the field is left out.
 
 import { InvalidInputError } from "./errors.js";
+import { hiddenCharacterProblem } from "../text/hidden-characters.js";
 
 /** The longest brand, after trimming. */
 export const MAX_BRAND_LENGTH = 100;
 
-// eslint-disable-next-line no-control-regex -- rejecting control characters is the point
-const CONTROL = /[\u0000-\u001f\u007f]/;
-
 /**
  * Why `value` can't be a brand, or undefined if it can. `value` is the text
- * as trimmed (brandOf trims it first).
+ * as trimmed (brandOf trims it first). `stored` is the brand the product
+ * already has, if any: a write that keeps it unchanged isn't refused for an
+ * invisible character it was stored with before they were refused.
  */
-export function brandProblem(value: string): string | undefined {
+export function brandProblem(value: string, stored?: unknown): string | undefined {
   if (value.length > MAX_BRAND_LENGTH) return `brand is longer than ${MAX_BRAND_LENGTH} characters`;
-  if (CONTROL.test(value)) return "brand has a control character in it";
-  return undefined;
+  return value === stored ? undefined : hiddenCharacterProblem("brand", value);
 }
 
 /**
  * A brand as it's stored: the text trimmed, or undefined for none (null,
  * or blank). Anything else that isn't text, or text that's too long or has a
- * control character in it, is an InvalidInputError.
+ * control or invisible character in it, is an InvalidInputError. `stored`:
+ * as for brandProblem.
  */
-export function brandOf(value: unknown): string | undefined {
+export function brandOf(value: unknown, stored?: unknown): string | undefined {
   if (value === null || value === undefined) return undefined;
   if (typeof value !== "string") throw new InvalidInputError("brand must be text");
   const brand = value.trim();
-  const problem = brandProblem(brand);
+  const problem = brandProblem(brand, stored);
   if (problem) throw new InvalidInputError(problem);
   return brand || undefined;
 }

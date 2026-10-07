@@ -8,6 +8,7 @@
 
 import { APIConnectionTimeoutError, APIError, APIUserAbortError, BadRequestError, RateLimitError, UnprocessableEntityError } from "@anthropic-ai/sdk";
 import type { Message, MessageCreateParamsNonStreaming } from "@anthropic-ai/sdk/resources/messages";
+import { withoutHiddenCharacters } from "../text/hidden-characters.js";
 import { inventoryList, type InventoryItem, RECEIPT_INSTRUCTIONS, RECEIPT_SCHEMA } from "./prompt.js";
 
 /** The part of the Anthropic Bedrock client this uses, so tests can fake it. */
@@ -171,7 +172,9 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 
 function text(v: unknown): string | null {
   if (typeof v !== "string") return null;
-  const t = v.replace(/\s+/g, " ").trim().slice(0, MAX_TEXT);
+  // Without invisible characters (src/text/hidden-characters.ts): a name read here can become an item's name
+  // (Cut to a few times the limit first, so only that much is scanned)
+  const t = withoutHiddenCharacters(withoutHiddenCharacters(v.slice(0, 4 * MAX_TEXT)).replace(/\s+/g, " ").trim().slice(0, MAX_TEXT));
   return t || null;
 }
 

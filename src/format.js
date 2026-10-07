@@ -33,6 +33,24 @@ export const numOrNull = n => (n === null || n === undefined || n === "" || isNa
 // takes is MAX_BRAND (MAX_BRAND_LENGTH in backend/src/data/brand.ts).
 export const MAX_BRAND = 100;
 export const brandOf = p => String(p.brand ?? "").trim();
+// Text without the control and invisible characters the API refuses in an item's name and brand
+// (supply-checkout-1dg.12): bidi controls, zero-width, tag and other default-ignorable characters,
+// lone surrogates. Control characters and line separators become a space; the rest have no width
+// and are removed. Kept: a joiner between two emoji, one variation selector after an emoji, joiners
+// in scripts that use them, and the England, Scotland and Wales flags. The rule and its reasons
+// are backend/src/text/hidden-characters.ts (HIDDEN_TEXT), and a test keeps the two patterns identical.
+const JOINING = ["Arabic", "Syriac", "Nko", "Mongolian", "Devanagari", "Bengali", "Gurmukhi", "Gujarati", "Oriya", "Tamil", "Telugu", "Kannada", "Malayalam", "Sinhala"].map(s => `\\p{sc=${s}}`).join("");
+const EMOJI = "(?:\\p{Emoji_Presentation}|\\p{Emoji}\\uFE0F)";
+const FLAG_TAGS = ["gbeng", "gbsct", "gbwls"].map(t => [...t].map(c => `\\u{E00${c.charCodeAt(0).toString(16)}}`).join("")).join("|");
+const ALLOWED = [
+  `(?:\\p{Emoji_Presentation}\\p{Emoji_Modifier}?|\\p{Emoji}\\uFE0F)\\u200D(?=${EMOJI})`,
+  "\\p{Emoji}[\\uFE0E\\uFE0F]",
+  `(?=\\p{L})[${JOINING}](?:(?!\\p{Default_Ignorable_Code_Point})\\p{M}){0,4}[\\u200C\\u200D](?=(?=\\p{L})[${JOINING}])`,
+  `\\u{1F3F4}(?:${FLAG_TAGS})\\u{E007F}`,
+].join("|");
+const HIDDEN = "[\\p{Cc}\\p{Default_Ignorable_Code_Point}\\p{Bidi_Control}\\u2028\\u2029\\uFFF9-\\uFFFB\\uD800-\\uDFFF]";
+export const HIDDEN_TEXT = new RegExp(`(${ALLOWED})|${HIDDEN}`, "gu");
+export const visibleText = t => String(t).replace(HIDDEN_TEXT, (c, kept) => kept ?? (/^[\p{Cc}\u2028\u2029]$/u.test(c) ? " " : ""));
 // Where an item's name has one line: its brand after it, "Trash bags · Glad"
 export const nameWithBrand = p => [p.name, brandOf(p)].filter(Boolean).join(" · ");
 // Where it has a line of its own under the name, in lists

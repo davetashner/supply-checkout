@@ -219,7 +219,7 @@ describe("importing a file", () => {
       { line: 13, column: "barcode", message: "Line 2 has the same barcode" },
       { line: 14, column: "name", message: "name is longer than 200 characters" },
       { line: 15, message: "This row has more cells than the header has columns" },
-      { line: 16, column: "name", message: "name has a control character in it" },
+      { line: 16, column: "name", message: "name has an invisible or control character in it" },
     ]);
     expect(products()).toEqual([]);
     expect(importItems()).toEqual([]);
@@ -760,7 +760,17 @@ describe("parsing", () => {
 
   it("parseInventoryCsv needs text, and a line break inside a name is a problem", () => {
     expect(() => parseInventoryCsv(undefined)).toThrow(/csv must be/);
-    expect(parseInventoryCsv('name,price\n"A\nB",1').errors).toEqual([{ line: 2, column: "name", message: "name has a control character in it" }]);
+    expect(parseInventoryCsv('name,price\n"A\nB",1').errors).toEqual([{ line: 2, column: "name", message: "name has an invisible or control character in it" }]);
+  });
+
+  it("refuses bidi controls, zero-width and other invisible characters in a name or brand, and keeps emoji and right-to-left text (supply-checkout-1dg.12)", () => {
+    const parsed = parseInventoryCsv("name,brand,price\nGloves \u202e00.21$,Ansell,1\nRags,Ac\u200bme,2\nMops,Ok\ud83d,3\n👩\u200d🔧 kit,قفازات,4\n");
+    expect(parsed.errors).toEqual([
+      { line: 2, column: "name", message: "name has an invisible or control character in it" },
+      { line: 3, column: "brand", message: "brand has an invisible or control character in it" },
+      { line: 4, column: "brand", message: "brand has an invisible or control character in it" },
+    ]);
+    expect(parsed.rows).toEqual([{ line: 5, name: "👩\u200d🔧 kit", brand: "قفازات", barcode: "", price: 4 }]);
   });
 
   it("the import dialog's template (src/aws/import-template.csv) passes as it is", () => {
@@ -819,7 +829,7 @@ describe("parsing", () => {
     ]);
     expect(parsed.errors).toEqual([
       { line: 5, column: "brand", message: `brand is longer than ${MAX_BRAND_LENGTH} characters` },
-      { line: 6, column: "brand", message: "brand has a control character in it" },
+      { line: 6, column: "brand", message: "brand has an invisible or control character in it" },
     ]);
     expect(parseInventoryCsv("manufacturer,name,price\nGlad,Bags,1\n").rows[0]).toMatchObject({ brand: "Glad", name: "Bags" });
     // A brand sets the item's and says it changed; a blank one keeps it
