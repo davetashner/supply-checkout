@@ -388,6 +388,39 @@ describe("documents (the app's db contract)", () => {
     expect(performance.now() - start).toBeLessThan(1000);
   });
 
+  it("refuses control and invisible characters in a project's client, creator's name and store where the write changes them, and cleans a line's name (supply-checkout-1dg.13)", async () => {
+    const line = { code: "0123", name: "Gloves", price: 1, out: 1, returned: 0 };
+    await call("PUT", "/teams/team-a/projects/s1", { body: { data: { ...project("2026-09-01", { "0123": line }), source: { store: "Shop", receiptDate: "" } } } });
+    const before = table.get("TEAM#team-a", "PROJECT#s1");
+    for (const [field, data] of [
+      ["client", { client: "Echo \u202eniatnuoM" }],
+      ["client", { client: "Echo\u200b" }],
+      ["createdByName", { createdByName: "Sam\u2066" }],
+      ["source.store", { source: { store: "Shop\u{e0041}" } }],
+    ] as const) {
+      const patch = await call("PATCH", "/teams/team-a/projects/s1", { body: { data } });
+      expect(patch.body.error, JSON.stringify(data)).toEqual({ code: "bad_request", message: `${field} has an invisible or control character in it` });
+      const put = await call("PUT", "/teams/team-a/projects/s1", { body: { data: { ...project("2026-09-01"), ...data } } });
+      expect(put.body.error?.code, JSON.stringify(data)).toBe("bad_request");
+    }
+    expect(table.get("TEAM#team-a", "PROJECT#s1")).toEqual(before);
+    // Right-to-left text and emoji pass
+    expect((await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { client: "\u05e0\u05d9\u05e7\u05d9\u05d5\u05df \u{1f9f9}" } } })).body.data.client).toBe("\u05e0\u05d9\u05e7\u05d9\u05d5\u05df \u{1f9f9}");
+    // A line's name the write changes is cleaned rather than refused: it's a copy of the item's
+    expect((await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { items: { "0123": { name: "Glo\u200bves \u202eL" }, k2: { name: "Ta\u2066pe", price: 1, out: 1, returned: 0 } } } } })).body.data.items).toMatchObject({ "0123": { name: "Gloves L" }, k2: { name: "Tape" } });
+  });
+
+  it("saves a project whose fields were stored with an invisible character before they were refused, when the write leaves them unchanged (supply-checkout-1dg.13)", async () => {
+    await call("PUT", "/teams/team-a/projects/s1", { body: { data: project("2026-09-01", { "0123": { code: "0123", name: "Gloves", price: 1, out: 1, returned: 0 } }) } });
+    const legacy = { client: "Echo \u202eniatnuoM", createdByName: "Sam\u200b", source: { store: "Shop\u2066", receiptDate: "" } };
+    const stored = table.get("TEAM#team-a", "PROJECT#s1") as Record<string, unknown>;
+    table.put({ ...stored, ...legacy, items: { "0123": { code: "0123", name: "Glo\u200bves", price: 1, out: 1, returned: 0 } } });
+    const res = await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { date: "2026-09-02", items: { "0123": { out: 2 } } } } });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ ...legacy, date: "2026-09-02", items: { "0123": { name: "Glo\u200bves", out: 2 } } });
+    expect((await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { client: "Other \u202etext" } } })).body.error?.code).toBe("bad_request");
+  });
+
   it("saves a product whose name or brand was stored with an invisible character before they were refused, when the write leaves them unchanged (supply-checkout-1dg.12)", async () => {
     await call("PUT", "/teams/team-a/products/p1", { body: { data: product } });
     const name = "Nitrile \u202egloves", brand = "Ans\u200bell";

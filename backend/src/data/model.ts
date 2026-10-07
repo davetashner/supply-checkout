@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { InvalidInputError } from "./errors.js";
 import { keys } from "./keys.js";
+import { hasHiddenCharacter } from "../text/hidden-characters.js";
 
 /** Roles in a team (ADR 0007). `system` is for server processes such as Stripe webhooks. */
 export type Role = "owner" | "contributor" | "viewer" | "system";
@@ -183,7 +184,8 @@ export function memberRole(value: unknown): MemberRole {
 }
 
 export function teamName(value: unknown): string {
-  if (typeof value !== "string" || !value.trim() || value.length > 200) throw new InvalidInputError("Invalid team name");
+  // No control or invisible characters (src/text/hidden-characters.ts): it's in the team switcher and in emails
+  if (typeof value !== "string" || !value.trim() || value.length > 200 || hasHiddenCharacter(value)) throw new InvalidInputError("Invalid team name");
   return value.trim();
 }
 

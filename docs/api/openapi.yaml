@@ -80,7 +80,10 @@ info:
       zero-width joiner in an emoji sequence, one variation selector after
       an emoji, joiners in scripts that use them, and the England, Scotland
       and Wales flags' tags; like money, only where the write changes the
-      field (supply-checkout-1dg.12).
+      field (supply-checkout-1dg.12). A project's `client`, `createdByName`
+      and `source.store` follow the same rule where the write changes them,
+      and a line's `name` the write changes has those characters removed
+      (supply-checkout-1dg.13).
     - A product's `stock` changes only through the stock commands (the
       `commands` tag) and the CSV import, which record a movement for every
       change. A product `set` or `update` keeps the stored `stock`: leave it
