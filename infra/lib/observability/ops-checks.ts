@@ -29,6 +29,7 @@ import {
   STUCK_IMPORT_ATTRIBUTES,
   TEAM_PURGE_ATTRIBUTES,
   TEAM_PURGE_MARK_ATTRIBUTES,
+  TEAM_PURGE_READ_ATTRIBUTES,
 } from "../../../backend/src/data/schema.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import {
@@ -92,7 +93,9 @@ export interface OpsChecksProps {
  *   the Stripe customer and link), and UpdateItem on `TEAM#` partitions
  *   naming only TEAM_PURGE_MARK_ATTRIBUTES, to mark a team `purging` before
  *   it deletes anything: it deletes whole items without reading documents,
- *   emails or names. The partitions are wildcards because it acts on
+ *   emails or names. A GetItem of a `TEAM#` item may also name the team's
+ *   test mark (TEAM_PURGE_READ_ATTRIBUTES, supply-checkout-o60.12), which
+ *   only tags its metrics. The partitions are wildcards because it acts on
  *   whichever teams are due, which only the table's own index names; no
  *   request reaches it. `purgeNotRunning` alarms when its ClosedTeamsOverdue
  *   gauge stops arriving ("Deletion job not running", docs/journeys.md).
@@ -135,7 +138,8 @@ export interface OpsChecksProps {
  *   Query GSI3's OPS#TEAMS partition naming only LAPSE_LIST_ATTRIBUTES and
  *   its OPS#OWNERS#* partitions naming only LAPSE_OWNER_ATTRIBUTES (an owner's
  *   email, for the notices); GetItem on `TEAM#` items naming only
- *   LAPSE_READ_ATTRIBUTES (billing fields, the name, Stripe IDs, version);
+ *   LAPSE_READ_ATTRIBUTES (billing fields, the name, Stripe IDs, version,
+ *   and the test mark, which only tags its metrics);
  *   UpdateItem there naming only LAPSE_CLOSE_ATTRIBUTES, returning nothing
  *   (the closure: never status, plan, comps or Stripe IDs); GetItem and
  *   PutItem in `LAPSE#` partitions (its own records) naming only
@@ -258,6 +262,21 @@ export class OpsChecks extends Construct {
           "ForAllValues:StringLike": purgePartitions,
           "ForAllValues:StringEquals": { "dynamodb:Attributes": [...TEAM_PURGE_ATTRIBUTES] },
           StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+    this.teamPurge.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadClosedTeamTestMark",
+        // A closed team's META item read as DeleteClosedTeamItems allows, with its test mark
+        // (supply-checkout-o60.12), which only tags the purge's metrics. GetItem only, team
+        // partitions only, projected: the index, the key listings and the deletes never name it
+        actions: ["dynamodb:GetItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...TEAM_PURGE_READ_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
         },
       }),
     );

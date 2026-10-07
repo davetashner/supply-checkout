@@ -82,7 +82,7 @@ import {
 } from "../data/index.js";
 import { EmailNotSentError, type Mailer, sendTeamNotice } from "../email/mailer.js";
 import type { TeamNoticeInput } from "../email/templates.js";
-import { BusinessMetric, type Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import { BILLING_EVENTS, type BillingEventType } from "./names.js";
 import type { BillingMessage } from "./webhook-handler.js";
 import { createEntitlementCheck, type EntitlementOutcome, type EntitlementStripe } from "./entitlements.js";
@@ -231,7 +231,7 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
   }
 
   /** Emails each owner about the event, once each whatever the retries (claimBillingNotice first). */
-  async function notify(db: Db, ctx: TeamContext, eventId: string, input: TeamNoticeInput): Promise<void> {
+  async function notify(db: Db, ctx: TeamContext, eventId: string, input: TeamNoticeInput, mark: { readonly test?: true }): Promise<void> {
     const owners = await listOwnerContacts(db, ctx);
     let sent = 0;
     const failures: string[] = [];
@@ -245,9 +245,9 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
         failures.push(error instanceof EmailNotSentError ? error.code : ((error as { name?: string } | null)?.name ?? "Unknown"));
       }
     }
-    if (sent) obs.count(BusinessMetric.BillingNotices, sent, { teamId: ctx.teamId, kind: input.kind });
+    if (sent) obs.count(BusinessMetric.BillingNotices, sent, { teamId: ctx.teamId, kind: input.kind, ...mark });
     if (failures.length) {
-      obs.count(BusinessMetric.BillingNoticeFailures, failures.length, { teamId: ctx.teamId, kind: input.kind });
+      obs.count(BusinessMetric.BillingNoticeFailures, failures.length, { teamId: ctx.teamId, kind: input.kind, ...mark });
       obs.logger.warn("Billing emails not sent", { teamId: ctx.teamId, eventId, kind: input.kind, failed: failures.length, codes: [...new Set(failures)].join(",") });
     }
   }
@@ -293,21 +293,21 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     try {
       after = await getBillingTeam(db, ctx, now());
     } catch (error) {
-      obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action, checked: "no" });
+      obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action, checked: "no", ...testMark(team.test) });
       obs.logger.error(NOT_READ_AGAIN, { ...ids, error: (error as { name?: string } | null)?.name ?? "Unknown" });
       return "unchecked";
     }
     if (after && after.closedAt !== team.closedAt) {
       if (await resumedAfterReopen(stripe, current.id, after, team.closedAt, action)) {
-        obs.count(BusinessMetric.ReopenedTeamSubscriptionsResumed, 1, { teamId: team.teamId, source: "worker" });
+        obs.count(BusinessMetric.ReopenedTeamSubscriptionsResumed, 1, { teamId: team.teamId, source: "worker", ...testMark(team.test) });
         obs.logger.warn("Team reopened while its subscription was being ended: resumed", ids);
       } else {
-        obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action });
+        obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action, ...testMark(team.test) });
         obs.logger.error(TEAM_REOPENED, ids);
       }
       return "reopened";
     }
-    obs.count(BusinessMetric.ClosedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action });
+    obs.count(BusinessMetric.ClosedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action, ...testMark(team.test) });
     obs.logger.info("Closed team's subscription ended", { teamId: team.teamId, ...request.log, subscriptionId: current.id, status: current.status, action });
     return "ended";
   }
@@ -471,9 +471,9 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
       if (after?.closed && !after.purging) await endForEvent(db, ctx, message, after, sub);
       return done("team_closed");
     }
-    obs.count(BusinessMetric.BillingEventsApplied, 1, { teamId, type: message.type });
+    obs.count(BusinessMetric.BillingEventsApplied, 1, { teamId, type: message.type, ...testMark(team.test) });
     const notice = await withAccess(db, ctx, noticeFor(message, sub, team.name));
-    if (notice) await notify(db, ctx, eventId, notice);
+    if (notice) await notify(db, ctx, eventId, notice, testMark(team.test));
     return done("applied");
   }
 

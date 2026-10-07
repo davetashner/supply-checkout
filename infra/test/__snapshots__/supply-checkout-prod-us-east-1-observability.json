@@ -6651,6 +6651,51 @@
               "Sid": "DeleteClosedTeamItems"
             },
             {
+              "Action": "dynamodb:GetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAM#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "GSI1PK",
+                    "GSI1SK",
+                    "closedAt",
+                    "purgeAfter",
+                    "purging",
+                    "stripeCustomerId",
+                    "stripeSubscriptionId",
+                    "stripeCancelledFor",
+                    "stripeSetAsideFor",
+                    "stripeSetAsideReason",
+                    "teamId",
+                    "test"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "ReadClosedTeamTestMark"
+            },
+            {
               "Action": "dynamodb:UpdateItem",
               "Condition": {
                 "ForAllValues:StringLike": {
@@ -7684,7 +7729,8 @@
                     "subscriptionEndedAt",
                     "compPlan",
                     "compUntil",
-                    "version"
+                    "version",
+                    "test"
                   ]
                 },
                 "StringEqualsIfExists": {

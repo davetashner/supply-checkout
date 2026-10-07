@@ -1178,6 +1178,7 @@ describe("scheduled checks", () => {
       "dynamodb:Query",
       "dynamodb:Query",
       ["dynamodb:DeleteItem", "dynamodb:GetItem"],
+      "dynamodb:GetItem",
       "dynamodb:UpdateItem",
       ["dynamodb:DeleteItem", "dynamodb:PutItem"],
       "dynamodb:Query",
@@ -1208,7 +1209,7 @@ describe("scheduled checks", () => {
       STRIPE_MODE: "test",
     });
     const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "purging", "stripeCustomerId", "stripeSubscriptionId", "stripeCancelledFor", "stripeSetAsideFor", "stripeSetAsideReason", "teamId"];
-    const [, index, query, items, mark, queue, listQueue] = found as Record<string, unknown>[];
+    const [, index, query, items, testMark, mark, queue, listQueue] = found as Record<string, unknown>[];
     expect(index?.Condition).toEqual({
       "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAMS#CLOSED"], "dynamodb:Attributes": attributes },
       // COUNT for the overdue gauge, which returns no items
@@ -1229,6 +1230,20 @@ describe("scheduled checks", () => {
       "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
       StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });
+    // A META item's test mark (supply-checkout-o60.12), for the metrics only: GetItem in team partitions, projected, naming
+    // the closure fields and `test` alone. The only statement that names it
+    expect(testMark).toEqual({
+      Sid: "ReadClosedTeamTestMark",
+      Effect: "Allow",
+      Action: "dynamodb:GetItem",
+      Resource: table,
+      Condition: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+        "ForAllValues:StringEquals": { "dynamodb:Attributes": [...attributes, "test"] },
+        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect(found.filter((s) => JSON.stringify(s).includes('"test"')).map((s) => s.Sid)).toEqual(["ReadClosedTeamTestMark"]);
     // The purging mark and the subscription-ended record: team partitions only, naming only the META item's key, purgeAfter
     // and the two marks: never closedAt, so it can't close or reopen a team
     expect(mark?.Resource).toEqual(table);
@@ -1348,6 +1363,9 @@ describe("scheduled checks", () => {
       },
     });
     expect(by("OwnerEmailsIndexOnly")).toMatchObject({ Action: "dynamodb:Query", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["OPS#OWNERS#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI3PK", "GSI3SK", "email"] } } });
+    // It reads a team's test mark, for its metrics only (supply-checkout-o60.12): never lists, closes or writes by it
+    expect(LAPSE_READ_ATTRIBUTES).toContain("test");
+    for (const s of found.filter((s) => s.Sid !== "ReadTeamBilling")) expect(JSON.stringify(s), String(s.Sid)).not.toContain('"test"');
     expect(by("ReadTeamBilling")).toMatchObject({ Action: "dynamodb:GetItem", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_READ_ATTRIBUTES] } } });
     // The closure, never status, plan, comps or Stripe IDs
     expect(by("CloseLapsedTeam")).toMatchObject({ Action: "dynamodb:UpdateItem", Condition: { "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "closedBy", "purgeAfter", "purging", "version", "stripeCheckoutAt"] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } } });

@@ -148,7 +148,7 @@ import {
   type StripeDeletion,
 } from "../data/index.js";
 import type { DeletionLog } from "../deletions/records.js";
-import { BusinessMetric, type Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import {
   CLOSED_TEAMS_TO_END_PER_RUN,
   HELD_PURGE_GRACE_DAYS,
@@ -221,7 +221,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         return false;
       }
       setAside++;
-      obs.count(BusinessMetric.ClosedTeamSubscriptionsSetAside, 1, { teamId: team.teamId, reason });
+      obs.count(BusinessMetric.ClosedTeamSubscriptionsSetAside, 1, { teamId: team.teamId, reason, ...testMark(team.test) });
       return true;
     };
     for (const listed of teams) {
@@ -247,7 +247,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
           // Set aside, not recorded as done: a Stripe key or mode mismatch would look like this for every
           // closed team, none cancelled, and once it's fixed a person lists them again. Counted for its own alarm
           if (await setTeamAside(team, "NotFound")) {
-            obs.count(BusinessMetric.ClosedTeamSubscriptionsNotFound, 1, { teamId });
+            obs.count(BusinessMetric.ClosedTeamSubscriptionsNotFound, 1, { teamId, ...testMark(team.test) });
             obs.logger.warn("Closed team's subscription not found in Stripe", { teamId, subscriptionId: team.stripeSubscriptionId });
           }
           continue;
@@ -268,12 +268,13 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         const periodStart = sub.items.data[0]?.current_period_start;
         if (sub.status === "active" && typeof periodStart === "number" && periodStart * 1000 > Date.parse(team.closedAt)) {
           obs.logger.warn("Closed team's subscription renewed after it closed", { teamId, subscriptionId: sub.id, closedAt: team.closedAt });
-          obs.count(BusinessMetric.ClosedTeamRenewalsCharged, 1, { teamId });
+          obs.count(BusinessMetric.ClosedTeamRenewalsCharged, 1, { teamId, ...testMark(team.test) });
         }
+        const mark = testMark(team.test);
         const marked = await markSubscriptionEnding(db, team).catch((error: unknown) => {
           // Set to end, but not recorded: if the team was reopened meanwhile, nothing would see it (supply-checkout-8jc.30)
           if (action !== "none") {
-            obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId, action, checked: "no" });
+            obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId, action, checked: "no", ...mark });
             obs.logger.error("Closed team's subscription set to end, but the team wasn't read again", { teamId, subscriptionId: sub.id, action, error: errorName(error) });
           }
           throw error;
@@ -281,18 +282,18 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         if (!marked) {
           // Reopened meanwhile: undo a cancellation at the period's end, which the reopen's resync may have missed
           if (action === "cancel_at_period_end" && (await resumedAfterReopen(stripe, team, sub.id))) {
-            obs.count(BusinessMetric.ReopenedTeamSubscriptionsResumed, 1, { teamId, source: "purge" });
+            obs.count(BusinessMetric.ReopenedTeamSubscriptionsResumed, 1, { teamId, source: "purge", ...testMark(team.test) });
             obs.logger.warn("Team reopened while its subscription was being ended: resumed", { teamId, subscriptionId: sub.id, action });
             continue;
           }
-          if (action !== "none") obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId, action });
+          if (action !== "none") obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId, action, ...testMark(team.test) });
           obs.logger.error("Team reopened while its subscription was being ended", { teamId, subscriptionId: sub.id, action });
           failed++;
           continue;
         }
         if (action !== "none") {
           ended++;
-          obs.count(BusinessMetric.ClosedTeamSubscriptionsEnded, 1, { teamId, action });
+          obs.count(BusinessMetric.ClosedTeamSubscriptionsEnded, 1, { teamId, action, ...testMark(team.test) });
         }
         obs.logger.info("Closed team's subscription ended", { teamId, subscriptionId: sub.id, status: sub.status, action });
       } catch (error) {
@@ -362,13 +363,16 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
     return 0;
   }
 
-  /** Counts and logs a Stripe customer deletion Stripe confirmed, from the purge or a retry. */
-  function customerDeleted(teamId: string, customerId: string, result: "deleted" | "already_deleted", source: "purge" | "retry"): void {
-    if (result === "deleted") obs.count(BusinessMetric.StripeCustomersDeleted, 1, { teamId, source });
+  /**
+   * Counts and logs a Stripe customer deletion Stripe confirmed, from the purge or a retry. `mark` is the
+   * team's test mark, from the purge (a retry's team is gone, so it has none).
+   */
+  function customerDeleted(teamId: string, customerId: string, result: "deleted" | "already_deleted", source: "purge" | "retry", mark: { readonly test?: true } = {}): void {
+    if (result === "deleted") obs.count(BusinessMetric.StripeCustomersDeleted, 1, { teamId, source, ...mark });
     else {
       // A run that stopped after deleting it, a retry whose first try reached Stripe, or a Stripe key or
       // mode mismatch: the IDs are in the deletion record
-      obs.count(BusinessMetric.StripeCustomersAlreadyDeleted, 1, { teamId, source });
+      obs.count(BusinessMetric.StripeCustomersAlreadyDeleted, 1, { teamId, source, ...mark });
       obs.logger.warn("Stripe customer already deleted", { teamId, customerId, ...(source === "retry" ? { source } : {}) });
     }
     obs.logger.info("Stripe customer deleted", { teamId, customerId, result, ...(source === "retry" ? { source } : {}) });
@@ -381,13 +385,13 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
    * the team's data still goes on schedule. Only a queue entry that can't be written stops
    * the team, which then fails and is tried again next run, nothing of it deleted.
    */
-  async function deleteCustomer(run: RunState, teamId: string, customerId: string, at: Date): Promise<void> {
+  async function deleteCustomer(run: RunState, teamId: string, customerId: string, at: Date, mark: { readonly test?: true }): Promise<void> {
     let failure: unknown;
     if (run.stripeFailures < STRIPE_FAILURES_BEFORE_QUEUEING) {
       try {
         const result = await deleteStripeCustomer(await deps.stripe(), customerId);
         run.stripeFailures = 0;
-        customerDeleted(teamId, customerId, result, "purge");
+        customerDeleted(teamId, customerId, result, "purge", mark);
         // Best effort: an entry an earlier, stopped run queued would otherwise be retried and found
         // already deleted, a false sign of a key or mode mismatch
         await removeStripeCustomerDeletion(db, teamId).catch((error: unknown) => {
@@ -401,7 +405,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
     }
     await queueStripeCustomerDeletion(db, { teamId, stripeCustomerId: customerId, queuedAt: at.toISOString() });
     run.queued++;
-    obs.count(BusinessMetric.StripeCustomerDeletionsQueued, 1, { teamId });
+    obs.count(BusinessMetric.StripeCustomerDeletionsQueued, 1, { teamId, ...mark });
     // The error's name and Stripe's safe fields only: never its message
     obs.logger.warn("Stripe customer deletion queued", { teamId, customerId, error: failure === undefined ? "NotTried" : errorName(failure), ...stripeFields(failure) });
   }
@@ -492,6 +496,8 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
     const heldDueBefore = new Date(started - HELD_PURGE_GRACE_DAYS * 86_400_000);
     const due = await listTeamsToPurge(db, new Date(started), undefined, heldDueBefore);
     let purged = 0;
+    // Of them, test teams: TeamsPurged is sent for the rest, and logged for these (TEST_SKIPPED_METRICS)
+    let testPurged = 0;
     let failed = 0;
     // Teams this run deleted, or found weren't due after all
     const done = new Set<string>();
@@ -501,7 +507,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         const at = new Date(now());
         const result = await purgeTeam(db, team.teamId, at, {
           beforeDelete: (stripeIds) => deps.deletions.record({ kind: "team", id: team.teamId, deletedAt: at.toISOString(), ...stripeIds }),
-          deleteStripeCustomer: (customerId) => deleteCustomer(run, team.teamId, customerId, at),
+          deleteStripeCustomer: (customerId, mark) => deleteCustomer(run, team.teamId, customerId, at, mark),
           heldDueBefore,
         });
         if (result.held) {
@@ -512,11 +518,12 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         done.add(team.teamId);
         if (result.skipped) continue;
         purged++;
+        if (result.test) testPurged++;
         obs.logger.info("Team purged", { teamId: team.teamId, purgeAfter: team.purgeAfter, items: result.deleted });
         if (result.forced) {
           // Its subscription may still be live (another customer's, or under a Stripe key or mode mismatch): a person ends it by hand
           const { stripeCustomerId, stripeSubscriptionId, reason } = result.forced;
-          obs.count(BusinessMetric.HeldTeamsPurged, 1, { teamId: team.teamId });
+          obs.count(BusinessMetric.HeldTeamsPurged, 1, { teamId: team.teamId, ...testMark(result.test) });
           obs.logger.error("Held team purged with its subscription unresolved", { teamId: team.teamId, customerId: stripeCustomerId, subscriptionId: stripeSubscriptionId, reason: reason ?? "Unknown" });
         }
       } catch (error) {
@@ -524,7 +531,8 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         obs.logger.error("Team purge failed", { teamId: team.teamId, error: errorName(error), ...stripeFields(error) });
       }
     }
-    if (purged) obs.count(BusinessMetric.TeamsPurged, purged);
+    if (purged > testPurged) obs.count(BusinessMetric.TeamsPurged, purged - testPurged);
+    if (testPurged) obs.count(BusinessMetric.TeamsPurged, testPurged, testMark(true));
     // After the purge, so the data deletions have the run's budget first
     const retryFailures = await retryQueued(run, started);
     // The overdue teams at the start less those this run deleted (or found weren't due). Held

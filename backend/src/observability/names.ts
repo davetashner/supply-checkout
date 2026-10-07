@@ -215,7 +215,10 @@ export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMe
  * so Writes (for ConditionalWriteConflicts) and ReceiptReads (for
  * ReceiptReadFailures) are sent too. Nor ReceiptTrialCapReached: the
  * account-wide trial cap being reached blocks real customers, whoever's read
- * reached it.
+ * reached it. Nor, from the background jobs, LapsedTeamsClosed (its alarm
+ * guards against a bug closing teams en masse, whoever's they are) or
+ * ReopenedTeamSubscriptionsResumed (a reopen racing a closure's cancellation),
+ * besides their failures, drift and held or set-aside teams.
  */
 export const TEST_SKIPPED_METRICS: ReadonlySet<BusinessMetricName> = new Set<BusinessMetricName>([
   BusinessMetric.SignUps,
@@ -235,6 +238,14 @@ export const TEST_SKIPPED_METRICS: ReadonlySet<BusinessMetricName> = new Set<Bus
   BusinessMetric.TeamReopenedNotices,
   BusinessMetric.AccountsDeleted,
   BusinessMetric.WelcomeEmails,
+  // The background jobs' (supply-checkout-o60.12): the purge, the lapsed-team job and the billing worker
+  BusinessMetric.TeamsPurged,
+  BusinessMetric.StripeCustomersDeleted,
+  BusinessMetric.ClosedTeamSubscriptionsEnded,
+  BusinessMetric.LapseNotices,
+  BusinessMetric.BillingEventsApplied,
+  BusinessMetric.BillingNotices,
+  BusinessMetric.SeatQuantityUpdates,
 ]);
 
 /**

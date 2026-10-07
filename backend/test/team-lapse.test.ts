@@ -8,7 +8,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { SubscriptionLike } from "../src/billing/subscription.js";
 import { deletionLastDay, deletionTime, LAPSE_CHECKOUT_GUARD_HOURS, LAPSE_PURGE_DELAY_HOURS, LAPSE_WARNING_DAYS, LAPSED_CLOSER } from "../src/data/index.js";
-import { BusinessMetric, type Observability } from "../src/observability/index.js";
+import { BusinessMetric, type BusinessMetricName, type Metadata, type Observability, skippedForTest } from "../src/observability/index.js";
 import { LAPSE_BUDGET_MS, LAPSE_MAX_CLOSURES_PER_RUN } from "../src/ops/names.js";
 import { createTeamLapseHandler, type LapseStripe } from "../src/ops/team-lapse-handler.js";
 import { fakeMailer, REGION } from "./helpers.js";
@@ -472,5 +472,62 @@ describe("the run", () => {
     const broken = createTeamLapseHandler({ db: table.guarded(() => false), obs: obs(), mailer: mails.mailer, stripe: async () => stripe, now: () => NOW });
     await expect(broken()).rejects.toThrow("not authorized");
     expect(gauges).toEqual({});
+  });
+});
+
+describe("a test team (supply-checkout-o60.12)", () => {
+  // The same lapse for a customer's team and a test team: the mark changes no email, warning,
+  // closure or Stripe call, only the metrics' metadata, and count() then skips the business ones
+  it("is handled exactly like a customer's team, its metrics tagged test", async () => {
+    team("cust", { status: "trialing", trialEndsAt: iso(NOW - 200 * DAY) });
+    team("probe", { status: "trialing", trialEndsAt: iso(NOW - 200 * DAY), test: true });
+    team("other", { status: "trialing", trialEndsAt: iso(NOW - 200 * DAY), test: "true" });
+    await run();
+    expect(await run(NOW + 8 * DAY)).toEqual({ checked: 3, closed: 3, failed: 0, held: 0 });
+    for (const id of ["probe", "other"]) {
+      expect(sentTo(id).map((m) => m.input.kind)).toEqual(sentTo("cust").map((m) => m.input.kind));
+      expect(meta(id)).toMatchObject({ closedBy: LAPSED_CLOSER, purgeAfter: meta("cust").purgeAfter });
+    }
+    expect(meta("probe").test).toBe(true);
+    const tagged = (teamId: string) => counts.filter(([, , m]) => m.teamId === teamId);
+    expect(tagged("probe").map(([metric]) => metric)).toEqual(tagged("cust").map(([metric]) => metric));
+    expect(tagged("probe").map(([metric]) => metric)).toEqual(expect.arrayContaining([BusinessMetric.LapseNotices, BusinessMetric.LapsedTeamsClosed]));
+    for (const [, , metadata] of tagged("probe")) expect(metadata.test).toBe(true);
+    // Only exactly true marks it
+    for (const id of ["cust", "other"]) for (const [, , metadata] of tagged(id)) expect(metadata).not.toHaveProperty("test");
+    // The owners' emails aren't sent as metrics for it; the closure (its alarm guards against mass closures) is
+    const sent = (teamId: string) => tagged(teamId).filter(([metric, , metadata]) => !skippedForTest(metric as BusinessMetricName, metadata as Metadata)).map(([metric]) => metric);
+    expect(sent("probe")).toEqual([BusinessMetric.LapsedTeamsClosed]);
+    expect(sent("cust")).toEqual(tagged("cust").map(([metric]) => metric));
+    expect(denied).toEqual([]);
+  });
+
+  it("tags its failures, which are still sent, including one that throws after the team was read", async () => {
+    team("probe", { status: "canceled", subscriptionEndedAt: iso(NOW - 40 * DAY), stripeSubscriptionId: "sub_p", stripeCustomerId: "cus_p", test: true });
+    customers.add("cus_p");
+    subs.set("sub_p", sub("sub_p", "cus_p", "canceled"));
+    subs.set("sub_live", sub("sub_live", "cus_p", "active"));
+    await run();
+    // Stripe disagrees: a live subscription
+    expect(await run(NOW + 8 * DAY)).toMatchObject({ closed: 0, failed: 1 });
+    // Stripe down: the throw is counted by the caller, with the mark it read
+    stripeDown = true;
+    expect(await run(NOW + 8 * DAY + 3_600_000)).toMatchObject({ closed: 0, failed: 1 });
+    const failures = counts.filter(([m]) => m === BusinessMetric.LapseFailures).map(([, , metadata]) => metadata);
+    expect(failures).toEqual([
+      { teamId: "probe", step: "stripe", why: "SubscriptionLive", test: true },
+      { teamId: "probe", step: "error", test: true },
+    ]);
+    for (const metadata of failures) expect(skippedForTest(BusinessMetric.LapseFailures, metadata as Metadata)).toBe(false);
+    expect(meta("probe").closedAt).toBeUndefined();
+  });
+
+  it("tags no failure for a team it couldn't read", async () => {
+    team("probe", { status: "trialing", trialEndsAt: iso(NOW - 200 * DAY), test: true });
+    // Its META item can't be read: nothing says it's a test team
+    const policy = lapsePolicy(denied);
+    const db = table.guarded((command, input) => !(command === "GetCommand" && JSON.stringify(input.Key).includes("TEAM#probe")) && policy(command, input));
+    await createTeamLapseHandler({ db, obs: obs(), mailer: mails.mailer, stripe: async () => stripe, now: () => NOW, random: () => 0 })();
+    expect(counts.filter(([m]) => m === BusinessMetric.LapseFailures).map(([, , metadata]) => metadata)).toEqual([{ teamId: "probe", step: "error" }]);
   });
 });

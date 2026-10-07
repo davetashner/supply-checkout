@@ -722,7 +722,8 @@ export class ApiStack extends SupplyCheckoutStack {
    *     records' attributes (WEBHOOK_RECORD_ATTRIBUTES), returning nothing.
    *   - GetItem in `STRIPE#<stripeCustomer>` naming only the keys and `teamId`.
    *   - GetItem and Query in `TEAM#<teamId>` naming only
-   *     BILLING_READ_ATTRIBUTES (projected reads only).
+   *     BILLING_READ_ATTRIBUTES (projected reads only), which include the
+   *     test mark (`test`), read only to tag its metrics.
    *   - UpdateItem in `TEAM#<teamId>` naming only BILLING_UPDATE_ATTRIBUTES,
    *     returning nothing.
    *   - PutItem in `OPAUDIT#<teamId>` naming only COMP_DISCOUNT_AUDIT_ATTRIBUTES,

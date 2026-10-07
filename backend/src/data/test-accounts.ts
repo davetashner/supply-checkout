@@ -14,9 +14,10 @@
 //   account (only we can make that happen, from a test account); the journey
 //   tests must never hand a test team to a non-test account.
 //
-// What the mark does, and only this: the handlers leave test accounts and
-// teams out of the customer-activity business metrics (TEST_SKIPPED_METRICS
-// in observability/names.ts), logging the line with `test: true` instead,
+// What the mark does, and only this: the handlers and the background jobs
+// (the purge, the lapsed-team job and the billing worker, supply-checkout-o60.12)
+// leave test accounts and teams out of the customer-activity business metrics
+// (TEST_SKIPPED_METRICS in observability/names.ts), logging the line with `test: true` instead,
 // and the operator page and `npm run ops` show a Test badge. It never grants
 // anything: no access, trial, limit, check or billing depends on it.
 //

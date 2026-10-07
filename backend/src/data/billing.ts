@@ -161,6 +161,11 @@ export interface BillingTeam {
   readonly compUntil?: string;
   readonly compMonths?: number;
   readonly compLive: boolean;
+  /**
+   * A test team (its META item's `test`, test-accounts.ts): read only to tag
+   * the worker's metrics (testMark). Never decides anything.
+   */
+  readonly test?: true;
 }
 
 /** The team's billing state, or undefined if its META item is gone (purged). */
@@ -172,8 +177,8 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
       Key: keys.team(ctx.teamId),
       ConsistentRead: true,
       ProjectionExpression:
-        "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil, compMonths, cancelAtPeriodEnd, stripeResyncFor, stripeReopenedAt, stripeCancelledFor, trialEndsAt, createdAt, pastDueSince, subscriptionEndedAt",
-      ExpressionAttributeNames: { "#name": "name", "#status": "status", "#plan": "plan" },
+        "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil, compMonths, cancelAtPeriodEnd, stripeResyncFor, stripeReopenedAt, stripeCancelledFor, trialEndsAt, createdAt, pastDueSince, subscriptionEndedAt, #test",
+      ExpressionAttributeNames: { "#name": "name", "#status": "status", "#plan": "plan", "#test": "test" },
     }),
   );
   if (!Item) return undefined;
@@ -202,6 +207,7 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
     ...(str(Item.compUntil) ? { compUntil: Item.compUntil as string } : {}),
     ...(typeof Item.compMonths === "number" ? { compMonths: Item.compMonths } : {}),
     compLive: liveComp(Item, now) !== undefined,
+    ...(Item.test === true ? { test: true as const } : {}),
   };
 }
 
