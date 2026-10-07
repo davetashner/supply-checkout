@@ -9,6 +9,7 @@ import { shrinkPhoto } from "./photo.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 import { projectCsv, projectsCsv, inventoryCsv, allJson } from "./export.js";
 import { createFirstRun } from "./first-run.js";
+import { reorderLevel, isLow, isAcked, needsReorder, lowItems, reorderCsv, reorderText } from "./reorder.js";
 
 let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected = false, isOwner = false;
 // Keyed by product key, which can be any barcode's: no prototype, so a key like
@@ -213,6 +214,7 @@ function draw() {
 function drawView() {
   $("#tab-projects").setAttribute("aria-pressed", ui.tab === "projects");
   $("#tab-prices").setAttribute("aria-pressed", ui.tab === "prices");
+  paintLowCount();
   paintNotice();
 
   $("#receiptView").hidden = !ui.receipt;
@@ -239,6 +241,9 @@ $("#main").addEventListener("click", e => {
   else if (t.id === "exportAll") exportAllModal();
   else if (t.id === "resume") { ui.receipt = true; draw(); refreshMarkup().then(renderReceipt); window.scrollTo(0, 0); }
   else if (t.id === "addProduct") productModal(null);
+  else if (t.id === "copyReorder") copyReorder();
+  else if (t.id === "downloadReorder") save("Reorder list.csv", reorderCsv(lowList()));
+  else if (t.dataset.ack) acknowledge(t.dataset.ack);
   else if (t.dataset.filter) { ui.filter = t.dataset.filter; draw(); }
   else if (t.dataset.year) { const b = t.getAttribute("aria-expanded") === "true"; ui.years[t.dataset.year] = !b; draw(); }
   else if (t.dataset.kind) { ui.kind = t.dataset.kind; draw(); }
@@ -248,7 +253,8 @@ $("#main").addEventListener("click", e => {
 });
 // preventDefault: otherwise this Enter press also submits the editor's form
 $("#main").addEventListener("keydown", e => {
-  if (e.key !== "Enter") return;
+  // A button in a row (Running low's Acknowledge) does its own thing
+  if (e.key !== "Enter" || e.target.closest("button")) return;
   const out = e.target.closest("tr[data-project]");
   if (out) { e.preventDefault(); openProjectFromInventory(out.dataset.project); return; }
   const tr = canWrite && e.target.closest("tr[data-prod]");
@@ -556,9 +562,12 @@ const KINDS = [["all", "All"], ["supply", "Supplies"], ["equipment", "Equipment"
 const chip = (attr, value, label, on) => `<button type="button" class="chip" data-${attr}="${value}" aria-pressed="${on}">${label}</button>`;
 function drawPrices() {
   const all = Object.entries(products).map(([key, p]) => ({ key, ...p })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  // Running low (supply-checkout-005.8): offered once any item has a reorder level, or while it's showing
+  const levels = ui.kind === "low" || all.some(p => reorderLevel(p) !== null);
+  const kinds = `<div class="chips" role="group" aria-label="Show">${KINDS.map(([k, label]) => chip("kind", k, label, ui.kind === k)).join("")}${levels ? chip("kind", "low", lowLabel(all), ui.kind === "low") : ""}</div>`;
+  if (ui.kind === "low") { drawLow(all, kinds); return; }
   const list = ui.kind === "all" ? all : all.filter(p => isEquipment(p) === (ui.kind === "equipment"));
   const out = ui.kind === "equipment" && ui.equip === "out";
-  const kinds = `<div class="chips" role="group" aria-label="Show">${KINDS.map(([k, label]) => chip("kind", k, label, ui.kind === k)).join("")}</div>`;
   const where = ui.kind === "equipment" ? `<div class="chips" role="group" aria-label="Equipment">${chip("equip", "in", "In storage", !out)}${chip("equip", "out", "Out on jobs", out)}</div>` : "";
   const n = list.length;
   morph($("#main"), `
@@ -569,10 +578,48 @@ function drawPrices() {
     <div class="bar">${kinds}${where}</div>
     ${out ? equipmentOutHTML() : list.length ? `<div class="table-wrap"><table class="prices">
       <thead><tr><th>Item</th><th>In storage</th><th>Price each</th><th>${ui.kind === "equipment" ? "Value each" : "Cost each"}</th><th>Value</th></tr></thead>
-      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span>${isEquipment(p) ? `<span class="kind">Company equipment</span>` : ""}</td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td>${isEquipment(p) ? `<td class="muted">Not charged</td>` : `<td>${money(p.price)}</td>`}<td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
+      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}${lowBadge(p)}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span>${isEquipment(p) ? `<span class="kind">Company equipment</span>` : ""}</td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td>${isEquipment(p) ? `<td class="muted">Not charged</td>` : `<td>${money(p.price)}</td>`}<td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
       <tfoot><tr><td>Total in storage</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td></td><td>${money(list.reduce((a, p) => a + storageCents(p), 0) / 100)}</td></tr></tfoot>
     </table></div>` : `<div class="empty">${!connected ? "Loading…" : !all.length ? "No items yet. Add one, or scan a barcode on a project." : ui.kind === "equipment" ? "No company equipment yet. Edit an item and choose Company equipment." : "No supplies yet."}</div>`}`);
 }
+// Low stock (supply-checkout-005.8, src/reorder.js). The count is what still needs someone to
+// look at it: low, and not acknowledged.
+const lowList = () => lowItems(Object.entries(products).map(([key, p]) => ({ key, ...p })));
+const lowCount = list => list.filter(needsReorder).length;
+const lowLabel = list => { const n = lowCount(list); return n ? `Running low (${n})` : "Running low"; };
+const lowBadge = p => !isLow(p) ? "" : isAcked(p) ? `<span class="low-badge acked">Low, acknowledged</span>` : `<span class="low-badge">Low</span>`;
+// The Inventory tab says how many need looking at, from anywhere in the app
+function paintLowCount() {
+  const n = lowCount(Object.values(products)), tab = $("#tab-prices");
+  setHTML(tab, n ? `Inventory<span class="tab-count" aria-hidden="true">${n}</span>` : "Inventory");
+  if (n) setAttr(tab, "aria-label", `Inventory, ${n} running low`); else tab.removeAttribute("aria-label");
+}
+// Inventory, Running low: the reorder list, to copy or download, and to acknowledge from
+function drawLow(all, kinds) {
+  const list = lowItems(all), n = list.length;
+  morph($("#main"), `
+    <div class="bar">
+      <p class="muted" style="margin:0">${n ? `${n} item${n === 1 ? " is" : "s are"} at or below the reorder level. Acknowledge an item once it's ordered; it's flagged again if stock falls further, or after it's restocked and runs low again.` : "Nothing is running low. Set a reorder level on an item, and it shows here when storage is down to it."}</p>
+      ${n ? `<span class="row-actions"><button type="button" class="btn" id="copyReorder">Copy list</button><button type="button" class="btn" id="downloadReorder">Download CSV</button></span>` : ""}
+    </div>
+    <div class="bar">${kinds}</div>
+    ${n ? `<div class="table-wrap"><table class="reorder">
+      <thead><tr><th>Item</th><th>In storage</th><th>Reorder at</th><th>Usual order</th><th>Status</th></tr></thead>
+      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span></td><td>${p.stock}</td><td>${p.reorderAt}</td><td class="${Number.isInteger(p.reorderQty) ? "" : "muted"}">${Number.isInteger(p.reorderQty) ? p.reorderQty : "—"}</td><td>${isAcked(p) ? `<span class="muted">Acknowledged</span>` : canWrite ? `<button type="button" class="btn small" data-ack="${esc(p.key)}" aria-label="Acknowledge ${esc(p.name || "Unnamed item")}">Acknowledge</button>` : `<span class="low-badge">Low</span>`}</td></tr>`).join("")}</tbody>
+    </table></div>` : ""}`);
+}
+// Shared by the team, on the item: quiet until stock falls below what it is now, or until it's
+// restocked above the level and runs low again (src/reorder.js). Made against the item as this
+// page has it, so if it changed meanwhile the latest shows instead (write()).
+function acknowledge(key) {
+  const p = own(products, key);
+  write(() => db.doc("products/" + key).update({ ackedAtStock: p.stock }), "Acknowledged. It's flagged again if stock falls below " + p.stock + ".");
+}
+async function copyReorder() {
+  try { await navigator.clipboard.writeText(reorderText(lowList())); toast("Reorder list copied"); }
+  catch { toast("Couldn't copy here. Download the CSV instead."); }
+}
+
 // Inventory, Equipment, Out: one row per open project and piece of equipment still out on it
 function equipmentOutHTML() {
   const rows = projects.filter(s => s.status !== "closed")
@@ -920,6 +967,8 @@ function liveProject(d) {
 // An item's storage value in whole cents (ADR 0014): its count times its cost each, or
 // its price each where the cost isn't known
 const MAX_PACK = 10000;
+// The largest count the API takes (MAX_QUANTITY in backend/src/data/money.ts)
+const MAX_COUNT = 1000000;
 const storageCents = p => hasStock(p) ? Math.round(p.stock * round2(unitValue(p)) * 100) : 0;
 const packInput = v => Math.min(MAX_PACK, Math.max(1, int(v)));
 // A count of single items as full packs and loose ones, for the line under the count
@@ -953,6 +1002,8 @@ function productModal(key) {
       <div class="field" id="fPriceField" ${equip ? "hidden" : ""}><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && !equip ? round2(p.price) : ""}" placeholder="0.00"></div>
       <div class="field"><label for="fCost" id="fCostLabel">${equip ? "Value each" : "Cost each"} ($)</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="Leave blank if not known"></div>
       <div class="field"><label for="fPack">Comes in packs of (optional)</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="Leave blank if bought one at a time" aria-describedby="fPackHint"><p class="hint" id="fPackHint">Receipts add packs × this many to storage.</p></div>
+      <div class="field"><label for="fReorder">Reorder at (optional)</label><input type="number" id="fReorder" min="0" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${reorderLevel(p) ?? ""}" placeholder="Leave blank for no alert" aria-describedby="fReorderHint"><p class="hint" id="fReorderHint">Inventory flags it as running low when storage is down to this many single items.</p></div>
+      <div class="field"><label for="fReorderQty">Usual order (optional)</label><input type="number" id="fReorderQty" min="1" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.reorderQty) ? p.reorderQty : ""}" placeholder="How many you usually buy"></div>
       <div class="field"><label for="fStock">Single items in storage now</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="Leave blank if not counted"><p class="hint" id="fPacks" aria-live="polite" hidden></p></div>
       <p class="hint" id="fKindHint">${equip ? EQUIPMENT_HINT : SUPPLY_HINT}</p>
       ${p ? `<p class="hint">Price changes apply to new checkouts. Projects keep the price they were checked out at; change it on a project by tapping the row. So does a change between supply and equipment.</p>` : ""}
@@ -996,6 +1047,10 @@ function productModal(key) {
       // Tabs and other control characters pasted in are spaces: the API refuses them in a brand
       // eslint-disable-next-line no-control-regex -- replacing control characters is the point
       opt("#fBrand", "brand", v => v.replace(/[\u0000-\u001f\u007f]+/g, " "));
+      opt("#fReorder", "reorderAt", v => Math.min(MAX_COUNT, int(v)));
+      opt("#fReorderQty", "reorderQty", v => Math.min(MAX_COUNT, Math.max(1, int(v))));
+      // A new reorder level starts afresh: the team's acknowledgment was of the old one
+      if (!p || body.reorderAt !== p.reorderAt) delete body.ackedAtStock;
       // Only a count the person changed is saved: the stock may have moved since the form opened
       // (a checkout, someone else's count), and the count it opened with would undo that. A
       // changed one is checked against the count it opened with (`expected`, null: not counted).

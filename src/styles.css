@@ -194,6 +194,14 @@ td.charge{color:var(--ink);font-weight:500}
 /* Price list */
 .prices td:first-child{width:50%}
 
+/* Low stock (src/reorder.js): the badge on Inventory rows and the tab, and Running low's list */
+.low-badge{display:inline-block;margin-left:8px;padding:1px 8px;border-radius:999px;background:var(--out-soft);color:var(--out);font-family:var(--body);font-size:12px;font-weight:700;white-space:nowrap}
+.low-badge.acked{background:var(--sunk);color:var(--muted);font-weight:600}
+.tab-count{display:inline-block;min-width:18px;margin-left:6px;padding:0 5px;border-radius:999px;background:var(--out);color:var(--surface);font-size:12px;line-height:18px;text-align:center}
+.row-actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn.small{padding:5px 10px;font-size:13px}
+table.reorder{min-width:480px}
+
 /* Company equipment: its section on a project, and Inventory's Out view */
 .section-head{font-family:var(--display);font-weight:600;font-size:16px;margin:22px 0 10px}
 table.equipment{min-width:420px}

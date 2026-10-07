@@ -44,6 +44,7 @@ import { count as checkCount, MAX_MONEY, MAX_QUANTITY, money, quantity as checkQ
 import { type Page, queryPage } from "./query.js";
 import { legacy } from "./legacy-sheets.js";
 import { projectKeyFor, readProjectItem } from "./project-items.js";
+import { ackEnds, ackOnRaise, ackRemoval } from "./reorder.js";
 import { PK } from "./schema.js";
 import { storedMarkup } from "./settings.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -453,15 +454,17 @@ function productWrite(
   const names = { "#stock": "stock", ...extra.names };
   if (tracked) {
     checkVersion(product);
+    // A return that takes stock above the reorder level ends the low-stock acknowledgment (reorder.ts)
+    const ack = ackOnRaise(product, delta);
     return {
       item: {
         Update: {
           TableName: db.tableName,
           Key,
-          UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :delta`,
-          ConditionExpression: ["attribute_exists(#stock)", ...extra.clauses].join(" AND "),
-          ExpressionAttributeNames: { ...names, "#version": "version" },
-          ExpressionAttributeValues: { ":delta": delta, ":one": 1, ...extra.values },
+          UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :delta${ackRemoval(ack)}`,
+          ConditionExpression: ["attribute_exists(#stock)", ...extra.clauses, ...(ack ? [ack.clause] : [])].join(" AND "),
+          ExpressionAttributeNames: { ...names, "#version": "version", ...ack?.names },
+          ExpressionAttributeValues: { ":delta": delta, ":one": 1, ...extra.values, ...ack?.values },
         },
       },
       tracked,
@@ -1401,6 +1404,8 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
     const base = { operationId: opId, command: "stockAdjust" as const, productKey: key, userId: ctx.userId, at };
     if (parsed.reason === "receipt") {
       const { qty, unitCost } = parsed;
+      // A restock above the reorder level ends the low-stock acknowledgment (reorder.ts)
+      const ack = ackOnRaise(product, qty);
       return {
         result: { ...base, reason: "receipt", quantity: qty, stockDelta: qty, unitCost },
         writes: [
@@ -1408,10 +1413,10 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
             Update: {
               TableName: db.tableName,
               Key,
-              UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :qty`,
-              ConditionExpression: "attribute_exists(PK)",
-              ExpressionAttributeNames: { "#stock": "stock", "#version": "version" },
-              ExpressionAttributeValues: { ":qty": qty, ":one": 1 },
+              UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :qty${ackRemoval(ack)}`,
+              ConditionExpression: ["attribute_exists(PK)", ...(ack ? [ack.clause] : [])].join(" AND "),
+              ExpressionAttributeNames: { "#stock": "stock", "#version": "version", ...ack?.names },
+              ExpressionAttributeValues: { ":qty": qty, ":one": 1, ...ack?.values },
             },
           },
           movementPut(db, ctx, { productKey: key, reason: "receipt", delta: qty, tracked: true, quantity: qty, unitCost, operationId: opId, userId: ctx.userId, at }),
@@ -1457,6 +1462,9 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
       };
     }
     const delta = parsed.counted - (current ?? 0);
+    // A count above the reorder level ends the low-stock acknowledgment (reorder.ts). The write is
+    // conditional on the stock just read, so this is decided on the stock it replaces.
+    const endsAck = ackEnds(product, parsed.counted);
     return {
       result: { ...base, reason: "count", count: parsed.counted, stockDelta: delta },
       writes: [
@@ -1464,10 +1472,10 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
           Update: {
             TableName: db.tableName,
             Key,
-            UpdateExpression: `SET #stock = :count, ${BUMP_VERSION}`,
+            UpdateExpression: `SET #stock = :count, ${BUMP_VERSION}${ackRemoval({ remove: endsAck })}`,
             // Set from the level just read, so the movement's delta is exact
             ConditionExpression: current === undefined ? "attribute_exists(PK) AND attribute_not_exists(#stock)" : "attribute_exists(PK) AND #stock = :current",
-            ExpressionAttributeNames: { "#stock": "stock", "#version": "version" },
+            ExpressionAttributeNames: { "#stock": "stock", "#version": "version", ...(endsAck ? { "#ackedAtStock": "ackedAtStock" } : {}) },
             ExpressionAttributeValues: { ":count": parsed.counted, ":one": 1, ...(current === undefined ? {} : { ":current": current }) },
           },
         },

@@ -1396,3 +1396,32 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     expect(backend.requests("GET", "/teams/t1/projects/s1")).toHaveLength(3);
   });
 });
+
+// Low-stock alerts (supply-checkout-005.8): the acknowledgment is a PATCH of the item, shared by
+// the team, and a restock above the reorder level ends it on the server (backend/src/data/reorder.ts)
+test.describe("low-stock alerts", { tag: ["@J15"] }, () => {
+  test("acknowledges with a PATCH, and a count above the reorder level ends it", { tag: ["@J15.3"] }, async ({ page }) => {
+    const backend = await open(page, new FakeBackend({ docs: { ...seeded(), "t1/products/GLV": { code: "GLV", name: "Nitrile gloves", price: 12.5, stock: 2, reorderAt: 5, reorderQty: 24 } } }), {});
+    await expect(page.locator("#tab-prices")).toHaveAccessibleName("Inventory, 1 running low");
+    await page.locator("#tab-prices").click();
+    await page.getByRole("button", { name: "Running low (1)" }).click();
+    await page.getByRole("button", { name: "Acknowledge Nitrile gloves" }).click();
+    await expect(page.getByRole("button", { name: "Running low", exact: true })).toBeVisible();
+    expect(backend.requests("PATCH", "/teams/t1/products/GLV").map((r) => r.body)).toEqual([{ data: { ackedAtStock: 2 }, expectedVersion: 1 }]);
+    expect(backend.doc("t1", "products", "GLV").data).toMatchObject({ stock: 2, ackedAtStock: 2 });
+
+    // Restocked: counted at 10, above the level, so the acknowledgment ends
+    await inventoryRow(page, "Nitrile gloves").click();
+    await modal(page).getByLabel("Single items in storage now").fill("10");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(page.locator("#main")).toContainText("Nothing is running low.");
+    expect(backend.doc("t1", "products", "GLV").data).not.toHaveProperty("ackedAtStock");
+    // And down to the level again: it's flagged again, though it's above where it was acknowledged
+    await page.getByRole("button", { name: "All", exact: true }).click();
+    await inventoryRow(page, "Nitrile gloves").click();
+    await modal(page).getByLabel("Single items in storage now").fill("4");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(page.getByRole("button", { name: "Running low (1)" })).toBeVisible();
+    await expect(inventoryRow(page, "Nitrile gloves").locator(".low-badge")).toHaveText("Low");
+  });
+});

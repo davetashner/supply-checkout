@@ -32,6 +32,7 @@ import { money, storedMoney } from "./money.js";
 import type { Movement } from "./commands.js";
 import { type ProjectLayout, layoutOf, projectAttributes, projectItemsByDatePage, projectItemsPage, projectKeyFor, readProjectItem } from "./project-items.js";
 import { type Page, queryPage } from "./query.js";
+import { checkReorderFields } from "./reorder.js";
 import { PK } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
@@ -190,6 +191,8 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
     }
     // A product's price and cost follow the money rule like a project line's (ADR 0014)
     for (const field of ["price", "cost"] as const) if (Object.hasOwn(data, field)) data[field] = writtenMoney(data[field], before?.data, field);
+    // The reorder level, usual order and the team's acknowledgment of a low-stock alert (reorder.ts)
+    checkReorderFields(data, before?.data);
   }
   if (collection === "projects") {
     if ("date" in data && typeof data.date !== "string") throw new InvalidInputError("Invalid date");

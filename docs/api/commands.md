@@ -460,6 +460,15 @@ before answering `409`, so `409` from contention is rare.
   `bumpStock` would start counting such an item at the returned quantity; the
   commands don't. A receipt or a count starts tracking it, and an uncount
   stops tracking it.
+- **A restock ends a low-stock acknowledgment** (`backend/src/data/reorder.ts`,
+  supply-checkout-005.8). On an item with `ackedAtStock`, a return or receipt
+  that takes `stock` above `reorderAt` (or any count that leaves it above)
+  removes `ackedAtStock` in the same update, so the next fall to the reorder
+  level alerts again. A return or receipt on such an item is also conditional
+  on the stock it read, so the decision is made on the stock it adds to: one
+  that loses a race is read again and retried like any other conflict.
+  Checkouts only take stock down, so they never change it, and items without
+  an acknowledgment are updated exactly as before.
 
 ## Stock history
 
