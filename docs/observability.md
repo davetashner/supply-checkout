@@ -84,10 +84,10 @@ aws cloudwatch set-alarm-state --profile supply-prod --region us-east-1 \
 
    ```bash
    git log --oneline -- infra/lib/web infra/lib/stacks/web-stack.ts   # the change before the bad one
-   git worktree add ../web-rollback <good commit>
+   git worktree add ../web-rollback '<good commit>'
    cd ../web-rollback/infra && npm ci
-   npx cdk deploy supply-checkout-<env>-us-east-1-web --exclusively --profile supply-prod
-   cd - && npm run publish:web -- check-router --env <env>
+   npx cdk deploy 'supply-checkout-<env>-us-east-1-web' --exclusively --profile supply-prod
+   cd - && npm run publish:web -- check-router --env '<env>'
    git worktree remove ../web-rollback
    ```
 
@@ -105,9 +105,9 @@ The alarm recovers on its first 5-minute period below the threshold. After a web
 2. **Stop new credentials.** Turn off guest identities on the pool, so no one can get new credentials. The app keeps working; it just stops reporting its errors.
 
    ```bash
-   POOL=$(aws ssm get-parameter --profile supply-prod --region us-east-1 --name /supply-checkout/<env>/web/rum-identity-pool-id --query Parameter.Value --output text)
+   POOL=$(aws ssm get-parameter --profile supply-prod --region us-east-1 --name '/supply-checkout/<env>/web/rum-identity-pool-id' --query Parameter.Value --output text)
    aws cognito-identity update-identity-pool --profile supply-prod --region us-east-1 --identity-pool-id "$POOL" \
-     --identity-pool-name supply-checkout-<env>-rum --no-allow-unauthenticated-identities --no-allow-classic-flow
+     --identity-pool-name 'supply-checkout-<env>-rum' --no-allow-unauthenticated-identities --no-allow-classic-flow
    ```
 
 3. **End the credentials already out.** Guest credentials last an hour. To end them now, revoke the guest role's sessions: in the IAM console, open the role `supply-checkout-<env>-rum-guest`, **Revoke sessions**. It adds an inline policy (`AWSRevokeOlderSessions`) that denies every call made with credentials issued before now.

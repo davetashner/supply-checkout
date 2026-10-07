@@ -437,7 +437,7 @@ Every other alarm on this page waits for the resource or code it watches, and is
 3. If the owner finished it as a new import (or doesn't want it), take the old job out of the check so the alarm recovers. This leaves the job itself alone, so a retry of it still works until it expires. It's audited (`ops.import.clear`), and the team's owners see it under support actions:
 
    ```bash
-   npm run ops -- clear-import <teamId> <importId> --reason "Owner re-imported the file"
+   npm run ops -- clear-import '<teamId>' '<importId>' --reason "Owner re-imported the file"
    ```
 
    It refuses an import that isn't stuck: one that finished, was cleared already, or started less than an hour ago.
@@ -561,10 +561,10 @@ A `past_due` subscription is the exception to "nothing more is charged": setting
 2. If Stripe has it in the right mode (live and charging), something else is wrong with the purge's Stripe access: find out what before removing `stripeSetAsideFor` the same way.
 3. If Stripe really doesn't have it in either mode, check the team's own customer (`stripeCustomerId` on its `META` item) in the Stripe Dashboard first: if the customer has any live subscription (the team may have recorded the wrong one), end it by hand (cancel at the period's end). Only then record the team as done, so the alarm clears, with `SET stripeCancelledFor = closedAt REMOVE stripeSetAsideFor` (below). The team is purged at the next run if it's past its deletion date; if its customer is gone from Stripe too, that run also sets off "Stripe customer already deleted" for it, which you can then acknowledge.
 
-To remove the attribute, on the condition the team is still that closure (the table is `supply-checkout-<env>`, in the primary region). Run it as an administrator only (the `supply-prod` SSO administrator role): the condition reads `closedAt`, which the purge's role may not name in an update on purpose (it can't close or reopen a team), and its role isn't to be widened for this:
+To remove the attribute, on the condition the team is still that closure (the table is `supply-checkout-<env>-app`, in the primary region). Run it as an administrator only (the `supply-prod` SSO administrator role): the condition reads `closedAt`, which the purge's role may not name in an update on purpose (it can't close or reopen a team), and its role isn't to be widened for this:
 
 ```bash
-aws dynamodb update-item --table-name supply-checkout-<env> \
+aws dynamodb update-item --table-name 'supply-checkout-<env>-app' \
   --key '{"PK":{"S":"TEAM#<teamId>"},"SK":{"S":"META"}}' \
   --update-expression "REMOVE stripeSetAsideFor" \
   --condition-expression "stripeSetAsideFor = closedAt"
@@ -604,7 +604,7 @@ A queue entry whose team is still in the table and not being purged is never sen
 **Stripe customer deletion stuck: what to do.** P1: a queued Stripe customer deletion has failed every hour for a week, so it isn't an outage. Work through "Stripe customer deletion retrying" first. If Stripe refuses that one customer, delete it by hand in the Stripe Dashboard (which ends any subscription on it), then remove its queue entry so the alarm can recover. Run it as an administrator only (the `supply-prod` SSO administrator role), in the primary region:
 
 ```bash
-aws dynamodb delete-item --table-name supply-checkout-<env>-app --key '{"PK":{"S":"PURGE#STRIPE_DELETIONS"},"SK":{"S":"<teamId>"}}' --profile supply-prod
+aws dynamodb delete-item --table-name 'supply-checkout-<env>-app' --key '{"PK":{"S":"PURGE#STRIPE_DELETIONS"},"SK":{"S":"<teamId>"}}' --profile supply-prod
 ```
 
 Leaving the entry would be harmless once the customer is gone (the next run finds it already deleted and clears it, counted for "Stripe customer already deleted"), but delete it to keep that alarm quiet.

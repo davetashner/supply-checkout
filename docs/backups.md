@@ -72,7 +72,7 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
    cd infra
    npx cdk bootstrap --profile supply-backup --app "npx tsx bin/backup-account.ts"
    npm run deploy:backup-account -- --profile supply-backup \
-     --parameters SourceAccountIds=<prod account ID> --parameters OrganizationId=<o-...>
+     --parameters SourceAccountIds='<prod account ID>' --parameters OrganizationId='<o-...>'
    ```
 
    The stack is `supply-checkout-<env>-<region>-backup-vault`, and `-c envName=staging` deploys staging's vault. It also creates the deletion records' copy, `supply-checkout-<env>-deletions-copy-<region>-<backup account>` (the `DeletionsReplicaBucket` output), and a bucket for its access logs. **The copy's Object Lock is in compliance mode from the start:** every record replicated into it stays 400 days, with no grace period, so there's nothing to undo in it. The bucket policy lets only the role `supply-checkout-<env>-deletions-replication` in a `SourceAccountIds` account in the organization replicate into it. Confirm the subscription from the email AWS sends. The `copies-missing` alarm fires until the first copy lands (step 6), which also shows its email arrives. The `CopyVaultArn` output is the vault's ARN. `RestoreAccountIds` (default empty) lists the accounts a copy may be sent to for a restore; leave it empty until a drill or a real restore needs it. CloudFormation rejects anything but 12-digit account IDs and an `o-` organization ID. Every account must also be in the organization: the vault and key policies check `aws:PrincipalOrgID`.
@@ -81,9 +81,9 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
 
    ```bash
    aws ssm put-parameter --profile supply-prod --region us-east-1 --type String \
-     --name /supply-checkout/prod/backup/copy-vault-arn --value <CopyVaultArn output>
+     --name /supply-checkout/prod/backup/copy-vault-arn --value '<CopyVaultArn output>'
    aws ssm put-parameter --profile supply-prod --region us-east-1 --type String \
-     --name /supply-checkout/prod/backup/organization-id --value <o-...>
+     --name /supply-checkout/prod/backup/organization-id --value '<o-...>'
    ```
 
 5. **Deploy the data stack, then the backup stack** (`supply-checkout-<env>-<region>-data` and `-backup`). The data stack turns on replication of the deletion records into the backup account's copy, which has to exist first (step 3). The backup stack deploys after the data and observability stacks, and `cdk deploy --all` includes both:
@@ -104,13 +104,13 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
 
    aws backup start-backup-job "${P[@]}" --backup-vault-name supply-checkout-prod-backups \
      --resource-arn "$TABLE_ARN" --iam-role-arn "$ROLE_ARN" --lifecycle DeleteAfterDays=35
-   aws backup describe-backup-job "${P[@]}" --backup-job-id <id>   # until COMPLETED; note RecoveryPointArn
+   aws backup describe-backup-job "${P[@]}" --backup-job-id '<id>'   # until COMPLETED; note RecoveryPointArn
 
-   aws backup start-copy-job "${P[@]}" --recovery-point-arn <RecoveryPointArn> \
+   aws backup start-copy-job "${P[@]}" --recovery-point-arn '<RecoveryPointArn>' \
      --source-backup-vault-name supply-checkout-prod-backups \
      --destination-backup-vault-arn "$COPY_VAULT" --iam-role-arn "$ROLE_ARN" \
      --lifecycle DeleteAfterDays=90
-   aws backup describe-copy-job "${P[@]}" --copy-job-id <id>       # until COMPLETED
+   aws backup describe-copy-job "${P[@]}" --copy-job-id '<id>'       # until COMPLETED
 
    aws backup list-recovery-points-by-backup-vault --backup-vault-name supply-checkout-prod-backup-copies \
      --profile supply-backup --region us-east-1               # the copy is here
@@ -296,7 +296,7 @@ The restore role (`supply-checkout-<env>-restore`) isn't used: that one is for A
 
 ```bash
 aws sso login --profile supply-prod
-export SUPPLY_CHECKOUT_EXPECTED_ACCOUNT=<prod account ID>   # in your shell only, never committed
+export SUPPLY_CHECKOUT_EXPECTED_ACCOUNT='<prod account ID>'   # in your shell only, never committed
 npm run restore-drill                    # dry run: read the calls it would make
 npm run restore-drill -- --apply         # the drill: answer y at the end to delete the restored table
 ```
@@ -320,10 +320,10 @@ KEY=$(aws ssm get-parameter --name /supply-checkout/prod/data/table-key-arn --qu
 date -u +%FT%TZ   # start
 aws dynamodb restore-table-to-point-in-time --profile supply-prod --region us-east-1 \
   --source-table-name supply-checkout-prod-app \
-  --target-table-name supply-checkout-prod-app-restore-pitr-<yyyymmdd> \
+  --target-table-name 'supply-checkout-prod-app-restore-pitr-<yyyymmdd>' \
   --use-latest-restorable-time \
-  --sse-specification-override Enabled=true,SSEType=KMS,KMSMasterKeyId=$KEY
-aws dynamodb wait table-exists --table-name supply-checkout-prod-app-restore-pitr-<yyyymmdd> --profile supply-prod --region us-east-1
+  --sse-specification-override "Enabled=true,SSEType=KMS,KMSMasterKeyId=$KEY"
+aws dynamodb wait table-exists --table-name 'supply-checkout-prod-app-restore-pitr-<yyyymmdd>' --profile supply-prod --region us-east-1
 date -u +%FT%TZ   # restored
 ```
 
@@ -336,8 +336,8 @@ This is the path after losing the workload account: copy a recovery point out of
 1. **Let the target account receive the copy.** Redeploy the vault stack with the target account in `RestoreAccountIds`, keeping `SourceAccountIds`:
 
    ```bash
-   npm run deploy:backup-account -- --profile supply-backup --parameters SourceAccountIds=<prod account ID> \
-     --parameters OrganizationId=<o-...> --parameters RestoreAccountIds=<target account ID>
+   npm run deploy:backup-account -- --profile supply-backup --parameters SourceAccountIds='<prod account ID>' \
+     --parameters OrganizationId='<o-...>' --parameters RestoreAccountIds='<target account ID>'
    ```
 
    The target account's backup stack must be deployed, with its `copy-vault-arn` pointing at a vault in this backup account. That is how its vault learns to accept copies from here.
@@ -355,22 +355,22 @@ This is the path after losing the workload account: copy a recovery point out of
    ```bash
    date -u +%FT%TZ   # copy started
    aws backup start-copy-job --profile supply-backup --region us-east-1 \
-     --recovery-point-arn <recovery point ARN> \
+     --recovery-point-arn '<recovery point ARN>' \
      --source-backup-vault-name supply-checkout-prod-backup-copies \
-     --destination-backup-vault-arn <target vault-arn, from /supply-checkout/<target env>/backup/vault-arn> \
-     --iam-role-arn <CopyOutRoleArn output> \
+     --destination-backup-vault-arn '<target vault-arn, from /supply-checkout/<target env>/backup/vault-arn>' \
+     --iam-role-arn '<CopyOutRoleArn output>' \
      --lifecycle DeleteAfterDays=7
-   aws backup describe-copy-job --copy-job-id <id> --profile supply-backup --region us-east-1   # until COMPLETED
+   aws backup describe-copy-job --copy-job-id '<id>' --profile supply-backup --region us-east-1   # until COMPLETED
    ```
 
 4. **Restore it in the target account.** The copy's ARN is in the target vault (`list-recovery-points-by-backup-vault`). Encrypt the new table with that account's table key:
 
    ```bash
-   aws backup start-restore-job --profile <target profile> --region us-east-1 \
-     --recovery-point-arn <recovery point ARN in the target vault> \
-     --iam-role-arn <value of /supply-checkout/<target env>/backup/restore-role-arn> \
-     --metadata TargetTableName=supply-checkout-<target env>-app-restore-<yyyymmdd>,encryptionType=KMS,kmsMasterKeyArn=<value of /supply-checkout/<target env>/data/table-key-arn>
-   aws backup describe-restore-job --restore-job-id <id> --profile <target profile> --region us-east-1   # until COMPLETED
+   aws backup start-restore-job --profile '<target profile>' --region us-east-1 \
+     --recovery-point-arn '<recovery point ARN in the target vault>' \
+     --iam-role-arn '<value of /supply-checkout/<target env>/backup/restore-role-arn>' \
+     --metadata 'TargetTableName=supply-checkout-<target env>-app-restore-<yyyymmdd>,encryptionType=KMS,kmsMasterKeyArn=<value of /supply-checkout/<target env>/data/table-key-arn>'
+   aws backup describe-restore-job --restore-job-id '<id>' --profile '<target profile>' --region us-east-1   # until COMPLETED
    ```
 
    `describe-restore-job` gives `CreationDate` and `CompletionDate`. Its difference is the restore time; with the copy job's, it's the time to restore from the backup account.
@@ -379,7 +379,7 @@ This is the path after losing the workload account: copy a recovery point out of
 
    ```bash
    npm run deploy:backup-account -- --profile supply-backup --no-previous-parameters \
-     --parameters SourceAccountIds=<prod account ID> --parameters OrganizationId=<o-...>
+     --parameters SourceAccountIds='<prod account ID>' --parameters OrganizationId='<o-...>'
    ```
 
 ### Verify the restored table
@@ -388,7 +388,7 @@ This is the path after losing the workload account: copy a recovery point out of
 2. **Item counts.** Count both tables. The CLI pages through and adds up `Count`:
 
    ```bash
-   aws dynamodb scan --table-name <restored> --select COUNT --query Count --profile <target profile> --region us-east-1
+   aws dynamodb scan --table-name '<restored>' --select COUNT --query Count --profile '<target profile>' --region us-east-1
    aws dynamodb scan --table-name supply-checkout-prod-app --select COUNT --query Count --profile supply-prod --region us-east-1
    ```
 
@@ -396,7 +396,7 @@ This is the path after losing the workload account: copy a recovery point out of
 3. **One team, item for item.** Pick a team with no changes since the recovery point, and compare its partition in both tables:
 
    ```bash
-   aws dynamodb query --table-name <table> --key-condition-expression "PK = :pk" \
+   aws dynamodb query --table-name '<table>' --key-condition-expression "PK = :pk" \
      --expression-attribute-values '{":pk":{"S":"TEAM#<teamId>"}}' --select COUNT --query Count
    ```
 
@@ -407,7 +407,7 @@ Never paste item contents into the drill log, a bead or a PR. They're customer d
 ### Clean up
 
 ```bash
-aws dynamodb delete-table --table-name <restored> --profile <target profile> --region us-east-1
+aws dynamodb delete-table --table-name '<restored>' --profile '<target profile>' --region us-east-1
 ```
 
 Restored tables have no deletion protection. The drill's copy in the target vault expires by itself after 7 days.
@@ -507,8 +507,8 @@ aws sso login --profile supply-prod
 cd backend && npm ci
 P=(--region us-east-1 --profile supply-prod)
 LIVE=supply-checkout-prod-app
-RESTORED=supply-checkout-prod-app-restore-<yyyymmdd>
-export SUPPLY_CHECKOUT_EXPECTED_ACCOUNT=<prod account ID>   # in your shell only: the script refuses any other account
+RESTORED='supply-checkout-prod-app-restore-<yyyymmdd>'
+export SUPPLY_CHECKOUT_EXPECTED_ACCOUNT='<prod account ID>'   # in your shell only: the script refuses any other account
 ```
 
 #### 1. Restore, and verify the restored table
@@ -518,8 +518,8 @@ Use [drill A or B](#restore-drill) with the target account the live table is in,
 #### 2. Preview
 
 ```bash
-npm run restore -- deletions --table $RESTORED "${P[@]}"      # what would be deleted again
-npm run restore -- copy-back --from $RESTORED --to $LIVE "${P[@]}"   # how many items would be put and deleted
+npm run restore -- deletions --table "$RESTORED" "${P[@]}"      # what would be deleted again
+npm run restore -- copy-back --from "$RESTORED" --to "$LIVE" "${P[@]}"   # how many items would be put and deleted
 ```
 
 Nothing is written. The copy-back counts tell you how long step 5 will take. A `deletions` line listing teams "left for a person" needs [a decision](#a-team-left-for-a-person) before step 4.
@@ -534,18 +534,18 @@ Throttle every function that uses the live table to zero, except the live-update
 FNS=$(aws lambda list-functions "${P[@]}" --query "Functions[?Environment.Variables.TABLE_NAME=='$LIVE'].FunctionName" --output text \
   | tr '\t' '\n' | grep -v -- '-live-updates$')
 echo "$FNS"   # the data, account and ops API functions, the email events handler, the scheduled checks and purge, and the sign-in triggers
-for f in $FNS; do aws lambda put-function-concurrency "${P[@]}" --function-name "$f" --reserved-concurrent-executions 0; done
+while IFS= read -r f; do aws lambda put-function-concurrency "${P[@]}" --function-name "$f" --reserved-concurrent-executions 0; done <<< "$FNS"
 date -u +%FT%TZ   # throttled
 ```
 
 Throttling stops new invocations, not ones already running. Wait until none are: the longest timeout is the purge's, 5 minutes. Check each function's `ConcurrentExecutions` is 0 for the last minute before going on (`date -u -v-2M` is BSD/macOS syntax; on Linux use `date -u -d '-2 minutes' +%FT%TZ`):
 
 ```bash
-for f in $FNS; do
+while IFS= read -r f; do
   echo "$f $(aws cloudwatch get-metric-statistics "${P[@]}" --namespace AWS/Lambda --metric-name ConcurrentExecutions \
-    --dimensions Name=FunctionName,Value=$f --statistics Maximum --period 60 \
-    --start-time $(date -u -v-2M +%FT%TZ) --end-time $(date -u +%FT%TZ) --query 'max(Datapoints[].Maximum)')"
-done   # every one None or 0; if not, wait a minute and check again
+    --dimensions "Name=FunctionName,Value=$f" --statistics Maximum --period 60 \
+    --start-time "$(date -u -v-2M +%FT%TZ)" --end-time "$(date -u +%FT%TZ)" --query 'max(Datapoints[].Maximum)')"
+done <<< "$FNS"   # every one None or 0; if not, wait a minute and check again
 date -u +%FT%TZ   # writes stopped
 ```
 
@@ -558,8 +558,8 @@ Note the time: the live table's own PITR can take it back to this moment if the 
 Now no more deletions can happen, so the records are complete. It runs only on a restored table (`--live` would allow the live table, with a warning; the runbook never needs it):
 
 ```bash
-npm run restore -- deletions --table $RESTORED "${P[@]}" --apply
-npm run restore -- deletions --table $RESTORED "${P[@]}"      # again: purges 0, removes 0
+npm run restore -- deletions --table "$RESTORED" "${P[@]}" --apply
+npm run restore -- deletions --table "$RESTORED" "${P[@]}"      # again: purges 0, removes 0
 ```
 
 For each record it finds in the restored table:
@@ -582,8 +582,8 @@ It exits 1 while a team is left for a person, or while any record version isn't 
 >
 > ```bash
 > aws sso login --profile supply-backup
-> npm run restore -- deletions --table $RESTORED "${P[@]}" --records-profile supply-backup          # dry run
-> npm run restore -- deletions --table $RESTORED "${P[@]}" --records-profile supply-backup --apply
+> npm run restore -- deletions --table "$RESTORED" "${P[@]}" --records-profile supply-backup          # dry run
+> npm run restore -- deletions --table "$RESTORED" "${P[@]}" --records-profile supply-backup --apply
 > ```
 >
 > The first line names the copy bucket and the backup account. It's `supply-checkout-<env>-deletions-copy-<region>-<backup account>` unless `--bucket` names another (the old account's own bucket, if that account is still reachable, with a profile that can read it). A record written in the old account's last minutes may not have replicated before it was lost (replication usually takes seconds to minutes); nothing can recover those. If the copy is missing altogether (replication was never set up), the deletions since the recovery point can't be re-applied, and every account and team deleted in the last 90 days may come back: tell the owner, and delete them by hand as their owners ask again.
@@ -596,8 +596,8 @@ The app never lets an account be deleted while it's the only owner of an open te
 
 ```bash
 date -u +%FT%TZ   # copy started
-npm run restore -- copy-back --from $RESTORED --to $LIVE "${P[@]}" --apply
-npm run restore -- copy-back --from $RESTORED --to $LIVE "${P[@]}"   # again: put 0, deleted 0
+npm run restore -- copy-back --from "$RESTORED" --to "$LIVE" "${P[@]}" --apply
+npm run restore -- copy-back --from "$RESTORED" --to "$LIVE" "${P[@]}"   # again: put 0, deleted 0
 date -u +%FT%TZ   # copy finished
 ```
 
@@ -606,7 +606,7 @@ Every write goes through the live table's stream, so the live-update function pu
 #### 6. Check the live table's settings
 
 ```bash
-npm run restore -- check --table $LIVE "${P[@]}"
+npm run restore -- check --table "$LIVE" "${P[@]}"
 ```
 
 It checks the table is active, has `GSI1`, `GSI2` and `GSI3` active, KMS encryption, TTL on `expiresAt`, the stream with new and old images, point-in-time recovery, deletion protection and the stack's tags, and exits 1 if anything is wrong. After a copy-back all of these are as they were. If one is wrong, the data stack has drifted: `npx cdk diff supply-checkout-prod-us-east-1-data -c backupCopy=false` shows it (drop the flag once [step 4](#setting-it-up) is done), and a deploy of the data stack puts it back.
@@ -614,7 +614,7 @@ It checks the table is active, has `GSI1`, `GSI2` and `GSI3` active, KMS encrypt
 Also confirm the stream mapping is enabled and on the table's current stream:
 
 ```bash
-aws dynamodb describe-table --table-name $LIVE "${P[@]}" --query Table.LatestStreamArn
+aws dynamodb describe-table --table-name "$LIVE" "${P[@]}" --query Table.LatestStreamArn
 aws lambda list-event-source-mappings --function-name supply-checkout-prod-live-updates "${P[@]}" \
   --query 'EventSourceMappings[].[EventSourceArn,State]'   # the same ARN, Enabled
 ```
@@ -626,7 +626,7 @@ Repeat [verify the restored table](#verify-the-restored-table)'s item count and 
 #### 8. Writes back on
 
 ```bash
-for f in $FNS; do aws lambda delete-function-concurrency "${P[@]}" --function-name "$f"; done
+while IFS= read -r f; do aws lambda delete-function-concurrency "${P[@]}" --function-name "$f"; done <<< "$FNS"
 date -u +%FT%TZ   # writes back on
 ```
 

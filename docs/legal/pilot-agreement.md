@@ -102,7 +102,7 @@ The app has no terms checkbox yet: that comes with the public sign-up (bead `sup
 3. Once they've accepted and created their team, comp it for the pilot with the ops CLI, naming the version and the date accepted in the reason (it's audited, and owners see it under **Members → Support activity**):
 
    ```bash
-   npm run ops -- comp <teamId> --plan free --until <END DATE> --reason "Pilot, agreement pilot-2026-10-02 accepted <YYYY-MM-DD>"
+   npm run ops -- comp '<teamId>' --plan free --until '<END DATE>' --reason "Pilot, agreement pilot-2026-10-02 accepted <YYYY-MM-DD>"
    ```
 
 4. When the pilot ends, extend the comp (`comp` again with a later `--until`) for a team that hasn't chosen yet. Once it has chosen a plan or closed, or 30 days after the billing notice in section 7, end it: `npm run ops -- uncomp <teamId> --reason "Pilot over"`.

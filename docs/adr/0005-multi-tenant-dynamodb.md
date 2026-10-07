@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-28 (proposed 2026-09-25)
 - Note: The owner accepted this on 2026-09-28, as built. A sheet's sort key is `SHEET#<id>`, not `SHEET#<date>#<id>`, because a sheet's date can be edited and the app reads sheets by ID. `dynamodb:LeadingKeys` is enforced with a per-request session tagged with the team ID, so a session can't reach another team's partition. Roles inside a team (owner, contributor, viewer) are enforced by the application only (see 0007).
+- Superseded in part: sheets are now called projects ([rename plan](../projects-rename-plan.md)), so a project's sort key is `PROJECT#<id>` and its date index partition is `TEAM#<teamId>#PROJECTS`; items the rename's backfill hasn't moved yet keep `SHEET#<id>` and `TEAM#<teamId>#SHEETS`. The text below keeps its original wording.
 
 ## Context
 
