@@ -21,6 +21,7 @@ import {
   RECEIPT_USAGE_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STUCK_IMPORT_ATTRIBUTES,
+  TEST_MARK_ATTRIBUTES,
 } from "../src/data/schema.js";
 import { namedAttributes } from "./helpers.js";
 
@@ -60,13 +61,14 @@ export function opsPolicy(team: string, denied: { command: string; input: Input 
             op.Put ? auditPartition(partitionKey(op.Put)) : op.Update ? update(op.Update, team) : false,
           );
         case "BatchGetCommand":
-          // Teams' receipt counters (supply-checkout-wxx): by key in any TEAM# partition, projecting
-          // only the keys and `receipts` (dynamodb:Attributes and Select SPECIFIC_ATTRIBUTES)
+          // Teams' receipt counters (supply-checkout-wxx) or test marks (supply-checkout-o60.2): by key in
+          // any TEAM# partition, projecting only the keys and `receipts`, or the keys and `test`
+          // (each its own statement: dynamodb:Attributes and Select SPECIFIC_ATTRIBUTES)
           return Object.values(input.RequestItems as Record<string, Input>).every(
             (request) =>
               typeof request.ProjectionExpression === "string" &&
               (request.Keys as Input[]).every((k) => typeof k.PK === "string" && k.PK.startsWith("TEAM#")) &&
-              [...namedAttributes(request)].every((a) => (RECEIPT_USAGE_ATTRIBUTES as readonly string[]).includes(a)),
+              [RECEIPT_USAGE_ATTRIBUTES, TEST_MARK_ATTRIBUTES].some((allowed) => [...namedAttributes(request)].every((a) => (allowed as readonly string[]).includes(a))),
           );
         default:
           // No GetItem, Scan, DeleteItem, or batch calls but the receipt counters' reads

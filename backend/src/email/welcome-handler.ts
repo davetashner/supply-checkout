@@ -44,10 +44,10 @@
 // Logs and metrics carry the sub, how they signed up, the outcome and the
 // error's name: never the address or the name.
 
-import { claimWelcome, type Db, hasLiveInvite, hasTeam, normalizeEmail, releaseWelcome } from "../data/index.js";
+import { claimWelcome, type Db, hasLiveInvite, hasTeam, isTestAccount, normalizeEmail, releaseWelcome } from "../data/index.js";
 import type { FindAccount } from "../identity/cognito-accounts.js";
 import { SUB } from "../identity/cognito-accounts.js";
-import { BusinessMetric, type Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import { EmailNotSentError, type Mailer } from "./mailer.js";
 import { WELCOME_VIA, type WelcomeRequest, type WelcomeVia } from "./names.js";
 
@@ -65,6 +65,8 @@ export interface WelcomeDeps {
   readonly obs: Observability;
   /** `support@<env domain>`. */
   readonly supportAddress: string;
+  /** The test mail domain (TEST_MAIL_DOMAIN, data/test-accounts.ts): a test account's welcome is left out of WelcomeEmails. */
+  readonly testMailDomain?: string;
   readonly now?: () => number;
 }
 
@@ -170,7 +172,7 @@ export function createWelcomeHandler(deps: WelcomeDeps) {
       if (error instanceof EmailNotSentError) return "not-sent";
       throw new CountedError(error);
     }
-    obs.count(BusinessMetric.WelcomeEmails, 1, { via });
+    obs.count(BusinessMetric.WelcomeEmails, 1, { via, ...testMark(isTestAccount(account, deps.testMailDomain)) });
     obs.logger.info("Welcome email sent", { userId, via, invited: invite });
     return "sent";
   }

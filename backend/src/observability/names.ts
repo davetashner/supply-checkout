@@ -201,6 +201,41 @@ export const BusinessMetric = {
 export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMetric];
 
 /**
+ * The business metrics that count what customers do, which a test account or
+ * test team (supply-checkout-o60.2, backend/src/data/test-accounts.ts) is
+ * left out of: count() with `test: true` in its metadata logs the line
+ * instead of sending it, so the dashboard, the weekly review and alarms like
+ * "Checkouts stopped" and "No sign-ups" see customers only.
+ *
+ * Failure, drift and health metrics aren't here on purpose, like AWS's own
+ * metrics: a failure a test run hits is a real failure, and it's counted
+ * (with `test: true` in its metadata, to tell it apart in Logs Insights).
+ */
+export const TEST_SKIPPED_METRICS: ReadonlySet<BusinessMetricName> = new Set<BusinessMetricName>([
+  BusinessMetric.SignUps,
+  BusinessMetric.Checkouts,
+  BusinessMetric.Returns,
+  BusinessMetric.Writes,
+  BusinessMetric.ConditionalWriteConflicts,
+  BusinessMetric.ReceiptReads,
+  BusinessMetric.ReceiptLines,
+  BusinessMetric.ReceiptTokens,
+  BusinessMetric.ReceiptRateLimited,
+  BusinessMetric.ReceiptLimitReached,
+  BusinessMetric.ReceiptTrialCapReached,
+  BusinessMetric.ReceiptTrialsNearLimit,
+  BusinessMetric.ReceiptPaidTeamsNearLimit,
+  BusinessMetric.InvitesSent,
+  BusinessMetric.InvitesAccepted,
+  BusinessMetric.TeamsClosed,
+  BusinessMetric.TeamClosedNotices,
+  BusinessMetric.TeamsReopened,
+  BusinessMetric.TeamReopenedNotices,
+  BusinessMetric.AccountsDeleted,
+  BusinessMetric.WelcomeEmails,
+]);
+
+/**
  * Environment variables the CDK app sets on every Lambda function
  * (infra/lib/observability/defaults.ts) and this module reads.
  */

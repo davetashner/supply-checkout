@@ -269,7 +269,7 @@ const date = (iso) => (typeof iso === "string" ? iso.slice(0, 10) : "-");
 export function teamLine(team) {
   const comp = team.comp ? ` comp:${team.comp.plan} until ${date(team.comp.until)}${team.comp.live ? "" : " (ended)"}` : "";
   const owners = (team.owners ?? []).map((o) => o.email ?? o.userId).join(", ");
-  return `${pad(team.id, 38)} ${pad(team.name, 28)} ${pad(`${team.plan}/${team.status}`, 20)} created ${date(team.createdAt)}${team.closedAt ? ` closed ${date(team.closedAt)}` : ""}${comp}${owners ? `  owners: ${owners}` : ""}`;
+  return `${pad(team.id, 38)} ${pad(`${team.name}${team.test === true ? " [TEST]" : ""}`, 28)} ${pad(`${team.plan}/${team.status}`, 20)} created ${date(team.createdAt)}${team.closedAt ? ` closed ${date(team.closedAt)}` : ""}${comp}${owners ? `  owners: ${owners}` : ""}`;
 }
 
 /** An amount in a currency's minor units, as `27.00 USD` (two decimals: the currencies Stripe bills here). */
@@ -329,7 +329,7 @@ export function monthsLeft(until, now) {
 
 function teamDetail(team, stripe, receipts, now = Date.now()) {
   const lines = [
-    `${team.name} (${team.id})`,
+    `${team.name} (${team.id})${team.test === true ? " [TEST]: made by the prod journey tests, left out of customer metrics; billed and limited like any team" : ""}`,
     `  plan ${team.plan}, status ${team.status}, seats ${team.seats}, owners ${team.ownerCount}${team.closedAt ? `, CLOSED ${team.closedAt} (read-only until it's deleted)` : ""}`,
     `  created ${team.createdAt}${team.trialEndsAt ? `, trial ends ${team.trialEndsAt}` : ""}`,
     `  Stripe customer ${team.stripeCustomerId ?? "none"}`,

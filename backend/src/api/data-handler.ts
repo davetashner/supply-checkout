@@ -69,7 +69,7 @@ import {
   updateDocument,
   type WriteResult,
 } from "../data/index.js";
-import { BusinessMetric, type Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import { ApiError, errorFor as apiErrorFor, errorResponse, json, jsonBody, noContent, notMember, viewOnly } from "./http.js";
 import { requireRole } from "./roles.js";
 import { DATA_ROUTES, type DataRoute, routeKey } from "./routes.js";
@@ -182,6 +182,9 @@ const LINES_FIELDS = ["operationId", "lines"];
 const STOCK_FIELDS = ["operationId", "reason", "quantity", "unitCost", "count", "expectedStock"];
 
 /** A project as a response carries it, under its name and (through the rename's window) its old one. */
+/** A team's metric metadata: its ID, and `test: true` for a test team (customer-activity metrics skip it: observability's skippedForTest). */
+const teamMetadata = (ctx: TeamContext) => ({ teamId: ctx.teamId, ...testMark(ctx.test) });
+
 const bothNames = (name: "project" | "toProject", doc: StoredDocument | undefined) => {
   const body = doc ? toBody(doc) : null;
   return name === "project" ? { project: body, sheet: body } : { toProject: body, toSheet: body };
@@ -195,7 +198,7 @@ const bothNames = (name: "project" | "toProject", doc: StoredDocument | undefine
 async function commandResponse(deps: DataHandlerDeps, ctx: TeamContext, outcome: CommandOutcome): Promise<APIGatewayProxyStructuredResultV2> {
   const db = deps.dbForTeam(ctx.teamId);
   const { result, replayed } = outcome;
-  const metadata = { teamId: ctx.teamId };
+  const metadata = teamMetadata(ctx);
   if (!replayed) {
     deps.obs.count(BusinessMetric.Writes, 1, metadata);
     // A quick take is a checkout, onto the General Use project (the Checkouts stopped alarm counts it)
@@ -242,7 +245,7 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
   if (route.operation === "move") {
     const body = jsonBody(event, MOVE_FIELDS);
     const { result, replayed } = await moveLine(db, ctx, { ...body, projectId } as Parameters<typeof moveLine>[2], at);
-    if (!replayed) deps.obs.count(BusinessMetric.Writes, 1, { teamId: ctx.teamId });
+    if (!replayed) deps.obs.count(BusinessMetric.Writes, 1, teamMetadata(ctx));
     // Both projects as they are now, read after the write (null if since deleted); no stock moved
     const [project, toProject] = await Promise.all([getDocument(db, ctx, "projects", projectId), getDocument(db, ctx, "projects", (result.toProjectId ?? result.toSheetId) as string)]);
     return json(200, { operationId: result.operationId, replayed, result, ...bothNames("project", project), ...bothNames("toProject", toProject), product: null });
@@ -251,9 +254,9 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
     const body = jsonBody(event, LINES_FIELDS);
     const { result, replayed } = await addLines(db, ctx, { ...body, projectId } as Parameters<typeof addLines>[2], at);
     if (!replayed) {
-      deps.obs.count(BusinessMetric.Writes, 1, { teamId: ctx.teamId });
+      deps.obs.count(BusinessMetric.Writes, 1, teamMetadata(ctx));
       // Bought for the client, not taken from storage: counted apart from Checkouts
-      deps.obs.count(BusinessMetric.ReceiptLines, result.lines.reduce((n, l) => n + l.quantity, 0), { teamId: ctx.teamId });
+      deps.obs.count(BusinessMetric.ReceiptLines, result.lines.reduce((n, l) => n + l.quantity, 0), teamMetadata(ctx));
     }
     // The project as it is now, read after the write (null if it's since been deleted)
     const project = await getDocument(db, ctx, "projects", projectId);
@@ -284,7 +287,7 @@ async function settings(deps: DataHandlerDeps, route: DataRoute, event: DataEven
   if (route.operation === "getSettings") return json(200, await getTeamSettings(db, ctx));
   const body = jsonBody(event, SETTINGS_FIELDS);
   const view = await setTeamSettings(db, ctx, { equipmentMarkup: body.equipmentMarkup }, expectedVersionFrom(body.expectedVersion), new Date((deps.now ?? Date.now)()));
-  deps.obs.count(BusinessMetric.Writes, 1, { teamId: ctx.teamId });
+  deps.obs.count(BusinessMetric.Writes, 1, teamMetadata(ctx));
   return json(200, view);
 }
 const IMPORT_FIELDS = ["importId", "csv", "dryRun"];
@@ -307,7 +310,7 @@ async function runImport(deps: DataHandlerDeps, event: DataEvent, ctx: TeamConte
   }
   if (outcome.status === "imported" && !outcome.replayed) {
     const { created, updated } = outcome.summary;
-    if (created + updated) deps.obs.count(BusinessMetric.Writes, created + updated, { teamId: ctx.teamId });
+    if (created + updated) deps.obs.count(BusinessMetric.Writes, created + updated, teamMetadata(ctx));
   }
   return json(200, outcome);
 }
@@ -331,7 +334,7 @@ async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ct
   if (COMMANDS.has(route.operation)) return runCommand(deps, route, event, ctx);
   const db = deps.dbForTeam(ctx.teamId);
   const collection = route.collection as Collection;
-  const metadata = { teamId: ctx.teamId };
+  const metadata = teamMetadata(ctx);
 
   if (route.operation === "list") {
     const q = event.queryStringParameters ?? {};
@@ -389,13 +392,14 @@ export function createDataHandler(deps: DataHandlerDeps) {
     const route = ROUTES.get(event.routeKey);
     const teamId = event.pathParameters?.teamId;
     let status = 500;
+    // The caller's context, once the membership check has passed
+    let ctx: TeamContext | undefined;
     try {
       if (!route) throw new ApiError(404, "not_found", "No such route");
       // An old client still on `/sheets` (supply-checkout-005.6): counted, then served as `/projects`
       if (route.legacy) deps.obs.count(BusinessMetric.LegacySheetsRouteCalls, 1, { route: routeKey(route) });
       const userId = callerId(event, now());
       if (typeof teamId !== "string") throw new ApiError(400, "bad_request", "Missing team ID");
-      let ctx: TeamContext;
       try {
         ctx = await authorizeTeam(deps.dbForTeam(teamId), userId, teamId, new Date(now()));
       } catch (error) {
@@ -415,7 +419,7 @@ export function createDataHandler(deps: DataHandlerDeps) {
       // Finished Return refused while equipment is still out (equipment_out), or a reopen refused
       // while another General Use project is open (adhoc_open), is the refusal
       // working as meant, not a write that lost a race, so it isn't counted as one
-      if (apiError.status === 409 && apiError.reason !== "stock_changed" && apiError.reason !== "equipment_out" && apiError.reason !== "adhoc_open") deps.obs.count(BusinessMetric.ConditionalWriteConflicts, 1, teamId ? { teamId } : {});
+      if (apiError.status === 409 && apiError.reason !== "stock_changed" && apiError.reason !== "equipment_out" && apiError.reason !== "adhoc_open") deps.obs.count(BusinessMetric.ConditionalWriteConflicts, 1, ctx ? teamMetadata(ctx) : teamId ? { teamId } : {});
       if (apiError.status >= 500) deps.obs.logger.error("Request failed", error as Error);
       // DynamoDB's refusal behind a 413, when the data layer kept it: its name and the start of its message
       else if (error instanceof TooLargeError && error.cause !== undefined) deps.obs.logger.warn("Refused as too large", { cause: error.cause });

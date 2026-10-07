@@ -1620,6 +1620,7 @@
               "Ref": "SsmParameterValuesupplycheckoutprodidentityuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
             },
             "SUPPORT_ADDRESS": "support@supplycheckout.com",
+            "TEST_MAIL_DOMAIN": "e2e.supplycheckout.com",
             "EMAIL_FROM_ADDRESS": "noreply@supplycheckout.com",
             "EMAIL_CONFIGURATION_SET": "supply-checkout-prod-transactional",
             "EMAIL_REGION": "us-east-1",

@@ -90,6 +90,25 @@ describe("business metrics", () => {
     expect(emf()).toHaveLength(2);
   });
 
+  it("logs a test account's or team's customer-activity metric instead of sending it, and still sends its failures (supply-checkout-o60.2)", () => {
+    const obs = createObservability({ service: "projects", env });
+    obs.count(BusinessMetric.Checkouts, 3, { teamId: "t-test", test: true });
+    obs.count(BusinessMetric.SignUps, 1, { teamId: "t-test", test: true });
+    obs.flush();
+    expect(emf()).toEqual([]);
+    expect(logs()).toEqual([
+      expect.objectContaining({ level: "INFO", message: "Business metric not sent for a test account or team", metric: "Checkouts", value: 3, teamId: "t-test", test: true }),
+      expect.objectContaining({ metric: "SignUps", value: 1, test: true }),
+    ]);
+    // A failure is a real failure: sent, with the mark beside it
+    obs.count(BusinessMetric.ReceiptReadFailures, 1, { teamId: "t-test", test: true });
+    expect(emf()).toEqual([expect.objectContaining({ ReceiptReadFailures: 1, teamId: "t-test", test: "true" })]);
+    // A customer's, and a mark that isn't exactly true, are sent
+    obs.count(BusinessMetric.Checkouts, 2, { teamId: "t-customer" });
+    obs.count(BusinessMetric.Checkouts, 1, { teamId: "t-other", test: false });
+    expect(emf().slice(1)).toEqual([expect.objectContaining({ Checkouts: 2, teamId: "t-customer" }), expect.objectContaining({ Checkouts: 1, teamId: "t-other", test: "false" })]);
+  });
+
   it("does nothing on flush when no metric was counted", () => {
     const { flush } = createObservability({ env });
     flush();

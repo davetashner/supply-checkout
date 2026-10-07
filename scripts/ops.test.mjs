@@ -270,6 +270,13 @@ test("shows one team, and the audit, and prints JSON when asked", async () => {
   assert.match(closed.logs[0], /CLOSED 2026-09-20T00:00:00.000Z/);
   await main(["teams"], closed.deps);
   assert.match(closed.logs[1], /closed 2026-09-20/);
+  assert.doesNotMatch(closed.logs.join("\n"), /\[TEST\]/);
+  // A test team (supply-checkout-o60.2): a badge in the list and the record, nothing more
+  const marked = harness({ routes: { "GET /ops/teams/team-a": { status: 200, body: { team: { ...TEAM, test: true } } }, "GET /ops/teams": { status: 200, body: { teams: [{ ...TEAM, test: true }] } } } });
+  await main(["team", "team-a"], marked.deps);
+  assert.match(marked.logs[0], /^Acme \(team-a\) \[TEST\]: made by the prod journey tests/);
+  await main(["teams"], marked.deps);
+  assert.match(marked.logs[1], /Acme \[TEST\]/);
   const audit = harness({ routes });
   await main(["audit", "--team", "team-a"], audit.deps);
   assert.deepEqual(audit.requests[0].query, { teamId: "team-a" });

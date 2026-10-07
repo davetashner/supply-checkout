@@ -18,6 +18,7 @@ import {
   RECEIPT_TRIAL_CAP_ATTRIBUTES,
   RECEIPT_TRIAL_READS_PER_DAY,
   RECEIPT_USAGE_ATTRIBUTES,
+  TEST_MARK_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
   STRIPE_LINK_READ_ATTRIBUTES,
@@ -223,7 +224,13 @@ describe("functions", () => {
       TABLE_NAME: "supply-checkout-prod-app",
       ISSUER_URL: { Ref: expect.stringMatching(/issuerurl/i) },
       ACCOUNT_ROLE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^AccountAccessRole/), "Arn"] },
+      // The test mail domain, fixed in the template (supply-checkout-o60.2): only the account function makes teams
+      TEST_MAIL_DOMAIN: "e2e.supplycheckout.com",
     });
+    // No other API function needs it: they read a team's mark from its META item
+    for (const [id, fn] of resources(template, "AWS::Lambda::Function")) {
+      if (!id.startsWith("AccountFunction")) expect(JSON.stringify(fn.Properties.Environment ?? {}), id).not.toContain("TEST_MAIL_DOMAIN");
+    }
     // AUTH_URL is fixed when the template is built, not read from SSM: the function sends the sign-in grant and the
     // refresh token there, so a rewritten parameter mustn't be able to move it (supply-checkout-6uw.23)
     expect(env("AuthFunction")).toMatchObject({ AUTH_URL: "https://auth.supplycheckout.com", CLIENT_ID: { Ref: expect.stringMatching(/webclientid/i) }, ALLOWED_ORIGINS: "https://app.supplycheckout.com" });
@@ -927,10 +934,24 @@ describe("operator-access role (ADR 0015)", () => {
     });
   });
 
-  it("queries only the operators' index partitions, for projected attributes only; updates only comp attributes of the tagged team; reads only teams' receipt counts; and only appends operator audit", () => {
+  it("queries only the operators' index partitions, for projected attributes only; updates only comp attributes of the tagged team; reads only teams' receipt counts and test marks; and only appends operator audit", () => {
     const [policy, ...others] = role().Policies;
     expect(others).toEqual([]);
-    const [index, comp, stuckList, stuckClear, receipts, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [index, comp, stuckList, stuckClear, testMarks, receipts, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    // Test marks (supply-checkout-o60.2): BatchGetItem by key only, the keys and `test` only, projected; read only
+    expect(testMarks).toEqual({
+      Sid: "TeamTestMarksReadOnly",
+      Effect: "Allow",
+      Action: "dynamodb:BatchGetItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+        "ForAllValues:StringEquals": { "dynamodb:Attributes": [...TEST_MARK_ATTRIBUTES] },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect([...TEST_MARK_ATTRIBUTES]).toEqual(["PK", "SK", "test"]);
+    expect(JSON.stringify(testMarks?.Resource)).not.toMatch(/index|\*/);
     // Receipt usage (supply-checkout-wxx): BatchGetItem by key only, the keys and `receipts` only, projected
     expect(receipts).toEqual({
       Sid: "TeamReceiptCountersReadOnly",
@@ -1009,8 +1030,10 @@ describe("operator-access role (ADR 0015)", () => {
     expect(JSON.stringify(audit?.Resource)).not.toContain("index");
     expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
     // Nothing else reads a team's partition from the table: no GetItem, no Query there, no Scan anywhere,
-    // and the one batch read is the receipt counters' above
-    expect(JSON.stringify({ ...policy, PolicyDocument: { Statement: (policy?.PolicyDocument.Statement ?? []).filter((x) => x !== receipts) } })).not.toMatch(/GetItem|Scan|Batch|DeleteItem|ConditionCheck/);
+    // and the batch reads are the receipt counters' and test marks' above
+    expect(JSON.stringify({ ...policy, PolicyDocument: { Statement: (policy?.PolicyDocument.Statement ?? []).filter((x) => x !== receipts && x !== testMarks) } })).not.toMatch(/GetItem|Scan|Batch|DeleteItem|ConditionCheck/);
+    // And nothing anywhere in it can write the test mark: it's in no statement but the read
+    expect(JSON.stringify({ ...policy, PolicyDocument: { Statement: (policy?.PolicyDocument.Statement ?? []).filter((x) => x !== testMarks) } })).not.toMatch(/"test"/);
     // And no closure field: with closedAt and purgeAfter it could close a team and have the purge delete it (supply-checkout-6uw.6)
     expect(JSON.stringify(policy)).not.toMatch(/closedAt|closedBy|purgeAfter|owners/);
   });

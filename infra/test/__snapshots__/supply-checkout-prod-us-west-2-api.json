@@ -684,7 +684,8 @@
               "Ref": "SeatSyncsQueue518F74A6"
             },
             "SUPPLY_CHECKOUT_ENV": "prod",
-            "TABLE_NAME": "supply-checkout-prod-app"
+            "TABLE_NAME": "supply-checkout-prod-app",
+            "TEST_MAIL_DOMAIN": "e2e.supplycheckout.com"
           }
         },
         "Handler": "index.handler",

@@ -215,7 +215,7 @@ describe("the once-only record", () => {
 describe("welcome email function", () => {
   const request = (over: Partial<Record<keyof WelcomeRequest, unknown>> = {}): WelcomeRequest => ({ userId: SUB, via: "email", ...over }) as WelcomeRequest;
 
-  function welcome(options: { find?: FindAccount; db?: ReturnType<MemoryTable["db"]> } = {}) {
+  function welcome(options: { find?: FindAccount; db?: ReturnType<MemoryTable["db"]>; testMailDomain?: string } = {}) {
     const mail = fakeMailer();
     const lookups: string[] = [];
     const handler = createWelcomeHandler({
@@ -229,11 +229,29 @@ describe("welcome email function", () => {
       mailer: mail.mailer,
       obs: fakeObservability(),
       supportAddress: SUPPORT,
+      ...(options.testMailDomain ? { testMailDomain: options.testMailDomain } : {}),
       now: () => NOW,
     });
     return { handler, ...mail, lookups };
   }
   const outcome = () => logs.filter((l) => l.message === "Welcome email").map((l) => l.data.outcome);
+
+  it("leaves a test account's welcome out of WelcomeEmails, marked test, and still sends it (supply-checkout-o60.2)", async () => {
+    const domain = "e2e.example.test";
+    const probe = account({ email: `run-1-owner@${domain}` });
+    const marked = welcome({ find: async () => probe, testMailDomain: domain });
+    await marked.handler(request());
+    expect(marked.sent).toHaveLength(1);
+    expect(metrics).toEqual([{ metric: BusinessMetric.WelcomeEmails, metadata: { via: "email", test: true } }]);
+    // Unverified there, or anyone else: counted as a customer
+    for (const other of [account({ email: `run-2-owner@${domain}`, emailVerified: false }), account()]) {
+      table = new MemoryTable();
+      metrics = [];
+      const { handler } = welcome({ find: async () => other, testMailDomain: domain });
+      await handler(request());
+      expect(metrics.filter((m) => m.metric === BusinessMetric.WelcomeEmails).map((m) => m.metadata)).toEqual(other.emailVerified ? [{ via: "email" }] : []);
+    }
+  });
 
   it("sends one welcome, by the account's given name, to its verified address, for every sign-up method", async () => {
     for (const via of WELCOME_VIA) {
