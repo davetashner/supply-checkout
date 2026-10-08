@@ -8,8 +8,11 @@
 //   Login's own pages), aborts requests to the RUM data plane (test sessions add no billed RUM
 //   events), refuses any account deletion or team closure that assertDestructiveAllowed doesn't
 //   allow, and keeps a trace only for a failed test, started after sign-in.
-// - `signIn(page, role)`: signs in as a long-lived account through Managed Login (password, and
-//   a two-step code for owner), then checks the app's own GET /me with checkMe.
+// - `signIn(page, role, { fresh })`: signs in as a long-lived account, reusing a session an
+//   earlier test of this browser project left (lib/sessions.mjs) unless `fresh`, and otherwise
+//   through Managed Login (password, and a two-step code for owner), backing off on Managed
+//   Login's "Too many requests"; then checks the app's own GET /me with checkMe. At the end of
+//   the test (or at signIn.release(context)) the session goes back to the pool.
 /* global document, location -- readScreen's function runs in the page */
 import { test as base, expect } from "@playwright/test";
 import path from "node:path";
@@ -23,12 +26,19 @@ import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
 import { freshTotp } from "../../scripts/journeys/lib/totp.mjs";
 import { PASSWORD_CHOICE, formatScreen } from "../../scripts/journeys/lib/screen.mjs";
+import { createSessionPool, sessionCookie } from "../../scripts/journeys/lib/sessions.mjs";
 import { assertNotTracing, markTracing, secretFill } from "../../scripts/journeys/lib/tracing.mjs";
 import { waitUntilConnected } from "../ui/app.js";
 
 const RUM = /^https:\/\/dataplane\.rum\.[a-z0-9-]+\.amazonaws\.com\//;
 const appOrigins = new Set([PROD.app, PROD.api]);
 const originOf = (url) => { try { return new URL(url).origin; } catch { return ""; } };
+
+/** Managed Login's request limit ("Too many requests: You have exceeded the request limit..."). */
+const TOO_MANY_REQUESTS = /too many requests|exceeded the request limit/i;
+export class TooManyRequests extends Error {}
+/** How long signIn waits before each new try after "Too many requests": two more tries at most. */
+export const RATE_LIMIT_BACKOFF_MS = [30_000, 60_000];
 
 export const test = base.extend({
   // eslint-disable-next-line no-empty-pattern -- Playwright fixtures take a destructured object
@@ -55,6 +65,8 @@ export const test = base.extend({
       record: (role, patch) => writeRecord(mailS3, { runId: id, role, address: throwaways[role], ...patch }),
       /** Teams the run's throwaways created (the specs add to it), for the destructive-call guard. */
       createdTeams: new Set(),
+      /** The long-lived accounts' signed-in sessions, shared by the run's workers (lib/sessions.mjs). */
+      sessions: createSessionPool(dir, { masker }),
     });
   }, { scope: "worker" }],
 
@@ -107,33 +119,74 @@ export const test = base.extend({
   },
 
   /**
-   * signIn(page, "owner" | "crew" | "viewer"): Managed Login by password (and the two-step code
-   * for owner), then the /me guard on the app's own request. Tracing starts after it.
+   * signIn(page, "owner" | "crew" | "viewer", { fresh }): a session from the pool, or Managed
+   * Login by password (and the two-step code for owner); then the /me guard on the app's own
+   * request. Tracing starts after it. `fresh` always goes through Managed Login (J0.2).
    */
-  signIn: async ({ harness, identity }, use, testInfo) => {
-    await use(async (page, role) => {
+  signIn: async ({ harness, identity, context }, use, testInfo) => {
+    const project = testInfo.project.name;
+    const held = [];
+    // Puts the context's sessions back in the pool: the refresh cookie as it is now, since the
+    // app's refresh rotated it. A closed context has nothing to give back.
+    const release = async (ctx) => {
+      const mine = held.filter((h) => h.context === ctx);
+      for (const h of mine) held.splice(held.indexOf(h), 1);
+      if (!mine.length) return;
+      let cookie;
+      try { cookie = sessionCookie(await ctx.cookies(PROD.api), PROD.api); } catch { return; }
+      for (const h of mine) harness.sessions.put(project, h.role, cookie);
+    };
+    const signIn = async (page, role, { fresh = false } = {}) => {
       const account = harness.config.accounts[role];
       if (!account) throw new Error(`No long-lived account ${role}`);
       // A trace records the password and code typed below: never sign in while tracing
       assertNotTracing(page.context(), "a sign-in");
       identity.account = account.email;
-      const meResponse = page.waitForResponse((r) => r.url() === `${PROD.api}/me` && r.request().method() === "GET", { timeout: 60_000 });
-      // Awaited below; a sign-in that fails first ends the test, and that rejection isn't news
-      meResponse.catch(() => {});
-      await page.goto("/");
-      await page.locator("#signIn").click();
-      await page.waitForURL((u) => u.origin === PROD.auth);
-      await managedLogin(page, account, account.totp ? harness.totpCode : null, { redact: harness.masker.redact });
-      await page.waitForURL((u) => u.origin === PROD.app, { timeout: 30_000 });
-      const res = await meResponse;
-      expect(res.status(), "GET /me after sign-in").toBe(200);
-      const me = await res.json();
-      harness.masker.add(me?.user?.id);
-      const warnings = checkMe(me, { email: account.email, teamIds: Object.values(harness.config.teams), requireTeams: true });
-      for (const w of warnings) testInfo.annotations.push({ type: "journeys-warning", description: w });
+      const ctx = page.context();
+      for (let attempt = 0; ; attempt++) {
+        const meResponse = page.waitForResponse((r) => r.url() === `${PROD.api}/me` && r.request().method() === "GET", { timeout: 60_000 });
+        // Awaited below; a sign-in that fails first ends the test, and that rejection isn't news
+        meResponse.catch(() => {});
+        const session = fresh ? null : harness.sessions.take(project, role);
+        if (session) await ctx.addCookies([session]);
+        await page.goto("/");
+        // A session the app can't refresh (revoked, or used past its rotation) shows sign-in
+        const reused = session && await Promise.race([
+          meResponse.then(() => true, () => false),
+          page.locator("#signIn").waitFor({ timeout: 30_000 }).then(() => false, () => false),
+        ]);
+        if (!reused) {
+          try {
+            await page.locator("#signIn").click();
+            await page.waitForURL((u) => u.origin === PROD.auth);
+            await managedLogin(page, account, account.totp ? harness.totpCode : null, { redact: harness.masker.redact });
+          } catch (err) {
+            if (!(err instanceof TooManyRequests) || attempt >= RATE_LIMIT_BACKOFF_MS.length) throw err;
+            const wait = RATE_LIMIT_BACKOFF_MS[attempt];
+            testInfo.setTimeout(testInfo.timeout + wait + 60_000);
+            testInfo.annotations.push({ type: "journeys-warning", description: `Managed Login refused a sign-in as ${role} with "Too many requests"; tried again ${wait / 1000} seconds later` });
+            await page.waitForTimeout(wait);
+            continue;
+          }
+          await page.waitForURL((u) => u.origin === PROD.app, { timeout: 30_000 });
+        }
+        const res = await meResponse;
+        expect(res.status(), "GET /me after sign-in").toBe(200);
+        const me = await res.json();
+        harness.masker.add(me?.user?.id);
+        const warnings = checkMe(me, { email: account.email, teamIds: Object.values(harness.config.teams), requireTeams: true });
+        for (const w of warnings) testInfo.annotations.push({ type: "journeys-warning", description: w });
+        break;
+      }
+      held.push({ context: ctx, role });
       await waitUntilConnected(page);
       await page.startTrace();
-    });
+    };
+    signIn.release = release;
+    await use(signIn);
+    // `context` is a dependency so that it's torn down after this: the test's own context is
+    // still open here
+    for (const ctx of new Set([context, ...held.map((h) => h.context)])) await release(ctx);
   },
 });
 
@@ -214,7 +267,9 @@ async function reachPassword(page, { timeout, redact, submit }) {
     await page.waitForTimeout(250);
   }
   if (await field.isVisible()) return;
-  throw new Error(`Managed Login showed no password field after the email (tried: ${[...done].join(", ") || "nothing"}): ${formatScreen(await readScreen(page), redact)}`);
+  const screen = await readScreen(page);
+  if ((screen.alerts ?? []).some((a) => TOO_MANY_REQUESTS.test(a))) throw new TooManyRequests(`Managed Login refused the sign-in: ${formatScreen(screen, redact)}`);
+  throw new Error(`Managed Login showed no password field after the email (tried: ${[...done].join(", ") || "nothing"}): ${formatScreen(screen, redact)}`);
 }
 
 /** The page's headings, alerts, field labels and control names (never a field's value). */

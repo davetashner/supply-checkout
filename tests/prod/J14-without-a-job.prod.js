@@ -27,14 +27,14 @@ test("crew takes supplies without a job, returns some, moves the rest to a clien
   await goToProjects(page);
   // The client project the line will move to, then back to the list
   await createProject(page, client);
-  await page.getByRole("button", { name: "← All projects" }).first().click();
+  await page.getByRole("button", { name: "← All projects", exact: true }).first().click();
 
   await test.step("J14.1 Quick take: scan what you're taking, and how many", async () => {
-    await page.getByRole("button", { name: "Quick take" }).click();
+    await page.getByRole("button", { name: "Quick take", exact: true }).click();
     await typeCode(page, gloves.code);
     await expect(modal(page).locator("h2")).toHaveText("Quick take");
     for (let i = 1; i < 3; i++) await modal(page).locator("[data-step='1']").click();
-    await modal(page).getByRole("button", { name: "Take 3" }).click();
+    await modal(page).getByRole("button", { name: "Take 3", exact: true }).click();
     await expect(page.locator("#toast")).toHaveText(`Took 3 × ${gloves.name} (General Use)`);
     await expect(page.locator("#main .project-card").first()).toHaveClass(/adhoc/);
     await expect(card(page, GENERAL_USE)).toBeVisible();
@@ -72,7 +72,7 @@ test("crew takes supplies without a job, returns some, moves the rest to a clien
     await goToProjects(page);
     await card(page, client).click();
     await expect(lineRow(page, gloves.name)).toBeVisible();
-    await page.getByRole("button", { name: "← All projects" }).first().click();
+    await page.getByRole("button", { name: "← All projects", exact: true }).first().click();
   });
 
   await test.step("J14.4 Finished Return on General Use: the next quick take starts a new one", async () => {

@@ -46,7 +46,7 @@ test("crew takes company equipment to a job, sees where it is, and brings it bac
 
   await test.step("J13.5 See it in Inventory → Equipment → Out on jobs", async () => {
     await page.getByRole("button", { name: "Equipment", exact: true }).click();
-    await page.getByRole("button", { name: "Out on jobs" }).click();
+    await page.getByRole("button", { name: "Out on jobs", exact: true }).click();
     const row = page.locator("#main table.out tbody tr", { hasText: ladder.name });
     await expect(row).toHaveCount(1);
     await expect(row.locator("td").nth(1)).toHaveText("2");
@@ -72,7 +72,7 @@ test("crew takes company equipment to a job, sees where it is, and brings it bac
     const lost = finishBox(page, 0).getByLabel("Lost or broken", { exact: true });
     await lost.fill("1");
     await lost.dispatchEvent("input");
-    await modal(page).getByRole("button", { name: "Save" }).click();
+    await modal(page).getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.locator("#toast")).toHaveText("Return finished");
     await expect(page.locator(".project-head .pill")).toHaveText("Returned");
     // The return put one back; the lost one didn't
@@ -81,7 +81,7 @@ test("crew takes company equipment to a job, sees where it is, and brings it bac
     await expect(inventoryRow(page, ladder.name).locator("td").nth(1)).toHaveText("2");
     // Nothing of it is out on a job any more
     await page.getByRole("button", { name: "Equipment", exact: true }).click();
-    await page.getByRole("button", { name: "Out on jobs" }).click();
+    await page.getByRole("button", { name: "Out on jobs", exact: true }).click();
     await expect(page.locator("#main table.out tbody tr", { hasText: ladder.name })).toHaveCount(0);
   });
 

@@ -41,7 +41,7 @@ test("a finished project downloads as the client's CSV", { tag: ["@J6.1", "@J6.2
   });
 
   await test.step("J6.2 Download CSV", async () => {
-    const { filename, text } = await download(page, page.getByRole("button", { name: "Download CSV" }));
+    const { filename, text } = await download(page, page.getByRole("button", { name: "Download CSV", exact: true }));
     const rows = text.split("\n");
     const date = /^Date,(\d{4}-\d\d-\d\d)$/.exec(rows[1])?.[1];
     expect(rows[0]).toBe(`Client,${client}`);
