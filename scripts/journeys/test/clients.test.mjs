@@ -266,7 +266,7 @@ test("upload-results scrubs the report and text files, then puts the run's direc
   // Binary files are uploaded as they are
   assert.equal(readFileSync(path.join(dir, "test-results/x/test-failed-1.png"), "utf8"), `PNG ${env.JOURNEYS_CREW_EMAIL}`);
   assert.deepEqual(filesToUpload(dir), ["report.json", "test-results/x/error-context.md", "test-results/x/test-failed-1.png", "test-results/x/trace.zip"]);
-  assert.deepEqual(NOT_UPLOADED, ["masked-values", "totp-step*"]);
+  assert.deepEqual(NOT_UPLOADED, ["masked-values", "totp-step*", "sessions/*"]);
   // An unreadable report is replaced, not uploaded as is
   const bad = runDirWith({ "report.json": `{ broken ${env.JOURNEYS_CREW_EMAIL}` });
   await upload({ env: uploadEnv(bad.temp), s3For: () => fakeS3() });
@@ -337,4 +337,16 @@ test("secrets are never typed into a traced page, and secretFill sets the value 
   assert.deepEqual(calls, [], "nothing typed");
   // Another context isn't affected
   assert.doesNotThrow(() => assertNotTracing({}));
+});
+
+test("upload-results refuses a file holding a refresh token a saved session still has, and never uploads the session", async () => {
+  const token = "live-refresh-token-value-0123";
+  const session = JSON.stringify({ name: "sc_refresh", value: token, domain: "api.example.com", path: "/auth", expires: -1, httpOnly: true, secure: true });
+  const leaked = runDirWith({ "report.json": "{}", "sessions/desktop-chrome/crew/a.json": session, "test-results/a/trace.bin": `cookie ${token}` });
+  const s3 = fakeS3();
+  await assert.rejects(upload({ env: uploadEnv(leaked.temp), s3For: () => s3 }), (e) => e instanceof UploadRefused && /a session's refresh token/.test(e.message) && e.message.endsWith("is in test-results/a/trace.bin") && !e.message.includes(token));
+  assert.deepEqual(s3.calls, []);
+  const clean = runDirWith({ "report.json": "{}", "sessions/desktop-chrome/crew/a.json": session });
+  const s3b = fakeS3();
+  assert.match(await upload({ env: uploadEnv(clean.temp), s3For: () => s3b }), /\(1 files\)/);
 });

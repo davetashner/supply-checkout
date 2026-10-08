@@ -4,11 +4,11 @@ import { expect } from "@playwright/test";
 /** Uploads a receipt photo and waits for its review. */
 export async function uploadReceipt(page, file) {
   await page.setInputFiles("#receiptFile", file);
-  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review receipt", exact: true })).toBeVisible();
 }
 
 /** Opens the saved, unfinished receipt review. */
-export const continueReview = (page) => page.getByRole("button", { name: "Continue review" }).click();
+export const continueReview = (page) => page.getByRole("button", { name: "Continue review", exact: true }).click();
 
 /** Adds a blank line to the receipt review. */
-export const addReceiptLine = (page) => page.getByRole("button", { name: "+ Add item" }).click();
+export const addReceiptLine = (page) => page.getByRole("button", { name: "+ Add item", exact: true }).click();

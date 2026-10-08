@@ -25,7 +25,7 @@ test("crew sets a reorder level, sees the item low, acknowledges it, and marks i
     await expect(modal(page).getByRole("heading", { name: "Edit item" })).toBeVisible();
     await modal(page).getByLabel("Reorder at (optional)").fill("3");
     await modal(page).getByLabel("Usual order (optional)").fill("12");
-    await modal(page).getByRole("button", { name: "Save" }).click();
+    await modal(page).getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.locator("#overlay")).toBeHidden();
     await expect(inventoryRow(page, item.name).locator(".low-badge")).toHaveCount(0);
   });
@@ -50,7 +50,7 @@ test("crew sets a reorder level, sees the item low, acknowledges it, and marks i
     await expect(row.locator("td").nth(1)).toHaveText("3");
     await expect(row.locator("td").nth(2)).toHaveText("3");
     await expect(row.locator("td").nth(3)).toHaveText("12");
-    const list = await download(page, page.getByRole("button", { name: "Download CSV" }));
+    const list = await download(page, page.getByRole("button", { name: "Download CSV", exact: true }));
     expect(list.filename).toBe("Reorder list.csv");
     expect(list.text.split("\n")[0]).toMatch(/^Item,(Brand,)?Barcode,In storage,Reorder at,Usual order,Status$/);
     expect(list.text).toContain(`${item.name},`);
@@ -63,7 +63,7 @@ test("crew sets a reorder level, sees the item low, acknowledges it, and marks i
     await page.getByRole("button", { name: `Mark ordered: ${item.name}` }).click();
     await expect(modal(page).getByRole("heading", { name: "Mark ordered" })).toBeVisible();
     await expect(modal(page).getByLabel("How many ordered")).toHaveValue("12");
-    await modal(page).getByRole("button", { name: "Mark ordered" }).click();
+    await modal(page).getByRole("button", { name: "Mark ordered", exact: true }).click();
     await expect(page.locator("#toast")).toHaveText("Marked 12 ordered");
     await expect(row.locator("td").nth(4)).toContainText("On order: 12 since");
     await page.getByRole("button", { name: `Cancel the order of ${item.name}` }).click();

@@ -26,13 +26,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENV, assertRunAllowed, readConfig, runDir, runId as currentRunId, secretValues } from "./lib/config.mjs";
 import { MASKED_VALUES_FILE, createMasker, readMaskedValues } from "./lib/mask.mjs";
+import { SESSIONS_DIR, createSessionPool } from "./lib/sessions.mjs";
 import { createS3 } from "./lib/s3.mjs";
 
 export const REPORT_FILE = "report.json";
 const ADD_MASK = "::add-mask::";
 /** Files in the run's directory that are never uploaded. */
-export const NOT_UPLOADED = [MASKED_VALUES_FILE, "totp-step*"];
-const notUploaded = (rel) => rel === MASKED_VALUES_FILE || /^totp-step/.test(path.basename(rel));
+export const NOT_UPLOADED = [MASKED_VALUES_FILE, "totp-step*", `${SESSIONS_DIR}/*`];
+const notUploaded = (rel) => rel === MASKED_VALUES_FILE || /^totp-step/.test(path.basename(rel)) || rel.split(path.sep)[0] === SESSIONS_DIR;
 
 /** A Playwright JSON report without stdout, stderr or ::add-mask:: lines, every string redacted. */
 export function scrubReport(report, redact) {
@@ -86,8 +87,9 @@ export async function upload({ env, run, s3For }) {
   // Only what unlocks an account refuses the upload (everything else is redacted below). Checked
   // before redacting as well as after, so a password anywhere is a refusal, never a quiet fix.
   const { owner, crew, viewer } = config.accounts;
-  const unlocking = [owner.password, crew.password, viewer.password, owner.totp];
-  const refuse = (leaks) => { if (leaks.length) throw new UploadRefused(`Refusing to upload: a password, the TOTP secret or an ::add-mask:: command is in ${leaks.join(", ")}`); };
+  // and any refresh token a saved session still holds (cleanup deletes them after signing out)
+  const unlocking = [owner.password, crew.password, viewer.password, owner.totp, ...createSessionPool(dir).tokens()];
+  const refuse = (leaks) => { if (leaks.length) throw new UploadRefused(`Refusing to upload: a password, the TOTP secret, a session's refresh token or an ::add-mask:: command is in ${leaks.join(", ")}`); };
   refuse(findLeaks(dir, files, unlocking, { addMask: false }));
   const masker = createMasker({ github: false });
   for (const v of [...secretValues(config), ...readMaskedValues(path.join(dir, MASKED_VALUES_FILE))]) masker.remember(v);

@@ -31,6 +31,7 @@ import { createCognito } from "./lib/cognito.mjs";
 import { PROD, assertRunAllowed, readConfig, runDir, runId as currentRunId, secretValues } from "./lib/config.mjs";
 import { assertDestructiveAllowed, checkMe, isRunScoped } from "./lib/guards.mjs";
 import { sweepInbox, waitForMail } from "./lib/mailbox.mjs";
+import { createSessionPool } from "./lib/sessions.mjs";
 import { MASKED_VALUES_FILE, createMasker } from "./lib/mask.mjs";
 import { readRecords, writeRecord } from "./lib/runs.mjs";
 import { resetMarkup } from "./lib/settings.mjs";
@@ -63,7 +64,7 @@ export async function cleanTeam(api, teamId, { runId, now }) {
  * The whole cleanup, with every dependency injected. Returns `{ done, left }`: lists of what it
  * did and what it couldn't, as masked text.
  */
-export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, log = () => {}, mail = waitForMail, totpCode, now = Date.now }) {
+export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, log = () => {}, mail = waitForMail, totpCode, now = Date.now, savedSessions = null }) {
   const done = [];
   const left = [];
   const sessions = [];
@@ -164,6 +165,10 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
     for (const s of sessions) {
       try { await cognito.globalSignOut(s.accessToken); done.push(`Signed ${s.label} out everywhere`); } catch (err) { left.push(`Couldn't sign ${s.label} out everywhere: ${message(err)}`); }
     }
+    // 5: the tests' saved sessions (lib/sessions.mjs), whose refresh tokens the sign-outs above revoked
+    if (savedSessions) {
+      try { savedSessions.clear(); done.push("Deleted the tests' saved sessions"); } catch (err) { left.push(`Couldn't delete the tests' saved sessions: ${message(err)}`); }
+    }
   }
   return { done: done.map(masker.redact), left: left.map(masker.redact) };
 }
@@ -192,7 +197,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const cognito = createCognito({ region: PROD.region, clientId });
     const totpCode = () => freshTotp(config.accounts.owner.totp, { stateFile: path.join(dir, "totp-step") });
     const log = (line) => console.log(masker.redact(line));
-    const { done, left } = await cleanup({ config, runId, cognito, apiFor: (token) => createApi({ token }), mailS3: createS3(config.buckets.mail), masker, log, totpCode });
+    const { done, left } = await cleanup({ config, runId, cognito, apiFor: (token) => createApi({ token }), mailS3: createS3(config.buckets.mail), masker, log, totpCode, savedSessions: createSessionPool(dir) });
     for (const d of done) console.log(`cleanup: ${d}`);
     for (const l of left) console.log(`cleanup: LEFT ${l}`);
     console.log(left.length ? `cleanup: ${left.length} thing${left.length === 1 ? "" : "s"} left` : "cleanup: nothing left");

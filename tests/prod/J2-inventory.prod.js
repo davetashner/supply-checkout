@@ -48,8 +48,8 @@ test("the owner adds, edits and deletes an item, imports a CSV, and sets the equ
     await saveItem(page);
     await expect(inventoryRow(page, added.renamed).locator("td").nth(2)).toHaveText("$5.00");
     await inventoryRow(page, added.renamed).click();
-    await modal(page).getByRole("button", { name: "Delete" }).click();
-    await modal(page).getByRole("button", { name: "Tap to delete" }).click();
+    await modal(page).getByRole("button", { name: "Delete", exact: true }).click();
+    await modal(page).getByRole("button", { name: "Tap to delete", exact: true }).click();
     await expect(page.locator("#toast")).toHaveText("Item deleted");
     await expect(inventoryRow(page, added.renamed)).toHaveCount(0);
   });
@@ -83,11 +83,11 @@ test("the owner adds, edits and deletes an item, imports a CSV, and sets the equ
       const field = modal(page).getByLabel("Markup on company equipment bought for a client (%)");
       await expect(field).toHaveValue(String(found));
       await field.fill(String(MARKUP_SENTINEL));
-      await modal(page).getByRole("button", { name: "Save" }).click();
+      await modal(page).getByRole("button", { name: "Save", exact: true }).click();
       await expect(page.locator("#toast")).toHaveText(`Saved: ${MARKUP_SENTINEL}% on equipment bought for clients`);
       await teambarButton(page, "Team settings").click();
       await expect(field).toHaveValue(String(MARKUP_SENTINEL));
-      await modal(page).getByRole("button", { name: "Cancel" }).click();
+      await modal(page).getByRole("button", { name: "Cancel", exact: true }).click();
     } finally {
       const now = await apiCall(page, token, "GET", settingsPath);
       if ((now.body?.settings?.equipmentMarkup ?? BASELINE_MARKUP) !== original) {

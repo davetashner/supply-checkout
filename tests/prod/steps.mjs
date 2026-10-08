@@ -138,6 +138,8 @@ export async function secondPage({ browser, harness, signIn, testInfo }, role) {
   return {
     page,
     async close() {
+      // The session goes back to the pool before the context (and its cookie) is gone
+      await signIn.release?.(context);
       await context.close();
       expect(errors.map(harness.masker.redact), `page errors in the ${role}'s context`).toEqual([]);
     },

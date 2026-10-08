@@ -7,10 +7,11 @@ import { appReady } from "./steps.mjs";
 
 test("crew signs in with a password and sees the app", { tag: ["@J0.1", "@J0.2", "@prod"] }, async ({ page, signIn }) => {
   await test.step("J0.1 Open the app, and J0.2 sign in through Managed Login as crew", async () => {
-    await signIn(page, "crew");
+    // Through Managed Login every time, not a saved session: this is the sign-in journey
+    await signIn(page, "crew", { fresh: true });
   });
   await goToProjects(page);
-  await expect(page.getByRole("button", { name: "Projects" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Projects", exact: true })).toBeVisible();
 });
 
 test("crew picks between their two teams, and each team's projects appear within 3 seconds", { tag: ["@J0.3", "@prod"] }, async ({ page, signIn, harness, journeyTeam }) => {

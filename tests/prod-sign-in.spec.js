@@ -4,7 +4,7 @@
 // a code sent by email with "Try another way" (what prod shows crew and viewer) or "Other sign-in options", and a page with no way to a password, which
 // fails saying what the page showed, without any value typed into it.
 import { expect, test } from "@playwright/test";
-import { managedLogin } from "./prod/fixtures.mjs";
+import { TooManyRequests, managedLogin } from "./prod/fixtures.mjs";
 
 const account = { email: "crew.member@example.com", password: "not-a-real-password-1" };
 
@@ -88,4 +88,15 @@ test("managedLogin never takes the email code's option, even with no Password op
   const err = await managedLogin(page, account, null, { timeout: 1_500 }).catch((e) => e);
   expect(err.message).toContain("Managed Login showed no password field after the email (tried: nothing)");
   expect(await page.evaluate(() => window.continued)).toBeUndefined();
+});
+
+test("managedLogin reports Managed Login's request limit as TooManyRequests, for signIn to back off", async ({ page }) => {
+  await page.setContent(standIn(`<h1>Sign in</h1><div role="alert">Too many requests: You have exceeded the request limit. Please try again later</div>`));
+  const err = await managedLogin(page, account, null, { timeout: 4_000 }).catch((e) => e);
+  expect(err).toBeInstanceOf(TooManyRequests);
+  expect(err.message).toContain("Managed Login refused the sign-in");
+  // Any other alert is an ordinary failure
+  await page.setContent(standIn(`<h1>Sign in</h1><div role="alert">Incorrect username or password.</div>`));
+  const other = await managedLogin(page, account, null, { timeout: 4_000 }).catch((e) => e);
+  expect(other).not.toBeInstanceOf(TooManyRequests);
 });

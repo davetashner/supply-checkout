@@ -13,8 +13,8 @@ export const modal = (page) => page.locator("#modal");
 export const waitUntilConnected = (page) =>
   page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
 
-/** The Inventory tab. */
-export const goToInventory = (page) => page.getByRole("button", { name: "Inventory" }).click();
+/** The Inventory tab (by ID: its name carries a low-stock count, and other buttons say "inventory"). */
+export const goToInventory = (page) => page.locator("#tab-prices").click();
 
-/** The Projects tab. */
-export const goToProjects = (page) => page.getByRole("button", { name: "Projects" }).click();
+/** The Projects tab (by ID: a project's "← All projects" button also says "projects"). */
+export const goToProjects = (page) => page.locator("#tab-projects").click();

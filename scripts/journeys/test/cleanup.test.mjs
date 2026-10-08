@@ -251,3 +251,16 @@ test("cleanup deletes the unused sign-in codes mailed to the long-lived accounts
   const r2 = await run(failing);
   assert.ok(r2.left.some((l) => l.startsWith("Couldn't sweep the long-lived accounts' unused sign-in codes")), r2.left.join("; "));
 });
+
+test("cleanup deletes the tests' saved sessions after signing everyone out, and says if it couldn't", async () => {
+  const w = world();
+  const order = [];
+  const signOut = w.cognito.globalSignOut;
+  w.cognito.globalSignOut = async (t) => { order.push("signOut"); return signOut(t); };
+  const r = await run(w, { savedSessions: { clear: () => order.push("clear") } });
+  assert.equal(order.at(-1), "clear");
+  assert.ok(order.indexOf("clear") > order.lastIndexOf("signOut"));
+  assert.ok(r.done.includes("Deleted the tests' saved sessions"));
+  const r2 = await run(world(), { savedSessions: { clear: () => { throw new Error("EACCES"); } } });
+  assert.ok(r2.left.includes("Couldn't delete the tests' saved sessions: EACCES"), r2.left.join("; "));
+});
