@@ -4,13 +4,20 @@
 import { hasStock, isEquipment, unitValue, brandOf } from "./format.js";
 import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts, lostCharge, lostRows, lineLabel, projectTitle, isAdhoc } from "./project-math.js";
 
-// One CSV cell. Text that a spreadsheet would run as a formula (=, +, -, @, tab or return
-// first) gets a leading apostrophe, so a name a team member typed can't run in the
-// owner's spreadsheet. Numbers are written as they are.
+// One CSV cell, guarded against formula (CSV) injection per OWASP: text a spreadsheet would
+// run as a formula gets a leading apostrophe, so a name a team member typed can't run in the
+// owner's spreadsheet. That's text starting with a tab or return, or whose first character
+// after any leading spaces, control or invisible characters (which spreadsheets may skip) is
+// = + - @ (DDE payloads such as =cmd|'/C calc'!A0 start with one too) or a fullwidth, small
+// or minus-sign lookalike of one, which a spreadsheet may read as it. A plain decimal such as
+// -12.50 is written as it is: it can only be read as that number, so a negative amount stays
+// a number. Numbers are written as they are.
+const FORMULA = /^[\s\p{Cc}\p{Cf}]*[\t\r=+\-@\u2212\ufe62\ufe63\ufe66\ufe6b\uff0b\uff0d\uff1d\uff20]/u;
+const DECIMAL = /^-?\d+(\.\d+)?$/;
 export function cell(v) {
   if (typeof v === "number") return String(v);
   let t = String(v ?? "");
-  if (/^[=+\-@\t\r]/.test(t)) t = "'" + t;
+  if (FORMULA.test(t) && !DECIMAL.test(t)) t = "'" + t;
   return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
 }
 export const toCsv = rows => rows.map(r => r.map(cell).join(",")).join("\n");
