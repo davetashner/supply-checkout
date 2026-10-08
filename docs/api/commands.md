@@ -415,7 +415,7 @@ movement or the operation record changed.
 | `403 permission_denied`, `reason: "not_member"` | Not a member of the team | As for document writes |
 | `404 not_found` | No such project, or (stock adjustment) no such item | Show the message (the web build handles it as for `400`) |
 | `409 aborted` | The project is closed ("Reopen it to …"), or the line or item changed on every retry | Show the message. Safe to retry with the same ID |
-| `409 aborted`, `reason: "equipment_out"` | A document write closing a project (Finished Return) while company equipment is still out on it | Ask about each piece still out (back, still at the job, or lost or broken), then close |
+| `409 aborted`, `reason: "equipment_out"` | A document write closing a project (Finished Return), or removing an equipment line, while company equipment is still out on it | Ask about each piece still out (back, still at the job, or lost or broken), then close |
 | `409 aborted`, `reason: "adhoc_open"` | A document write reopening a finished General Use project while another General Use project is open | Show the message: finish the open one first |
 | `429`, `5xx`, timeout, network error | Unknown whether it ran | Retry with the same ID, with backoff |
 
@@ -434,7 +434,13 @@ before answering `409`, so `409` from contention is rare.
   equipment lost or broken, `returned + lost` never exceeds `out`.
 - **No project closes with equipment out.** A `PUT` or `PATCH` that sets
   `status: "closed"` is refused with `409 aborted`, reason `equipment_out`,
-  while any equipment line has `out − returned − lost > 0`.
+  while any equipment line has `out − returned − lost > 0`. Removing such a
+  line (leaving it out of a `PUT`, or `null` in a `PATCH`) is refused the
+  same way, so what's out can't drop off the project.
+- **A line is an object.** In a `PATCH`, `"items": {"<key>": null}` removes
+  the line (it isn't stored as `null`); any other value that isn't an object
+  is refused with `400`, unless it's a legacy value the write carries over
+  unchanged.
 - **The line fields are checked on document writes too** (`documents.ts`):
   a line's `kind` is `"equipment"` or missing and can't change once the line
   exists; `lost` and `lostCharge` are only on equipment lines (a charge only

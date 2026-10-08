@@ -94,6 +94,23 @@ describe.skipIf(!endpoint)("company equipment (DynamoDB Local)", () => {
     expect(history.items.reduce((n, m) => n + m.delta, 0)).toBe(2 - 4);
   });
 
+  it("refuses removing an equipment line with something still out, and a line that isn't an object", async () => {
+    const ctx = await team();
+    await checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "ladder", quantity: 2 });
+    await checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "0123", quantity: 1 });
+    await expect(updateDocument(db, ctx, "projects", "s1", { items: { ladder: null } }, { expectedVersion: await version(ctx) })).rejects.toThrow(EquipmentOutError);
+    const { ladder, ...rest } = await lines(ctx);
+    await expect(setDocument(db, ctx, "projects", "s1", { client: "Echo", date: "2026-10-01", status: "open", items: rest }, { expectedVersion: await version(ctx) })).rejects.toThrow(EquipmentOutError);
+    await expect(updateDocument(db, ctx, "projects", "s1", { items: { "0123": "gone" } }, { expectedVersion: await version(ctx) })).rejects.toThrow(InvalidInputError);
+    expect(await lines(ctx)).toMatchObject({ ladder, "0123": { out: 1 } });
+
+    await updateDocument(db, ctx, "projects", "s1", { items: { "0123": null } }, { expectedVersion: await version(ctx) });
+    await returnItems(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "ladder", quantity: 1 });
+    await markLost(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "ladder", quantity: 1 });
+    await updateDocument(db, ctx, "projects", "s1", { items: { ladder: null } }, { expectedVersion: await version(ctx) });
+    expect(await lines(ctx)).toEqual({});
+  });
+
   it("never lets concurrent returns and lost records take an equipment line past what went out", async () => {
     const ctx = await team();
     await checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "ladder", quantity: 3 });

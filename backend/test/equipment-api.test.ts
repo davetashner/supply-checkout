@@ -358,6 +358,46 @@ describe("project documents and the new fields", () => {
     expect(await call("PUT", "/teams/team-a/projects/s1", { data: { ...whole, items: { ladder: dropped } }, expectedVersion: projectVersion() })).toMatchObject({ status: 400, body: { error: { message: "takenBy is set by the server" } } });
   });
 
+  it("refuse a line that isn't an object, except null, which removes it, or a legacy value carried over unchanged", async () => {
+    const bought = { name: "Step ladder", price: 150, cost: 120, purchased: true, priceSet: "markup", out: 1, returned: 0 };
+    project({ items: { "ladder:bought": bought, "0123": { name: "Gloves", price: 1, out: 1, returned: 0 }, odd: "legacy" } });
+    for (const value of ["x", 0, true, [], [bought]]) {
+      for (const key of ["ladder:bought", "0123", "new"]) {
+        expect(await patchProject({ items: { [key]: value } }), `${key} ${JSON.stringify(value)}`).toMatchObject({ status: 400, body: { error: { message: "A line is a JSON object, or null to remove it" } } });
+      }
+    }
+    const whole = () => ({ client: "Echo", date: "2026-10-01", status: "open", items: items() });
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: { ...whole(), items: { ...items(), "0123": "gone" } }, expectedVersion: projectVersion() })).toMatchObject({ status: 400 });
+    expect(items()["ladder:bought"]).toEqual(bought);
+    // The legacy value, unchanged, doesn't block a PATCH or a PUT; changed, it's refused
+    expect(await patchProject({ client: "Echo 2" })).toMatchObject({ status: 200 });
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: whole(), expectedVersion: projectVersion() })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { odd: "other" } })).toMatchObject({ status: 400 });
+    // null removes a line, a bought one too, and isn't stored
+    expect(await patchProject({ items: { "ladder:bought": null, odd: null } })).toMatchObject({ status: 200 });
+    expect(Object.keys(items())).toEqual(["0123"]);
+    // A PUT with a null line (as read before nulls were dropped) leaves it out
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: { ...whole(), items: { ...items(), gone: null } }, expectedVersion: projectVersion() })).toMatchObject({ status: 200 });
+    expect(Object.keys(items())).toEqual(["0123"]);
+  });
+
+  it("refuse removing an equipment line with something still out, as closing the project is, by PATCH or PUT", async () => {
+    project({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 3, returned: 1, lost: 1 }, "0123": { name: "Gloves", price: 1, out: 1, returned: 0 } } });
+    const removing = { status: 409, body: { error: { code: "aborted", reason: "equipment_out", message: "Equipment is still out on this line: return it or mark it lost before removing it" } } };
+    expect(await patchProject({ items: { ladder: null } })).toMatchObject(removing);
+    const { ladder, ...rest } = items();
+    const whole = { client: "Echo", date: "2026-10-01", status: "open" };
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: { ...whole, items: rest }, expectedVersion: projectVersion() })).toMatchObject(removing);
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: whole, expectedVersion: projectVersion() })).toMatchObject(removing);
+    expect(items().ladder).toEqual(ladder);
+    expect(counts.ConditionalWriteConflicts).toBeUndefined();
+    // A supply line goes whatever is out; the equipment line once every piece is back or lost
+    expect(await patchProject({ items: { "0123": null } })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: { returned: 2 } } })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: null } })).toMatchObject({ status: 200 });
+    expect(items()).toEqual({});
+  });
+
   it("don't hold a line the write doesn't change to returned + lost <= out", async () => {
     project({ items: { odd: { name: "Odd", price: 1, out: 1, returned: 3 } } });
     expect(await patchProject({ client: "Echo 2" })).toMatchObject({ status: 200 });
