@@ -143,20 +143,35 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     await expect(modal(page)).toContainText("None of Step ladder is still out.");
   });
 
-  test("the line editor has no price for equipment, and keeps returned and lost within taken", { tag: ["@J13.2"] }, async ({ page }) => {
+  test("the line editor shows equipment's counts without changing them, and no Remove while any is still out", { tag: ["@J13.2"] }, async ({ page }) => {
     await open(page);
     await openProject(page, "Delta Dental");
     await equipmentRow(page, "Step ladder").click();
     await expect(modal(page)).toContainText("Company equipment: not charged.");
-    await expect(modal(page).locator("#fPrice")).toHaveCount(0);
-    await modal(page).getByLabel("Taken").fill("0");
-    await modal(page).getByLabel("Returned").fill("9");
-    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(modal(page).locator("#fPrice, #fOut, #fRet")).toHaveCount(0);
+    await expect(modal(page).locator(".summary")).toHaveText(/Taken 3\s*Returned 0\s*Lost or broken 1\s*Still out 2/);
+    await expect(modal(page)).toContainText("Return it or mark it lost before removing it.");
+    await expect(modal(page).getByRole("button", { name: "Remove" })).toHaveCount(0);
+    await expect(modal(page).getByRole("button", { name: "Save" })).toHaveCount(0);
+    await modal(page).getByRole("button", { name: "Close" }).click();
     await expect(page.locator("#overlay")).toBeHidden();
-    // Taken can't go below the one lost, and nothing else is left to have come back
     const line = (await doc(page, "projects/s2")).items["LAD-1"];
-    expect(line).toMatchObject({ out: 1, returned: 0, lost: 1 });
+    expect(line).toMatchObject({ out: 3, returned: 0, lost: 1 });
     expect(line).not.toHaveProperty("price");
+  });
+
+  test("a line of equipment all back can be removed", { tag: ["@J13.2"] }, async ({ page }) => {
+    const back = { ...seed["projects/s1"], items: { ...seed["projects/s1"].items, "LAD-1": { ...seed["projects/s1"].items["LAD-1"], returned: 1 } } };
+    await open(page, { seed: { ...seed, "projects/s1": back } });
+    await openProject(page, "Echo Studio");
+    await equipmentRow(page, "Step ladder").click();
+    await expect(modal(page).locator(".summary")).toHaveText(/Taken 1\s*Returned 1\s*Still out 0/);
+    await expect(modal(page)).not.toContainText("Lost or broken");
+    await expect(modal(page)).not.toContainText("before removing it");
+    await modal(page).getByRole("button", { name: "Remove" }).click();
+    await modal(page).getByRole("button", { name: "Tap to remove" }).click();
+    await expect(page.locator("#toast")).toHaveText("Removed");
+    await expect(equipmentRow(page, "Step ladder")).toHaveCount(0);
   });
 
   test("Inventory filters supplies and equipment, and shows where equipment is out", { tag: ["@J13.5"] }, async ({ page }) => {
@@ -344,6 +359,25 @@ test.describe("the web build's checkout command", () => {
     // The latest is showing: one still out
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("1");
   });
+
+  test("removing a line someone took more equipment on meanwhile is refused, and says why", { tag: ["@J13.2"] }, async ({ page }) => {
+    const docs = Object.fromEntries(Object.entries(seed).map(([k, v]) => [`t1/${k}`, v]));
+    docs["t1/projects/s2"] = { ...seed["projects/s2"], items: { "LAD-1": { ...seed["projects/s2"].items["LAD-1"], returned: 2 } } };
+    const backend = new FakeBackend({ docs });
+    await openAws(page, backend);
+    await connected(page);
+    await openProject(page, "Delta Dental");
+    await equipmentRow(page, "Step ladder").click();
+    // Another phone took one more, and this page hasn't heard yet
+    backend.doc("t1", "projects", "s2").data.items["LAD-1"].out = 4;
+    await modal(page).getByRole("button", { name: "Remove" }).click();
+    await modal(page).getByRole("button", { name: "Tap to remove" }).click();
+    await expect(page.locator("#toast")).toHaveText("Some of this is still out, so it wasn't removed. Return it or mark it lost before removing it.");
+    await expect(page.locator("#overlay")).toBeHidden();
+    expect(backend.doc("t1", "projects", "s2").data.items["LAD-1"]).toMatchObject({ out: 4, returned: 2, lost: 1 });
+    // The latest is showing: one still out
+    await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("1");
+  });
 });
 
 const finishBox = (page, i) => modal(page).locator(`fieldset.finish[data-i="${i}"]`);
@@ -391,7 +425,7 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
     // Its row opens the equipment line
     await row.click();
     await expect(modal(page)).toContainText("Company equipment: not charged.");
-    await modal(page).getByRole("button", { name: "Cancel" }).click();
+    await modal(page).getByRole("button", { name: "Close" }).click();
     await page.getByRole("button", { name: "Download CSV" }).click();
     await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
     const csv = (await page.evaluate(() => window.__mock.saves[0].data)).split("\n");

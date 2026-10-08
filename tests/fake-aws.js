@@ -394,6 +394,11 @@ export class FakeBackend {
     if (coll === "projects" && data.status === "closed" && cur?.data.status !== "closed" && Object.values(data.items || {}).some(stillOut)) {
       return [409, { error: { code: "aborted", message: "Equipment is still out on this project", reason: "equipment_out" } }];
     }
+    // ...and no line with equipment still out is removed (supply-checkout-1dg.10)
+    const kept = (k) => data.items && Object.hasOwn(data.items, k) && data.items[k] !== null;
+    if (coll === "projects" && Object.entries(cur?.data.items || {}).some(([k, l]) => stillOut(l) && !kept(k))) {
+      return [409, { error: { code: "aborted", message: "Equipment is still out on this line: return it or mark it lost before removing it", reason: "equipment_out" } }];
+    }
     // One open General Use project per team (ADR 0017, documents.ts)
     if (coll === "projects" && data.kind === "adhoc" && data.status !== "closed" && cur?.data.status === "closed" && this.openAdhoc(team)) {
       return [409, { error: { code: "aborted", message: "Another General Use project is open. Finish it before reopening this one.", reason: "adhoc_open" } }];
