@@ -63,12 +63,13 @@ describe.skipIf(!endpoint)("the lapsed-team job's data (DynamoDB Local)", () => 
     await linkStripeCustomer(table.db, context, customer, dayAgo);
     expect(await closeLapsedTeam(table.db, read as { teamId: string; version: number }, now)).toBe(false);
     const linked = await readLapseTeam(table.db, team.teamId);
-    expect(linked).toMatchObject({ stripeCustomerId: customer, version: 2 });
+    // With when, so the job skips a team an owner is in Checkout for before calling Stripe (supply-checkout-8jc.45)
+    expect(linked).toMatchObject({ stripeCustomerId: customer, version: 2, stripeCheckoutAt: dayAgo.toISOString() });
     // Every checkout links it again, moving the version, and nothing closes the team within a Checkout Session's life of it
     await linkStripeCustomer(table.db, context, customer, now);
     expect(await closeLapsedTeam(table.db, linked as { teamId: string; version: number }, now)).toBe(false);
     const recent = await readLapseTeam(table.db, team.teamId);
-    expect(recent).toMatchObject({ version: 3 });
+    expect(recent).toMatchObject({ version: 3, stripeCheckoutAt: now.toISOString() });
     expect(await closeLapsedTeam(table.db, recent as { teamId: string; version: number }, now)).toBe(false);
     expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ stripeCheckoutAt: now.toISOString() });
     // Once that's past: closed

@@ -194,6 +194,10 @@ export const BusinessMetric = {
   LapseTeamsUnstarted: "LapseTeamsUnstarted",
   /** Lapsed teams due to close that a run held because it had already closed LAPSE_MAX_CLOSURES_PER_RUN: "Lapsed-team closures held". */
   LapseClosuresHeld: "LapseClosuresHeld",
+  /** Lapsed teams due to close that a run left because an owner started Checkout within LAPSE_CHECKOUT_GUARD_HOURS or Stripe has one open (supply-checkout-8jc.45). For the dashboard; held LAPSE_CHECKOUT_MAX_DELAY_DAYS past its closing time, a team counts in LapseCheckoutOverdue too. */
+  LapseCheckoutHeld: "LapseCheckoutHeld",
+  /** Lapsed teams a Checkout held LAPSE_CHECKOUT_MAX_DELAY_DAYS or more past their closing time, each run (supply-checkout-8jc.45): "Lapsed team held by Checkout". Its own alarm, so one such team doesn't hold "Lapsed-team job failing" in alarm. */
+  LapseCheckoutOverdue: "LapseCheckoutOverdue",
   /** Teams the lapsed-team job couldn't handle this run (a read, write, email or Stripe call failed), or wouldn't close because Stripe disagrees with the team (a live subscription, or the team's subscription or customer missing), or that has no owner to warn or no readable deletion time: "Lapsed-team job failing". */
   LapseFailures: "LapseFailures",
 } as const;

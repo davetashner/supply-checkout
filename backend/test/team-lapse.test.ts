@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { SubscriptionLike } from "../src/billing/subscription.js";
 import { deletionLastDay, deletionTime, LAPSE_CHECKOUT_GUARD_HOURS, LAPSE_PURGE_DELAY_HOURS, LAPSE_WARNING_DAYS, LAPSED_CLOSER } from "../src/data/index.js";
 import { BusinessMetric, type BusinessMetricName, type Metadata, type Observability, skippedForTest } from "../src/observability/index.js";
-import { LAPSE_BUDGET_MS, LAPSE_MAX_CLOSURES_PER_RUN } from "../src/ops/names.js";
+import { LAPSE_BUDGET_MS, LAPSE_CHECKOUT_MAX_DELAY_DAYS, LAPSE_LEASE_MS, LAPSE_MAX_CLOSURES_PER_RUN } from "../src/ops/names.js";
 import { createTeamLapseHandler, type LapseStripe } from "../src/ops/team-lapse-handler.js";
 import { fakeMailer, REGION } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -280,9 +280,90 @@ describe("an ended subscription", () => {
     table.put({ ...meta("gone"), stripeCheckoutAt: iso(later - 3_600_000), version: 7 });
     expect(await run(later)).toMatchObject({ closed: 0, failed: 0 });
     expect(meta("gone").closedAt).toBeUndefined();
+    // Held before any Stripe call (supply-checkout-8jc.45), and counted, not as a failure
+    expect(stripeCalls).toEqual([]);
+    expect(counts.find(([m]) => m === BusinessMetric.LapseCheckoutHeld)?.[2]).toEqual({ teamId: "gone", why: "recent" });
+    expect(counted(BusinessMetric.LapseFailures)).toBe(0);
     expect(await run(later - 3_600_000 + LAPSE_CHECKOUT_GUARD_HOURS * 3_600_000 - 1)).toMatchObject({ closed: 0 });
     expect(await run(later - 3_600_000 + LAPSE_CHECKOUT_GUARD_HOURS * 3_600_000 + 1)).toMatchObject({ closed: 1 });
     expect(denied).toEqual([]);
+  });
+
+  describe("held by an owner's Checkout (supply-checkout-8jc.45)", () => {
+    // Warned at NOW, so it closes 7 days on, rounded up
+    const closes = deletionTime(NOW + 7 * DAY);
+    const cap = closes + LAPSE_CHECKOUT_MAX_DELAY_DAYS * DAY;
+    const failures = () => counts.filter(([m]) => m === BusinessMetric.LapseFailures).map(([, , metadata]) => metadata);
+
+    const overdue = () => counts.filter(([m]) => m === BusinessMetric.LapseCheckoutOverdue).map(([, , metadata]) => metadata);
+
+    it("an owner who starts Checkout every day keeps it read-only, but past the cap it's counted on its own for a person, never closed", async () => {
+      await run();
+      for (let at = closes; at < cap; at += DAY) {
+        table.put({ ...meta("gone"), stripeCheckoutAt: iso(at - 3_600_000) });
+        counts = [];
+        expect(await run(at)).toMatchObject({ closed: 0, failed: 0 });
+        expect(counted(BusinessMetric.LapseCheckoutHeld)).toBe(1);
+        expect(overdue()).toEqual([]);
+      }
+      table.put({ ...meta("gone"), stripeCheckoutAt: iso(cap - 3_600_000) });
+      counts = [];
+      expect(await run(cap)).toMatchObject({ closed: 0, failed: 0 });
+      expect(counted(BusinessMetric.LapseCheckoutHeld)).toBe(1);
+      expect(overdue()).toEqual([{ teamId: "gone", why: "recent" }]);
+      // Not a failure: "Lapsed-team job failing" stays free for other teams' faults
+      expect(failures()).toEqual([]);
+      expect(logs.find(([, message]) => message === "Lapsed team held by Checkout too long past its date")?.[2]).toEqual({
+        teamId: "gone",
+        why: "recent",
+        deletesAt: iso(closes),
+        customerId: "cus_1",
+        stripeCheckoutAt: iso(cap - 3_600_000),
+      });
+      expect(meta("gone").closedAt).toBeUndefined();
+      expect(stripeCalls).toEqual([]);
+      // Once the owner stops, it closes
+      expect(await run(cap + LAPSE_CHECKOUT_GUARD_HOURS * 3_600_000)).toMatchObject({ closed: 1 });
+      expect(denied).toEqual([]);
+    });
+
+    it("a session open in Stripe holds it the same way, with or without a Checkout the app recorded", async () => {
+      await run();
+      openCheckouts.add("cus_1");
+      expect(await run(cap - 1)).toMatchObject({ closed: 0, failed: 0 });
+      expect(counts.find(([m]) => m === BusinessMetric.LapseCheckoutHeld)?.[2]).toEqual({ teamId: "gone", why: "open" });
+      expect(await run(cap)).toMatchObject({ closed: 0, failed: 0 });
+      expect(overdue()).toEqual([{ teamId: "gone", why: "open" }]);
+      expect(failures()).toEqual([]);
+      const held = () => logs.filter(([, message]) => message === "Lapsed team held by Checkout too long past its date").map(([, , data]) => data);
+      expect(held()).toEqual([{ teamId: "gone", why: "open", deletesAt: iso(closes), customerId: "cus_1" }]);
+      // An older Checkout the app recorded is logged with it
+      table.put({ ...meta("gone"), stripeCheckoutAt: iso(NOW) });
+      expect(await run(cap)).toMatchObject({ closed: 0, failed: 0 });
+      expect(held()[1]).toEqual({ teamId: "gone", why: "open", deletesAt: iso(closes), customerId: "cus_1", stripeCheckoutAt: iso(NOW) });
+      expect(meta("gone").closedAt).toBeUndefined();
+    });
+
+    it("counts a last Checkout time that isn't a past date, which would hold it for good, without asking Stripe", async () => {
+      await run();
+      // Dates that parse but aren't the exact ISO 8601 linkStripeCustomer writes, which the closure's condition compares as strings
+      const loose = ["2026-10-02", "2026-10-02T12:00:00Z", new Date(NOW).toUTCString()];
+      for (const bad of ["not a date", iso(closes + 6 * 60_000), 1_700_000_000, ...loose]) {
+        table.put({ ...meta("gone"), stripeCheckoutAt: bad });
+        counts = [];
+        expect(await run(closes)).toMatchObject({ closed: 0, failed: 1 });
+        expect(failures()).toEqual([{ teamId: "gone", step: "badCheckoutAt" }]);
+      }
+      expect(logs.filter(([, message]) => message === "Lapsed team's last Checkout time isn't a past date, so it can't be closed").map(([, , data]) => data.stripeCheckoutAt)).toEqual(["not a date", iso(closes + 6 * 60_000), "", ...loose]);
+      // A few minutes ahead is the billing function's clock: held as a Checkout just started
+      table.put({ ...meta("gone"), stripeCheckoutAt: iso(closes + 4 * 60_000) });
+      counts = [];
+      expect(await run(closes)).toMatchObject({ closed: 0, failed: 0 });
+      expect(counted(BusinessMetric.LapseCheckoutHeld)).toBe(1);
+      expect(stripeCalls).toEqual([]);
+      expect(meta("gone").closedAt).toBeUndefined();
+      expect(denied).toEqual([]);
+    });
   });
 
   it("counts a Stripe failure and still handles the other teams", async () => {
@@ -450,6 +531,18 @@ describe("the run", () => {
     expect(await run(NOW + 120_000)).toMatchObject({ checked: 1 });
     expect(table.get("LAPSE#RUN", "LEASE")).toMatchObject({ sentAt: iso(NOW + 120_000), expiresAt: 0 });
     expect(denied).toEqual([]);
+  });
+
+  it("returns the run's result when the lease can't be given up, which then runs out by itself", async () => {
+    team("old", { status: "trialing", trialEndsAt: iso(NOW - DAY) });
+    const policy = lapsePolicy(denied);
+    const db = table.guarded((command, input) => !(command === "PutCommand" && (input.Item as Record<string, unknown>).expiresAt === 0) && policy(command, input));
+    const result = await createTeamLapseHandler({ db, obs: obs(), mailer: mails.mailer, stripe: async () => stripe, now: () => NOW, random: () => 0 })();
+    expect(result).toEqual({ checked: 1, closed: 0, failed: 0, held: 0 });
+    expect(logs.find(([, message]) => message === "Lapsed-team job's lease not released")).toEqual(["warn", "Lapsed-team job's lease not released", { error: "AccessDeniedException" }]);
+    expect(table.get("LAPSE#RUN", "LEASE")).toMatchObject({ sentAt: iso(NOW), expiresAt: Math.ceil((NOW + LAPSE_LEASE_MS) / 1000) });
+    // The next hour's run takes it over
+    expect(await run(NOW + 3_600_000)).not.toHaveProperty("skipped");
   });
 
   it("skips a second invocation that starts while the first is still running", async () => {

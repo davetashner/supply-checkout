@@ -14,6 +14,7 @@ import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import {
   HELD_PURGE_GRACE_DAYS,
+  LAPSE_CHECKOUT_MAX_DELAY_DAYS,
   LAPSE_CLOSURES_ALARM_COUNT,
   LAPSE_CLOSURES_ALARM_HOURS,
   LAPSE_EVERY_HOURS,
@@ -803,6 +804,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       severity: "P2",
       rule: `Any LapseClosuresHeld over ${2 * LAPSE_EVERY_HOURS} hours: a run of the hourly lapsed-team job (primary region) found more than ${LAPSE_MAX_CLOSURES_PER_RUN} lapsed teams due to close for deletion (LAPSE_MAX_CLOSURES_PER_RUN), closed that many and held the rest for the next run. Each run closes up to that many more, so if it's a bug or bad data rather than a real batch of lapsed teams, disable the TeamLapseSchedule rule now. Logs Insights on the job: "Lapsed team closed for deletion" lists the teams. See docs/runbooks/lapsed-teams.md.`,
       metric: business(BusinessMetric.LapseClosuresHeld, region, Duration.hours(2 * LAPSE_EVERY_HOURS)),
+      threshold: 0,
+      primaryOnly: true,
+    },
+    {
+      id: "lapse-checkout-held",
+      title: "Lapsed team held by Checkout",
+      journeys: "J10",
+      severity: "P2",
+      rule: `Any LapseCheckoutOverdue over ${2 * LAPSE_EVERY_HOURS} hours: the hourly lapsed-team job (primary region) didn't close a lapsed team ${LAPSE_CHECKOUT_MAX_DELAY_DAYS} or more days (LAPSE_CHECKOUT_MAX_DELAY_DAYS) past its date because an owner started Checkout within LAPSE_CHECKOUT_GUARD_HOURS or Stripe has a session open for its customer. The job never closes a team under a Checkout, so an owner who keeps starting one holds the team indefinitely, past the Terms' 30 days: a person decides. "Lapsed team held by Checkout too long past its date" has the team and customer IDs. See docs/runbooks/lapsed-teams.md.`,
+      metric: business(BusinessMetric.LapseCheckoutOverdue, region, Duration.hours(2 * LAPSE_EVERY_HOURS)),
       threshold: 0,
       primaryOnly: true,
     },

@@ -4817,6 +4817,71 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmslapsecheckoutheld2C1CBD9D": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Lapsed team held by Checkout (J10, us-east-1). Any LapseCheckoutOverdue over 2 hours: the hourly lapsed-team job (primary region) didn't close a lapsed team 3 or more days (LAPSE_CHECKOUT_MAX_DELAY_DAYS) past its date because an owner started Checkout within LAPSE_CHECKOUT_GUARD_HOURS or Stripe has a session open for its customer. The job never closes a team under a Checkout, so an owner who keeps starting one holds the team indefinitely, past the Terms' 30 days: a person decides. \"Lapsed team held by Checkout too long past its date\" has the team and customer IDs. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-lapse-checkout-held",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "LapseCheckoutOverdue (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "LapseCheckoutOverdue",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 7200,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmslapseclosureshigh505F7CD1": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -7727,6 +7792,7 @@
                     "compPlan",
                     "compUntil",
                     "version",
+                    "stripeCheckoutAt",
                     "test"
                   ]
                 },
@@ -14142,6 +14208,13 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmslapsecheckoutheld2C1CBD9D",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmslapseclosureshigh505F7CD1",
                   "Arn"
                 ]
@@ -14450,11 +14523,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"WelcomeEmails\",\"Region\",\"us-east-1\",{\"label\":\"WelcomeEmails (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailFailures\",\"Region\",\"us-east-1\",{\"label\":\"WelcomeEmailFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailsRefused\",\"Region\",\"us-east-1\",{\"label\":\"WelcomeEmailsRefused (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmails\",\"Region\",\"us-west-2\",{\"label\":\"WelcomeEmails (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailFailures\",\"Region\",\"us-west-2\",{\"label\":\"WelcomeEmailFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailsRefused\",\"Region\",\"us-west-2\",{\"label\":\"WelcomeEmailsRefused (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":109,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: lapsing teams' owners emailed (and not), lapsed teams closed for deletion (and held at the cap), failures\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"WelcomeEmails\",\"Region\",\"us-east-1\",{\"label\":\"WelcomeEmails (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailFailures\",\"Region\",\"us-east-1\",{\"label\":\"WelcomeEmailFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailsRefused\",\"Region\",\"us-east-1\",{\"label\":\"WelcomeEmailsRefused (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmails\",\"Region\",\"us-west-2\",{\"label\":\"WelcomeEmails (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailFailures\",\"Region\",\"us-west-2\",{\"label\":\"WelcomeEmailFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailsRefused\",\"Region\",\"us-west-2\",{\"label\":\"WelcomeEmailsRefused (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":109,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: lapsing teams' owners emailed (and not), lapsed teams closed for deletion (and held at the cap or by a Checkout), failures\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-east-1\",{\"label\":\"LapseNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"LapsedTeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-east-1\",{\"label\":\"LapseClosuresHeld (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-west-2\",{\"label\":\"LapseNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"LapsedTeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-west-2\",{\"label\":\"LapseClosuresHeld (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":109,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: teams the lapsed-team job checked, read-only for billing, and left for lack of time\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-east-1\",{\"label\":\"LapseNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"LapsedTeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-east-1\",{\"label\":\"LapseClosuresHeld (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseCheckoutHeld\",\"Region\",\"us-east-1\",{\"label\":\"LapseCheckoutHeld (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseCheckoutOverdue\",\"Region\",\"us-east-1\",{\"label\":\"LapseCheckoutOverdue (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-west-2\",{\"label\":\"LapseNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"LapsedTeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-west-2\",{\"label\":\"LapseClosuresHeld (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseCheckoutHeld\",\"Region\",\"us-west-2\",{\"label\":\"LapseCheckoutHeld (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseCheckoutOverdue\",\"Region\",\"us-west-2\",{\"label\":\"LapseCheckoutOverdue (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":109,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: teams the lapsed-team job checked, read-only for billing, and left for lack of time\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

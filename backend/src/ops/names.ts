@@ -140,6 +140,17 @@ export const LAPSE_LEASE_MS = LAPSE_BUDGET_MS + 2 * 60_000;
  */
 export const LAPSE_MAX_CLOSURES_PER_RUN = 10;
 
+/**
+ * How long past its closing time an owner's Checkouts may keep a lapsed team
+ * from closing (supply-checkout-8jc.45). A Checkout started within
+ * LAPSE_CHECKOUT_GUARD_HOURS, or one Stripe still has open, holds the team
+ * (LapseCheckoutHeld) rather than risk an owner paying for a team being
+ * deleted. Past this long, each run that holds it counts it in
+ * LapseCheckoutOverdue ("Lapsed team held by Checkout") so a person looks: the
+ * job never closes a team under a Checkout by itself.
+ */
+export const LAPSE_CHECKOUT_MAX_DELAY_DAYS = 3;
+
 /** More LapsedTeamsClosed than LAPSE_CLOSURES_ALARM_COUNT in LAPSE_CLOSURES_ALARM_HOURS alarms ("Lapsed-team closures high"), even under the per-run cap: well within the day before the purge deletes them. */
 export const LAPSE_CLOSURES_ALARM_COUNT = 20;
 export const LAPSE_CLOSURES_ALARM_HOURS = 6;
