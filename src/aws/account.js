@@ -2,7 +2,7 @@
 // sign-in, "name your team", joining from an invite link, and errors. They take the app's
 // place until a team is open; then a bar under the header shows the team (a switcher when
 // there are several), Members and Import CSV for owners, Leave team for everyone else,
-// Account (deleting it) and Sign out. A team an owner closed is read-only, with a notice
+// Account (who is signed in, with their role; deleting the account) and Sign out. A team an owner closed is read-only, with a notice
 // saying when its data will be deleted, and for its owners a way to reopen it. So is a team
 // whose subscription ended (its trial ended without a card, or payments stopped), with a
 // notice, and for its owners a way to subscribe again on Stripe Checkout. Owners of a team
@@ -374,10 +374,19 @@ export async function start(config) {
     bar.querySelector("#reopenBy").textContent = " It's too close to being deleted to reopen now.";
   }
 
+  // Who is signed in, and their role in this team, on the team bar's Account button: their
+  // name from the token, else their email, cut short with an ellipsis on a narrow screen. A
+  // screen reader reads it all, as "Signed in as …".
+  const ROLE_NAME = { owner: "Owner", contributor: "Contributor", viewer: "Viewer" };
+  const identity = (name, team) => {
+    const who = esc(visibleText(name)), role = ROLE_NAME[team.role];
+    return `<button type="button" class="btn ghost whoami-chip" id="accountOpen" title="${who}" aria-label="Signed in as ${who}, ${role}. Account"><span class="who-name">${who}</span><span class="who-role">${role}</span></button>`;
+  };
+
   // The team bar under the header: which team, a switcher, managing members and importing
   // inventory (owners; importing only while the team is open), leaving (everyone else), the
   // account, and Sign out. A closed team says when it will be deleted; its owners can reopen it.
-  function teamBar(me, team, fr) {
+  function teamBar(me, team, fr, who) {
     const bar = document.createElement("div");
     bar.className = "teambar";
     const owner = team.role === "owner";
@@ -385,7 +394,7 @@ export async function start(config) {
     const ended = !team.closedAt && team.subscriptionEnded;
     // The Customer Portal: owners of an open team that has a Stripe customer
     const billing = owner && !team.closedAt && team.billingAccount;
-    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button><button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}<button type="button" class="btn ghost" id="accountOpen">Account</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
+    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button><button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}${identity(who, team)}<button type="button" class="btn ghost" id="signOut">Sign out</button>`
       + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "")
       + (!team.closedAt && !ended && team.cancelsAt ? `<p class="closed-note" role="status" id="cancelNote">This team's subscription was canceled. Everything works until ${esc(day(team.cancelsAt))}; then the team becomes read-only.${billing ? " To keep it, renew it from Billing." : " Ask an owner to renew it to keep it."}</p>` : "")
       + (ended ? `<p class="closed-note" role="status">This team's subscription has ended, so it's read-only. Nothing has been deleted: everyone can still see it${owner ? ", and you can export it. Subscribe to make changes again." : ". Ask an owner to subscribe to make changes again."}</p>${owner ? `<button type="button" class="btn" id="subscribe">Subscribe</button>` : ""}` : "");
@@ -516,7 +525,9 @@ export async function start(config) {
     document.body.classList.remove("account-open");
     box.innerHTML = "";
     const fr = firstRun(me, team);
-    let bar = teamBar(me, team, fr);
+    // Who is signed in: their name, else their email (shown on the team bar, and as their profile)
+    const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
+    let bar = teamBar(me, team, fr, name);
     // /me was just loaded
     meAt = Date.now();
     let viewOnly = team.closedAt ? CLOSED_NOTICE : team.subscriptionEnded ? ENDED_NOTICE : null;
@@ -534,11 +545,10 @@ export async function start(config) {
       meAt = Date.now();
       Object.assign(team, now);
       const old = bar;
-      bar = teamBar(me, team, fr);
+      bar = teamBar(me, team, fr, name);
       old.remove();
       viewOnly = CLOSED_NOTICE;
     })(); };
-    const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
     const profile = { id: me.user.id, name, avatarUrl: AVATAR, isMe: true };
     db = createDb({
       api: session.api, config, teamId: team.id, userId: me.user.id, token: session.token,
