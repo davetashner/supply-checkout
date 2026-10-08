@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { throwawayAddress } from "../lib/addresses.mjs";
 import { PROD } from "../lib/config.mjs";
 import { addresses, authResults, extractCode, extractLinks, messageText, parseMessage, verifyMessage } from "../lib/mail.mjs";
-import { MailTimeout, waitForMail } from "../lib/mailbox.mjs";
+import { MailTimeout, sweepInbox, waitForMail } from "../lib/mailbox.mjs";
 import { createMasker } from "../lib/mask.mjs";
 import { fakeS3, sesMessage } from "./helpers.mjs";
 
@@ -215,4 +215,29 @@ test("a message that can't be deleted after reading is still used", async () => 
   const { now, sleep } = clock();
   assert.deepEqual(await waitForMail({ s3, to, since: T0, masker: createMasker({ github: false }), now, sleep, log: (l) => logs.push(l) }), { code: "123456" });
   assert.match(logs[0], /couldn't delete/);
+});
+
+test("the reader refuses at once to wait for a long-lived account's mail", async () => {
+  const longLived = `crew-lived@${PROD.mailDomain}`;
+  const s3 = fakeS3({ "inbox/unused": { body: sesMessage({ to: longLived, body: "Your code is 123456" }), lastModified: T0 + 1000 } });
+  await assert.rejects(waitForMail({ s3, to: longLived.toUpperCase(), since: T0, masker: createMasker({ github: false }), refuse: [longLived] }), /long-lived account/);
+  assert.deepEqual(s3.calls, [], "nothing is even listed");
+});
+
+test("sweepInbox deletes only the messages to the addresses given", async () => {
+  const crewLived = `crew-lived@${PROD.mailDomain}`, viewerLived = `viewer-lived@${PROD.mailDomain}`;
+  const s3 = fakeS3({
+    "inbox/crew": { body: sesMessage({ to: crewLived, body: "Your code is 123456" }), lastModified: T0 },
+    "inbox/viewer": { body: sesMessage({ to: viewerLived, body: "Your code is 654321" }), lastModified: T0 },
+    "inbox/throwaway": { body: sesMessage({ to, body: "Your code is 111111" }), lastModified: T0 },
+    "runs/9-1/accounts/owner.json": "{}",
+  });
+  const logs = [];
+  assert.equal(await sweepInbox({ s3, to: [crewLived, viewerLived], log: (l) => logs.push(l) }), 2);
+  assert.deepEqual([...s3.store.keys()].sort(), ["inbox/throwaway", "runs/9-1/accounts/owner.json"]);
+  assert.deepEqual(logs, []);
+  const failing = { ...fakeS3({ "inbox/crew": { body: sesMessage({ to: crewLived }), lastModified: T0 } }), remove: async () => { throw new Error("AccessDenied"); } };
+  assert.equal(await sweepInbox({ s3: failing, to: [crewLived], log: (l) => logs.push(l) }), 0);
+  assert.equal(logs.length, 1);
+  assert.ok(!logs[0].includes("@"));
 });

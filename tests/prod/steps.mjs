@@ -12,7 +12,7 @@ import { readFile } from "node:fs/promises";
 import { runBarcode, runName } from "../../scripts/journeys/lib/addresses.mjs";
 import { PROD } from "../../scripts/journeys/lib/config.mjs";
 import { switchTeam, teamPicker } from "../ui/index.js";
-import { expect, isExpectedConsoleError, isExpectedPageError } from "./fixtures.mjs";
+import { consoleFailure, expect, isExpectedConsoleError, isExpectedPageError } from "./fixtures.mjs";
 
 /**
  * The run's names and barcodes for one test: `name("towels")` is `E2E <runId> J4 towels r0`,
@@ -130,7 +130,7 @@ export async function secondPage({ browser, harness, signIn, testInfo }, role) {
   page.on("pageerror", (e) => { if (appOrigin(page.url()) && !isExpectedPageError(e.message)) errors.push(`pageerror: ${e.message}`); });
   page.on("console", (m) => {
     const url = m.location()?.url ?? "";
-    if (m.type() === "error" && appOrigin(url || page.url()) && !isExpectedConsoleError(m.text(), url)) errors.push(`console: ${m.text()}`);
+    if (m.type() === "error" && appOrigin(url || page.url()) && !isExpectedConsoleError(m.text(), url)) errors.push(consoleFailure(m.text(), url));
   });
   // signIn starts a trace when it's done; this context is never traced
   page.startTrace = async () => {};

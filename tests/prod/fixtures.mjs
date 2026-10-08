@@ -17,7 +17,7 @@ import { createCognito } from "../../scripts/journeys/lib/cognito.mjs";
 import { PROD, TEAM_FOR_PROJECT, readConfig, runDir, runId, secretValues } from "../../scripts/journeys/lib/config.mjs";
 import { GuardError, assertDestructiveAllowed, checkMe } from "../../scripts/journeys/lib/guards.mjs";
 import { waitForMail } from "../../scripts/journeys/lib/mailbox.mjs";
-import { isExpectedConsoleError, isExpectedPageError } from "../../scripts/journeys/lib/console.mjs";
+import { consoleFailure, isExpectedConsoleError, isExpectedPageError } from "../../scripts/journeys/lib/console.mjs";
 import { MASKED_VALUES_FILE, createMasker } from "../../scripts/journeys/lib/mask.mjs";
 import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
@@ -49,8 +49,8 @@ export const test = base.extend({
       throwaways,
       cognito: createCognito({ region: PROD.region, clientId: env.JOURNEYS_CLIENT_ID }),
       totpCode: () => freshTotp(config.accounts.owner.totp, { stateFile: path.join(dir, "totp-step") }),
-      /** The app's next mail to `to` since `since`: a code or a link (lib/mailbox.mjs). */
-      mail: (opts) => waitForMail({ s3: mailS3, masker, log: (l) => console.log(masker.redact(l)), ...opts }),
+      /** The app's next mail to `to` since `since`: a code or a link (lib/mailbox.mjs). Never to a long-lived account. */
+      mail: (opts) => waitForMail({ s3: mailS3, masker, log: (l) => console.log(masker.redact(l)), ...opts, refuse: Object.values(config.accounts).map((a) => a.email) }),
       /** Records a throwaway account's progress (`started` before sign-up, `deleted` after J11). */
       record: (role, patch) => writeRecord(mailS3, { runId: id, role, address: throwaways[role], ...patch }),
       /** Teams the run's throwaways created (the specs add to it), for the destructive-call guard. */
@@ -72,7 +72,7 @@ export const test = base.extend({
     page.on("pageerror", (e) => { if (appOrigins.has(originOf(page.url())) && !isExpectedPageError(e.message)) errors.push(`pageerror: ${e.message}`); });
     page.on("console", (m) => {
       const url = m.location()?.url ?? "";
-      if (m.type() === "error" && appOrigins.has(originOf(url || page.url())) && !isExpectedConsoleError(m.text(), url)) errors.push(`console: ${m.text()}`);
+      if (m.type() === "error" && appOrigins.has(originOf(url || page.url())) && !isExpectedConsoleError(m.text(), url)) errors.push(consoleFailure(m.text(), url));
     });
     await page.context().route(RUM, (r) => r.abort());
     // Account deletion and team closure only as the run's throwaway, on a team the run created
@@ -143,10 +143,14 @@ export const test = base.extend({
  *
  * The user pool allows a password, an email code and a passkey as the first factor (choice-based
  * sign-in). An account that can only use a password (the owner: Cognito offers no email code to
- * a user with MFA) goes straight to the password. Any other account is first asked how to sign
- * in, and the password may be a button, a link or a radio there, or behind "Other sign-in
- * options". So after the email this takes whichever leads to the password field, each at most
- * once, and stops early on an alert. If no password field turns up it fails with what the page
+ * a user with MFA) goes straight to the password. Any other account (crew, viewer) is mailed a
+ * code at once and shown "Check your email" with a "Verification code" field and a "Try another
+ * way" button, behind which is the password. The long-lived accounts take the password, so a
+ * run doesn't wait on mail for every sign-in (the throwaways prove the email code): after the
+ * email this takes whichever leads to the password field (a password radio, button or link, or
+ * "Try another way" / "Other sign-in options"), each at most once, and stops early on an alert.
+ * The code mailed meanwhile is never used: the fixtures' mail() refuses the long-lived
+ * addresses, and cleanup deletes those messages (sweepInbox in lib/mailbox.mjs). If no password field turns up it fails with what the page
  * showed (formatScreen: headings, alerts, labels and control names, redacted, never a value).
  */
 export async function managedLogin(page, account, totpCode, { timeout = 20_000, redact = (s) => s } = {}) {
@@ -179,9 +183,9 @@ async function reachPassword(page, { timeout, redact, submit }) {
   const alert = page.getByRole("alert").filter({ hasText: /\S/ });
   const done = new Set();
   const deadline = Date.now() + timeout;
+  let lastAction = 0;
   while (Date.now() < deadline) {
     if (await field.isVisible()) return;
-    if (await alert.first().isVisible()) break;
     let acted = false;
     for (const { kind, locator } of choices) {
       if (done.has(kind) || !(await locator.first().isVisible())) continue;
@@ -196,9 +200,14 @@ async function reachPassword(page, { timeout, redact, submit }) {
         if (!(await other.first().isVisible())) continue;
         done.add("other");
         await other.first().click();
+        acted = true;
         break;
       }
     }
+    // An alert ends the wait only when there's nothing left to try and the page has had time to
+    // move on from the last click (a notice can be an alert too)
+    if (acted) lastAction = Date.now();
+    else if (Date.now() - lastAction > 2_000 && (await alert.first().isVisible())) break;
     await page.waitForTimeout(250);
   }
   if (await field.isVisible()) return;
@@ -221,5 +230,5 @@ export function readScreen(page) {
   });
 }
 
-export { isExpectedConsoleError, isExpectedPageError };
+export { consoleFailure, isExpectedConsoleError, isExpectedPageError };
 export { expect, secretFill };

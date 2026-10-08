@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PROD } from "../lib/config.mjs";
-import { isExpectedConsoleError, isExpectedPageError } from "../lib/console.mjs";
+import { consoleFailure, isExpectedConsoleError, isExpectedPageError } from "../lib/console.mjs";
 import { createMasker } from "../lib/mask.mjs";
 import { formatScreen } from "../lib/screen.mjs";
 
@@ -81,4 +81,11 @@ test("only the RUM client's failure to get its credentials is an expected page e
     "",
     undefined,
   ]) assert.equal(isExpectedPageError(m), false, String(m));
+});
+
+test("a console failure names the resource's path without its query", () => {
+  assert.equal(consoleFailure(NOT_FOUND, `${PROD.api}/teams/t1/settings?token=abc#x`), `console: ${NOT_FOUND} (${PROD.api}/teams/t1/settings)`);
+  assert.equal(consoleFailure("TypeError: boom", ""), "console: TypeError: boom");
+  assert.equal(consoleFailure("TypeError: boom", undefined), "console: TypeError: boom");
+  assert.equal(consoleFailure("x", "data:text/plain,secret"), "console: x");
 });

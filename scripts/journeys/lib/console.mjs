@@ -45,3 +45,14 @@ const RUM_CREDENTIALS = [
 export function isExpectedPageError(message) {
   return RUM_CREDENTIALS.some((re) => re.test(String(message ?? "")));
 }
+
+/**
+ * A console error as a test reports it: the text, and the resource's origin and path when the
+ * message has one (no query or fragment, which can carry a token or code). The fixtures redact
+ * it before it's shown, which masks the team IDs in a path.
+ */
+export function consoleFailure(text, url) {
+  let where = "";
+  try { const u = new URL(url); if (/^https?:$/.test(u.protocol)) where = ` (${u.origin}${u.pathname})`; } catch { /* no URL */ }
+  return `console: ${text}${where}`;
+}

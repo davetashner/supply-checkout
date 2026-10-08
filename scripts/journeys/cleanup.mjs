@@ -30,7 +30,7 @@ import { appConfig, createApi } from "./lib/api.mjs";
 import { createCognito } from "./lib/cognito.mjs";
 import { PROD, assertRunAllowed, readConfig, runDir, runId as currentRunId, secretValues } from "./lib/config.mjs";
 import { assertDestructiveAllowed, checkMe, isRunScoped } from "./lib/guards.mjs";
-import { waitForMail } from "./lib/mailbox.mjs";
+import { sweepInbox, waitForMail } from "./lib/mailbox.mjs";
 import { MASKED_VALUES_FILE, createMasker } from "./lib/mask.mjs";
 import { readRecords, writeRecord } from "./lib/runs.mjs";
 import { resetMarkup } from "./lib/settings.mjs";
@@ -145,6 +145,13 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
       }
     }
   } finally {
+    // The unused codes Managed Login mailed the long-lived accounts before their password sign-ins
+    try {
+      const n = await sweepInbox({ s3: mailS3, to: longLived.emails, log });
+      if (n) done.push(`Deleted ${n} unused sign-in ${n === 1 ? "code" : "codes"} to the long-lived accounts`);
+    } catch (err) {
+      left.push(`Couldn't sweep the long-lived accounts' unused sign-in codes: ${message(err)}`);
+    }
     // 4: every session ends, whatever happened above
     for (const role of ["crew", "viewer"]) {
       try {

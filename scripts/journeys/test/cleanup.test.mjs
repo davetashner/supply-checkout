@@ -8,7 +8,7 @@ import { createMasker } from "../lib/mask.mjs";
 import { recordKey } from "../lib/runs.mjs";
 import { BASELINE_MARKUP, MARKUP_SENTINEL, resetMarkup } from "../lib/settings.mjs";
 import { cleanTeam, cleanup, main, parseArgs } from "../cleanup.mjs";
-import { at, fakeEnv, fakeS3 } from "./helpers.mjs";
+import { at, fakeEnv, fakeS3, sesMessage } from "./helpers.mjs";
 
 const NOW = Date.parse("2026-10-07T12:00:00Z");
 const RUN = "9-1";
@@ -233,4 +233,21 @@ test("resetMarkup changes only the sentinel, at the version it read", async () =
   assert.equal(await resetMarkup(api({ version: 2, settings: { equipmentMarkup: 12.35 } }), "t"), false);
   assert.equal(await resetMarkup(api({ version: 4, settings: { equipmentMarkup: MARKUP_SENTINEL } }), "t"), true);
   assert.deepEqual(calls, [["t", BASELINE_MARKUP, 4]]);
+});
+
+test("cleanup deletes the unused sign-in codes mailed to the long-lived accounts, and no other mail", async () => {
+  const w = world();
+  const throwaway = throwawayAddress(RUN, "owner");
+  await w.mailS3.put("inbox/crew-code", sesMessage({ to: config.accounts.crew.email, body: "Your code is 123456" }));
+  await w.mailS3.put("inbox/viewer-code", sesMessage({ to: config.accounts.viewer.email, body: "Your code is 654321" }));
+  await w.mailS3.put("inbox/throwaway", sesMessage({ to: throwaway, body: "Your code is 111111" }));
+  const r = await run(w);
+  assert.ok(!w.mailS3.store.has("inbox/crew-code") && !w.mailS3.store.has("inbox/viewer-code"));
+  assert.ok(w.mailS3.store.has("inbox/throwaway"));
+  assert.ok(r.done.includes("Deleted 2 unused sign-in codes to the long-lived accounts"), r.done.join("; "));
+  assert.deepEqual(r.left, []);
+  const failing = world();
+  failing.mailS3.list = async () => { throw new Error("AccessDenied"); };
+  const r2 = await run(failing);
+  assert.ok(r2.left.some((l) => l.startsWith("Couldn't sweep the long-lived accounts' unused sign-in codes")), r2.left.join("; "));
 });

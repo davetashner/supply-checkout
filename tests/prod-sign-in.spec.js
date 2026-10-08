@@ -1,7 +1,7 @@
 // The prod journey suite's Managed Login steps (managedLogin in tests/prod/fixtures.mjs), on
 // stand-ins for the shapes Managed Login's choice-based sign-in can take after the email: the
 // password straight away (an account with MFA), a choice of sign-in method (radios, or buttons),
-// a code sent by email with "Other sign-in options", and a page with no way to a password, which
+// a code sent by email with "Try another way" (what prod shows crew and viewer) or "Other sign-in options", and a page with no way to a password, which
 // fails saying what the page showed, without any value typed into it.
 import { expect, test } from "@playwright/test";
 import { managedLogin } from "./prod/fixtures.mjs";
@@ -21,6 +21,12 @@ const shapes = {
     <button type="button" onclick="if (document.querySelector('input[value=pw]').checked) show(window.passwordPage)">Next</button>`,
   "a choice of buttons": `<h1>Sign in</h1><button type="button">Email message</button>
     <button type="button" onclick="show(window.passwordPage)">Sign in with password</button>`,
+  // What prod shows an account without MFA (seen by hand, 2026-10-08): the email code first
+  "Managed Login's \"Check your email\" page, then Try another way": `<h1>Check your email</h1>
+    <p role="alert">Enter the code that we sent to the email address c***@e***. The code expires in 15 minutes.</p>
+    <label>Verification code <input id="code" autocomplete="one-time-code"></label>
+    <button type="button">Continue</button><button type="button">Back</button><p>Or</p>
+    <button type="button" onclick="show('<h1>Choose a sign-in option</h1><button type=&quot;button&quot;>Email message</button><button type=&quot;button&quot; onclick=&quot;show(window.passwordPage)&quot;>Password</button>')">Try another way</button>`,
   "a code by email first, other options behind a link": `<h1>Enter the code we emailed you</h1><label>Code <input id="code"></label>
     <a href="#" onclick="show('<h1>Other ways</h1><a href=&quot;#&quot; onclick=&quot;show(window.passwordPage)&quot;>Password</a>'); return false">Other sign-in options</a>`,
 };
