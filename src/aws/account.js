@@ -83,16 +83,23 @@ const errorText = (m) => `<p class="error" role="alert" id="accountError"${m ? "
 // Not once another screen has taken over (the session ended while a request was on its way)
 const setError = (m) => { const e = box.querySelector("#accountError"); if (e) { e.textContent = m; e.hidden = false; } };
 
-// The invite in the link (?invite=<id>&token=<token>), kept across sign-in
+// The invite in the link (?invite=<id>&token=<token>), kept across sign-in. A link copied
+// from the email's HTML source has "&amp;token=" (supply-checkout-6uw.29): read that too.
 function takeInvite() {
   const q = new URLSearchParams(location.search);
   if (q.has("invite")) {
-    tab.set(INVITE_KEY, JSON.stringify({ id: q.get("invite"), token: q.get("token") }));
+    tab.set(INVITE_KEY, JSON.stringify({ id: q.get("invite"), token: q.get("token") ?? q.get("amp;token") }));
     history.replaceState(null, "", location.pathname);
   }
   return tab.json(INVITE_KEY);
 }
 const dropInvite = () => tab.remove(INVITE_KEY);
+// An invite link with its ID or token missing or mangled (cut short, or broken across lines
+// when copied): the server can't accept it, so say so rather than try. IDs are the API's
+// (1 to 128 letters, digits, - or _); tokens are base64url.
+const INVITE_ID = /^[A-Za-z0-9_-]{1,128}$/, INVITE_TOKEN = /^[A-Za-z0-9_-]{1,256}$/;
+const wellFormed = (invite) => typeof invite.id === "string" && INVITE_ID.test(invite.id) && typeof invite.token === "string" && INVITE_TOKEN.test(invite.token);
+const INCOMPLETE = "This invite link is incomplete. Open it again from the email, or ask for a new invite.";
 
 // The saved invite, if it's for this user. It's marked with the first user it's offered to,
 // so after that user's session ends without Sign out, the next person to sign in in this tab
@@ -293,11 +300,14 @@ export async function start(config) {
   const joinInvite = (me, invite) => until((resolve) => {
     const known = me.invites.find((i) => i.id === invite.id);
     const hasTeams = me.teams.length > 0;
+    // A broken link can't be joined: say so at once, with no Join, and forget it
+    const broken = !wellFormed(invite);
+    if (broken) dropInvite();
     show(`<h2>${known ? "Join " + esc(known.teamName) : "Join a team"}</h2>
       <p>${known ? `${esc(known.teamName)} invited you as ${ROLE[known.role]}.` : "You've been invited to join a team."}</p>
       ${verifyPrompt(me)}
-      ${errorText("")}
-      <div class="actions"><button type="button" class="btn primary" id="join" data-autofocus>Join</button>
+      ${errorText(broken ? INCOMPLETE : "")}
+      <div class="actions"><button type="button" class="btn primary" id="join"${broken ? " hidden" : " data-autofocus"}>Join</button>
       <button type="button" class="btn" id="skip">${hasTeams ? "Not now" : "Create my own team instead"}</button></div>
       ${whoami(me)}`, (el) => {
       wireWhoami(el, me);
@@ -314,10 +324,12 @@ export async function start(config) {
           join.disabled = false;
           // Already a member: carry on to the team as usual
           if (err.code === "aborted") { dropInvite(); resolve(null); return; }
-          if (err.code === "not_found") { dropInvite(); join.hidden = true; }
+          // not_found: expired, used or someone else's; bad_request: the link is broken
+          if (err.code === "not_found" || err.code === "bad_request") { dropInvite(); join.hidden = true; }
           const prompt = el.querySelector("#verifyPrompt");
           if (err.code === "permission_denied" && prompt) prompt.hidden = false;
-          setError(err.code === "not_found" ? "This invite has expired, was already used, or was sent to a different email address. Ask the person who invited you for a new one."
+          setError(err.code === "bad_request" ? INCOMPLETE
+            : err.code === "not_found" ? "This invite has expired, was already used, or was sent to a different email address. Ask the person who invited you for a new one."
             : err.code === "permission_denied" ? "Your email address isn't verified yet. Verify it, then join."
             : err.reason === "team_full" ? "This team is full. Ask the person who invited you to make room, then try again."
             : err.code === "quota_exceeded" ? "You're already in as many teams as you can be. Leave one to join this one."
@@ -355,7 +367,12 @@ export async function start(config) {
   async function chooseTeam(me) {
     const invite = inviteFor(me);
     const joined = invite && await joinInvite(me, invite);
-    if (joined) return joined;
+    // The /me that loaded the page doesn't list the team just joined: add it, so the switcher
+    // shows it with the others without a reload (supply-checkout-6uw.29)
+    if (joined) {
+      me.teams = [...me.teams.filter((t) => t.id !== joined.id), joined];
+      return joined;
+    }
     if (!me.teams.length) return newTeam(me);
     return me.teams.find((t) => t.id === local.get(TEAM_KEY)) || me.teams[0];
   }

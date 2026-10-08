@@ -127,6 +127,26 @@ describe("templates", () => {
     expect(email.text).toContain("a contributor");
   });
 
+  it("gives the same invite and token from the plain-text link, the HTML button and the HTML link text, when copied", () => {
+    const email = renderEmail(samples[0] as EmailInput, OPTS);
+    // What a mail client shows and copies: the HTML with its entities decoded
+    const decode = (s: string) => s.replace(/&amp;/g, "&");
+    const hrefs = [...email.html.matchAll(/href="([^"]+)"/g)].map((m) => decode(m[1] as string));
+    const shown = [...email.html.matchAll(/>(https:\/\/[^<]+)<\/a>/g)].map((m) => decode(m[1] as string));
+    const plain = email.text.match(/https:\/\/\S+/g) ?? [];
+    expect(hrefs).toHaveLength(2);
+    expect(shown).toHaveLength(1);
+    expect(plain).toHaveLength(1);
+    for (const copied of [...hrefs, ...shown, ...plain]) {
+      const link = new URL(copied);
+      expect(link.searchParams.get("invite")).toBe(INVITE);
+      expect(link.searchParams.get("token")).toBe("tok_abcdefghijklmnopqrstuvwxyz");
+    }
+    // The HTML source escapes the "&" (copying the source gives "&amp;token=", which the app also reads)
+    expect(email.html).toContain("&amp;token=");
+    expect(email.text).not.toContain("&amp;");
+  });
+
   it("describes each role", () => {
     for (const role of ["owner", "contributor", "viewer"] as const) {
       const email = renderEmail({ ...(samples[0] as Extract<EmailInput, { kind: "invite" }>), role }, OPTS);

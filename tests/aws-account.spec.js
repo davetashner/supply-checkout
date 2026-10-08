@@ -558,6 +558,65 @@ test.describe("first sign-in and teams", () => {
     expect(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite"))).toBeNull();
   });
 
+  test("joining a second team shows the switcher with both teams, without a reload", { tag: ["@J3.2", "@J0.3"] }, async ({ page }) => {
+    const backend = new FakeBackend({ invites: [invited], docs: seeded("t-i1") });
+    await openAws(page, backend, { storage: inviteLink() });
+    await page.getByRole("button", { name: "Join", exact: true }).click();
+    await connected(page);
+    const pick = teamPicker(page);
+    await expect(pick).toHaveValue("t-i1");
+    await expect(pick.locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
+    expect(backend.pageLoads).toBe(1);
+    expect(backend.requests("GET", "/me")).toHaveLength(1);
+  });
+
+  test("a team that /me already listed isn't listed twice once joined", { tag: ["@J3.2"] }, async ({ page }) => {
+    const backend = new FakeBackend({ teams: [TEAM, { ...TEAM, id: "t-i1", name: "Bravo Co", role: "contributor" }], invites: [invited], docs: seeded("t-i1") });
+    await openAws(page, backend, { storage: inviteLink() });
+    await page.getByRole("button", { name: "Join", exact: true }).click();
+    await connected(page);
+    await expect(teamPicker(page).locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
+  });
+
+  test("a link copied from the email's HTML source (&amp;token=) still joins", { tag: ["@J3.2"] }, async ({ page }) => {
+    const backend = new FakeBackend({ teams: [], invites: [invited], docs: seeded("t-i1") });
+    await openAws(page, backend, { path: "/?invite=i1&amp;token=tok" });
+    await page.getByRole("button", { name: "Join", exact: true }).click();
+    await connected(page);
+    expect(backend.requests("POST", "/invites/i1/accept")[0].body).toEqual({ token: "tok" });
+    await expect(page.locator(".teambar")).toContainText("Team: Bravo Co");
+  });
+
+  // A link whose ID or token was lost or mangled when it was copied
+  for (const [name, saved] of [
+    ["without a token", { id: "i1", token: null }],
+    ["with an empty token", { id: "i1", token: "" }],
+    ["with a token broken by a space", { id: "i1", token: "to k" }],
+    ["without an ID", { token: "tok" }],
+    ["with a mangled ID", { id: "i1>", token: "tok" }],
+  ]) {
+    test(`an invite link ${name} says it's incomplete, and doesn't try to join`, { tag: ["@J3.2"] }, async ({ page }) => {
+      const backend = new FakeBackend({ teams: [], invites: [invited] });
+      await openAws(page, backend, { storage: { session: { "supplyCheckout.invite": JSON.stringify(saved) } } });
+      await expect(alert(page)).toHaveText("This invite link is incomplete. Open it again from the email, or ask for a new invite.");
+      await expect(page.getByRole("button", { name: "Join", exact: true })).toBeHidden();
+      expect(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite"))).toBeNull();
+      expect(backend.requests("POST", /^\/invites\//)).toHaveLength(0);
+      await page.getByRole("button", { name: "Create my own team instead" }).click();
+      await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
+    });
+  }
+
+  test("an invite link the server finds malformed (400) says it's incomplete", { tag: ["@J3.2"] }, async ({ page }) => {
+    const backend = new FakeBackend({ teams: [], invites: [invited] });
+    backend.on("POST", "/invites/i1/accept", { status: 400, body: { error: { code: "bad_request", message: "Invalid invite ID" } } });
+    await openAws(page, backend, { storage: inviteLink() });
+    await page.getByRole("button", { name: "Join", exact: true }).click();
+    await expect(alert(page)).toHaveText("This invite link is incomplete. Open it again from the email, or ask for a new invite.");
+    await expect(page.getByRole("button", { name: "Join", exact: true })).toBeHidden();
+    expect(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite"))).toBeNull();
+  });
+
   test("an invite that's expired or used says so, and offers a team of their own", { tag: ["@J3.2"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams: [], invites: [invited] });
     await openAws(page, backend, { storage: inviteLink("wrong") });
