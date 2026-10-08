@@ -384,7 +384,8 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
       Condition: {
         "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
         "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "verifiedEmailHash", "verifiedAt"] },
-        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        // Required, not IfExists: a GetItem without a projection is denied (supply-checkout-3sv.23)
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     };
     const tableKey = {
@@ -405,7 +406,8 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
         Condition: {
           "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
           "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeAddressAt"] },
-          StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          // Required, not IfExists: a GetItem without a projection is denied (supply-checkout-3sv.23)
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
         },
       },
       {

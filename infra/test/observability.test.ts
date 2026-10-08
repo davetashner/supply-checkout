@@ -26,7 +26,7 @@ import { BEDROCK_SPEND_ALARM_USD_PER_DAY, journeyAlarmSpecs, SET_ASIDE_INCIDENT_
 import { ROUTER_FAILING_ABOVE, RUM_EVENTS_FLOOD_PER_HOUR, RUM_EVENTS_SURGE_PER_HOUR, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
 import { rumAppMonitorName } from "../lib/web/rum.js";
 import { webOutputParameters } from "../lib/stacks/web-stack.js";
-import { LAPSE_LIST_ATTRIBUTES, LAPSE_READ_ATTRIBUTES, OPERATOR_AUDIT_HEARTBEAT } from "../../backend/src/data/schema.js";
+import { LAPSE_LIST_ATTRIBUTES, LAPSE_READ_ATTRIBUTES, LAPSE_RECORD_ATTRIBUTES, OPERATOR_AUDIT_HEARTBEAT } from "../../backend/src/data/schema.js";
 import { DELETION_PREFIXES, LIFECYCLE_EXPIRATION } from "../../backend/src/deletions/names.js";
 import {
   CHECK_EVERY_MINUTES,
@@ -1468,6 +1468,7 @@ describe("scheduled checks", () => {
       "OwnerEmailsIndexOnly",
       "ReadTeamBilling",
       "CloseLapsedTeam",
+      "ReadLapseRecords",
       "LapseRecords",
       "TableKeyThroughDynamoDb",
       "ReadStripeSecretKey",
@@ -1495,7 +1496,23 @@ describe("scheduled checks", () => {
     });
     // The closure, never status, plan, comps or Stripe IDs
     expect(by("CloseLapsedTeam")).toMatchObject({ Action: "dynamodb:UpdateItem", Condition: { "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "closedBy", "purgeAfter", "purging", "version", "stripeCheckoutAt"] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } } });
-    expect(by("LapseRecords")).toMatchObject({ Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["LAPSE#*"] } } });
+    // Its own records: reads projected (Select required, not IfExists, supply-checkout-3sv.23), writes returning nothing
+    expect(by("ReadLapseRecords")).toEqual({
+      Sid: "ReadLapseRecords",
+      Effect: "Allow",
+      Action: "dynamodb:GetItem",
+      Resource: expect.anything(),
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["LAPSE#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_RECORD_ATTRIBUTES] }, StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } },
+    });
+    expect(by("LapseRecords")).toEqual({
+      Sid: "LapseRecords",
+      Effect: "Allow",
+      Action: "dynamodb:PutItem",
+      Resource: expect.anything(),
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["LAPSE#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_RECORD_ATTRIBUTES] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } },
+    });
+    // No GetItem anywhere in its policy with Select only IfExists
+    for (const s of found.filter((s) => JSON.stringify(s.Action).includes("dynamodb:GetItem"))) expect(s.Condition, String(s.Sid)).toMatchObject({ StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } });
     expect(JSON.stringify(found)).not.toMatch(/dynamodb:(Scan|DeleteItem|BatchWriteItem|TransactWriteItems)/);
     const [fn] = functions(t).filter((f) => f.FunctionName === "supply-checkout-prod-team-lapse");
     expect(fn?.Timeout).toBe(300);

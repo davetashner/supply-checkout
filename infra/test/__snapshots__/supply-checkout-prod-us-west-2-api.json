@@ -2628,7 +2628,7 @@
                         "totpOnAt"
                       ]
                     },
-                    "StringEqualsIfExists": {
+                    "StringEquals": {
                       "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
                     }
                   },

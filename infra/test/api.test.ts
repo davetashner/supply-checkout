@@ -781,7 +781,8 @@ describe("billing function and billing-access role (ADR 0009)", () => {
       Resource: expect.anything(),
       Condition: {
         "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["USER#${aws:PrincipalTag/userId}"], "dynamodb:Attributes": ["PK", "SK", "totpOnAt"] },
-        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        // Required, not IfExists: a GetItem without a projection is denied (supply-checkout-3sv.23)
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     });
     expect(totpUpdate).toEqual({

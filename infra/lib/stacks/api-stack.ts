@@ -636,7 +636,7 @@ export class ApiStack extends SupplyCheckoutStack {
    *   attributes, returning nothing.
    * - GetItem and UpdateItem in `USER#<userId>`, the caller's own `sub`,
    *   naming only the keys and `totpOnAt` (TOTP_RECORD_ATTRIBUTES), reads
-   *   projected and updates returning nothing: when the caller turned
+   *   projected (Select SPECIFIC_ATTRIBUTES, required) and updates returning nothing: when the caller turned
    *   two-step sign-in on (supply-checkout-8jc.14), which the billing routes
    *   compare with the token's auth_time, and record when there's none.
    *   `userId` is the unused marker otherwise.
@@ -720,7 +720,10 @@ export class ApiStack extends SupplyCheckoutStack {
               },
             }),
             // When the caller turned two-step sign-in on (supply-checkout-8jc.14): only
-            // that attribute, only in their own partition (the tag is the verified sub)
+            // that attribute, only in their own partition (the tag is the verified sub).
+            // Projected: Select required, not IfExists, so a GetItem without a projection
+            // (which may carry neither Select nor Attributes) is denied (supply-checkout-3sv.23).
+            // totpOnAt (data/two-step.ts), its only caller, always projects
             new PolicyStatement({
               sid: "CallerTotpRecordRead",
               effect: Effect.ALLOW,
@@ -728,7 +731,7 @@ export class ApiStack extends SupplyCheckoutStack {
               resources: [tableArn],
               conditions: {
                 "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [user], "dynamodb:Attributes": [...TOTP_RECORD_ATTRIBUTES] },
-                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
             new PolicyStatement({

@@ -965,3 +965,19 @@ describe("GET /teams/{teamId}/billing/invoices (supply-checkout-eja)", () => {
     expect(scopes).toEqual([]);
   });
 });
+
+describe("the billing-access role's read of the caller's two-step record (supply-checkout-3sv.23)", () => {
+  // CallerTotpRecordRead requires dynamodb:Select SPECIFIC_ATTRIBUTES, so billingPolicy refuses a read of the record
+  // without a projection: the two-step tests, which fail on any refusal, then show totpOnAt projects
+  it("refuses a GetItem of the record without a projection, or with Select other than SPECIFIC_ATTRIBUTES", () => {
+    const refused: { command: string; input: Record<string, unknown> }[] = [];
+    const allow = billingPolicy({ teamId: TEAM, userId: OWNER }, refused);
+    const Key = { PK: `USER#${OWNER}`, SK: "TOTP_ON" };
+    const at = { ProjectionExpression: "#at", ExpressionAttributeNames: { "#at": "totpOnAt" } };
+    expect(allow("GetCommand", { Key })).toBe(false);
+    expect(allow("GetCommand", { Key, ...at, Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(allow("GetCommand", { Key: { PK: "USER#someone-else", SK: "TOTP_ON" }, ...at })).toBe(false);
+    expect(allow("GetCommand", { Key, ...at })).toBe(true);
+    expect(refused).toHaveLength(3);
+  });
+});
