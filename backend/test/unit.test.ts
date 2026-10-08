@@ -5,6 +5,7 @@ import * as data from "../src/data/index.js";
 import {
   ConflictError,
   createDb,
+  createProduct,
   ForbiddenError,
   InvalidInputError,
   listProjectsByDate,
@@ -179,6 +180,16 @@ describe("TeamContext (ADR 0005)", () => {
     const contributor = await contextFor("contributor");
     await expect(updateProduct(offline, contributor, "p1", { code: "", name: "Glo\u202eves", price: 1 }, 1)).rejects.toThrow(new InvalidInputError("name has an invisible or control character in it"));
     await expect(updateProduct(offline, contributor, "p1", { code: "", name: "x".repeat(201), price: 1 }, 1)).rejects.toThrow(new InvalidInputError("Invalid product"));
+  });
+
+  it("holds a product's price to the money rule on create and edit, before it reaches DynamoDB (supply-checkout-hv70)", async () => {
+    const contributor = await contextFor("contributor");
+    const rule = new InvalidInputError(`price must be an amount from 0 to ${MAX_MONEY} with at most two decimals`);
+    for (const price of [MAX_MONEY + 1, MAX_MONEY + 0.01, 0.001, 1.005, -0.01, Number.NaN, Number.POSITIVE_INFINITY, "3"]) {
+      const input = { code: "", name: "x", price: price as number };
+      await expect(createProduct(offline, contributor, "p1", input), String(price)).rejects.toThrow(rule);
+      await expect(updateProduct(offline, contributor, "p1", input, 1), String(price)).rejects.toThrow(rule);
+    }
   });
 });
 
