@@ -979,7 +979,7 @@
             ]
           }
         },
-        "Description": "Emails the account when its password, two-step sign-in or email is changed directly against Cognito",
+        "Description": "Emails the account when its password, two-step sign-in or email is changed directly against Cognito, or its password is reset",
         "Environment": {
           "Variables": {
             "NODE_OPTIONS": "--enable-source-maps",
@@ -995,6 +995,7 @@
             "SUPPLY_CHECKOUT_ENV": "prod"
           }
         },
+        "FunctionName": "supply-checkout-prod-security-notices",
         "Handler": "index.handler",
         "LoggingConfig": {
           "LogGroup": {

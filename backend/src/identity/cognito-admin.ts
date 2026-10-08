@@ -1,6 +1,6 @@
 // Cognito's admin API, signed with the Lambda's role (IAM): AdminUpdateUserAttributes
 // for the email_verified trigger, ListUsers and AdminLinkProviderForUser for the
-// account-linking trigger (and cognito-accounts.ts builds the security notices
+// account-linking trigger, AdminUserGlobalSignOut for the post confirmation trigger (and cognito-accounts.ts builds the security notices
 // function's lookup on cognitoRequest). Each role may call only its own actions, and only on the
 // environment's user pool (identity stack). The endpoint is the regional Cognito
 // endpoint for the Lambda's own region, which is the pool's region: the triggers run
@@ -77,6 +77,18 @@ export function cognitoRequest(options: CognitoAdminOptions): (action: string, b
       throw new Error(`${action} failed: ${response.status} ${type}`.trim());
     }
     return answer;
+  };
+}
+
+/**
+ * Signs one user out everywhere (AdminUserGlobalSignOut): Cognito revokes
+ * their refresh tokens and the access tokens issued with them. For the post
+ * confirmation trigger, after a confirmed password reset (supply-checkout-6uw.32).
+ */
+export function globalSignOut(options: CognitoAdminOptions): (userPoolId: string, username: string) => Promise<void> {
+  const call = cognitoRequest(options);
+  return async (userPoolId, username) => {
+    await call("AdminUserGlobalSignOut", { UserPoolId: userPoolId, Username: username });
   };
 }
 

@@ -37,6 +37,13 @@ export const emailResourceNames = (envName: string) => ({
    * API's password reset function, in the api stack, invokes it by name.
    */
   passwordResetFunction: `supply-checkout-${envName}-password-reset`,
+  /**
+   * The security notices function (supply-checkout-8jc.28). A fixed name: the
+   * user pool's post confirmation trigger, in the identity stack (which deploys
+   * first), invokes it by name with a confirmed password reset
+   * (supply-checkout-6uw.32).
+   */
+  securityNoticesFunction: `supply-checkout-${envName}-security-notices`,
 });
 
 /** How a new account was made: an email code (Cognito's own sign-up), or a first Google or Apple sign-in. */
@@ -103,7 +110,7 @@ export const EMAIL_ENV = {
 export const EMAIL_TAGS = { kind: "kind", teamId: "teamId", inviteId: "inviteId" } as const;
 
 /** The kinds of message the app sends (templates.ts). */
-export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "deletionWarning", "passwordSet", "twoStepOn", "emailChanged", "welcome", "passwordResetProvider"] as const;
+export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "deletionWarning", "passwordSet", "twoStepOn", "emailChanged", "passwordReset", "welcome", "passwordResetProvider"] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
 
 /**

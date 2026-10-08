@@ -74,6 +74,15 @@ export type EmailInput =
   | { readonly kind: "twoStepOn"; readonly at: string }
   | { readonly kind: "emailChanged"; readonly at: string }
   /**
+   * The password was reset with a code sent to the account's address
+   * (Cognito's ConfirmForgotPassword, from the app or Managed Login,
+   * supply-checkout-6uw.32). `signedOut`: the account was signed out
+   * everywhere (AdminUserGlobalSignOut), which the message says only if so.
+   * That revokes refresh tokens only: an access token stays valid for up to
+   * an hour, and so may a Managed Login session, so the message says so.
+   */
+  | { readonly kind: "passwordReset"; readonly at: string; readonly signedOut: boolean }
+  /**
    * The welcome email, once per new account, to its verified address
    * (supply-checkout-6uw.25). `givenName` is the account's own (Cognito's
    * given_name, from sign-up or Google or Apple), if it has one. `invited`: a
@@ -92,7 +101,7 @@ export type EmailInput =
   | { readonly kind: "passwordResetProvider"; readonly signInWith: "Google" | "SignInWithApple"; readonly supportAddress: string };
 
 /** The security notices, to an account's own address rather than a team's owners. */
-export type SecurityNotice = Extract<EmailInput, { kind: "passwordSet" | "twoStepOn" | "emailChanged" }>;
+export type SecurityNotice = Extract<EmailInput, { kind: "passwordSet" | "twoStepOn" | "emailChanged" | "passwordReset" }>;
 
 /** The welcome email (welcomeContent). */
 export type WelcomeEmail = Extract<EmailInput, { kind: "welcome" }>;
@@ -182,6 +191,10 @@ export function formatDateTime(value: string): string {
 const NOT_YOU =
   "If it wasn't you, someone else may be able to sign in to your account. Reset your password from the Supply Checkout sign-in page with a code sent to this address, check that the email address on your account is still yours, tell the other owners of your teams, and contact Supply Checkout support. We'll never ask you for your password or a sign-in code.";
 
+/** NOT_YOU for a password reset: it took a code sent to this address, so the mailbox itself may be someone else's to read. */
+const RESET_NOT_YOU =
+  "If it wasn't you, someone who can read this mailbox may have reset it. Secure this email account first (change its password), then reset your Supply Checkout password again from the sign-in page, check that the email address on your account is still yours, tell the other owners of your teams, and contact Supply Checkout support. We'll never ask you for your password or a sign-in code.";
+
 /** NOT_YOU for an email change: codes and resets now go to the new address, so they can't help. */
 const EMAIL_NOT_YOU =
   "If it wasn't you, someone else may have taken over your account: sign-in codes and password resets now go to their address. Contact Supply Checkout support from this address right away, and tell the other owners of your teams. We'll never ask you for your password or a sign-in code.";
@@ -262,7 +275,7 @@ function text(c: Content): string {
 }
 
 function content(input: EmailInput, appUrl: string): Content {
-  if (input.kind === "passwordSet" || input.kind === "twoStepOn" || input.kind === "emailChanged") return securityContent(input, appUrl);
+  if (input.kind === "passwordSet" || input.kind === "twoStepOn" || input.kind === "emailChanged" || input.kind === "passwordReset") return securityContent(input, appUrl);
   if (input.kind === "welcome") return welcomeContent(input, appUrl);
   if (input.kind === "passwordResetProvider") return resetProviderContent(input, appUrl);
   const team = teamLabel(input.teamName);
@@ -405,6 +418,19 @@ function securityContent(input: SecurityNotice, appUrl: string): Content {
       preheader: `Your password was set or changed on ${when}.`,
       heading: "Your password was set",
       paragraphs: [`A new password was set on your Supply Checkout account on ${when}.`, "If this was you, you don't need to do anything.", NOT_YOU],
+      button,
+    };
+  }
+  if (input.kind === "passwordReset") {
+    return {
+      subject: "Your Supply Checkout password was reset",
+      preheader: `Your password was reset on ${when}.`,
+      heading: "Your password was reset",
+      paragraphs: [
+        `The password on your Supply Checkout account was reset on ${when}, with a code sent to this address.${input.signedOut ? " Devices that were signed in were signed out, though a session may keep working for up to an hour." : ""}`,
+        "If this was you, you don't need to do anything.",
+        RESET_NOT_YOU,
+      ],
       button,
     };
   }

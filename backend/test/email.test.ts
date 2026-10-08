@@ -34,12 +34,14 @@ const samples: EmailInput[] = [
   { kind: "emailChanged", at: "2026-09-30T14:05:09.000Z" },
   { kind: "welcome", givenName: "Sam", invited: false, supportAddress: "support@supplycheckout.com" },
   { kind: "passwordResetProvider", signInWith: "Google", supportAddress: "support@supplycheckout.com" },
+  { kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: true },
   // Variants of a kind: last, since tests pick the ones above by position
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "subscription_ended", deletesAt: "2026-11-02T12:00:00.000Z" },
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "trial_ended", deletesAt: "2026-11-02T12:00:00.000Z" },
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "payment_overdue" },
   { kind: "deletionWarning", teamName: "Echo Cleaning", deletesAt: "2026-11-02T12:00:00.000Z" },
   { kind: "passwordResetProvider", signInWith: "SignInWithApple", supportAddress: "support@supplycheckout.com" },
+  { kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: false },
   { kind: "welcome", invited: true, supportAddress: "support@supplycheckout.com" },
 ];
 
@@ -102,6 +104,17 @@ describe("templates", () => {
       });
     });
   }
+
+  // supply-checkout-6uw.32
+  it("says a reset password signed the account out only when it did, and what to do if it wasn't them", () => {
+    const signedOut = renderEmail({ kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: true }, { appUrl: APP });
+    expect(signedOut.subject).toBe("Your Supply Checkout password was reset");
+    expect(signedOut.text).toContain("was reset on September 30, 2026 at 14:05 UTC, with a code sent to this address. Devices that were signed in were signed out, though a session may keep working for up to an hour.");
+    expect(signedOut.text).toContain("Secure this email account first");
+    const not = renderEmail({ kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: false }, { appUrl: APP });
+    expect(not.text).not.toContain("signed out");
+    expect(() => renderEmail({ kind: "passwordReset", at: "soon", signedOut: true }, { appUrl: APP })).toThrow("Invalid date");
+  });
 
   it("puts the invite's ID and token in the link the app reads (?invite=&token=)", () => {
     const email = renderEmail(samples[0] as EmailInput, { appUrl: APP });

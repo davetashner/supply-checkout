@@ -71,6 +71,16 @@
 // notice SES refused, is thrown after it's counted, so Lambda tries the event
 // again, then puts it on the dead-letter queue ("Security notices dropped").
 // No address, name or token is ever logged or put in a metric.
+//
+// A confirmed password reset (supply-checkout-6uw.32) arrives another way:
+// the user pool's post confirmation trigger, which has signed the account out
+// everywhere, invokes this function asynchronously with a
+// PasswordResetNoticeRequest (the user's sub from Cognito's own event, the
+// time, and whether the sign-out worked). Only the trigger's role may invoke
+// it so (the identity stack). It's handled as an event is, with `via: reset`
+// in logs and metrics: the email change check, then `passwordReset` to the
+// verified address, once per NOTICE_DEDUPE_MS. A failed lookup is retried by
+// Lambda, then the dead-letter queue.
 
 import {
   claimEmailChangeNotice,
@@ -90,7 +100,7 @@ import { EmailNotSentError, type Mailer } from "../email/mailer.js";
 import type { SecurityNotice } from "../email/templates.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { type FindAccount, type PoolAccount, SUB } from "./cognito-accounts.js";
-import { SECURITY_NOTICE_EVENTS } from "./names.js";
+import { type PasswordResetNoticeRequest, SECURITY_NOTICE_EVENTS } from "./names.js";
 
 export interface SecurityNoticesDeps {
   /** The app pool: events that name another pool are ignored. */
@@ -122,6 +132,23 @@ interface CloudTrailDetail {
 }
 
 type Kind = SecurityNotice["kind"];
+
+/** How the change reached the function, for logs and metrics: CloudTrail's event, or the post confirmation trigger's reset. */
+type Via = "cloudtrail" | "reset";
+
+/** A notice to the account's verified address (noticeAccount): every kind but an email change. */
+type AccountNotice = Exclude<SecurityNotice, { kind: "emailChanged" }>;
+
+/** The post confirmation trigger's request, if `event` is one (PasswordResetNoticeRequest); EventBridge's events never have a `type`. */
+const resetRequest = (event: unknown): Partial<Record<keyof PasswordResetNoticeRequest, unknown>> | undefined =>
+  typeof event === "object" && event !== null && (event as { type?: unknown }).type === "passwordReset" ? (event as Partial<Record<keyof PasswordResetNoticeRequest, unknown>>) : undefined;
+
+/** What an attempt got to, for counting an error thrown along the way. */
+interface Seen {
+  sub?: string;
+  kind?: Kind;
+  via?: Via;
+}
 
 /** cognitoRequest's error message: `<Action> failed: <status> <type>`. */
 const LOOKUP_ERROR = /^(ListUsers|AdminGetUser) failed: \d{3}( [A-Za-z]+)?$/;
@@ -155,31 +182,32 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
   const { db, obs } = deps;
   const now = () => new Date((deps.now ?? Date.now)());
 
-  const failed = (userId: string | undefined, kind: Kind, reason: string, code: string) => {
-    obs.logger.warn("Security notice not sent", { ...(userId ? { userId } : {}), kind, code, via: "cloudtrail" });
-    obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind, reason, via: "cloudtrail" });
+  const failed = (userId: string | undefined, kind: Kind, reason: string, code: string, via: Via) => {
+    obs.logger.warn("Security notice not sent", { ...(userId ? { userId } : {}), kind, code, via });
+    obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind, reason, via });
   };
 
   /** Sends one notice. Never throws. */
-  async function send(userId: string, to: string, input: SecurityNotice): Promise<void> {
+  async function send(userId: string, to: string, input: SecurityNotice, via: Via): Promise<void> {
     try {
       await deps.mailer.send(to, input);
-      obs.count(BusinessMetric.SecurityNotices, 1, { kind: input.kind, via: "cloudtrail" });
-      obs.logger.info("Security notice sent", { userId, kind: input.kind, via: "cloudtrail" });
+      obs.count(BusinessMetric.SecurityNotices, 1, { kind: input.kind, via });
+      obs.logger.info("Security notice sent", { userId, kind: input.kind, via });
     } catch (error) {
-      failed(userId, input.kind, "not_sent", errorCode(error));
+      failed(userId, input.kind, "not_sent", errorCode(error), via);
     }
   }
 
-  /** A password or two-step notice to the verified address, unless one of its kind just went out. */
-  async function noticeAccount(userId: string, account: PoolAccount, kind: "passwordSet" | "twoStepOn", at: string): Promise<void> {
+  /** A password, reset or two-step notice to the verified address, unless one of its kind just went out. */
+  async function noticeAccount(userId: string, account: PoolAccount, input: AccountNotice, via: Via): Promise<void> {
+    const { kind } = input;
     const to = verifiedAddress(account);
-    if (!to) return failed(userId, kind, "no_address", "NoAddress");
+    if (!to) return failed(userId, kind, "no_address", "NoAddress", via);
     if (!(await claimNotice(db, userId, kind, now()))) {
-      obs.logger.info("Security notice already sent", { userId, kind, via: "cloudtrail" });
+      obs.logger.info("Security notice already sent", { userId, kind, via });
       return;
     }
-    await send(userId, to, { kind, at });
+    await send(userId, to, input, via);
   }
 
   /**
@@ -200,7 +228,7 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
    * counting it (`pending`) once the claim is PENDING_COUNT_AFTER_MS old, so an attempt that died holding the claim
    * isn't taken for a sent notice: the retry, after the claim lapses, sends it.
    */
-  async function noticeEmailChange(userId: string, account: PoolAccount, at: string): Promise<void> {
+  async function noticeEmailChange(userId: string, account: PoolAccount, at: string, via: Via): Promise<void> {
     // A new address not verified yet (keepOriginal keeps the old one until it is) changes nothing
     if (!account.emailVerifiedInCognito || !account.email?.trim()) return;
     const seen = emailSeenHash(account.email);
@@ -219,8 +247,8 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
       // Counted only once the claim is old enough that its attempt has likely died: a younger one is
       // usually another event's attempt still sending, which the retry finds done
       const claimedAt = await emailChangeClaimedAt(db, userId);
-      if (!claimedAt || now().getTime() - claimedAt.getTime() >= PENDING_COUNT_AFTER_MS) failed(userId, "emailChanged", "pending", "ClaimHeld");
-      else obs.logger.info("Security notice being sent", { userId, kind: "emailChanged", via: "cloudtrail" });
+      if (!claimedAt || now().getTime() - claimedAt.getTime() >= PENDING_COUNT_AFTER_MS) failed(userId, "emailChanged", "pending", "ClaimHeld", via);
+      else obs.logger.info("Security notice being sent", { userId, kind: "emailChanged", via });
       throw new CountedError(new Error("An email change notice is claimed but not sent yet"));
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -234,45 +262,67 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
       ]);
     } catch (error) {
       await releaseEmailChangeNotice(db, userId, seen).catch(() => undefined);
-      failed(userId, "emailChanged", "not_sent", errorCode(error));
+      failed(userId, "emailChanged", "not_sent", errorCode(error), via);
       throw new CountedError(error);
     } finally {
       clearTimeout(timer);
     }
-    obs.count(BusinessMetric.SecurityNotices, 1, { kind: "emailChanged", via: "cloudtrail" });
-    obs.logger.info("Security notice sent", { userId, kind: "emailChanged", via: "cloudtrail" });
+    obs.count(BusinessMetric.SecurityNotices, 1, { kind: "emailChanged", via });
+    obs.logger.info("Security notice sent", { userId, kind: "emailChanged", via });
     // The next change is told to the new address only if it's one the app can use; otherwise still the old one
     await moveNoticeAddress(db, userId, record.seen, seen, addressIf(account, true) ?? record.address, now());
   }
 
-  async function handle(event: { readonly detail?: unknown }, seen: { sub?: string; kind?: Kind }): Promise<void> {
+  /** Looks the user up by sub, counting a failed lookup (`lookup_failed`) and throwing it on for Lambda to try again. */
+  async function findUser(sub: string, seen: Seen): Promise<PoolAccount | undefined> {
+    try {
+      return await deps.findAccount(sub);
+    } catch (error) {
+      // cognitoRequest's message names only the action, status and error type; anything else, only its name. Lambda tries again
+      const message = (error as { message?: unknown } | null)?.message;
+      failed(sub, seen.kind ?? "passwordSet", "lookup_failed", typeof message === "string" && LOOKUP_ERROR.test(message) ? message : errorCode(error), seen.via ?? "cloudtrail");
+      throw new CountedError(error);
+    }
+  }
+
+  /** A confirmed password reset, from the post confirmation trigger (see the top). */
+  async function handleReset(request: Partial<Record<keyof PasswordResetNoticeRequest, unknown>>, seen: Seen): Promise<void> {
+    seen.kind = "passwordReset";
+    seen.via = "reset";
+    const sub = text(request.userId);
+    if (!sub || !SUB.test(sub)) return failed(undefined, "passwordReset", "no_user", "NoSub", "reset");
+    seen.sub = sub;
+    const time = Date.parse(String(request.at));
+    const at = (Number.isFinite(time) ? new Date(time) : now()).toISOString();
+    // The trigger's sign-out failed: logged here too, with the sub, so an operator can sign the user out by hand
+    if (request.signedOut !== true) obs.logger.warn("Reset without sign-out", { userId: sub, signedOut: false, via: "reset" });
+    const account = await findUser(sub, seen);
+    // Since deleted
+    if (!account) return;
+    await noticeEmailChange(sub, account, at, "reset");
+    await noticeAccount(sub, account, { kind: "passwordReset", at, signedOut: request.signedOut === true }, "reset");
+  }
+
+  async function handle(event: { readonly detail?: unknown }, seen: Seen): Promise<void> {
     const detail = (event.detail ?? {}) as CloudTrailDetail;
     if (detail.eventSource !== "cognito-idp.amazonaws.com") return;
     const name = text(detail.eventName);
     if (!name || !Object.hasOwn(SECURITY_NOTICE_EVENTS, name)) return;
-    const kind: Kind = SECURITY_NOTICE_EVENTS[name as keyof typeof SECURITY_NOTICE_EVENTS];
+    const kind = SECURITY_NOTICE_EVENTS[name as keyof typeof SECURITY_NOTICE_EVENTS];
     seen.kind = kind;
     // Only calls that succeeded changed anything
     if (text(detail.errorCode)) return;
     const pool = text(detail.requestParameters?.userPoolId) ?? text(detail.additionalEventData?.userPoolId);
     if (pool && pool !== deps.userPoolId) return;
     const sub = text(detail.additionalEventData?.sub);
-    if (!sub || !SUB.test(sub)) return failed(undefined, kind, "no_user", "NoSub");
+    if (!sub || !SUB.test(sub)) return failed(undefined, kind, "no_user", "NoSub", "cloudtrail");
     seen.sub = sub;
     const eventTime = Date.parse(String(detail.eventTime));
     // CloudTrail's time is in whole seconds, rounded down: never later than the call
     const when = Number.isFinite(eventTime) ? new Date(eventTime) : now();
     const at = when.toISOString();
 
-    let account: PoolAccount | undefined;
-    try {
-      account = await deps.findAccount(sub);
-    } catch (error) {
-      // cognitoRequest's message names only the action, status and error type; anything else, only its name. Lambda tries again
-      const message = (error as { message?: unknown } | null)?.message;
-      failed(sub, kind, "lookup_failed", typeof message === "string" && LOOKUP_ERROR.test(message) ? message : errorCode(error));
-      throw new CountedError(error);
-    }
+    const account = await findUser(sub, seen);
     // Not an app user: another pool's (the event didn't name it), or since deleted
     if (!account) return;
     // When TOTP was turned on, for the billing check, before anything below can fail. A failed
@@ -295,22 +345,24 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
     }
   }
 
-  async function notices(sub: string, account: PoolAccount, kind: Kind, at: string): Promise<void> {
+  async function notices(sub: string, account: PoolAccount, kind: "passwordSet" | "twoStepOn" | "emailChanged", at: string): Promise<void> {
     // On every event, so a later one catches an email change whose own events were missed or dead-lettered
-    await noticeEmailChange(sub, account, at);
+    await noticeEmailChange(sub, account, at, "cloudtrail");
     if (kind === "emailChanged") return;
     if (kind === "twoStepOn" && !account.totpEnabled) return;
-    return noticeAccount(sub, account, kind, at);
+    return noticeAccount(sub, account, { kind, at }, "cloudtrail");
   }
 
-  return async (event: { readonly detail?: unknown }): Promise<void> => {
-    const seen: { sub?: string; kind?: Kind } = {};
+  /** EventBridge's event (a CloudTrail record in `detail`), or the post confirmation trigger's PasswordResetNoticeRequest. */
+  return async (event: { readonly detail?: unknown } | { readonly type?: unknown }): Promise<void> => {
+    const seen: Seen = {};
     try {
-      await handle(event, seen);
+      const reset = resetRequest(event);
+      await (reset ? handleReset(reset, seen) : handle(event as { readonly detail?: unknown }, seen));
     } catch (error) {
       if (error instanceof CountedError) throw error.cause;
       // Anything else (DynamoDB refusing a call, say) is counted too, before Lambda tries again
-      failed(seen.sub, seen.kind ?? "passwordSet", "error", errorCode(error));
+      failed(seen.sub, seen.kind ?? "passwordSet", "error", errorCode(error), seen.via ?? "cloudtrail");
       throw error;
     }
   };
