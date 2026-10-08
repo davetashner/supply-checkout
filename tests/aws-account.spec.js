@@ -745,6 +745,31 @@ test.describe("first sign-in and teams", () => {
 
   test("while polling instead of a socket, /me is asked at most every 10 minutes", { tag: ["@J0"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams, docs: seeded() });
+    // API requests the app hasn't finished reading yet. A jump of the clock past 15 seconds
+    // also fires the timeout of a request still in flight (src/aws/http.js). When the poll
+    // fires first in that jump (showing the tab started the re-list after the poll timer was
+    // set), it only marks the re-list to run again, and the timeout then fails the re-list,
+    // which drops that second run (src/aws/db.js), so no request follows the poll. So each
+    // jump waits until the app has read every answer.
+    await page.addInitScript(() => {
+      window.__apiPending = 0;
+      const fetch = window.fetch, json = Response.prototype.json;
+      window.fetch = (url, ...rest) => {
+        if (!String(url).includes("/_api/")) return fetch(url, ...rest);
+        window.__apiPending++;
+        return fetch(url, ...rest).then((res) => {
+          if (res.status === 204) window.__apiPending--;
+          else res.__api = true;
+          return res;
+        }, (e) => { window.__apiPending--; throw e; });
+      };
+      Response.prototype.json = function () {
+        const read = json.call(this);
+        if (this.__api) read.finally(() => window.__apiPending--).catch(() => {});
+        return read;
+      };
+    });
+    const answered = () => expect.poll(() => page.evaluate(() => window.__apiPending)).toBe(0);
     await page.clock.install();
     // The socket never opens, so after three tries the app polls every 15 seconds
     await openAws(page, backend, { ws: { open: false } });
@@ -753,20 +778,18 @@ test.describe("first sign-in and teams", () => {
     const polls = () => backend.requests("GET", "/teams/t1/products").length;
     for (let i = 0; i < 3; i++) await page.clock.fastForward(5e3);
     await expect.poll(polls).toBeGreaterThan(1);
-    for (let i = 0; i < 8; i++) {
+    const poll = async () => {
+      await answered();
       const before = polls();
       await page.clock.fastForward(61e3);
       await expect.poll(polls).toBeGreaterThan(before);
-    }
+    };
+    for (let i = 0; i < 8; i++) await poll();
     expect(meCalls()).toBe(1);
     // Showing the tab again is not a poll: the usual minute applies
     await setVisible(page, true);
     await expect.poll(meCalls).toBe(2);
-    for (let i = 0; i < 9; i++) {
-      const before = polls();
-      await page.clock.fastForward(61e3);
-      await expect.poll(polls).toBeGreaterThan(before);
-    }
+    for (let i = 0; i < 9; i++) await poll();
     expect(meCalls()).toBe(2);
     await page.clock.fastForward(61e3);
     await expect.poll(meCalls).toBe(3);
