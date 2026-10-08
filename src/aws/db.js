@@ -30,6 +30,9 @@ import { COUNT_NOT_SAVED } from "../moves.js";
 // after the first was held if they don't. The re-list uses up the fetch budget, so a burst
 // that goes on is re-listed every MAX_WAIT_MS rather than fetched again.
 const BURST_FETCHES = 10, BURST_MS = 1000, QUIET_MS = 300, MAX_WAIT_MS = 2000;
+// A re-list asked for while another one failed (it timed out, say) isn't dropped: it's tried
+// again after RETRY_MS, twice as long after each failure, up to RETRY_MAX_MS
+const RETRY_MS = 2000, RETRY_MAX_MS = 60e3;
 const META = { fromCache: false, hasPendingWrites: false };
 
 // The day the projects listed at start go back to: 1 January of the year it was six months ago,
@@ -71,7 +74,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   const queues = new Map();
   let removed = false;
   // all: list every project, not only the recent ones (loadOlder); since: the day the held list goes back to ("" for all)
-  const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false, fetched: [], held: null, all: name !== "projects", since: "", kept: new Set(), older: false });
+  const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false, fetched: [], held: null, retry: null, retries: 0, all: name !== "projects", since: "", kept: new Set(), older: false });
   const docPath = (name, id) => `${base}/${name}/${encodeURIComponent(id)}`;
 
   // Runs fn once every write to the same document sent before it has answered, so a write names
@@ -90,6 +93,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     if (removed) return;
     removed = true;
     live.stop();
+    for (const c of Object.values(colls)) clearTimeout(c.retry);
     onRemoved();
   }
 
@@ -139,10 +143,14 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   }
 
   // Replaces the collection with a fresh list, keeping documents that changed while it
-  // was being read. A re-list asked for meanwhile runs once more afterwards.
+  // was being read. A re-list asked for meanwhile runs once more afterwards, or, if this one
+  // fails, after a wait (RETRY_MS), until one gets through.
   function relist(name) {
     const c = coll(name);
     if (c.listing) { c.again = true; return c.listing; }
+    // This one runs now, in place of a retry waiting
+    clearTimeout(c.retry);
+    c.retry = null;
     c.listing = (async () => {
       do {
         c.again = false;
@@ -163,14 +171,21 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
         c.since = since;
         c.loaded = true;
         c.touched = null;
+        c.retries = 0;
         notify(name);
       } while (c.again);
     })()
       .catch((e) => {
         c.touched = null;
         if (e.code === "permission_denied") lost();
-        // Only the first load reports an error; later re-lists are retried by the next one
+        // Only the first load reports an error
         else if (!c.loaded) c.listeners.forEach((l) => l.error && l.error(e));
+        // A re-list asked for meanwhile (or one being retried) is tried again, unless the page
+        // has stopped meanwhile; any other is retried by the next one asked for
+        else if (!removed && (c.again || c.retries)) {
+          const wait = Math.min(RETRY_MAX_MS, RETRY_MS * 2 ** c.retries++);
+          c.retry = setTimeout(() => relist(name), wait);
+        }
       })
       .finally(() => { c.listing = null; });
     return c.listing;
@@ -465,11 +480,14 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     reconnect: () => live.reconnect(),
     // The session ended (signed out, it expired, or another tab changed who's signed in) or
     // the account was deleted: no more live updates or re-lists, which need a token, not even
-    // a burst's re-list still waiting, and the team isn't reported as lost
+    // a burst's re-list or a failed one's retry still waiting, and the team isn't reported as lost
     stop: () => {
       removed = true;
       live.stop();
-      for (const c of Object.values(colls)) if (c.held) { clearTimeout(c.held.timer); c.held = null; }
+      for (const c of Object.values(colls)) {
+        clearTimeout(c.retry);
+        if (c.held) { clearTimeout(c.held.timer); c.held = null; }
+      }
     },
   };
 }

@@ -833,6 +833,30 @@ export function installFakeSocket(mode) {
   window.WebSocket = FakeSocket;
 }
 
+// Counts the API requests the app hasn't finished reading the answer to (unanswered below),
+// for a test on page.clock: a jump past 15 seconds also fires the timeout of any request still
+// in flight (src/aws/http.js), and a test that sets the clock against a timer the app sets
+// once an answer is read must wait for that first. Call before openAws.
+export const trackAnswers = (page) => page.addInitScript(() => {
+  window.__apiPending = 0;
+  const fetch = window.fetch, json = Response.prototype.json;
+  window.fetch = (url, ...rest) => {
+    if (!String(url).includes("/_api/")) return fetch(url, ...rest);
+    window.__apiPending++;
+    return fetch(url, ...rest).then((res) => {
+      if (res.status === 204) window.__apiPending--;
+      else res.__api = true;
+      return res;
+    }, (e) => { window.__apiPending--; throw e; });
+  };
+  Response.prototype.json = function () {
+    const read = json.call(this);
+    if (this.__api) read.finally(() => window.__apiPending--).catch(() => {});
+    return read;
+  };
+});
+export const unanswered = (page) => page.evaluate(() => window.__apiPending);
+
 // Loads the web build with the fake backend. storage: { local: {...}, session: {...} },
 // set before the app starts.
 export async function openAws(page, backend, { path = "/", ws = {}, storage } = {}) {
