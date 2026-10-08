@@ -86,13 +86,16 @@
 .support-actions{list-style:none;margin:0;padding:0;display:grid;gap:8px;font-size:14px;overflow-wrap:anywhere}
 #supportList p{margin:0}
 #supportMore{margin-top:8px;width:max-content}
-/* Two-step sign-in (src/aws/mfa.js), in the app's modal */
+/* Two-step sign-in (src/aws/mfa.js) and Change password (src/aws/password.js), in the app's modal */
 #modal .two-step{display:grid;gap:14px}
 #modal .two-step p{margin:0}
 .two-step-why{font-weight:600}
 .two-step-form{display:grid;gap:10px}
 .two-step-form input[type=password]{background:var(--ground);border:1px solid var(--line);border-radius:9px;padding:9px 12px;width:100%;max-width:22em}
 .two-step-form input#totpCode{background:var(--ground);border:1px solid var(--line);border-radius:9px;padding:9px 12px;width:100%;max-width:8em;font-family:var(--mono);font-size:20px;letter-spacing:.2em}
+.password-forgot{font-size:14px}
+.password-forgot summary{cursor:pointer;font-weight:600;color:var(--accent)}
+#modal .password-forgot p{margin-top:6px}
 /* White whatever the theme: scanners want dark modules on light */
 .two-step-qr svg{display:block;width:200px;max-width:100%;height:auto;background:#fff;border-radius:6px}
 #totpKey{font-family:var(--mono);overflow-wrap:anywhere}

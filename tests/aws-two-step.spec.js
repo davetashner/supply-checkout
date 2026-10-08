@@ -32,17 +32,31 @@ test("an owner sets a password and an authenticator app up from Account, and sig
   await expect(dialog(page).locator("#twoStepState")).toHaveText("Owners need two-step sign-in to manage billing. You'll sign in with a password and a code from an authenticator app on your phone.");
   await dialog(page).getByRole("button", { name: "Set up two-step sign-in" }).click();
   await expect(dialog(page).getByRole("heading", { name: "Two-step sign-in" })).toBeVisible();
-  await expect(dialog(page).getByLabel("New password")).toBeFocused();
+  // The current password first, so a password manager reads it as a change, not a sign-up
+  await expect(dialog(page).getByLabel("Current password")).toBeFocused();
+  expect(await dialog(page).locator("#passwordStep input[autocomplete]").evaluateAll((els) => els.map((e) => [e.name, e.autocomplete, e.value]))).toEqual([
+    ["username", "username", USER.email], ["current-password", "current-password", ""], ["new-password", "new-password", ""], ["confirm-password", "new-password", ""],
+  ]);
   await expectAccessible(page);
 
-  // Nothing typed; a password the policy refuses; a wrong current one; a lost answer
+  // Nothing typed; new passwords that don't match; a password the policy refuses; a wrong
+  // current one; a lost answer
   const next = dialog(page).getByRole("button", { name: "Continue" });
+  const setNew = async (password, again = password) => {
+    await dialog(page).getByLabel("New password", { exact: true }).fill(password);
+    await dialog(page).getByLabel("Confirm new password").fill(again);
+  };
   await next.click();
   await expect(fail(page)).toHaveText("Choose a password.");
-  await dialog(page).getByLabel("New password").fill("short");
+  await expect(dialog(page).getByLabel("New password", { exact: true })).toBeFocused();
+  await setNew("Correct-Horse-9", "Correct-Horse-8");
   await next.click();
-  await expect(fail(page)).toHaveText("Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol.");
-  await dialog(page).getByLabel("New password").fill("Correct-Horse-9");
+  await expect(fail(page)).toHaveText("The new passwords don't match. Type the new one again.");
+  await expect(dialog(page).getByLabel("Confirm new password")).toBeFocused();
+  await setNew("short");
+  await next.click();
+  await expect(fail(page)).toHaveText("Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol, that you haven't used before.");
+  await setNew("Correct-Horse-9");
   await dialog(page).getByLabel("Current password").fill("wrong");
   await next.click();
   await expect(fail(page)).toHaveText("That current password isn't right. If you've only signed in with an email code or a passkey, leave it empty.");
@@ -59,8 +73,13 @@ test("an owner sets a password and an authenticator app up from Account, and sig
     { password: "Correct-Horse-9" },
   ]);
 
-  // The app's secret, as a QR code, a key and a link
+  // The password is set: nothing of it stays in the page
   const code = dialog(page).getByLabel("Code from the app");
+  await expect(code).toBeFocused();
+  expect(await dialog(page).locator("#passwordStep input[type=password]").evaluateAll((els) => els.map((e) => e.value))).toEqual(["", "", ""]);
+  await expect(dialog(page).locator("#passwordStep")).toHaveAttribute("method", "post");
+
+  // The app's secret, as a QR code, a key and a link
   await expect(code).toBeFocused();
   await expect(fail(page)).toBeHidden();
   await expect(dialog(page).locator("#totpKey")).toHaveText("JBSW Y3DP EHPK 3PXP");
@@ -97,7 +116,7 @@ test("billing refused for want of two-step sign-in opens the setup, saying why",
   backend.on("POST", "/me/mfa/totp", { abort: true });
   await dialog(page).getByRole("button", { name: "Keep my current password" }).click();
   await expect(fail(page)).toHaveText("Couldn't start the setup. Check your connection and try again.");
-  await expect(dialog(page).getByLabel("New password")).toBeVisible();
+  await expect(dialog(page).getByLabel("New password", { exact: true })).toBeVisible();
   await dialog(page).getByRole("button", { name: "Keep my current password" }).click();
   await expect(dialog(page).getByLabel("Code from the app")).toBeFocused();
   expect(backend.requests("POST", "/me/password")).toEqual([]);
@@ -157,7 +176,7 @@ test("with it on, Account offers to move it to a new phone, with no password ste
   await dialog(page).getByRole("button", { name: "Move to a new phone" }).click();
   await expect(dialog(page).getByText("Set up the authenticator app on your new phone. Your old phone's codes keep working until this is done.")).toBeVisible();
   await expect(dialog(page).getByLabel("Code from the app")).toBeFocused();
-  await expect(dialog(page).getByLabel("New password")).toBeHidden();
+  await expect(dialog(page).getByLabel("New password", { exact: true })).toBeHidden();
   await expect(dialog(page).getByRole("heading", { name: "Your authenticator app" })).toBeVisible();
   // A setup that expired meanwhile, and too many tries
   backend.totpStarted = false;
@@ -195,7 +214,7 @@ test("moving to a new phone that can't start says so", { tag: ["@J0"] }, async (
   await bar(page).getByRole("button", { name: "Account" }).click();
   await dialog(page).getByRole("button", { name: "Move to a new phone" }).click();
   await expect(fail(page)).toHaveText("Couldn't start the setup. Check your connection and try again.");
-  await expect(dialog(page).getByLabel("New password")).toBeHidden();
+  await expect(dialog(page).getByLabel("New password", { exact: true })).toBeHidden();
 });
 
 test("a Google or Apple user has nothing to set up", { tag: ["@J0"] }, async ({ page }) => {
@@ -208,6 +227,6 @@ test("a Google or Apple user has nothing to set up", { tag: ["@J0"] }, async ({ 
 test("an API that doesn't say shows nothing about it", { tag: ["@J0"] }, async ({ page }) => {
   await open(page, new FakeBackend());
   await bar(page).getByRole("button", { name: "Account" }).click();
-  await expect(dialog(page).getByLabel("Type DELETE to confirm")).toBeFocused();
+  await expect(dialog(page).getByLabel("Type DELETE to confirm")).toBeVisible();
   await expect(dialog(page).locator("#twoStepState")).toHaveCount(0);
 });

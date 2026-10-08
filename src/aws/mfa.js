@@ -8,21 +8,21 @@
 // password first (their current one confirms it, if they have one), unless they're only
 // moving to a new phone. Then it shows the app's secret as a QR code and as text, and checks
 // a code from the app. That turns it on and signs the user out everywhere, this tab too, so
-// then `onOn` shows a screen with a way to sign in again. Web build only, like the rest of
-// src/aws/.
+// then `onOn` shows a screen with a way to sign in again. The password step's fields and
+// errors are password.js's, shared with Account's Change password. Web build only, like the
+// rest of src/aws/.
 import { esc } from "../format.js";
 import { openModal, closeModal } from "../dom.js";
+import { clearPassword, passwordFailure, passwordFields, readPassword } from "./password.js";
 
 const ISSUER = "Supply Checkout";
 
 // What went wrong, in words
 const failure = (e, doing) =>
-  e.reason === "password_invalid" ? "Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol."
-    : e.reason === "password_mismatch" ? "That current password isn't right. If you've only signed in with an email code or a passkey, leave it empty."
-    : e.reason === "code_mismatch" ? "That code isn't right. Check the app and try the newest code."
+  passwordFailure(e)
+    || (e.reason === "code_mismatch" ? "That code isn't right. Check the app and try the newest code."
     : e.reason === "code_expired" ? "This setup expired. Close this and start again."
-    : e.code === "quota_exceeded" ? "Too many tries for now. Wait a few minutes, then try again."
-    : `Couldn't ${doing}. Check your connection and try again.`;
+    : `Couldn't ${doing}. Check your connection and try again.`);
 
 // The key as the app shows it, in groups of four
 const grouped = (secret) => secret.replace(/(.{4})(?=.)/g, "$1 ");
@@ -40,11 +40,9 @@ export function openTwoStep(session, email, onOn, { why = "", moving = false } =
       <p class="hint">${moving
         ? "Set up the authenticator app on your new phone. Your old phone's codes keep working until this is done."
         : "You'll sign in with your email, a password and a 6-digit code from an authenticator app on your phone, such as Google Authenticator, Microsoft Authenticator or 1Password. Email codes and passkeys stop working for signing in."}</p>
-      <form id="passwordStep" class="two-step-form" novalidate${moving ? " hidden" : ""}>
+      <form id="passwordStep" class="two-step-form" method="post" novalidate${moving ? " hidden" : ""}>
         <h3>1. Your password</h3>
-        <div class="field"><label for="newPassword">New password</label><input type="password" id="newPassword" autocomplete="new-password" data-autofocus></div>
-        <div class="field"><label for="currentPassword">Current password</label><input type="password" id="currentPassword" autocomplete="current-password" aria-describedby="currentHint">
-        <p class="hint" id="currentHint">Leave it empty if you've only signed in with an email code or a passkey.</p></div>
+        ${passwordFields(email)}
         <div class="actions"><button type="submit" class="btn primary" id="savePassword">Continue</button><button type="button" class="btn ghost" id="keepPassword">Keep my current password</button></div>
       </form>
       <form id="appStep" class="two-step-form" novalidate hidden>
@@ -97,17 +95,18 @@ export function openTwoStep(session, email, onOn, { why = "", moving = false } =
 
     $("#passwordStep").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const password = $("#newPassword").value, current = $("#currentPassword").value;
-      if (!password) { say("Choose a password."); $("#newPassword").focus(); return; }
+      const body = readPassword(m, say);
+      if (!body) return;
       say("");
       busy(true);
       try {
-        await session.api("POST", "/me/password", current ? { password, currentPassword: current } : { password });
+        await session.api("POST", "/me/password", body);
       } catch (err) {
         busy(false);
         say(failure(err, "set the password"));
         return;
       }
+      clearPassword(m);
       busy(false);
       await showApp();
     });

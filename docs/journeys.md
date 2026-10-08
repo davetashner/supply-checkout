@@ -68,7 +68,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 
 **Expected:** the team's projects appear within 3 seconds. Staying signed in lasts 30 days on the same device. Signing in with Apple or Google using the verified email of an existing account, at an address that provider runs (Gmail or the account's own Workspace domain; iCloud or an Apple relay address), opens that same account and its teams (`supply-checkout-0b1`: `backend/test/account-link.test.ts`, and the retry in `tests/aws-account.spec.js`). A person removed from a team no longer sees it on their next request.
 
-**Status:** tested (`supply-checkout-zsm`: Cognito and Managed Login; `supply-checkout-l5y`: the team switcher). The tests use a fake Managed Login: `tests/aws-account.spec.js`, `aws-session-tabs.spec.js` and `aws-two-step.spec.js`, and `backend/test/auth-api.test.ts`.
+**Status:** tested (`supply-checkout-zsm`: Cognito and Managed Login; `supply-checkout-l5y`: the team switcher). The tests use a fake Managed Login: `tests/aws-account.spec.js`, `aws-session-tabs.spec.js`, `aws-two-step.spec.js` and `aws-password.spec.js` (changing the password from Account), and `backend/test/auth-api.test.ts`.
 
 ### J1. Sign up and start a trial
 

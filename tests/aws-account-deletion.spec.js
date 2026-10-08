@@ -299,7 +299,7 @@ test.describe("deleting an account", { tag: ["@J11.1"] }, () => {
     await expect(dialog(page)).toContainText(`Signed in as ${USER.email}.`);
     const confirm = dialog(page).getByLabel("Type DELETE to confirm");
     const remove = dialog(page).getByRole("button", { name: "Delete account" });
-    await expect(confirm).toBeFocused();
+    await expect(dialog(page).getByRole("button", { name: "Change password" })).toBeFocused();
     await expect(remove).toBeDisabled();
     await confirm.fill("delet");
     await expect(remove).toBeDisabled();

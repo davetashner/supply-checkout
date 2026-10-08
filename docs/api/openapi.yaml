@@ -1276,7 +1276,8 @@ paths:
       summary: Set the caller's password.
       description: |
         Sets the caller's password with Cognito (ChangePassword, with their
-        own access token). Send `currentPassword` if they have one; a user who
+        own access token): the two-step setup's password step, and Account's
+        Change password. Send `currentPassword` if they have one; a user who
         has only signed in with an email code or a passkey sends none. Once
         an authenticator app is on (`setupTotp`), Cognito lets the user sign
         in only with their password and its code, so the app has them set one
