@@ -10,7 +10,7 @@ import {
 import { Construct } from "constructs";
 import { billingResourceNames } from "../../../backend/src/billing/names.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
-import { PASSWORD_RESET_HELP_PER_DAY } from "../../../backend/src/data/schema.js";
+import { PASSWORD_RESET_HINTS_PER_DAY } from "../../../backend/src/data/schema.js";
 import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import {
@@ -307,12 +307,12 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       primaryOnly: true,
     },
     {
-      id: "password-reset-help-capped",
-      title: "Password reset help capped",
+      id: "password-reset-hints-capped",
+      title: "Password reset hints capped",
       journeys: "J0",
       severity: "P2",
-      rule: `Any PasswordResetHelpCapped in an hour: the help emails to addresses we can't send a reset code to reached their cap for the UTC day (PASSWORD_RESET_HELP_PER_DAY, ${PASSWORD_RESET_HELP_PER_DAY}), so no more go out until midnight UTC. Either many people without accounts are resetting, or someone is using the route to mail addresses that never signed up, which risks SES's bounce and complaint rates (supply-checkout-6uw.26).`,
-      metric: business(BusinessMetric.PasswordResetHelpCapped, region, Duration.hours(1)),
+      rule: `Any PasswordResetHintsCapped in an hour: the "sign in with Google" (or Apple) hints for password resets asked for in the app reached their cap for the UTC day (PASSWORD_RESET_HINTS_PER_DAY, ${PASSWORD_RESET_HINTS_PER_DAY}), so no more go out until midnight UTC. They go only to Google or Apple accounts' verified addresses, so this is either real demand or someone pushing many of those addresses through the route (supply-checkout-6uw.26).`,
+      metric: business(BusinessMetric.PasswordResetHintsCapped, region, Duration.hours(1)),
       threshold: 0,
       primaryOnly: true,
     },

@@ -1895,7 +1895,7 @@
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmspasswordresethelpcappedFBAD8C3E": {
+    "JourneyAlarmspasswordresethintscapped0BF3B381": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
         "AlarmActions": [
@@ -1903,15 +1903,15 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Password reset help capped (J0, us-east-1). Any PasswordResetHelpCapped in an hour: the help emails to addresses we can't send a reset code to reached their cap for the UTC day (PASSWORD_RESET_HELP_PER_DAY, 500), so no more go out until midnight UTC. Either many people without accounts are resetting, or someone is using the route to mail addresses that never signed up, which risks SES's bounce and complaint rates (supply-checkout-6uw.26). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-password-reset-help-capped",
+        "AlarmDescription": "P2 Password reset hints capped (J0, us-east-1). Any PasswordResetHintsCapped in an hour: the \"sign in with Google\" (or Apple) hints for password resets asked for in the app reached their cap for the UTC day (PASSWORD_RESET_HINTS_PER_DAY, 500), so no more go out until midnight UTC. They go only to Google or Apple accounts' verified addresses, so this is either real demand or someone pushing many of those addresses through the route (supply-checkout-6uw.26). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-password-reset-hints-capped",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
             "Id": "m1",
-            "Label": "PasswordResetHelpCapped (us-east-1)",
+            "Label": "PasswordResetHintsCapped (us-east-1)",
             "MetricStat": {
               "Metric": {
                 "Dimensions": [
@@ -1920,7 +1920,7 @@
                     "Value": "us-east-1"
                   }
                 ],
-                "MetricName": "PasswordResetHelpCapped",
+                "MetricName": "PasswordResetHintsCapped",
                 "Namespace": "SupplyCheckout"
               },
               "Period": 3600,
@@ -13965,7 +13965,7 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
-                  "JourneyAlarmspasswordresethelpcappedFBAD8C3E",
+                  "JourneyAlarmspasswordresethintscapped0BF3B381",
                   "Arn"
                 ]
               },
@@ -14603,11 +14603,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsChecked (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsReadOnly (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsUnstarted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsChecked (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsReadOnly (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsUnstarted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":115,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J0: password reset help emailed, requests limited, and help capped\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsChecked (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsReadOnly (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsUnstarted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsChecked (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsReadOnly (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsUnstarted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":115,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J0: password reset provider hints, requests limited, and hints capped\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"PasswordResetHelpEmails\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetHelpEmails (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetsLimited\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetsLimited (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetHelpCapped\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetHelpCapped (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetHelpEmails\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetHelpEmails (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetsLimited\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetsLimited (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetHelpCapped\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetHelpCapped (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"PasswordResetProviderHints\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetProviderHints (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetsLimited\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetsLimited (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetHintsCapped\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetHintsCapped (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetProviderHints\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetProviderHints (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetsLimited\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetsLimited (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetHintsCapped\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetHintsCapped (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },

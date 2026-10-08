@@ -1827,7 +1827,7 @@
               "Condition": {
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [
-                    "RESETLIMIT#HELP*"
+                    "RESETLIMIT#HINT*"
                   ]
                 },
                 "ForAllValues:StringEquals": {
@@ -1855,7 +1855,7 @@
                   ]
                 ]
               },
-              "Sid": "CountPasswordResetHelp"
+              "Sid": "CountPasswordResetHints"
             },
             {
               "Action": [
@@ -1909,7 +1909,7 @@
           },
           "S3Key": "<asset hash>.zip"
         },
-        "Description": "Sends a password reset code, or help for an address with no account (supply-checkout-6uw.26)",
+        "Description": "Sends a password reset code, or a sign-in-with-Google hint (supply-checkout-6uw.26)",
         "Environment": {
           "Variables": {
             "NODE_OPTIONS": "--enable-source-maps",

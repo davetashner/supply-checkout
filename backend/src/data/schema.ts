@@ -219,8 +219,8 @@ export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as
  * - `RESETLIMIT#ADDRESS#<hash>` and `RESETLIMIT#IP#<hash>`: reset requests for
  *   one address (its inviteLimitKey) and from one IP address. The API's
  *   password reset function counts them, and its role reaches only these.
- * - `RESETLIMIT#HELP#<hash>` and `RESETLIMIT#HELP`: help emails to one
- *   address, and to everyone together. The email stack's password reset
+ * - `RESETLIMIT#HINT#<hash>` and `RESETLIMIT#HINT`: provider hints ("sign in
+ *   with Google") to one address, and to everyone together. The email stack's password reset
  *   function counts them, and its role reaches only these.
  *
  * Both roles may use only UpdateItem, only PASSWORD_RESET_LIMIT_ATTRIBUTES and
@@ -228,19 +228,19 @@ export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as
  */
 export const PASSWORD_RESET_LIMIT_PREFIX = "RESETLIMIT#";
 
-/** The request limits' partitions (the API's password reset function) and the help emails' (the email stack's), as IAM LeadingKeys patterns. */
+/** The request limits' partitions (the API's password reset function) and the provider hints' (the email stack's), as IAM LeadingKeys patterns. */
 export const PASSWORD_RESET_REQUEST_PARTITIONS = [`${PASSWORD_RESET_LIMIT_PREFIX}ADDRESS#*`, `${PASSWORD_RESET_LIMIT_PREFIX}IP#*`] as const;
-export const PASSWORD_RESET_HELP_PARTITIONS = [`${PASSWORD_RESET_LIMIT_PREFIX}HELP*`] as const;
+export const PASSWORD_RESET_HINT_PARTITIONS = [`${PASSWORD_RESET_LIMIT_PREFIX}HINT*`] as const;
 
 /**
- * Help emails the app may send a UTC day, to every address together: the one
- * number to change to send fewer (0 sends none; an address with no account
- * then gets nothing, as with Managed Login's reset). A circuit breaker on mail
- * to addresses that never signed up, which bounce and complain more than most
- * and count against the SES account's reputation; the "Password reset help
- * capped" alarm says when it's reached.
+ * Provider hints ("sign in with Google", supply-checkout-6uw.26) the app may
+ * send a UTC day, to every address together: the one number to change to send
+ * fewer (0 sends none; the screen's guidance still mentions Google). A circuit
+ * breaker on the app's mail; the "Password reset hints capped" alarm says
+ * when it's reached. Each goes only to an address a Google or Apple account in
+ * the pool has, verified by its provider.
  */
-export const PASSWORD_RESET_HELP_PER_DAY = 500;
+export const PASSWORD_RESET_HINTS_PER_DAY = 500;
 
 /** The only attributes the password reset function may name: the keys, the window's count and its expiry (TTL). */
 export const PASSWORD_RESET_LIMIT_ATTRIBUTES = [PK, SK, "count", "expiresAt"] as const;

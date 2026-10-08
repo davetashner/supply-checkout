@@ -2,16 +2,16 @@
 // /auth/password-reset, supply-checkout-6uw.26). The API counts the requests,
 // before anything is queued or looked up, so an address with an account and
 // one without are counted alike and a limit can't tell them apart; the
-// password reset function counts the help emails.
+// password reset function counts the provider hints.
 //
 // - Requests: each address (its inviteLimitKey, so +tags and Gmail's dots
 //   count as one mailbox) and each IP address (an IPv6 address by its /64),
 //   by the UTC hour and day, all four windows in one transaction, so a
 //   refused request counts in none of them. Past any, the API answers 429 and
-//   nothing is queued: no code and no help email.
-// - Help emails (to an address we can't send a code to): one per address a
-//   UTC day, and PASSWORD_RESET_HELP_PER_DAY for everyone together, a circuit
-//   breaker on the app sending mail to addresses that never signed up.
+//   nothing is queued: no code and no hint.
+// - Provider hints (to an address only a Google or Apple account has): one per
+//   address a UTC day, and PASSWORD_RESET_HINTS_PER_DAY for everyone together,
+//   a circuit breaker on the app's mail.
 //
 // Keys are SHA-256 hashes, never an address or IP address, and each window
 // expires a day after it ends (TTL).
@@ -21,16 +21,16 @@ import { isIP } from "node:net";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { inviteLimitKey } from "./model.js";
-import { PASSWORD_RESET_HELP_PER_DAY, PASSWORD_RESET_LIMIT_PREFIX } from "./schema.js";
+import { PASSWORD_RESET_HINTS_PER_DAY, PASSWORD_RESET_LIMIT_PREFIX } from "./schema.js";
 
 /** Reset requests one address may get, and one IP address may make, per UTC hour and day. */
 export const PASSWORD_RESET_LIMITS = { addressPerHour: 3, addressPerDay: 6, ipPerHour: 10, ipPerDay: 30 } as const;
 
-/** Help emails one address may get a UTC day. */
-export const PASSWORD_RESET_HELP_PER_ADDRESS_PER_DAY = 1;
+/** Provider hints one address may get a UTC day. */
+export const PASSWORD_RESET_HINTS_PER_ADDRESS_PER_DAY = 1;
 
-/** Help emails the app may send a UTC day, to every address together: schema.ts has why, and is the one place to change it. */
-export { PASSWORD_RESET_HELP_PER_DAY };
+/** Provider hints the app may send a UTC day, to every address together: schema.ts has why, and is the one place to change it. */
+export { PASSWORD_RESET_HINTS_PER_DAY };
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -130,16 +130,16 @@ export async function takePasswordReset(db: Db, addressKey: string, ipKey: strin
 }
 
 /**
- * Counts one help email to the address (its key) and one for the day: "ok",
+ * Counts one provider hint to the address (its key) and one for the day: "ok",
  * or what was used up: "address" (its one a day) or "cap" (everyone's,
- * PASSWORD_RESET_HELP_PER_DAY, whether or not the address's was too).
+ * PASSWORD_RESET_HINTS_PER_DAY, whether or not the address's was too).
  */
-export async function takePasswordResetHelp(db: Db, addressKey: string, now = new Date(), cap = PASSWORD_RESET_HELP_PER_DAY): Promise<"ok" | "address" | "cap"> {
+export async function takePasswordResetHint(db: Db, addressKey: string, now = new Date(), cap = PASSWORD_RESET_HINTS_PER_DAY): Promise<"ok" | "address" | "cap"> {
   // A new window's first count would pass any condition, so a cap of 0 is checked here
   if (cap <= 0) return "cap";
   const full = await take(db, [
-    windowOf(`HELP#${addressKey}`, "DAY", now, PASSWORD_RESET_HELP_PER_ADDRESS_PER_DAY),
-    windowOf("HELP", "DAY", now, cap),
+    windowOf(`HINT#${addressKey}`, "DAY", now, PASSWORD_RESET_HINTS_PER_ADDRESS_PER_DAY),
+    windowOf("HINT", "DAY", now, cap),
   ]);
   return full.length === 0 ? "ok" : full.includes(1) ? "cap" : "address";
 }

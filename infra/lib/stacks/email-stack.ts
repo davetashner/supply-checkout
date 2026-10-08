@@ -12,7 +12,7 @@ import { LambdaSubscription } from "aws-cdk-lib/aws-sns-subscriptions";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { GSI2, PASSWORD_RESET_HELP_PARTITIONS, PASSWORD_RESET_LIMIT_ATTRIBUTES, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
+import { GSI2, PASSWORD_RESET_HINT_PARTITIONS, PASSWORD_RESET_LIMIT_ATTRIBUTES, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
 import { EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, emailResourceNames, PASSWORD_RESET_ENV, WELCOME_ENV } from "../../../backend/src/email/names.js";
 import { SECURITY_NOTICE_EVENTS, SECURITY_NOTICES_ENV } from "../../../backend/src/identity/names.js";
 import { TEST_MAIL_DOMAIN_ENV } from "../../../backend/src/data/test-accounts.js";
@@ -94,12 +94,14 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  *
  * - The api stack's password reset function invokes this one asynchronously,
  *   by its fixed name (emailResourceNames().passwordResetFunction), with the
- *   address. Only that function's role is granted
- *   it.
+ *   address. Only that function's role is granted it. It has Cognito email a
+ *   code to an account that can have one, emails a "sign in with Google" (or
+ *   Apple) hint to an address only a Google or Apple account has, and sends
+ *   nothing to any other address (the owner's decision, 2026-10-08).
  * - The function may call AdminGetUser and ListUsers on the app pool only,
  *   send the app's email (grantSendEmail), and UpdateItem naming only
- *   PASSWORD_RESET_LIMIT_ATTRIBUTES, returning nothing, in `RESETLIMIT#HELP`
- *   partitions (the help emails' limits, keyed by hashes). The API counts the
+ *   PASSWORD_RESET_LIMIT_ATTRIBUTES, returning nothing, in `RESETLIMIT#HINT`
+ *   partitions (the provider hints' limits, keyed by hashes). The API counts the
  *   requests' limits before it invokes this. Cognito's ForgotPassword is a
  *   public call (the web client's ID), so it needs no permission.
  * - No retries and no dead-letter queue: a request holds an address, and the
@@ -116,7 +118,7 @@ export class EmailStack extends SupplyCheckoutStack {
   readonly securityNoticeEvents: Rule;
   readonly welcome: NodejsFunction;
   readonly welcomeDeadLetterQueue: Queue;
-  /** Password resets asked for in the app: a code, or help for an address with no account (supply-checkout-6uw.26). */
+  /** Password resets asked for in the app: Cognito's code, or a "sign in with Google" hint for a Google or Apple account's address (supply-checkout-6uw.26). */
   readonly passwordReset: NodejsFunction;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
@@ -256,7 +258,7 @@ export class EmailStack extends SupplyCheckoutStack {
       architecture: Architecture.ARM_64,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      description: "Sends a password reset code, or help for an address with no account (supply-checkout-6uw.26)",
+      description: "Sends a password reset code, or a sign-in-with-Google hint (supply-checkout-6uw.26)",
       environment: {
         NODE_OPTIONS: "--enable-source-maps",
         TABLE_NAME: table,
@@ -278,14 +280,14 @@ export class EmailStack extends SupplyCheckoutStack {
         resources: [userPoolArn],
       }),
     );
-    // backend/src/data/password-resets.ts: the help emails' counters, by hashes, returning nothing (the API counts the requests)
+    // backend/src/data/password-resets.ts: the provider hints' counters, by hashes, returning nothing (the API counts the requests)
     fn.addToRolePolicy(
       new PolicyStatement({
-        sid: "CountPasswordResetHelp",
+        sid: "CountPasswordResetHints",
         actions: ["dynamodb:UpdateItem"],
         resources: [tableArn],
         conditions: {
-          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...PASSWORD_RESET_HELP_PARTITIONS] },
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...PASSWORD_RESET_HINT_PARTITIONS] },
           "ForAllValues:StringEquals": { "dynamodb:Attributes": [...PASSWORD_RESET_LIMIT_ATTRIBUTES] },
           StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
         },

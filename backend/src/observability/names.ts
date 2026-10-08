@@ -136,12 +136,12 @@ export const BusinessMetric = {
   WelcomeEmailFailures: "WelcomeEmailFailures",
   /** Welcome emails SES refused (sending paused, a suppressed address); `via` in metadata (J1). */
   WelcomeEmailsRefused: "WelcomeEmailsRefused",
-  /** Help emails sent for a password reset asked for in the app for an address we can't send a code to (supply-checkout-6uw.26); `signInWith` (Google, SignInWithApple, none) in metadata. */
-  PasswordResetHelpEmails: "PasswordResetHelpEmails",
-  /** Password reset requests that sent nothing because of a limit: `limit` in metadata (request: the address's or IP address's, counted by the API; help: an address's one help email a day; cognito: Cognito's own on codes). */
+  /** "Sign in with Google" (or Apple) hints sent for a password reset asked for in the app for an address only a Google or Apple account has (supply-checkout-6uw.26); `signInWith` in metadata. */
+  PasswordResetProviderHints: "PasswordResetProviderHints",
+  /** Password reset requests that sent nothing because of a limit: `limit` in metadata (request: the address's or IP address's, counted by the API; hint: an address's one provider hint a day; cognito: Cognito's own on codes). */
   PasswordResetsLimited: "PasswordResetsLimited",
-  /** Help emails not sent because every address's together reached PASSWORD_RESET_HELP_PER_DAY for the UTC day (the "Password reset help capped" alarm). */
-  PasswordResetHelpCapped: "PasswordResetHelpCapped",
+  /** Provider hints not sent because every address's together reached PASSWORD_RESET_HINTS_PER_DAY for the UTC day (the "Password reset hints capped" alarm). */
+  PasswordResetHintsCapped: "PasswordResetHintsCapped",
   /** Accounts their users deleted: the Cognito user and every row that named them. */
   AccountsDeleted: "AccountsDeleted",
   /** Closed teams deleted by the scheduled purge once their read-only period ended. */

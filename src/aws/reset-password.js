@@ -4,10 +4,11 @@
 // asks for the address, then for the emailed code and a new password, then offers sign-in.
 //
 // It never says whether the address has an account: the API answers every request the same
-// way, and the screen says what to expect either way. If there's an account that can have a
-// password, Cognito emails it a code; if not, the address gets a short email saying why (a
-// different address, Google or Apple, or no account yet). Web build only, like the rest of
-// src/aws/.
+// way, and the screen shows everyone the same guidance (another address, Google, or no account
+// yet, with a link to create one). If there's an account that can have a password, Cognito
+// emails it a code; a Google or Apple account's address gets a "sign in with Google" hint; any
+// other address gets nothing (the owner's decision, 2026-10-08). Web build only, like the rest
+// of src/aws/.
 import { esc } from "../format.js";
 import { json, request } from "./http.js";
 import { MANAGER_RULES, passwordFailure, RULES } from "./password.js";
@@ -37,8 +38,11 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
     }
     finally { busy(el, false); }
   }
-  // Shown past the limits: the sign-in page, whose "Forgot your password?" is Managed Login's reset
-  const fallback = (url) => `<p class="hint" id="resetFallback" hidden><a href="${esc(url)}" id="resetElsewhere">Go to the sign-in page</a> and choose <strong>Forgot your password?</strong> there.</p>`;
+  // Another Managed Login page with the same sign-in request (and so the same PKCE state, which
+  // only the newest link made has): /signup and /forgotPassword take /oauth2/authorize's parameters
+  const managed = (url, page) => url.replace("/oauth2/authorize?", `/${page}?`);
+  // Shown past the limits: Managed Login's own reset
+  const fallback = (url) => `<p class="hint" id="resetFallback" hidden><a href="${esc(managed(url, "forgotPassword"))}" id="resetElsewhere">Reset it on the sign-in page instead</a>.</p>`;
 
   async function askForAddress() {
     const url = await signInUrl();
@@ -63,8 +67,8 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
   async function enterCode(email) {
     const url = await signInUrl();
     show(`<h2>Check your email</h2>
-      <p>If there's an account for <strong>${esc(email)}</strong>, we've emailed it a code. The code works for an hour.</p>
-      <p class="hint" id="resetNothing">No code after a few minutes? Check your spam folder. You may have signed up with a different email address, or with Google or Apple, or not have an account yet: if there's no account we can reset for this address, we've emailed it to say so. <a href="${esc(url)}" id="resetSignUp">Sign in or create an account</a></p>
+      <p>If there's an account for this address (<strong>${esc(email)}</strong>), we've sent a code. It works for an hour.</p>
+      <p class="hint" id="resetNothing">Nothing in a few minutes? You may have signed up with a different email or with Google, or you may not have an account yet. <a href="${esc(managed(url, "signup"))}" id="resetSignUp">Create an account</a></p>
       <form id="resetConfirm" method="post" novalidate>
         <input type="text" name="username" autocomplete="username" value="${esc(email)}" hidden readonly tabindex="-1" aria-hidden="true">
         <div class="field"><label for="resetCode">Code from the email</label><input type="text" id="resetCode" name="code" class="reset-code" inputmode="numeric" autocomplete="one-time-code" required data-autofocus></div>

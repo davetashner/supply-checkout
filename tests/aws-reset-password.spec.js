@@ -47,10 +47,14 @@ test("someone who forgot their password asks for a code, sets a new one and sign
   await askFor(page, "  pat@example.com ");
   expect(backend.requests("POST", "/auth/password-reset").map((c) => c.body)).toEqual([{ email: "pat@example.com" }]);
   // The same words whether or not there's an account, with what to try when no code comes
-  await expect(account(page)).toContainText("If there's an account for pat@example.com, we've emailed it a code. The code works for an hour.");
-  await expect(account(page).locator("#resetNothing")).toContainText("You may have signed up with a different email address, or with Google or Apple, or not have an account yet");
-  const signUp = new URL(await account(page).getByRole("link", { name: "Sign in or create an account" }).getAttribute("href"));
-  expect(signUp.origin + signUp.pathname).toBe(AUTH + "/oauth2/authorize");
+  await expect(account(page)).toContainText("If there's an account for this address (pat@example.com), we've sent a code. It works for an hour.");
+  await expect(account(page).locator("#resetNothing")).toHaveText("Nothing in a few minutes? You may have signed up with a different email or with Google, or you may not have an account yet. Create an account");
+  // Managed Login's sign-up, with this tab's sign-in request, so a new account comes back signed in
+  const signUp = new URL(await account(page).getByRole("link", { name: "Create an account" }).getAttribute("href"));
+  expect(signUp.origin + signUp.pathname).toBe(AUTH + "/signup");
+  const saved = JSON.parse(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.signIn")));
+  expect(signUp.searchParams.get("state")).toBe(saved.state);
+  expect(signUp.searchParams.get("client_id")).toBe("test-client");
   await expect(account(page).getByLabel("Code from the email")).toBeFocused();
   // A password manager sees whose password it is, and that it's a new one
   expect(await account(page).locator("input[autocomplete]").evaluateAll((els) => els.map((e) => [e.name, e.autocomplete]))).toEqual([
@@ -102,8 +106,9 @@ test("past the API's limits, it points at the sign-in page's own reset", { tag: 
   await account(page).getByRole("button", { name: "Send code" }).click();
   await expect(alert(page)).toHaveText("Too many reset requests for now. Try again in an hour, or reset your password on the sign-in page.");
   await expect(fallback).toBeVisible();
-  const url = new URL(await account(page).getByRole("link", { name: "Go to the sign-in page" }).getAttribute("href"));
-  expect(url.origin + url.pathname).toBe(AUTH + "/oauth2/authorize");
+  // Managed Login's own reset
+  const url = new URL(await account(page).getByRole("link", { name: "Reset it on the sign-in page instead" }).getAttribute("href"));
+  expect(url.origin + url.pathname).toBe(AUTH + "/forgotPassword");
   await expectAccessible(page);
   // Another failure hides it again; a code asked for once more works
   backend.on("POST", "/auth/password-reset", { abort: true });

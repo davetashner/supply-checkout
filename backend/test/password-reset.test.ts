@@ -5,8 +5,9 @@
 //   address's limits (429 past one) and only queue it; confirming maps every
 //   failed code to one answer;
 // - the password reset function sends Cognito's code to an account that can
-//   have one, help to an address without one (or a Google or Apple one), and
-//   nothing to a disabled account or past the help emails' limits;
+//   have one, a "sign in with Google" (or Apple) hint to an address only a
+//   Google or Apple account has, and nothing to any other address, a disabled
+//   account, or past the hints' limits;
 // - the limits are all-or-nothing, keyed by hashes, each within its function's IAM policy;
 // - no address, IP address, code or password is logged.
 
@@ -17,14 +18,14 @@ import { PASSWORD_RESET_ROUTES, routeKey } from "../src/api/routes.js";
 import {
   inviteLimitKey,
   ipv6Prefix,
-  PASSWORD_RESET_HELP_PER_DAY,
+  PASSWORD_RESET_HINTS_PER_DAY,
   PASSWORD_RESET_LIMITS,
   resetAddressKey,
   resetIpKey,
   takePasswordReset,
-  takePasswordResetHelp,
+  takePasswordResetHint,
 } from "../src/data/index.js";
-import { PASSWORD_RESET_HELP_PARTITIONS, PASSWORD_RESET_LIMIT_ATTRIBUTES, PASSWORD_RESET_LIMIT_PREFIX, PASSWORD_RESET_REQUEST_PARTITIONS } from "../src/data/schema.js";
+import { PASSWORD_RESET_HINT_PARTITIONS, PASSWORD_RESET_LIMIT_ATTRIBUTES, PASSWORD_RESET_LIMIT_PREFIX, PASSWORD_RESET_REQUEST_PARTITIONS } from "../src/data/schema.js";
 import { emailResourceNames, type PasswordResetRequest } from "../src/email/names.js";
 import { createPasswordResetHandler, resetRequestOf } from "../src/email/password-reset-handler.js";
 import { renderEmail } from "../src/email/templates.js";
@@ -76,11 +77,11 @@ function expectNothingPersonal() {
 /**
  * The two functions' IAM policies: UpdateItem naming only
  * PASSWORD_RESET_LIMIT_ATTRIBUTES, returning nothing, in the API function's
- * request partitions (api stack) or the worker's help partitions (email stack).
+ * request partitions (api stack) or the worker's hint partitions (email stack).
  */
 const like = (patterns: readonly string[]) => (pk: string) => patterns.some((p) => (p.endsWith("*") ? pk.startsWith(p.slice(0, -1)) : pk === p));
 const apiPolicy = (command: string, input: Record<string, unknown>) => policyFor(like(PASSWORD_RESET_REQUEST_PARTITIONS), command, input);
-const policy = (command: string, input: Record<string, unknown>) => policyFor(like(PASSWORD_RESET_HELP_PARTITIONS), command, input);
+const policy = (command: string, input: Record<string, unknown>) => policyFor(like(PASSWORD_RESET_HINT_PARTITIONS), command, input);
 function policyFor(partition: (pk: string) => boolean, command: string, input: Record<string, unknown>): boolean {
   const one = (kind: string, body: Record<string, unknown>) => {
     const pk = String(((body.Key ?? {}) as { PK?: unknown }).PK ?? "");
@@ -103,9 +104,9 @@ describe("the limits", () => {
   it("count reset requests per address and IP address, by the hour and the day, all or nothing", async () => {
     const table = new MemoryTable();
     const db = table.guarded(apiPolicy);
-    // The worker's role can't count requests, nor the API's help emails
+    // The worker's role can't count requests, nor the API's hints
     await expect(takePasswordReset(table.guarded(policy), "a".repeat(64), "b".repeat(64), NOW)).rejects.toThrow("not authorized");
-    await expect(takePasswordResetHelp(db, "a".repeat(64), NOW)).rejects.toThrow("not authorized");
+    await expect(takePasswordResetHint(db, "a".repeat(64), NOW)).rejects.toThrow("not authorized");
     const address = resetAddressKey(ADDRESS), ip = resetIpKey(IP), other = resetIpKey("198.51.100.1");
     for (let i = 0; i < PASSWORD_RESET_LIMITS.addressPerHour; i++) expect(await takePasswordReset(db, address, ip, NOW)).toBe(true);
     // The address's hour is used up, from any IP address; the refused request counts nowhere
@@ -132,20 +133,20 @@ describe("the limits", () => {
     expect(JSON.stringify([...table.items.values()])).not.toMatch(/example|203\.0|198\.51/);
   });
 
-  it("count help emails: one an address a day, and a cap for everyone", async () => {
+  it("count provider hints: one an address a day, and a cap for everyone", async () => {
     const table = new MemoryTable();
     const db = table.guarded(policy);
     const address = resetAddressKey(ADDRESS);
-    expect(await takePasswordResetHelp(db, address, NOW)).toBe("ok");
-    expect(await takePasswordResetHelp(db, address, NOW)).toBe("address");
-    expect(await takePasswordResetHelp(db, address, new Date("2026-10-09T00:00:01Z"))).toBe("ok");
-    table.put({ PK: "RESETLIMIT#HELP", SK: "DAY#2026-10-08", count: PASSWORD_RESET_HELP_PER_DAY });
-    expect(await takePasswordResetHelp(db, resetAddressKey("someone@example.com"), NOW)).toBe("cap");
+    expect(await takePasswordResetHint(db, address, NOW)).toBe("ok");
+    expect(await takePasswordResetHint(db, address, NOW)).toBe("address");
+    expect(await takePasswordResetHint(db, address, new Date("2026-10-09T00:00:01Z"))).toBe("ok");
+    table.put({ PK: "RESETLIMIT#HINT", SK: "DAY#2026-10-08", count: PASSWORD_RESET_HINTS_PER_DAY });
+    expect(await takePasswordResetHint(db, resetAddressKey("someone@example.com"), NOW)).toBe("cap");
     // Both used up reads as the cap
-    expect(await takePasswordResetHelp(db, address, NOW)).toBe("cap");
+    expect(await takePasswordResetHint(db, address, NOW)).toBe("cap");
     // A cap of 0 sends none
-    expect(await takePasswordResetHelp(db, resetAddressKey("third@example.com"), new Date("2026-10-10T00:00:00Z"), 0)).toBe("cap");
-    expect(table.get(`RESETLIMIT#HELP#${resetAddressKey("someone@example.com")}`, "DAY#2026-10-08")).toBeUndefined();
+    expect(await takePasswordResetHint(db, resetAddressKey("third@example.com"), new Date("2026-10-10T00:00:00Z"), 0)).toBe("cap");
+    expect(table.get(`RESETLIMIT#HINT#${resetAddressKey("someone@example.com")}`, "DAY#2026-10-08")).toBeUndefined();
   });
 
   it("retries a conflicting transaction, refuses one that keeps conflicting, and throws anything else", async () => {
@@ -155,17 +156,17 @@ describe("the limits", () => {
     table.beforeTransactWrite = () => {
       if (conflicts-- > 0) throw conflict();
     };
-    expect(await takePasswordResetHelp(table.db(), "a".repeat(64), NOW)).toBe("ok");
+    expect(await takePasswordResetHint(table.db(), "a".repeat(64), NOW)).toBe("ok");
     table.beforeTransactWrite = () => {
       throw conflict();
     };
-    expect(await takePasswordResetHelp(table.db(), "a".repeat(64), NOW)).toBe("address");
+    expect(await takePasswordResetHint(table.db(), "a".repeat(64), NOW)).toBe("address");
     expect(await takePasswordReset(table.db(), "a".repeat(64), "b".repeat(64), NOW)).toBe(false);
     table.beforeTransactWrite = () => {
       throw Object.assign(new Error("Transaction cancelled"), { name: "TransactionCanceledException" });
     };
-    await expect(takePasswordResetHelp(table.db(), "a".repeat(64), NOW)).rejects.toThrow("Transaction cancelled");
-    await expect(takePasswordResetHelp(table.guarded(() => false), "a".repeat(64), NOW)).rejects.toThrow("not authorized");
+    await expect(takePasswordResetHint(table.db(), "a".repeat(64), NOW)).rejects.toThrow("Transaction cancelled");
+    await expect(takePasswordResetHint(table.guarded(() => false), "a".repeat(64), NOW)).rejects.toThrow("not authorized");
   });
 
   it("count an address by its mailbox, and an IP address by its network", () => {
@@ -189,7 +190,7 @@ describe("the limits", () => {
   it("are the schema's", () => {
     expect([...PASSWORD_RESET_LIMIT_ATTRIBUTES]).toEqual(["PK", "SK", "count", "expiresAt"]);
     expect([...PASSWORD_RESET_REQUEST_PARTITIONS]).toEqual(["RESETLIMIT#ADDRESS#*", "RESETLIMIT#IP#*"]);
-    expect([...PASSWORD_RESET_HELP_PARTITIONS]).toEqual(["RESETLIMIT#HELP*"]);
+    expect([...PASSWORD_RESET_HINT_PARTITIONS]).toEqual(["RESETLIMIT#HINT*"]);
     expect(emailResourceNames("prod").passwordResetFunction).toBe("supply-checkout-prod-password-reset");
   });
 });
@@ -201,13 +202,14 @@ const user = (over: Partial<PoolUser> & { attributes?: Record<string, string> } 
   ...over,
   attributes: { email: ADDRESS, email_verified: "true", ...over.attributes },
 });
-const google = (over: Partial<PoolUser> = {}): PoolUser => ({
-  username: "Google_107691234567890123456",
+const providerUser = (provider: "Google" | "SignInWithApple", id: string, over: Partial<PoolUser> & { attributes?: Record<string, string> } = {}): PoolUser => ({
+  username: `${provider}_${id}`,
   status: "EXTERNAL_PROVIDER",
   enabled: true,
-  attributes: { email: ADDRESS, identities: JSON.stringify([{ providerName: "Google", providerType: "Google", userId: "107691234567890123456" }]) },
   ...over,
+  attributes: { email: ADDRESS, email_verified: "true", identities: JSON.stringify([{ providerName: provider, providerType: provider, userId: id }]), ...over.attributes },
 });
+const google = (over: Partial<PoolUser> & { attributes?: Record<string, string> } = {}) => providerUser("Google", "107691234567890123456", over);
 
 describe("the password reset function", () => {
   let table: MemoryTable;
@@ -222,9 +224,9 @@ describe("the password reset function", () => {
 
   const run = (event: unknown = { email: TYPED }) =>
     createPasswordResetHandler({ lookup: lookup as unknown as ResetLookup, db: table.guarded(policy), mailer: mail.mailer, obs: fakeObservability(), supportAddress: SUPPORT, now: () => NOW })(event);
-  const outcome = () => (logs.find((l) => l.message === "Password reset")?.data as { outcome?: string }).outcome;
+  const outcome = () => (logs.findLast((l) => l.message === "Password reset")?.data as { outcome?: string }).outcome;
 
-  it("has Cognito email a code to an account that can have one, and sends no help", async () => {
+  it("has Cognito email a code to an account that can have one, and sends nothing else", async () => {
     lookup.byAlias.mockResolvedValue(user());
     await run();
     expect(lookup.byAlias).toHaveBeenCalledWith(ADDRESS);
@@ -239,98 +241,101 @@ describe("the password reset function", () => {
     expectNothingPersonal();
   });
 
-  it("emails help to an address with no account, naming the support address", async () => {
+  it("sends nothing at all to an address with no account (the owner's decision, 2026-10-08)", async () => {
     await run();
     expect(lookup.byEmail).toHaveBeenCalledWith([ADDRESS, TYPED]);
     expect(lookup.forgotPassword).not.toHaveBeenCalled();
-    expect(mail.sent).toEqual([{ to: ADDRESS, input: { kind: "passwordResetHelp", supportAddress: SUPPORT }, tags: {} }]);
-    expect(metrics).toEqual([{ metric: BusinessMetric.PasswordResetHelpEmails, metadata: { signInWith: "none" } }]);
-    expect(outcome()).toBe("help");
+    expect(mail.sent).toEqual([]);
+    expect(metrics).toEqual([]);
+    expect(table.items.size).toBe(0);
+    expect(outcome()).toBe("no_code");
     expectNothingPersonal();
   });
 
-  it("emails help, naming the provider, to a Google or Apple account's address", async () => {
-    lookup.byEmail.mockResolvedValue([google({ attributes: { ...google().attributes, email: "PAT.LEE@example.com" } })]);
-    await run();
-    expect(mail.sent.map((s) => s.input)).toEqual([{ kind: "passwordResetHelp", supportAddress: SUPPORT, signInWith: "Google" }]);
-    const apple = { ...google(), username: "SignInWithApple_001234.abc", attributes: { email: ADDRESS, identities: JSON.stringify([{ providerName: "SignInWithApple", providerType: "SignInWithApple", userId: "001234.abc" }]) } };
-    lookup.byEmail.mockResolvedValue([apple]);
-    await run({ email: ADDRESS });
-    // One help email an address a day
-    expect(mail.sent).toHaveLength(1);
-    expect(outcome()).toBe("help");
-    table.items.clear();
-    await run({ email: ADDRESS });
-    expect(mail.sent.at(-1)?.input).toEqual({ kind: "passwordResetHelp", supportAddress: SUPPORT, signInWith: "SignInWithApple" });
-    expectNothingPersonal();
-  });
-
-  it("emails general help to an account Cognito won't send a code to", async () => {
+  it("sends nothing to an account Cognito won't send a code to: unconfirmed, unverified, or refused", async () => {
     for (const u of [user({ status: "UNCONFIRMED" }), user({ attributes: { email_verified: "false" } }), user({ status: "FORCE_CHANGE_PASSWORD" })]) {
-      table.items.clear();
       lookup.byAlias.mockResolvedValue(u);
       await run();
-      expect(mail.sent.at(-1)?.input).toEqual({ kind: "passwordResetHelp", supportAddress: SUPPORT });
+      expect(outcome()).toBe("no_code");
     }
     expect(lookup.forgotPassword).not.toHaveBeenCalled();
-    expect(lookup.byEmail).not.toHaveBeenCalled();
-    // Or one Cognito refuses after all
-    table.items.clear();
     lookup.byAlias.mockResolvedValue(user());
     lookup.forgotPassword.mockResolvedValue("refused");
     await run();
-    expect(mail.sent).toHaveLength(4);
+    expect(outcome()).toBe("no_code");
+    expect(lookup.byEmail).not.toHaveBeenCalled();
+    expect(mail.sent).toEqual([]);
   });
 
   it("sends nothing to a disabled account", async () => {
     lookup.byAlias.mockResolvedValue(user({ enabled: false }));
     await run();
     expect(outcome()).toBe("disabled");
-    logs = [];
-    lookup.byAlias.mockResolvedValue(undefined);
-    lookup.byEmail.mockResolvedValue([google({ enabled: false })]);
-    await run({ email: ADDRESS });
-    expect(outcome()).toBe("disabled");
-    expect(mail.sent).toEqual([]);
     expect(lookup.forgotPassword).not.toHaveBeenCalled();
-    // An enabled Google user beside a disabled one still gets help; another address's user doesn't count
-    logs = [];
-    lookup.byEmail.mockResolvedValue([google({ enabled: false }), google({ username: "Google_2", attributes: { email: ADDRESS, identities: JSON.stringify([{ providerName: "Google", providerType: "Google", userId: "2" }]) } }), user({ username: "x", attributes: { email: "other@example.com" } })]);
-    await run({ email: ADDRESS });
-    expect(mail.sent.map((s) => s.input)).toEqual([{ kind: "passwordResetHelp", supportAddress: SUPPORT, signInWith: "Google" }]);
+    expect(mail.sent).toEqual([]);
   });
 
-  it("counts Cognito's own limit on codes, and the help email's limits", async () => {
+  it("emails a Google or Apple account's verified address a hint to sign in with its provider, once a day", async () => {
+    lookup.byEmail.mockResolvedValue([google({ attributes: { email: "PAT.LEE@example.com" } })]);
+    await run();
+    expect(mail.sent).toEqual([{ to: ADDRESS, input: { kind: "passwordResetProvider", signInWith: "Google", supportAddress: SUPPORT }, tags: {} }]);
+    expect(metrics).toEqual([{ metric: BusinessMetric.PasswordResetProviderHints, metadata: { signInWith: "Google" } }]);
+    expect(outcome()).toBe("hint");
+    // One a day for an address
+    metrics = [];
+    await run({ email: ADDRESS });
+    expect(mail.sent).toHaveLength(1);
+    expect(outcome()).toBe("hint_limited");
+    expect(metrics).toEqual([{ metric: BusinessMetric.PasswordResetsLimited, metadata: { limit: "hint" } }]);
+    // Apple too
+    table.items.clear();
+    lookup.byEmail.mockResolvedValue([providerUser("SignInWithApple", "001234.abc")]);
+    await run({ email: ADDRESS });
+    expect(mail.sent.at(-1)?.input).toEqual({ kind: "passwordResetProvider", signInWith: "SignInWithApple", supportAddress: SUPPORT });
+    expectNothingPersonal();
+  });
+
+  it("sends no hint to a provider user that's disabled or unverified, another address's, or not a provider user", async () => {
+    lookup.byEmail.mockResolvedValue([
+      google({ enabled: false }),
+      providerUser("Google", "2", { attributes: { email_verified: "false" } }),
+      providerUser("Google", "3", { attributes: { email: "other@example.com" } }),
+      user({ username: "native-unverified", attributes: { email_verified: "true" } }),
+    ]);
+    await run();
+    expect(outcome()).toBe("no_code");
+    expect(mail.sent).toEqual([]);
+    // One good one among them is enough
+    lookup.byEmail.mockResolvedValue([google({ enabled: false }), providerUser("Google", "4")]);
+    await run();
+    expect(outcome()).toBe("hint");
+  });
+
+  it("counts Cognito's own limit on codes, and stops hints at the day's cap", async () => {
     lookup.byAlias.mockResolvedValue(user());
     lookup.forgotPassword.mockResolvedValue("limited");
     await run();
     expect(outcome()).toBe("code_limited");
     expect(metrics).toEqual([{ metric: BusinessMetric.PasswordResetsLimited, metadata: { limit: "cognito" } }]);
+    metrics = [];
     lookup.byAlias.mockResolvedValue(undefined);
+    lookup.byEmail.mockResolvedValue([google()]);
+    table.put({ PK: "RESETLIMIT#HINT", SK: "DAY#2026-10-08", count: PASSWORD_RESET_HINTS_PER_DAY });
     await run();
-    metrics = [];
-    logs = [];
-    await run();
-    expect(outcome()).toBe("help_limited");
-    expect(metrics).toEqual([{ metric: BusinessMetric.PasswordResetsLimited, metadata: { limit: "help" } }]);
-    expect(mail.sent).toHaveLength(1);
-    // Everyone's cap has its own metric, for its alarm
-    metrics = [];
-    logs = [];
-    table.put({ PK: "RESETLIMIT#HELP", SK: "DAY#2026-10-08", count: PASSWORD_RESET_HELP_PER_DAY });
-    await run({ email: "someone@example.com" });
-    expect(outcome()).toBe("help_capped");
-    expect(metrics).toEqual([{ metric: BusinessMetric.PasswordResetHelpCapped, metadata: { limit: "help" } }]);
-    expect(mail.sent).toHaveLength(1);
+    expect(outcome()).toBe("hint_capped");
+    expect(metrics).toEqual([{ metric: BusinessMetric.PasswordResetHintsCapped, metadata: { limit: "hint" } }]);
+    expect(mail.sent).toEqual([]);
   });
 
-  it("logs a help email SES refused and doesn't throw, but throws anything else", async () => {
+  it("logs a hint SES refused and doesn't throw, but throws anything else", async () => {
+    lookup.byEmail.mockResolvedValue([google()]);
     mail.state.fail = "MessageRejected";
     await run();
-    expect(outcome()).toBe("help_refused");
-    expect(logs).toContainEqual({ level: "warn", message: "Password reset help not sent", data: { error: "MessageRejected" } });
+    expect(outcome()).toBe("hint_refused");
+    expect(logs).toContainEqual({ level: "warn", message: "Password reset hint not sent", data: { error: "MessageRejected" } });
     const mailer = { send: async () => Promise.reject(new Error("boom")) };
     const handler = createPasswordResetHandler({ lookup: lookup as unknown as ResetLookup, db: table.db(), mailer, obs: fakeObservability(), supportAddress: SUPPORT });
+    lookup.byEmail.mockResolvedValue([google({ attributes: { email: "new@example.com" } })]);
     await expect(handler({ email: "new@example.com" })).rejects.toThrow("boom");
     lookup.byAlias.mockRejectedValue(new Error("AdminGetUser failed: 500 InternalErrorException"));
     await expect(handler({ email: "new2@example.com" })).rejects.toThrow("AdminGetUser failed");
@@ -587,18 +592,17 @@ describe("handing a request over", () => {
   });
 });
 
-describe("the help email", () => {
-  it("says why there's no code, and what to try, linking only to the app", () => {
-    const none = renderEmail({ kind: "passwordResetHelp", supportAddress: SUPPORT }, { appUrl: APP });
-    expect(none.subject).toBe("About your Supply Checkout password reset");
-    expect(none.text).toContain("There's no Supply Checkout account with a password we can reset for this address");
-    expect(none.text).toContain("with Google or Apple");
-    expect(none.text).toContain(`Write to us at ${SUPPORT}`);
-    expect(none.text).toContain("someone asked to reset a Supply Checkout password for this address");
-    const apple = renderEmail({ kind: "passwordResetHelp", signInWith: "SignInWithApple", supportAddress: SUPPORT }, { appUrl: APP });
+describe("the provider hint", () => {
+  it("says to sign in with the provider, linking only to the app", () => {
+    const google = renderEmail({ kind: "passwordResetProvider", signInWith: "Google", supportAddress: SUPPORT }, { appUrl: APP });
+    expect(google.subject).toBe("Sign in to Supply Checkout with Google");
+    expect(google.text).toContain("This address signs in to Supply Checkout with Google, so it has no Supply Checkout password to reset");
+    expect(google.text).toContain(`Write to us at ${SUPPORT}`);
+    expect(google.text).toContain("which signs in with Google");
+    const apple = renderEmail({ kind: "passwordResetProvider", signInWith: "SignInWithApple", supportAddress: SUPPORT }, { appUrl: APP });
     expect(apple.subject).toBe("Sign in to Supply Checkout with Apple");
     expect(apple.text).toContain("choose Apple and use this address");
-    expect(() => renderEmail({ kind: "passwordResetHelp", supportAddress: "<x>" }, { appUrl: APP })).toThrow();
-    expect(() => renderEmail({ kind: "passwordResetHelp", signInWith: "Facebook" as "Google", supportAddress: SUPPORT }, { appUrl: APP })).toThrow();
+    expect(() => renderEmail({ kind: "passwordResetProvider", signInWith: "Google", supportAddress: "<x>" }, { appUrl: APP })).toThrow();
+    expect(() => renderEmail({ kind: "passwordResetProvider", signInWith: "Facebook" as "Google", supportAddress: SUPPORT }, { appUrl: APP })).toThrow();
   });
 });

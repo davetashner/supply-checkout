@@ -2508,13 +2508,14 @@ paths:
         whatever the address, without looking it up, so the answer can't say
         whether it has an account. Afterwards, out of the request's sight: if
         the address has an account that can have a password, Cognito emails it
-        a reset code (enter it with `/auth/password-reset/confirm`);
-        otherwise the address gets a short help email (it may have signed up
-        with another address or with Google or Apple, or have no account
-        yet). Limited per address and per IP address by the hour and the day
-        (requests, not accounts): past a limit, 429 `rate_limited` and nothing
-        is sent. Help emails are limited to one an address a day, and a daily
-        cap for everyone; past those the answer is still 204.
+        a reset code (enter it with `/auth/password-reset/confirm`); if only a
+        Google or Apple account has it, it gets a short "sign in with Google"
+        (or Apple) hint; any other address gets nothing, and the app says on
+        screen what to try. Limited per address and per IP address by the hour
+        and the day (requests, not accounts): past a limit, 429
+        `rate_limited` and nothing is sent. Hints are limited to one an
+        address a day, and a daily cap for everyone; past those the answer is
+        still 204.
       security: []
       parameters: [{ $ref: "#/components/parameters/origin" }]
       requestBody:
@@ -2529,7 +2530,7 @@ paths:
                 email: { type: string, format: email, maxLength: 254 }
       responses:
         "204":
-          description: Taken. A code or a help email goes to the address, unless a limit was reached.
+          description: Taken. A code (or a provider hint) goes to the address if it has an account, unless a limit was reached.
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/OriginRefused" }
         "429":

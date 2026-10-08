@@ -180,8 +180,8 @@ export class OpsDashboard extends Construct {
       graph("J7, J8, J10: teams the lapsed-team job checked, read-only for billing, and left for lack of time", each((r) => [BusinessMetric.LapseTeamsChecked, BusinessMetric.LapseTeamsReadOnly, BusinessMetric.LapseTeamsUnstarted].map((name) => business(name, r, FIVE_MINUTES, "Maximum"))), WIDTH / 4),
     );
     this.dashboard.addWidgets(
-      // Password resets asked for in the app (supply-checkout-6uw.26): help emails to addresses we sent no code to, and requests a limit stopped
-      businessGraph("J0: password reset help emailed, requests limited, and help capped", [BusinessMetric.PasswordResetHelpEmails, BusinessMetric.PasswordResetsLimited, BusinessMetric.PasswordResetHelpCapped]),
+      // Password resets asked for in the app (supply-checkout-6uw.26): provider hints to Google or Apple accounts' addresses, and requests a limit stopped
+      businessGraph("J0: password reset provider hints, requests limited, and hints capped", [BusinessMetric.PasswordResetProviderHints, BusinessMetric.PasswordResetsLimited, BusinessMetric.PasswordResetHintsCapped]),
     );
   }
 }

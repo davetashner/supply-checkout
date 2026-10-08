@@ -368,7 +368,7 @@ describe("email stack", () => {
       expect(resources(t, "AWS::Lambda::Permission").filter(([, p]) => JSON.stringify(p.Properties.FunctionName).includes(fnId))).toEqual([]);
     });
 
-    it("lets the function look addresses up in the app pool, send only the app's email, and count only the help emails' limits", () => {
+    it("lets the function look addresses up in the app pool, send only the app's email, and count only the provider hints' limits", () => {
       const all = statements(email(), "PasswordResetRole");
       const byAction = (prefix: string) => all.filter((s) => JSON.stringify(s.Action).includes(prefix));
       expect(byAction("cognito-idp:")).toEqual([
@@ -376,12 +376,12 @@ describe("email stack", () => {
       ]);
       expect(byAction("dynamodb:")).toEqual([
         {
-          Sid: "CountPasswordResetHelp",
+          Sid: "CountPasswordResetHints",
           Effect: "Allow",
           Action: "dynamodb:UpdateItem",
           Resource: { "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] },
           Condition: {
-            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["RESETLIMIT#HELP*"] },
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["RESETLIMIT#HINT*"] },
             "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "count", "expiresAt"] },
             StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
           },

@@ -175,7 +175,8 @@ export interface PasswordResetRoute {
  * no cookie: an Origin check, API Gateway's throttles, and in the password
  * reset function the per-address and per-IP limits. Asking for a reset
  * answers the same whether or not the address has an account; the code goes
- * to an address with one, and a help email to an address without.
+ * that can have a password, a "sign in with Google" (or Apple) hint to an
+ * address only a Google or Apple account has, and nothing to any other.
  */
 export const PASSWORD_RESET_ROUTES: readonly PasswordResetRoute[] = [
   { method: "POST", path: "/auth/password-reset", action: "requestReset", throttle: { rate: 2, burst: 5 } },

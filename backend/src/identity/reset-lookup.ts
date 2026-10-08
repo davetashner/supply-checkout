@@ -14,8 +14,8 @@
 //   the provider sent it, so the function asks for the address as typed and
 //   in lower case. Google and Apple send lower case in practice. A provider
 //   user whose stored address is cased some third way isn't found: that
-//   address gets the general help email, which suggests Google and Apple too,
-//   rather than the one naming its provider. Nothing better is possible
+//   address gets no hint, and the screen's guidance (which mentions Google)
+//   is all the person sees. Nothing better is possible
 //   without listing the whole pool.
 // - forgotPassword: Cognito's own ForgotPassword with the web client's ID, for
 //   one user by their username. It's a public call (no IAM, unsigned), as
