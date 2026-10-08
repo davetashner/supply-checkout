@@ -29,11 +29,13 @@
 //
 //   node scripts/check-deploy-workflow.mjs     (CI's "Lint and validate HTML" job)
 //
+// It also refuses any YAML merge key (`<<`), which could hide keys from these checks.
+//
 // Exits 1 with the problems listed, 0 when there are none.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseWorkflow } from "./check-workflow-environments.mjs";
+import { hasMergeKey, parseWorkflow } from "./check-workflow-environments.mjs";
 
 /** Jobs that run the release commit's code with the deploy role, after an apply approval. */
 export const AFTER_APPLY_APPROVAL = ["apply-stateful", "apply", "journeys"];
@@ -77,6 +79,7 @@ export function afterApplyApproval(jobs, id, seen = new Set()) {
 /** Every problem with a parsed deploy workflow. */
 export function deployProblems(workflow) {
   const problems = [];
+  if (hasMergeKey(workflow)) problems.push("it uses a YAML merge key (<<), which could hide keys from these checks; write the keys out");
   if (grantsIdToken(workflow.permissions)) problems.push("the workflow's permissions grant id-token; grant it per job");
   const jobs = isMap(workflow.jobs) ? workflow.jobs : {};
   for (const [id, job] of Object.entries(jobs)) {

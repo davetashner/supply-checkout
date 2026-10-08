@@ -156,6 +156,13 @@ test("rule 4: the jobs that run the release with the token are past an apply app
   assert.match(deployTextProblems(good.replace("    needs: [release, apply]\n", "    needs: [release]\n")).join("\n"), /job journeys runs the release/);
 });
 
+test("refuses a YAML merge key anywhere", () => {
+  const merged = good.replace("    needs: [release, synth]\n    runs-on: x\n    environment: production\n", "    <<: {needs: [release, synth], environment: production}\n    runs-on: x\n");
+  assert.ok(deployTextProblems(merged).includes("it uses a YAML merge key (<<), which could hide keys from these checks; write the keys out"));
+  const inStep = good.replace("      - uses: actions/download-artifact@abc", "      - <<: {uses: actions/download-artifact@abc}");
+  assert.deepEqual(deployTextProblems(inStep), ["it uses a YAML merge key (<<), which could hide keys from these checks; write the keys out"]);
+});
+
 test("helpers", () => {
   assert.equal(grantsIdToken({ "id-token": "write" }), true);
   assert.equal(grantsIdToken({ "id-token": "read" }), false);

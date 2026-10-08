@@ -48,6 +48,15 @@ check failed "fails when cdk diff fails, still scrubbed, with no output" '[[ $rc
 run garbled $'something else'
 check garbled "fails on output without the count" '[[ $rc == 1 ]] && [[ "$out" == *"didn'"'"'t say how many"* ]]'
 
+run commands $'Stack supply-checkout-prod-r-data\n[+] AWS::SNS::Topic Evil\n::error::fake\n::add-mask::x\n```\n## not a heading\n`````\n\n✨  Number of stacks with differences: 1'
+token="$(grep -oE '^::stop-commands::[0-9a-f]{32}$' <<< "$out" | head -1 | cut -d: -f5)"
+check commands "prints the diff with workflow commands stopped, by a random token, and starts them again after" '[[ $rc == 0 && -n "$token" ]] && awk -v t="$token" '"'"'$0 == "::stop-commands::" t { on = 1 } $0 == "::error::fake" { if (on != 1) exit 1; seen = 1 } $0 == "::" t "::" { on = 2 } END { exit !(seen && on == 2) }'"'"' <<< "$out"'
+check commands "the token is new each run" 'run commands2 "x"; [[ "$out" != *"::stop-commands::$token"* ]]'
+run commands $'Stack supply-checkout-prod-r-data\n[+] AWS::SNS::Topic Evil\n```\n`````\n\n✨  Number of stacks with differences: 1'
+check fence "fences the summary with more backticks than any run in the diff" 'grep -qx "\`\`\`\`\`\`diff" "$GITHUB_STEP_SUMMARY" && [[ "$(tail -n 1 "$GITHUB_STEP_SUMMARY")" == "\`\`\`\`\`\`" ]]'
+run plain $'Stack supply-checkout-prod-r-data\nThere were no differences\n\n✨  Number of stacks with differences: 0'
+check fence "three backticks when the diff has none" 'grep -qx "\`\`\`diff" "$GITHUB_STEP_SUMMARY" && [[ "$(tail -n 1 "$GITHUB_STEP_SUMMARY")" == "\`\`\`" ]]'
+
 # --- assembly-hash.sh -------------------------------------------------------------
 asm() { mkdir -p "$1"; printf '{"version":"1"}' > "$1/manifest.json"; printf '{"Resources":{}}' > "$1/a.template.json"; printf '{"files":{}}' > "$1/a.assets.json"; printf '{"tree":1}' > "$1/tree.json"; }
 hash_of() { bash "$here/assembly-hash.sh" "$1"; }

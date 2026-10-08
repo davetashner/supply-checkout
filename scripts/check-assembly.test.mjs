@@ -113,6 +113,20 @@ test("refuses what isn't JSON, and a folder without a manifest", () => {
   assert.equal(run.status, 2);
 });
 
+test("refuses control characters in identifiers, which the diff prints", () => {
+  const nl = assembly((f) => { f["s.template.json"].Resources["Fn\n::error::x"] = { Type: "AWS::SNS::Topic" }; });
+  assert.deepEqual(assemblyProblems(nl), ["s.template.json: a name in Resources has a control character"]);
+  assert.deepEqual(assemblyProblems(assembly((f) => { f["s.template.json"].Outputs = { "O\r": {} }; })), ["s.template.json: a name in Outputs has a control character"]);
+  assert.deepEqual(assemblyProblems(assembly((f) => { f["s.template.json"].Resources.Fn.Type = "AWS::X\u001b[2J"; })), ["s.template.json: a resource type in Resources has a control character"]);
+  assert.deepEqual(assemblyProblems(assembly((f) => { f["manifest.json"].artifacts.s.displayName = "s\n::set-output name=x::y"; })), ["manifest.json.artifacts.s.displayName has a control character"]);
+  assert.deepEqual(assemblyProblems(assembly((f) => { f["manifest.json"].artifacts.s.dependencies = ["a\u2028b"]; })), ["manifest.json.artifacts.s.dependencies[0] has a control character"]);
+  // An artifact ID; the message itself carries no control character
+  const id = assemblyProblems(assembly((f) => { f["manifest.json"].artifacts["t\n"] = { type: "cdk:tree", properties: { file: "tree.json" } }; }));
+  assert.deepEqual(id, ["manifest.json.artifacts key has a control character"]);
+  // Values inside a template (inline code, say) may have newlines
+  assert.deepEqual(assemblyProblems(assembly((f) => { f["s.template.json"].Resources.Fn.Properties = { Code: { ZipFile: "a\nb" } }; })), []);
+});
+
 test("plain names", () => {
   for (const ok of ["manifest.json", "a.template.json", "asset.abc", "x_y-z"]) assert.equal(plainName(ok), true, ok);
   for (const bad of ["", ".", "..", "../x", "a/b", "/x", ".hidden", "-n", "a\\b", 5, undefined, "x".repeat(202)]) assert.equal(plainName(bad), false, String(bad));

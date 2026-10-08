@@ -12,6 +12,10 @@
 //     (no folder, no ..) of a regular file in the assembly's folder
 //   - in every template (nested ones too), each aws:asset:path is a plain name, and a nested
 //     stack's is a regular file in the folder, checked in turn
+//   - no control character (newline, carriage return, escape…) in manifest.json's keys or string
+//     values (artifact IDs, displayName, dependencies…), or in a template's logical IDs, resource
+//     types, or its outputs', parameters', conditions' and mappings' names: the diff prints them,
+//     and a newline in one could start a line that looks like a workflow command
 //   - in every asset manifest, each source path or directory is a plain name, and nothing has an
 //     `executable` source (a command to run)
 //
@@ -25,10 +29,21 @@ import { fileURLToPath } from "node:url";
 export const ARTIFACT_TYPES = ["aws:cloudformation:stack", "cdk:asset-manifest", "cdk:tree", "cdk:feature-flag-report"];
 export const MANIFEST_KEYS = ["version", "artifacts", "minimumCliVersion", "runtime"];
 const PLAIN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/;
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 const isMap = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
 /** Whether a name is a plain file name: no folder, no .., no leading dot or dash. */
 export const plainName = (name) => typeof name === "string" && PLAIN.test(name);
+
+/** Whether a string has a control character in it. */
+export const hasControl = (text) => typeof text === "string" && CONTROL.test(text);
+
+/** Every key and string value in a parsed JSON value, with where it is. */
+function* strings(value, where) {
+  if (typeof value === "string") yield [value, where];
+  else if (Array.isArray(value)) for (const [i, v] of value.entries()) yield* strings(v, `${where}[${i}]`);
+  else if (isMap(value)) for (const [k, v] of Object.entries(value)) { yield [k, `${where} key`]; yield* strings(v, `${where}.${k}`); }
+}
 
 /** Every problem with the assembly in `dir`. */
 export function assemblyProblems(dir) {
@@ -59,6 +74,9 @@ export function assemblyProblems(dir) {
   if (!isFile("manifest.json")) return ["no manifest.json in the assembly"];
   const manifest = readJson("manifest.json");
   if (!isMap(manifest)) return problems.length ? problems : ["manifest.json isn't an object"];
+  for (const [text, where] of strings(manifest, "manifest.json")) {
+    if (hasControl(text)) problems.push(`${where.replace(/[^\x20-\x7e]/g, "?")} has a control character`);
+  }
   if (manifest.missing !== undefined) problems.push("manifest.json has `missing` entries (context lookups); the plan does none");
   for (const key of Object.keys(manifest)) {
     if (key !== "missing" && !MANIFEST_KEYS.includes(key)) problems.push(`manifest.json has an unexpected key ${JSON.stringify(key)}`);
@@ -94,6 +112,12 @@ export function assemblyProblems(dir) {
     if (seen.has(name)) continue;
     seen.add(name);
     const template = readJson(name);
+    for (const section of ["Resources", "Outputs", "Parameters", "Conditions", "Mappings"]) {
+      for (const [logicalId, value] of Object.entries(isMap(template?.[section]) ? template[section] : {})) {
+        if (hasControl(logicalId)) problems.push(`${name}: a name in ${section} has a control character`);
+        if (section === "Resources" && hasControl(value?.Type)) problems.push(`${name}: a resource type in ${section} has a control character`);
+      }
+    }
     const resources = isMap(template?.Resources) ? template.Resources : {};
     for (const [logicalId, resource] of Object.entries(resources)) {
       const assetPath = isMap(resource?.Metadata) ? resource.Metadata["aws:asset:path"] : undefined;
