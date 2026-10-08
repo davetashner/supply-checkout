@@ -2949,7 +2949,9 @@
     "SeatSyncsQueue518F74A6": {
       "Type": "AWS::SQS::Queue",
       "Properties": {
+        "DeduplicationScope": "messageGroup",
         "FifoQueue": true,
+        "FifoThroughputLimit": "perMessageGroupId",
         "MessageRetentionPeriod": 345600,
         "QueueName": "supply-checkout-prod-seat-syncs.fifo",
         "RedrivePolicy": {

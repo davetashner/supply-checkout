@@ -884,6 +884,9 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
       template.hasResourceProperties("AWS::SQS::Queue", {
         QueueName: "supply-checkout-prod-seat-syncs.fifo",
         FifoQueue: true,
+        // Deduplicated per customer, so no sender can drop another customer's sync (supply-checkout-8jc.26)
+        DeduplicationScope: "messageGroup",
+        FifoThroughputLimit: "perMessageGroupId",
         SqsManagedSseEnabled: true,
         VisibilityTimeout: 180,
         RedrivePolicy: { deadLetterTargetArn: { "Fn::GetAtt": [Match.stringLikeRegexp("^SeatSyncsDeadLetterQueue"), "Arn"] }, maxReceiveCount: 5 },
