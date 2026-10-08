@@ -1036,7 +1036,7 @@ describe("members' names (supply-checkout-lx7)", () => {
     names[PAT] = "Patricia Lee";
     await call("GET", "/me", { user: PAT });
     expect((await listed()).find((m) => m.userId === PAT)?.name).toBe("Patricia Lee");
-    delete names[PAT];
+    names = {};
     await call("GET", "/me", { user: PAT });
     expect(memberOf("team-a", PAT)).not.toHaveProperty("displayName");
     expect((await listed()).find((m) => m.userId === PAT)?.name).toBeNull();
