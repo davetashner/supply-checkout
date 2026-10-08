@@ -10,6 +10,7 @@ import { deleteDocument } from "./documents.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
 import { hiddenCharacterProblem } from "../text/hidden-characters.js";
 import { MAX_NAME_LENGTH } from "./imports.js";
+import { money } from "./money.js";
 import { barcode, keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
 import { queryAll, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -35,10 +36,9 @@ function fields(input: ProductFields): Record<string, unknown> {
   if (typeof input.name !== "string" || !input.name.trim() || input.name.trim().length > MAX_NAME_LENGTH) throw new InvalidInputError("Invalid product");
   const problem = hiddenCharacterProblem("name", input.name.trim());
   if (problem) throw new InvalidInputError(problem);
-  if (typeof input.price !== "number" || !Number.isFinite(input.price) || input.price < 0) {
-    throw new InvalidInputError("Invalid price");
-  }
-  return { code: barcode(input.code), name: input.name.trim(), price: input.price, updatedAt: new Date().toISOString() };
+  // The money rule (ADR 0014), as for every other price: 0 to MAX_MONEY, whole cents
+  const price = money(input.price, "price");
+  return { code: barcode(input.code), name: input.name.trim(), price, updatedAt: new Date().toISOString() };
 }
 
 export async function listProducts(db: Db, ctx: TeamContext): Promise<Product[]> {

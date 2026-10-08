@@ -905,12 +905,18 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(updateProduct(db, contributor, "missing", { code: "", name: "x", price: 5 }, 1)).rejects.toThrow(ConflictError);
       await expect(updateProduct(db, viewer, "0123456789", { code: "", name: "x", price: 5 }, 2)).rejects.toThrow(ForbiddenError);
       await expect(createProduct(db, contributor, "bad", { code: "", name: "x", price: -1 })).rejects.toThrow(InvalidInputError);
+      await expect(createProduct(db, contributor, "bad", { code: "", name: "x", price: 1_000_001 })).rejects.toThrow(InvalidInputError);
+      await expect(updateProduct(db, contributor, "0123456789", { code: "", name: "x", price: 4.999 }, 2)).rejects.toThrow(InvalidInputError);
+      // Floating-point noise counts as the cents the person saw (ADR 0014)
+      expect(await createProduct(db, contributor, "noise", { code: "", name: "x", price: 0.1 + 0.2 })).toMatchObject({ price: 0.3 });
+      expect((await getProduct(db, viewer, "noise"))?.price).toBe(0.3);
       await expect(createProduct(db, contributor, "bad", { code: "1".repeat(257), name: "x", price: 1 })).rejects.toThrow(InvalidInputError);
       await expect(createProduct(db, contributor, "bad", { code: 123 as unknown as string, name: "x", price: 1 })).rejects.toThrow(InvalidInputError);
 
       await expect(deleteProduct(db, contributor, "0123456789", 1)).rejects.toThrow(ConflictError);
       await deleteProduct(db, contributor, "0123456789", 2);
       await deleteProduct(db, contributor, "no-barcode-sponge");
+      await deleteProduct(db, contributor, "noise");
       expect(await getProduct(db, viewer, "0123456789")).toBeUndefined();
     });
 
