@@ -27,15 +27,12 @@
 //    ended team without the date its access rules count from (`accessDates`:
 //    applied before those were kept).
 // 3. Fix it: apply Stripe's state with applySubscription, conditioned on the
-//    team's status, plan, seats, subscription and `cancelAtPeriodEnd` being
-//    as they were read (`asRead`), so an event applied meanwhile is almost
-//    never overwritten with older state: that conflict throws, and the
-//    message's retry finds the team in sync. The condition compares values,
-//    not a version, so an event that changed a field and changed it back (A
-//    to B to A) between the read and the write slips through, and
-//    `currentPeriodEnd` isn't compared at all. Then the older state can win
-//    for a while; the next event for the subscription, or the next night,
-//    puts it right. Only once the fix is written is
+//    team's version being the one read (`asRead`, supply-checkout-8jc.27).
+//    Every write to the team's billing, closure or comp moves the version, so
+//    an event applied meanwhile (even one that changed a field and changed it
+//    back, or changed only `currentPeriodEnd`) is never overwritten with
+//    older state: that conflict throws, and the message's retry reads the
+//    team again. Only once the fix is written is
 //    the drift counted in EntitlementDrift (the "Entitlements drifting"
 //    alarm) and logged with the team and subscription IDs, the fields, and
 //    both values (statuses, plan names and numbers only), so an event that
@@ -188,7 +185,7 @@ export function createEntitlementCheck(deps: EntitlementCheckDeps) {
     const state = subscriptionState(sub, customer, replaces);
     const fields = entitlementDrift(team, state);
     if (!fields.length) return "in_sync";
-    const asRead: BillingAsRead = { status: team.status, plan: team.plan, seats: team.seats, cancelAtPeriodEnd: team.cancelAtPeriodEnd, ...(team.stripeSubscriptionId ? { subscriptionId: team.stripeSubscriptionId } : {}) };
+    const asRead: BillingAsRead = { version: team.version };
     // Counted once the fix is written: a team an event changed meanwhile throws here, and the retry finds it in sync
     if ((await applySubscription(db, ctx, state, now, asRead)) === "ignored") return "team_closed";
     obs.count(BusinessMetric.EntitlementDrift, 1, { teamId, ...testMark(team.test) });

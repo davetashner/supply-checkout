@@ -81,6 +81,12 @@ function patchTeam(fields: Record<string, unknown>) {
   table.put(Object.fromEntries(Object.entries({ ...meta, ...fields }).filter(([, v]) => v !== undefined)));
 }
 
+/** An event the billing worker applies (applySubscription), which moves the team's version. */
+function applyEvent(fields: Record<string, unknown>) {
+  const meta = table.get(`TEAM#${TEAM}`, "META") as Record<string, unknown>;
+  patchTeam({ ...fields, version: (meta.version as number) + 1 });
+}
+
 beforeEach(() => {
   table = new MemoryTable();
   // Two owners, one editor and two viewers: three billed seats
@@ -419,11 +425,30 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     subs.set(SUB, subscription(3, { status: "past_due" }));
     onRetrieve = () => {
       onRetrieve = undefined;
-      patchTeam({ cancelAtPeriodEnd: true });
+      applyEvent({ cancelAtPeriodEnd: true });
     };
     await expect(nightly()).rejects.toThrow("changed meanwhile");
     expect(meta()).toMatchObject({ status: "active", cancelAtPeriodEnd: true });
     expect(drift()).toEqual([]);
+  });
+
+  it("doesn't overwrite a change and back (A to B to A) applied while the check was asking Stripe (supply-checkout-8jc.27)", async () => {
+    subs.set(SUB, subscription(3, { status: "past_due" }));
+    const before = meta().version as number;
+    // Cancelled and renewed again: every field is as the check read it, but the version moved twice
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      applyEvent({ cancelAtPeriodEnd: true });
+      applyEvent({ cancelAtPeriodEnd: false, currentPeriodEnd: "2026-12-01T00:00:00.000Z" });
+    };
+    await expect(nightly()).rejects.toThrow("changed meanwhile");
+    expect(meta()).toMatchObject({ status: "active", seats: 3, cancelAtPeriodEnd: false, currentPeriodEnd: "2026-12-01T00:00:00.000Z", version: before + 2 });
+    expect(drift()).toEqual([]);
+    // The retry reads the team again and fixes the drift that's still there
+    expect(await nightly()).toBe("in_sync");
+    expect(meta()).toMatchObject({ status: "past_due", seats: 3, version: before + 3 });
+    expect(drift()).toHaveLength(1);
+    expect(denied).toEqual([]);
   });
 
   it("turns a team read-only whose subscription ended without us hearing, after looking for a newer one", async () => {
@@ -531,7 +556,7 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     // The billing worker applies the same change between the check's read and its write
     onRetrieve = () => {
       onRetrieve = undefined;
-      patchTeam({ status: "past_due", pastDueSince: "2026-09-27T00:00:00.000Z" });
+      applyEvent({ status: "past_due", pastDueSince: "2026-09-27T00:00:00.000Z" });
     };
     await expect(nightly()).rejects.toThrow("The team's subscription changed meanwhile");
     expect(counts).toEqual([]);
