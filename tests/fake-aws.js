@@ -233,6 +233,18 @@ export class FakeBackend {
 
     if (path === "/me" && method === "DELETE") return this.deleteAccount(call.body, err);
     if (path === "/me") return [200, { user: this.user, teams: this.teams, invites: this.invites }];
+    // The user's own preferences (supply-checkout-005.17), as the account API checks them: either
+    // field, of the right type. Only for a user that has them (an API from before them has no route)
+    if (path === "/me/preferences" && method === "PATCH") {
+      if (!this.user.preferences) return err(404, "not_found");
+      const { whatsNew, whatsNewLastShown, ...rest } = call.body || {};
+      if (Object.keys(rest).length || (whatsNew === undefined && whatsNewLastShown === undefined)) return err(400, "bad_request");
+      if (whatsNew !== undefined && typeof whatsNew !== "boolean") return err(400, "bad_request");
+      if (whatsNewLastShown !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(whatsNewLastShown)) return err(400, "bad_request");
+      const preferences = { ...this.user.preferences, ...(whatsNew === undefined ? {} : { whatsNew }), ...(whatsNewLastShown === undefined ? {} : { whatsNewLastShown }) };
+      this.user = { ...this.user, preferences };
+      return [200, { preferences }];
+    }
     // Verifying the email as Cognito does it: a code for an unverified address, and 123456 is
     // the code it sent. A code counts only for the address it was sent to (409 email_changed
     // otherwise, and the code is spent). Verifying lists pendingInvites (invites for the

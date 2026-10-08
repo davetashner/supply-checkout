@@ -129,6 +129,30 @@ The prod journey tests ([the plan](journey-tests-plan.md), "Credentials and secr
 
 **What runs with AWS credentials.** In `journeys.yml`, only the `suite` job, in `production-journeys`, with the journeys role (two buckets, nothing else): it restores no cache of any kind (main's caches are written by ordinary CI runs, whose `npm ci` runs every dev dependency's install scripts, and a browser runs here with every secret), installs its dependencies with `--ignore-scripts` and the browsers cold, before any credential or secret is in a step's environment. In `deploy.yml`, only `plan` (the lookup role after its sign-in steps, whose deploy-role session lasts 15 minutes), `apply-stateful` and `apply` (the publisher role for publishing), each only after the owner's approval, only in `production` or `production-stateful` (both `main` only), only in a run on `main`, and only code from a release commit on `main` that passed CI. No dependency cache is restored in them, no pull request event starts the workflow, and every third-party action is pinned by commit SHA.
 
+## What's New notes
+
+The app's What's New banner ([web-app.md](web-app.md#the-web-app-on-aws), `supply-checkout-005.17`) shows a short note for each user-facing change released in the last 14 days. The notes are written by hand, in `src/whats-new.json`, because commit titles are written for developers. The banner is drawn from that file, and the file is shipped with the app.
+
+**The check.** `scripts/check-whats-new.mjs` (in `npm run lint`) reads the newest release in `CHANGELOG.md`. Every entry under its **Features** must have a note, or an explicit skip with a reason. Fixes don't need one, but a fix users will notice deserves a note. On an ordinary pull request, `CHANGELOG.md` is main's, and its newest release already has notes, so the check passes. It only fails on release-please's pull request, whose `CHANGELOG.md` adds the next release. The error names each `feat:` entry that has neither a note nor a skip. The check also refuses a malformed file: an unknown field, a bad date, releases out of order, a title over 60 characters or text over 200, a note without `prs`, or a pull request that is both noted and skipped. Its tests are in `scripts/check-whats-new.test.mjs`.
+
+**Writing them.** When the release pull request's CI fails the check (or before, if you know what's in it), open a pull request to main that adds the release at the top of `src/whats-new.json`. release-please then carries the notes into its own pull request when it updates it. Don't push to release-please's branch, because it rewrites that branch.
+
+```json
+{
+  "version": "1.10.0",
+  "date": "2026-10-08",
+  "notes": [
+    { "title": "See who's signed in", "text": "The bar under the header shows your name and your role in the team.", "prs": [605] }
+  ],
+  "skip": { "564": "Behind the scenes: test infrastructure" }
+}
+```
+
+- `version` is the release's version, and `date` is the day it's deployed to prod. The banner shows a release from that day until 14 days later, so a date later than the deploy holds the notes back until then. Releases go newest first.
+- A note says what someone using the app can now do, or what's different, in a sentence or two. Write for the people using the app, not the people who built it. Don't use pull request titles, and don't name internals ("the API", "DynamoDB", "a migration"). Use the app's own words (projects, inventory, checkout, Account), and keep the title under 60 characters and the text under 200. One note can cover several pull requests (`prs`), for example a feature built in a backend PR and an app PR.
+- Skip a `feat:` entry that users won't see, such as a support tool, the marketing site, infrastructure, metrics or a migration, and give a short reason. The reason isn't shown in the app, but reviewers read it.
+- The owner reviews the notes as part of the release pull request, before approving it. They're the words customers will read.
+
 ## Real-device check
 
 Playwright can't open a phone's camera (its tests use a stand-in camera, `tests/camera.js`), so before publishing a release, check scanning on a real iPhone and a real Android phone: your own phones, or a real-device cloud such as BrowserStack Live. A Scan button opens the camera in a scanner (`src/live-scan.js`), which reads each frame with the browser's `BarcodeDetector` where there is one (Chrome and Samsung Internet on Android) and ZXing otherwise (Safari on iPhone and iPad, Firefox), and takes a code once two frames agree. **Take a photo instead** (and a browser without a camera) takes a photo through the file input (`capture="environment"`), decoded the same way.
