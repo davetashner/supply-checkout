@@ -71,6 +71,7 @@ export * from "./verified-email.js";
 export { isAtDomain, isTestAccount, TEST_MAIL_DOMAIN_ENV, testMailDomain } from "./test-accounts.js";
 export * from "./security-notices.js";
 export * from "./two-step.js";
+export * from "./password-reset-time.js";
 export * from "./welcome.js";
 export * from "./preferences.js";
 export { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";

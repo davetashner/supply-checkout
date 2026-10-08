@@ -11,7 +11,9 @@
 // Team isolation, in order, on every request:
 // 1. API Gateway's JWT authorizer checks the Cognito access token.
 // 2. This handler re-checks the claims it gets (an access token, not expired)
-//    and takes the user ID only from `sub`.
+//    and takes the user ID only from `sub`. A session that began before the
+//    user's password was last reset is refused (session-reset.ts,
+//    supply-checkout-6uw.33).
 // 3. The team comes only from the path. authorizeTeam reads the caller's
 //    MEMBER item for it and issues the TeamContext every data function needs;
 //    no membership, no context. The body can't name a team.
@@ -73,6 +75,7 @@ import { BusinessMetric, type Observability, testMark } from "../observability/i
 import { ApiError, errorFor as apiErrorFor, errorResponse, json, jsonBody, noContent, notMember, viewOnly } from "./http.js";
 import { requireRole } from "./roles.js";
 import { DATA_ROUTES, type DataRoute, routeKey } from "./routes.js";
+import type { SessionCheck } from "./session-reset.js";
 import type { DbForTeam } from "./team-db.js";
 
 export type DataEvent = APIGatewayProxyEventV2WithJWTAuthorizer;
@@ -80,6 +83,8 @@ export type DataEvent = APIGatewayProxyEventV2WithJWTAuthorizer;
 export interface DataHandlerDeps {
   readonly dbForTeam: DbForTeam;
   readonly obs: Observability;
+  /** Refuses a session from before the caller's last password reset (session-reset.ts). The Lambda entry always sets it. */
+  readonly sessionCheck?: SessionCheck;
   readonly now?: () => number;
 }
 
@@ -404,6 +409,7 @@ export function createDataHandler(deps: DataHandlerDeps) {
       // An old client still on `/sheets` (supply-checkout-005.6): counted, then served as `/projects`
       if (route.legacy) deps.obs.count(BusinessMetric.LegacySheetsRouteCalls, 1, { route: routeKey(route) });
       const userId = callerId(event, now());
+      await deps.sessionCheck?.(event, userId);
       if (typeof teamId !== "string") throw new ApiError(400, "bad_request", "Missing team ID");
       try {
         ctx = await authorizeTeam(deps.dbForTeam(teamId), userId, teamId, new Date(now()));

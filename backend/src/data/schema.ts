@@ -570,6 +570,25 @@ export const TOTP_ON_SK = "TOTP_ON";
 
 /**
  * The sort key of the item in a user's own `USER#<sub>` partition that holds
+ * when their password was last reset (supply-checkout-6uw.33,
+ * password-reset-time.ts): every API route the app's tokens reach refuses a
+ * session that began before it. Not a `LIMIT#` key, so deleting an account
+ * removes it.
+ */
+export const PASSWORD_RESET_SK = "PASSWORD_RESET";
+
+/**
+ * The only attributes the password reset record's readers and its writer may
+ * name in a `USER#` partition (dynamodb:Attributes): the keys and
+ * `passwordResetAt`, which no other item has. The post confirmation trigger
+ * may update only these (no read), and the data, account, billing and
+ * receipts functions' own roles may only read them, so neither can read or
+ * change a user's teams, proofs or notices, or set a TTL.
+ */
+export const PASSWORD_RESET_RECORD_ATTRIBUTES = [PK, SK, "passwordResetAt"] as const;
+
+/**
+ * The sort key of the item in a user's own `USER#<sub>` partition that holds
  * their app preferences (supply-checkout-005.17, preferences.ts): whether the
  * What's New banner is on, and the local date it was last shown. Not a
  * `LIMIT#` key, so deleting an account removes it.

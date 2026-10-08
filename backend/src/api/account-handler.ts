@@ -75,6 +75,8 @@
 // 1. API Gateway's JWT authorizer checks the Cognito access token; this handler
 //    re-checks it (an access token from our issuer, not expired) and takes the
 //    user only from `sub`. Nothing in the path, query or body names a user.
+//    A session that began before the user's password was last reset is
+//    refused (session-reset.ts, supply-checkout-6uw.33).
 // 2. The email comes from Cognito (GetUser with the caller's own token), and
 //    only a verified one lists invites. Accepting also needs the invite's
 //    token from the emailed link, checked against the stored hash in the same
@@ -243,10 +245,13 @@ import type { CognitoUser, DeleteUser, EmailCodes, TotpSetup, UserInfo } from ".
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
 import { accessToken, ApiError, errorResponse, header, json, jsonBody, noContent, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
+import type { SessionCheck } from "./session-reset.js";
 import { ACCOUNT_ROUTES, type AccountRoute, IDEMPOTENCY_HEADER, routeKey } from "./routes.js";
 
 export interface AccountHandlerDeps {
   readonly dbFor: DbForAccount;
+  /** Refuses a session from before the caller's last password reset (session-reset.ts). The Lambda entry always sets it. */
+  readonly sessionCheck?: SessionCheck;
   readonly userInfo: UserInfo;
   /** Emails the caller a verification code and checks it (cognito-user.ts). */
   readonly emailCodes: EmailCodes;
@@ -1167,6 +1172,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       if (!action) throw new ApiError(404, "not_found", "No such route");
       const userId = callerId(event, now());
       if (event.requestContext.authorizer.jwt.claims.iss !== deps.issuerUrl) throw new ApiError(401, "unauthenticated", "Sign in again");
+      await deps.sessionCheck?.(event, userId);
       const response = await actions[action](event, userId);
       status = response.statusCode ?? 200;
       return response;

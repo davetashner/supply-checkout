@@ -65,12 +65,13 @@ const random = (n) => b64url(crypto.getRandomValues(new Uint8Array(n)));
 const ENDED = { code: "unauthenticated", message: "Signed out" };
 const claimsOf = (jwt) => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))));
 
-export function createSession(config, { onSignedOut, onRefreshed, onUserChanged }) {
+export function createSession(config, { onSignedOut, onRefreshed, onUserChanged, onPasswordReset }) {
   const redirectUri = location.origin + "/";
   // ended: this tab is done with the session for good (the account was deleted, or another
   // tab changed who's signed in), so a refresh still on its way isn't taken up
   // user: the ID token's sub from sign-in, which every refresh must match
-  let tokens = null, refreshing = null, timer, signingOut = false, ended = false, user = null;
+  // resetting: the API refused this session as older than the account's password reset
+  let tokens = null, refreshing = null, timer, signingOut = false, ended = false, user = null, resetting = false;
   const post = (path, body) => request(config.apiUrl + path, { ...json("POST", body), credentials: "include" });
   const logoutUrl = () => `${config.authUrl}/logout?${new URLSearchParams({ client_id: config.clientId, logout_uri: redirectUri })}`;
 
@@ -135,6 +136,18 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged 
     return refreshing;
   }
 
+  // The API refused this session: it began before the account's password was reset
+  // (supply-checkout-6uw.33), and every call with its tokens will be refused the same way, so
+  // no refresh is tried (refreshed tokens keep the session's sign-in time). Said once; this
+  // call and every later one (each refused the same way) never settle, so nothing behind
+  // them shows an error or a sign-in screen over the one onPasswordReset shows, whose
+  // sign-out leaves the page.
+  function passwordWasReset() {
+    clearTimeout(timer);
+    if (!resetting) { resetting = true; onPasswordReset(); }
+    return new Promise(() => {});
+  }
+
   return {
     // Why the last sign-in didn't finish, for the sign-in screen
     notice: "",
@@ -195,7 +208,10 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged 
       const send = () => {
         const init = body ? json(method, body, headers) : { method, headers: { ...headers } };
         init.headers.authorization = "Bearer " + tokens.accessToken;
-        return request(config.apiUrl + path, init, options);
+        return request(config.apiUrl + path, init, options).catch((e) => {
+          if (e.reason === "password_reset") return passwordWasReset();
+          throw e;
+        });
       };
       try { return await send(); }
       catch (e) {

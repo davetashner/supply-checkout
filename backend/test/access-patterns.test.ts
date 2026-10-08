@@ -16,6 +16,9 @@ import {
   clearTotpOn,
   recordTotpOn,
   totpOnAt,
+  passwordResetAt,
+  recordPasswordReset,
+  deleteUserRows,
   getPreferences,
   setPreferences,
   startAccountDeletion,
@@ -234,6 +237,22 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(await clearTotpOn(db, userId, at)).toBe(false);
       expect(await clearTotpOn(db, userId, new Date(at.getTime() + 1000))).toBe(true);
       expect(await totpOnAt(db, userId)).toBeUndefined();
+    });
+
+    // supply-checkout-6uw.33
+    it("keeps when the password was last reset in the user's own partition, only ever moving it later", async () => {
+      db = table.db;
+      const userId = newUser();
+      const at = new Date("2026-10-08T14:05:09.123Z");
+      expect(await passwordResetAt(db, userId)).toBeUndefined();
+      expect(await recordPasswordReset(db, userId, at)).toBe(true);
+      expect(await recordPasswordReset(db, userId, new Date(at.getTime() - 1000))).toBe(false);
+      expect(await rawItem(db, `USER#${userId}`, "PASSWORD_RESET")).toEqual({ PK: `USER#${userId}`, SK: "PASSWORD_RESET", passwordResetAt: at.toISOString() });
+      expect(await recordPasswordReset(db, userId, new Date(at.getTime() + 300), { timeoutMs: 5_000 })).toBe(true);
+      expect(await passwordResetAt(db, userId)).toBe(at.getTime() + 300);
+      // Deleting the account removes it with the user's other rows
+      await deleteUserRows(db, userId);
+      expect(await passwordResetAt(db, userId)).toBeUndefined();
     });
 
     // supply-checkout-005.17

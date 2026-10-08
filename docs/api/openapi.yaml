@@ -3332,7 +3332,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_reset, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -3365,7 +3365,11 @@ components:
                 sign-in on. `mfa_sign_in_again`: a billing route for an owner
                 whose session (the token's `auth_time`) began before two-step
                 sign-in was turned on: sign in again, with the password and the
-                code. Setting it up: `password_invalid` (the password
+                code. `password_reset` (with `unauthenticated`, on any route
+                that takes the app's token): the session (the token's
+                `auth_time`) began before the account's password was last
+                reset; sign out, of Managed Login too, and sign in again with
+                the new password. Setting it up: `password_invalid` (the password
                 policy), `password_mismatch` (the current password is wrong
                 or missing), `federated_sign_in` (a Google or Apple user,
                 who has nothing to set up), and `signout_failed` (it's on, but
@@ -3582,7 +3586,7 @@ components:
       description: "`bad_request`: malformed JSON, ID, field, query or cursor."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Unauthenticated:
-      description: "`unauthenticated`: no token, an expired or ID token. (API Gateway's own 401 has the body `{\"message\":\"Unauthorized\"}`.)"
+      description: "`unauthenticated`: no token, an expired or ID token, or (reason `password_reset`) a session that began before the account's password was last reset. (API Gateway's own 401 has the body `{\"message\":\"Unauthorized\"}`.)"
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Forbidden:
       description: |

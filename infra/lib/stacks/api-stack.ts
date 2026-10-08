@@ -65,6 +65,7 @@ import {
   OPS_OWNERS_PREFIX,
   OPS_TEAMS_PARTITION,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
+  PASSWORD_RESET_RECORD_ATTRIBUTES,
   RECEIPT_RATE_ATTRIBUTES,
   RECEIPT_RATE_PREFIX,
   RECEIPT_TRIAL_CAP_ATTRIBUTES,
@@ -135,7 +136,7 @@ export const bundling: BundlingOptions = {
  *   in an HttpOnly cookie, served by the `auth` function. No authorizer: they
  *   run on the cookie, with SameSite=Strict and an Origin check.
  * - Team isolation, second layer (ADR 0005): the data function's own role
- *   can't reach the table. For each request it assumes the data-access role
+ *   can't reach the table (but for the password reset time, below). For each request it assumes the data-access role
  *   with the session tag `teamId=<path team>`, and that role may only touch
  *   items whose partition key is `TEAM#<tag>`, or the team's date index
  *   partition `TEAM#<tag>#PROJECTS` (or `TEAM#<tag>#SHEETS`, its name before
@@ -155,6 +156,11 @@ export const bundling: BundlingOptions = {
  *   request is entitled to it, and a member only after an owner's checks
  *   (backend/src/api/account-db.ts).
  *   No Scan, no BatchWriteItem, and never another user's partition.
+ * - Sessions from before a password reset (supply-checkout-6uw.33): the
+ *   data, account, billing and receipts functions' own roles may read one
+ *   attribute, `passwordResetAt`, in `USER#` partitions, and nothing else of
+ *   the table (grantPasswordResetRead), to refuse a token whose session began
+ *   before the caller's last reset (backend/src/api/session-reset.ts).
  * - Functions are NodejsFunction (Node.js 24, arm64) behind a `live` alias,
  *   ready for CodeDeploy canaries (ADR 0012). The data function has 1 GB of
  *   memory for CPU: its work is JSON and TLS, and more memory means less
@@ -445,6 +451,8 @@ export class ApiStack extends SupplyCheckoutStack {
     const billing = this.addBilling(config, table, tableArn, region, appOrigin, ssm(identity.issuerUrl), tableKeyStatement);
     this.billingFunction = billing.fn;
     this.billingAccessRole = billing.role;
+    // Every function the app's access tokens reach checks the session against the caller's last password reset
+    for (const fn of [this.dataFunction, this.accountFunction, this.billingFunction, this.receiptsFunction]) this.grantPasswordResetRead(fn, tableArn, tableKeyStatement);
     const events = this.addBillingEvents(config, table, tableArn, region, tableKeyStatement);
     this.webhookFunction = events.webhook;
     this.billingQueue = events.queue;
@@ -611,7 +619,8 @@ export class ApiStack extends SupplyCheckoutStack {
   /**
    * The billing function and the billing-access role it assumes (ADR 0009,
    * supply-checkout-x0l). Owners start Stripe Checkout through it. Its own
-   * role can't reach the table: it may assume the billing-access role, and
+   * role can't reach the table (but for the password reset time,
+   * grantPasswordResetRead): it may assume the billing-access role, and
    * read the one Stripe secret key for this environment and mode
    * (secretsmanager:GetSecretValue on that secret's ARN only). The
    * billing-access role, tagged with the path's team and (once Stripe has
@@ -1194,7 +1203,8 @@ export class ApiStack extends SupplyCheckoutStack {
   /**
    * The receipts function and the receipt-access role it assumes (ADR 0008).
    *
-   * - Like the data function, its own role can't reach the table. Per request
+   * - Like the data function, its own role can't reach the table (but for
+   *   the password reset time, grantPasswordResetRead). Per request
    *   it assumes the receipt-access role tagged with the path's team and the
    *   caller (`teamId`, and `userId`: always the token's `sub`), which may
    *   read only that team's partition (the membership check, the team's
@@ -1313,6 +1323,35 @@ export class ApiStack extends SupplyCheckoutStack {
       }),
     );
     return { fn, role };
+  }
+
+  /**
+   * Lets a function refuse a session from before the caller's last password
+   * reset (backend/src/api/session-reset.ts, supply-checkout-6uw.33), with its
+   * own role: GetItem naming only the keys and `passwordResetAt`
+   * (PASSWORD_RESET_RECORD_ATTRIBUTES, which no other item has), projected,
+   * in `USER#` partitions, and the table's key through DynamoDB. No other
+   * action, attribute or partition. The function's own role has no per-user
+   * session, so IAM can't name the caller or the sort key: the code reads
+   * only `USER#<sub>` / `PASSWORD_RESET` for the verified token's `sub`, and
+   * all any other read could see is when another user last reset their
+   * password.
+   */
+  private grantPasswordResetRead(fn: NodejsFunction, tableArn: string, tableKeyStatement: () => PolicyStatement): void {
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadPasswordResetTime",
+        effect: Effect.ALLOW,
+        actions: ["dynamodb:GetItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...PASSWORD_RESET_RECORD_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    fn.addToRolePolicy(tableKeyStatement());
   }
 
   /** A function from backend/src/<dir>/<name>.ts. */

@@ -13,6 +13,7 @@ import { createObservability, withObservability } from "../observability/index.j
 import { receiptModelClient } from "../receipts/client.js";
 import { createReceiptsHandler } from "./receipts-handler.js";
 import { API_ENV } from "./routes.js";
+import { sessionCheckFromEnv } from "./session-reset.js";
 import { receiptScopedDbs } from "./team-db.js";
 
 const roleArn = process.env[API_ENV.receiptRoleArn];
@@ -26,4 +27,4 @@ const trialReadsPerDay = trialReadsPerDayFrom(process.env[API_ENV.receiptTrialRe
 const obs = createObservability({ service: "receipts" });
 // The region and credentials are the function's (AWS_REGION and its role); see receipts/client.ts
 const model = receiptModelClient();
-export const handler = withObservability(obs, createReceiptsHandler({ dbFor: receiptScopedDbs({ roleArn }), obs, model, modelId, trialReadsPerDay }));
+export const handler = withObservability(obs, createReceiptsHandler({ dbFor: receiptScopedDbs({ roleArn }), obs, model, modelId, trialReadsPerDay, sessionCheck: sessionCheckFromEnv() }));

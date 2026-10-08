@@ -438,7 +438,21 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
       Action: "lambda:InvokeFunction",
       Resource: { "Fn::Join": ["", [`arn:aws:lambda:${EAST}:`, { Ref: "AWS::AccountId" }, ":function:supply-checkout-staging-security-notices"]] },
     };
-    sameStatements(statementsOf(template, roleOf(template, "PostConfirmation")), [logs("PostConfirmation"), xray, ...noticeAddress, welcome, resetSignOut, resetNotice]);
+    // And recording the reset's time (supply-checkout-6uw.33): an update naming only the record's attributes, returning nothing, no read
+    const resetRecord = {
+      Sid: "RecordPasswordReset",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Resource: table,
+      Condition: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+        "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "passwordResetAt"] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    };
+    sameStatements(statementsOf(template, roleOf(template, "PostConfirmation")), [logs("PostConfirmation"), xray, ...noticeAddress, welcome, resetSignOut, resetRecord, resetNotice]);
+    // No other trigger may write it
+    for (const id of ["SignInGuard", "EmailVerified", "AccountLink"]) expect(JSON.stringify(statementsOf(template, roleOf(template, id))), id).not.toContain("passwordResetAt");
     // No other role may sign anyone out or invoke the security notices function
     for (const id of ["SignInGuard", "EmailVerified", "AccountLink"]) expect(JSON.stringify(statementsOf(template, roleOf(template, id))), id).not.toMatch(/GlobalSignOut|security-notices/);
     const link = { Sid: "LinkToExistingAccount", Effect: "Allow", Action: ["cognito-idp:AdminLinkProviderForUser", "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:ListUsers"], Resource: { "Fn::GetAtt": [poolId, "Arn"] } };

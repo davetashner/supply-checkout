@@ -6,7 +6,8 @@
 //
 // In order, on every request:
 // 1. The caller is checked as on every team route (data-handler.ts): an
-//    access token, the user from `sub`, the team from the path only, the
+//    access token, the user from `sub` (in a session that began after their
+//    last password reset, session-reset.ts), the team from the path only, the
 //    membership read on a role session tagged with that team and that user
 //    (team-db.ts, receiptScopedDbs), and at least contributor (routes.ts,
 //    minRole).
@@ -59,6 +60,7 @@ import { callerId, type DataEvent, errorFor } from "./data-handler.js";
 import { ApiError, errorResponse, json, jsonBody, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
 import { RECEIPT_ROUTES, routeKey } from "./routes.js";
+import type { SessionCheck } from "./session-reset.js";
 import type { DbForTeamUser } from "./team-db.js";
 
 /**
@@ -85,6 +87,8 @@ export interface ReceiptsHandlerDeps {
   /** The team's and the caller's role session (receiptScopedDbs). */
   readonly dbFor: DbForTeamUser;
   readonly obs: Observability;
+  /** Refuses a session from before the caller's last password reset (session-reset.ts). The Lambda entry always sets it. */
+  readonly sessionCheck?: SessionCheck;
   readonly model: ReceiptModel;
   /** RECEIPT_MODEL_ID. */
   readonly modelId: string;
@@ -232,6 +236,7 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
     try {
       if (!route) throw new ApiError(404, "not_found", "No such route");
       const userId = callerId(event, now());
+      await deps.sessionCheck?.(event, userId);
       if (typeof teamId !== "string") throw new ApiError(400, "bad_request", "Missing team ID");
       let ctx: TeamContext;
       try {

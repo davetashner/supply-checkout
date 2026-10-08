@@ -131,6 +131,8 @@ export async function start(config) {
     onRefreshed: () => { if (db) db.reconnect(); },
     // A refresh answered with another user's tokens: the refresh cookie is someone else's now
     onUserChanged: () => accountChanged(),
+    // The API refused this session as older than the account's password reset
+    onPasswordReset: () => passwordWasReset(),
   });
 
   // Signed out: a link to Managed Login. Following it leaves the page.
@@ -196,6 +198,20 @@ export async function start(config) {
     show(`<h2>${title}</h2>
       <p>${text}</p>
       <div class="actions"><a class="btn primary big" href="${esc(out)}" id="signInAgain" data-autofocus>Sign in again</a></div>`);
+  }
+  // This session began before the account's password was reset (supply-checkout-6uw.33): the
+  // API refuses it everywhere, so stop, and offer to sign in again with the new password. Signing
+  // out here and of Managed Login, whose session from before would otherwise sign straight back
+  // in, keeps the team and drafts for the same person, as signing in again for billing does.
+  function passwordWasReset() {
+    owner = null;
+    if (db) db.stop();
+    closeModal();
+    show(`<h2>Your password was reset</h2>
+      <p>This session began before your account's password was reset, so it's been signed out. Sign in again with the new password.</p>
+      <div class="actions"><button type="button" class="btn primary big" id="resetSignInAgain" data-autofocus>Sign in again</button></div>`, (el) => {
+      el.querySelector("#resetSignInAgain").addEventListener("click", (e) => signOut(e, true));
+    });
   }
   const twoStepOn = () => signedOutEverywhere("Two-step sign-in is on", "You've been signed out everywhere, here too. Sign in again with your email, your password and a code from your authenticator app.");
   const passwordChanged = () => signedOutEverywhere("Your password is changed", "You've been signed out everywhere, here too. Sign in again with your new password.");

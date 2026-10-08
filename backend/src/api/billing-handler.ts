@@ -40,7 +40,8 @@
 // Isolation, in order:
 // 1. API Gateway's JWT authorizer checks the Cognito access token; this
 //    handler re-checks it (an access token from our issuer, not expired) and
-//    takes the user only from `sub`.
+//    takes the user only from `sub`. A session that began before the user's
+//    password was last reset is refused (session-reset.ts, supply-checkout-6uw.33).
 // 2. The team comes only from the path, and the caller must be its owner
 //    (authorizeTeam, then requireRole), before the body is read or Stripe is
 //    called.
@@ -101,6 +102,7 @@ import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handl
 import type { UserInfo } from "./cognito-user.js";
 import { accessToken, ApiError, errorResponse, header, json, jsonBody, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
+import type { SessionCheck } from "./session-reset.js";
 import { BILLING_ROUTES, type BillingRoute, IDEMPOTENCY_HEADER, routeKey } from "./routes.js";
 
 /** What the checkout needs from the Stripe client (the `stripe` package's, or a fake in tests). */
@@ -194,6 +196,8 @@ export interface CheckoutSessionParams {
 
 export interface BillingHandlerDeps {
   readonly dbFor: DbForBilling;
+  /** Refuses a session from before the caller's last password reset (session-reset.ts). The Lambda entry always sets it. */
+  readonly sessionCheck?: SessionCheck;
   /** The Stripe client, read from Secrets Manager on first use (billing/stripe.ts). */
   readonly stripe: () => Promise<BillingStripe>;
   /** The price ID for a catalog price, by its lookup key (billing/prices.ts). */
@@ -483,6 +487,7 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
       if (!route) throw new ApiError(404, "not_found", "No such route");
       const userId = callerId(event, now());
       if (event.requestContext.authorizer.jwt.claims.iss !== deps.issuerUrl) throw new ApiError(401, "unauthenticated", "Sign in again");
+      await deps.sessionCheck?.(event, userId);
       const response = await actions[route.action](event, userId, route);
       status = response.statusCode ?? 200;
       return response;

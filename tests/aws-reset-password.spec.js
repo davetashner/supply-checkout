@@ -4,7 +4,7 @@
 // email) is in backend/test/password-reset.test.ts.
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
-import { FakeBackend, AUTH, openAws } from "./fake-aws.js";
+import { FakeBackend, AUTH, ORIGIN, openAws, connected } from "./fake-aws.js";
 
 const account = (page) => page.locator("#account");
 const alert = (page) => page.locator("#accountError");
@@ -189,4 +189,55 @@ test("a sign-in that didn't finish says so until the person asks to reset their 
   await account(page).getByRole("button", { name: "Back to sign in" }).click();
   await expect(account(page).getByRole("heading", { name: "Sign in" })).toBeVisible();
   await expect(alert(page)).toBeHidden();
+});
+
+// After a reset, the API refuses a session that began before it (supply-checkout-6uw.33,
+// backend/src/api/session-reset.ts): 401 `unauthenticated` with the reason `password_reset`
+const RESET_REFUSAL = { status: 401, body: { error: { code: "unauthenticated", message: "Your password was reset after this session began. Sign in again with the new password.", reason: "password_reset" } } };
+
+test("a session from before a password reset is stopped, and signs in again with the new password, keeping the team and drafts", { tag: ["@J0"] }, async ({ page }) => {
+  const backend = new FakeBackend();
+  await openAws(page, backend);
+  await connected(page);
+  await page.evaluate(() => localStorage.setItem("supplyCheckout.receiptDraft.t1", JSON.stringify({ vendor: "Costco", items: [] })));
+  const refreshes = backend.requests("POST", "/auth/refresh").length;
+  backend.on("GET", "/teams/t1/members", RESET_REFUSAL);
+  await page.locator(".teambar").getByRole("button", { name: "Members" }).click();
+  await expect(account(page).getByRole("heading", { name: "Your password was reset" })).toBeVisible();
+  await expect(account(page).getByText("This session began before your account's password was reset, so it's been signed out. Sign in again with the new password.")).toBeVisible();
+  await expect(account(page).getByRole("button", { name: "Sign in again" })).toBeFocused();
+  await expect(page.locator("#overlay")).toBeHidden();
+  // No refresh: refreshed tokens keep the session's sign-in time, and would be refused too
+  expect(backend.requests("POST", "/auth/refresh")).toHaveLength(refreshes);
+  await expectAccessible(page);
+  // The API can't be reached: still here, and says so
+  backend.on("POST", "/auth/sign-out", { abort: true });
+  await account(page).getByRole("button", { name: "Sign in again" }).click();
+  await expect(page.locator("#toast")).toHaveText("Couldn't sign out. Try again.");
+  expect(backend.authRequests).toEqual([]);
+  // Signed out here and of Managed Login, whose session from before would otherwise sign straight back in
+  await account(page).getByRole("button", { name: "Sign in again" }).click();
+  await expect.poll(() => backend.authRequests).toEqual([`${AUTH}/logout?client_id=test-client&logout_uri=${encodeURIComponent(ORIGIN + "/")}`]);
+  expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(2);
+  expect(await page.evaluate(() => ["supplyCheckout.team", "supplyCheckout.owner", "supplyCheckout.receiptDraft.t1"].map((k) => localStorage.getItem(k) !== null))).toEqual([true, true, true]);
+});
+
+test("a session refused on several calls at once says so once", { tag: ["@J0"] }, async ({ page }) => {
+  const backend = new FakeBackend();
+  // The team's first lists, which go out together
+  backend.on("GET", /^\/teams\/t1\/(products|projects)$/, RESET_REFUSAL, 2);
+  await openAws(page, backend);
+  await expect(account(page).getByRole("heading", { name: "Your password was reset" })).toBeVisible();
+  await expect.poll(() => backend.requests("GET", /^\/teams\/t1\/(products|projects)$/).length).toBe(2);
+  await expect(account(page).getByRole("heading")).toHaveCount(1);
+  await expect(page.locator("#toast")).toBeHidden();
+  expect(backend.requests("POST", "/auth/refresh")).toHaveLength(1);
+});
+
+test("a session refused as the app starts asks to sign in again before any team opens", { tag: ["@J0"] }, async ({ page }) => {
+  const backend = new FakeBackend();
+  backend.on("GET", "/me", RESET_REFUSAL);
+  await openAws(page, backend);
+  await expect(account(page).getByRole("heading", { name: "Your password was reset" })).toBeVisible();
+  expect(backend.requests("GET", /^\/teams\//)).toEqual([]);
 });
