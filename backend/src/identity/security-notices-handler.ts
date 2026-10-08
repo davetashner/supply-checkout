@@ -274,13 +274,13 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
   }
 
   /** Looks the user up by sub, counting a failed lookup (`lookup_failed`) and throwing it on for Lambda to try again. */
-  async function lookUp(sub: string, kind: Kind, via: Via): Promise<PoolAccount | undefined> {
+  async function findUser(sub: string, seen: Seen): Promise<PoolAccount | undefined> {
     try {
       return await deps.findAccount(sub);
     } catch (error) {
       // cognitoRequest's message names only the action, status and error type; anything else, only its name. Lambda tries again
       const message = (error as { message?: unknown } | null)?.message;
-      failed(sub, kind, "lookup_failed", typeof message === "string" && LOOKUP_ERROR.test(message) ? message : errorCode(error), via);
+      failed(sub, seen.kind ?? "passwordSet", "lookup_failed", typeof message === "string" && LOOKUP_ERROR.test(message) ? message : errorCode(error), seen.via ?? "cloudtrail");
       throw new CountedError(error);
     }
   }
@@ -294,7 +294,7 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
     seen.sub = sub;
     const time = Date.parse(String(request.at));
     const at = (Number.isFinite(time) ? new Date(time) : now()).toISOString();
-    const account = await lookUp(sub, "passwordReset", "reset");
+    const account = await findUser(sub, seen);
     // Since deleted
     if (!account) return;
     await noticeEmailChange(sub, account, at, "reset");
@@ -320,7 +320,7 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
     const when = Number.isFinite(eventTime) ? new Date(eventTime) : now();
     const at = when.toISOString();
 
-    const account = await lookUp(sub, kind, "cloudtrail");
+    const account = await findUser(sub, seen);
     // Not an app user: another pool's (the event didn't name it), or since deleted
     if (!account) return;
     // When TOTP was turned on, for the billing check, before anything below can fail. A failed
