@@ -354,6 +354,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Sign-in trigger failing | J0 | P1 | As below. In the primary region only, where the user pool is. |
 | Sign-up trigger failing | J1 | P1 | As below. In the primary region only, where the user pool is. |
 | Welcome emails failing, Welcome emails refused, Welcome email function failing, Welcome emails dropped | J1 | P2 | As below. In the primary region only, where the user pool and the welcome email function are. |
+| Password reset help capped | J0 | P2 | `PasswordResetHelpCapped`, any in an hour: help emails for password resets reached `PASSWORD_RESET_HELP_PER_DAY` for the UTC day. In the primary region only. Check the email stack password reset function's logs (`outcome`) and SES's bounce and complaint rates; lower the cap if it's abuse ([Sign-in](infrastructure.md#sign-in)). |
 | Imports stuck | J2 | P2 | As below, from the stuck-import check. In the primary region only, where the check runs. |
 | Email verification not saved, Email codes failing, Near the sending limit | J3 | P2 | As below. Near the sending limit reads the SES quota check's gauge, and is in the primary region only, where the check runs. |
 | Invite surge | J3 | P2 | As below: `InvitesSent` summed over every team |

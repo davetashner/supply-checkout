@@ -2,21 +2,19 @@
 // for an address with an account, or a short help email for one without.
 //
 // Who asks: the API's POST /auth/password-reset (api/password-reset-handler.ts),
-// with an asynchronous invoke carrying the address as typed and the caller's
-// IP address (PasswordResetRequest). The API answers the same way before any
+// with an asynchronous invoke carrying the address as typed
+// (PasswordResetRequest), once the API has counted the request against the
+// address's and the caller's IP address's limits (data/password-resets.ts),
+// which count requests, not accounts. The API answers the same way before any
 // of this runs, so neither its answer nor how long it takes says whether the
 // address has an account. Only the address's inbox learns that.
 //
 // For each request:
-// 1. The limits (data/password-resets.ts), before the address is looked up,
-//    so they count an address with an account and one without alike: per
-//    address and per IP address, by the hour and the day. Past any, nothing
-//    is sent.
-// 2. The native user who signs in with the address (AdminGetUser by alias). If
+// 1. The native user who signs in with the address (AdminGetUser by alias). If
 //    it's enabled, confirmed and its email verified, Cognito's ForgotPassword
 //    emails it a code, as Managed Login's reset does. A disabled user gets
 //    nothing.
-// 3. Otherwise (no such user, one Cognito won't send a code to, or a Google or
+// 2. Otherwise (no such user, one Cognito won't send a code to, or a Google or
 //    Apple user), a help email: why there's no code, and the ways in that might
 //    work ("sign in with Google", or "a different address, Google or Apple, or
 //    create an account"). At most one an address a day, and
@@ -30,10 +28,9 @@
 // ask again), and there's no dead-letter queue, since the request holds an
 // address.
 //
-// Logs and metrics carry the outcome and the error's name: never the address
-// or the IP address.
+// Logs and metrics carry the outcome and the error's name: never the address.
 
-import { type Db, mailAddress, resetAddressKey, resetIpKey, takePasswordReset, takePasswordResetHelp } from "../data/index.js";
+import { type Db, mailAddress, resetAddressKey, takePasswordResetHelp } from "../data/index.js";
 import type { PoolUser } from "../identity/cognito-admin.js";
 import { asciiLower, federatedProvider, isFederatedOnly } from "../identity/email-verified-handler.js";
 import type { FederatedProvider } from "../identity/names.js";
@@ -45,7 +42,7 @@ import type { PasswordResetRequest } from "./names.js";
 export interface PasswordResetDeps {
   /** The app pool (AdminGetUser and ListUsers only) and Cognito's ForgotPassword. */
   readonly lookup: ResetLookup;
-  /** The app table, as the function's role reaches it: UpdateItem of PASSWORD_RESET_LIMIT_ATTRIBUTES in `RESETLIMIT#` partitions. */
+  /** The app table, as the function's role reaches it: UpdateItem of PASSWORD_RESET_LIMIT_ATTRIBUTES in `RESETLIMIT#HELP` partitions (the help emails' limits). */
   readonly db: Db;
   readonly mailer: Mailer;
   readonly obs: Observability;
@@ -55,13 +52,13 @@ export interface PasswordResetDeps {
 }
 
 /** What became of a request, as logged. */
-export type ResetOutcome = "invalid" | "limited" | "code" | "code_limited" | "disabled" | "help" | "help_limited" | "help_refused";
+export type ResetOutcome = "invalid" | "code" | "code_limited" | "disabled" | "help" | "help_limited" | "help_capped" | "help_refused";
 
-/** The request, if it's one: an address and an IP address, as strings of sane length. */
+/** The request, if it's one: an address, as a string of sane length. */
 export function resetRequestOf(event: unknown): PasswordResetRequest | undefined {
-  const { email, ip } = (event ?? {}) as { email?: unknown; ip?: unknown };
-  if (typeof email !== "string" || email.length > 320 || typeof ip !== "string" || ip.length > 64) return undefined;
-  return { email, ip };
+  const { email } = (event ?? {}) as { email?: unknown };
+  if (typeof email !== "string" || email.length > 320) return undefined;
+  return { email };
 }
 
 /** A native user Cognito will email a reset code to: enabled, confirmed (or asked to reset) and with a verified email. */
@@ -86,9 +83,11 @@ export function createPasswordResetHandler(deps: PasswordResetDeps) {
   }
 
   async function help(address: string, addressKey: string, signInWith: FederatedProvider | undefined): Promise<ResetOutcome> {
-    if (!(await takePasswordResetHelp(db, addressKey, now()))) {
-      obs.count(BusinessMetric.PasswordResetsLimited, 1, { limit: "help" });
-      return "help_limited";
+    const taken = await takePasswordResetHelp(db, addressKey, now());
+    if (taken !== "ok") {
+      // Everyone's cap reached has its own metric, for the "Password reset help capped" alarm
+      obs.count(taken === "cap" ? BusinessMetric.PasswordResetHelpCapped : BusinessMetric.PasswordResetsLimited, 1, { limit: "help" });
+      return taken === "cap" ? "help_capped" : "help_limited";
     }
     try {
       await mailer.send(address, { kind: "passwordResetHelp", supportAddress: deps.supportAddress, ...(signInWith ? { signInWith } : {}) });
@@ -104,17 +103,12 @@ export function createPasswordResetHandler(deps: PasswordResetDeps) {
   async function handle(event: unknown): Promise<ResetOutcome> {
     const request = resetRequestOf(event);
     if (!request) return "invalid";
-    let address: string, addressKey: string, ipKey: string;
+    let address: string, addressKey: string;
     try {
       address = mailAddress(request.email);
       addressKey = resetAddressKey(address);
-      ipKey = resetIpKey(request.ip);
     } catch {
       return "invalid";
-    }
-    if (!(await takePasswordReset(db, addressKey, ipKey, now()))) {
-      obs.count(BusinessMetric.PasswordResetsLimited, 1, { limit: "request" });
-      return "limited";
     }
 
     const native = await lookup.byAlias(address);

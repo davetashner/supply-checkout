@@ -56,6 +56,8 @@ import {
   IMPORT_INDEX_ATTRIBUTES,
   INVITE_LIMIT_ATTRIBUTES,
   INVITE_LIMIT_PREFIX,
+  PASSWORD_RESET_LIMIT_ATTRIBUTES,
+  PASSWORD_RESET_REQUEST_PARTITIONS,
   MEMBER_ROW_ATTRIBUTES,
   MEMBER_SEAT_ATTRIBUTES,
   OPERATOR_AUDIT_PREFIX,
@@ -232,14 +234,16 @@ export class ApiStack extends SupplyCheckoutStack {
       },
     });
 
-    // Resetting a forgotten password from the app (supply-checkout-6uw.26). Its role may invoke the
-    // password reset function, by its fixed name in the primary region, and nothing else: no table,
-    // no Cognito admin call (ConfirmForgotPassword is a public call with the web client's ID)
+    // Resetting a forgotten password from the app (supply-checkout-6uw.26). Its role may count the
+    // requests' limits (UpdateItem in the RESETLIMIT#ADDRESS# and RESETLIMIT#IP# partitions only, below),
+    // invoke the password reset function by its fixed name in the primary region, and nothing else: no
+    // Cognito admin call (ConfirmForgotPassword is a public call with the web client's ID)
     const passwordResetTarget = emailResourceNames(config.envName).passwordResetFunction;
     this.passwordResetFunction = this.handler("PasswordResetFunction", "password-reset", {
       memorySize: 256,
       description: "Password resets from the app's sign-in screen: queues a request, and confirms a code",
       environment: {
+        [API_ENV.tableName]: table,
         [API_ENV.clientId]: ssm(identity.webClientId),
         [API_ENV.issuerUrl]: ssm(identity.issuerUrl),
         [API_ENV.allowedOrigins]: origins.join(","),
@@ -252,6 +256,18 @@ export class ApiStack extends SupplyCheckoutStack {
         sid: "QueuePasswordResets",
         actions: ["lambda:InvokeFunction"],
         resources: [Stack.of(this).formatArn({ service: "lambda", region: config.primaryRegion, resource: "function", resourceName: passwordResetTarget, arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
+      }),
+    );
+    this.passwordResetFunction.addToRolePolicy(
+      new PolicyStatement({
+        sid: "CountPasswordResets",
+        actions: ["dynamodb:UpdateItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...PASSWORD_RESET_REQUEST_PARTITIONS] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...PASSWORD_RESET_LIMIT_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
       }),
     );
 
@@ -269,6 +285,8 @@ export class ApiStack extends SupplyCheckoutStack {
         resources: [ssm(`/supply-checkout/${config.envName}/data/table-key-arn`)],
         conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
       });
+    // The password reset function counts its limits in the table, encrypted with this key
+    this.passwordResetFunction.addToRolePolicy(tableKeyStatement());
 
     // The data-access role: DynamoDB on one team's partitions, chosen by the session tag
     const dataRole = this.dataFunction.role;

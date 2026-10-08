@@ -181,7 +181,7 @@ export class OpsDashboard extends Construct {
     );
     this.dashboard.addWidgets(
       // Password resets asked for in the app (supply-checkout-6uw.26): help emails to addresses we sent no code to, and requests a limit stopped
-      businessGraph("J0: password reset help emailed, and requests limited", [BusinessMetric.PasswordResetHelpEmails, BusinessMetric.PasswordResetsLimited]),
+      businessGraph("J0: password reset help emailed, requests limited, and help capped", [BusinessMetric.PasswordResetHelpEmails, BusinessMetric.PasswordResetsLimited, BusinessMetric.PasswordResetHelpCapped]),
     );
   }
 }

@@ -9,6 +9,14 @@
 // - byEmail: ListUsers with an `email = "…"` filter, for the users AdminGetUser
 //   doesn't find by alias: a Google or Apple user (whose username is
 //   `<provider>_<id>`), or a native user whose address isn't its sign-in alias.
+//   Cognito doesn't say the filter ignores case (its docs say so only for
+//   `cognito:user_status`), and a Google or Apple user's `email` is stored as
+//   the provider sent it, so the function asks for the address as typed and
+//   in lower case. Google and Apple send lower case in practice. A provider
+//   user whose stored address is cased some third way isn't found: that
+//   address gets the general help email, which suggests Google and Apple too,
+//   rather than the one naming its provider. Nothing better is possible
+//   without listing the whole pool.
 // - forgotPassword: Cognito's own ForgotPassword with the web client's ID, for
 //   one user by their username. It's a public call (no IAM, unsigned), as
 //   Managed Login makes it; the pool emails the code from its own template.

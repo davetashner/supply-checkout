@@ -2511,9 +2511,10 @@ paths:
         a reset code (enter it with `/auth/password-reset/confirm`);
         otherwise the address gets a short help email (it may have signed up
         with another address or with Google or Apple, or have no account
-        yet). Limited per address and per IP address by the hour and the day,
-        and help emails to one an address a day; past a limit nothing is sent,
-        and the answer is still 204.
+        yet). Limited per address and per IP address by the hour and the day
+        (requests, not accounts): past a limit, 429 `rate_limited` and nothing
+        is sent. Help emails are limited to one an address a day, and a daily
+        cap for everyone; past those the answer is still 204.
       security: []
       parameters: [{ $ref: "#/components/parameters/origin" }]
       requestBody:
@@ -2531,6 +2532,9 @@ paths:
           description: Taken. A code or a help email goes to the address, unless a limit was reached.
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/OriginRefused" }
+        "429":
+          description: "`quota_exceeded` / `rate_limited`: too many requests for this address or from this network; try later, or use Managed Login's reset."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "503": { $ref: "#/components/responses/Unavailable" }
   /auth/password-reset/confirm:
     post:

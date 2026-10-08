@@ -22,23 +22,32 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
   const busy = (el, on) => { for (const b of el.querySelectorAll("button")) b.disabled = on; };
   const wireBack = (el) => el.querySelector("#resetBack").addEventListener("click", back);
 
-  // Asks for a code for `email`: resolves true once the API took it, or says why not
+  // Asks for a code for `email`: resolves true once the API took it, or says why not. Past
+  // the API's limits (per address and per network), the way left is Managed Login's own reset,
+  // on the sign-in page, which has Cognito's limits instead of ours.
   async function ask(el, email) {
     busy(el, true);
     try { await post("/auth/password-reset", { email }); return true; }
     catch (e) {
-      setError(e.code === "bad_request" ? "Enter your email address, like name@example.com." : "Couldn't send that. Check your connection and try again.");
+      const limited = e.code === "quota_exceeded";
+      setError(limited ? "Too many reset requests for now. Try again in an hour, or reset your password on the sign-in page."
+        : e.code === "bad_request" ? "Enter your email address, like name@example.com." : "Couldn't send that. Check your connection and try again.");
+      el.querySelector("#resetFallback").hidden = !limited;
       return false;
     }
     finally { busy(el, false); }
   }
+  // Shown past the limits: the sign-in page, whose "Forgot your password?" is Managed Login's reset
+  const fallback = (url) => `<p class="hint" id="resetFallback" hidden><a href="${esc(url)}" id="resetElsewhere">Go to the sign-in page</a> and choose <strong>Forgot your password?</strong> there.</p>`;
 
-  function askForAddress() {
+  async function askForAddress() {
+    const url = await signInUrl();
     show(`<h2>Reset your password</h2>
       <p>Enter the email address you sign in with. If there's an account for it, we'll email you a code to set a new password.</p>
       <form id="resetForm" method="post" novalidate>
         <div class="field"><label for="resetEmail">Email address</label><input type="email" id="resetEmail" name="email" autocomplete="username" required data-autofocus></div>
         <p class="error" role="alert" id="accountError" hidden></p>
+        ${fallback(url)}
         <div class="actions"><button type="submit" class="btn primary" id="resetSend">Send code</button> <button type="button" class="btn ghost" id="resetBack">Back to sign in</button></div>
       </form>`, (el) => {
       wireBack(el);
@@ -64,6 +73,7 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
         <div class="field"><label for="confirmPassword">Confirm new password</label><input type="password" id="confirmPassword" name="confirm-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}" required></div>
         <p class="hint" role="status" id="resetStatus"></p>
         <p class="error" role="alert" id="accountError" hidden></p>
+        ${fallback(url)}
         <div class="actions"><button type="submit" class="btn primary" id="resetSave">Set password</button> <button type="button" class="btn" id="resetAgain">Send a new code</button> <button type="button" class="btn ghost" id="resetBack">Back to sign in</button></div>
       </form>`, (el) => {
       const $ = (s) => el.querySelector(s);
@@ -105,5 +115,5 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
       <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn" data-autofocus>Sign in</a></div>`);
   }
 
-  askForAddress();
+  return askForAddress();
 }

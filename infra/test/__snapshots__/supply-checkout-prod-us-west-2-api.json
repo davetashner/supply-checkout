@@ -545,6 +545,71 @@
                 ]
               },
               "Sid": "QueuePasswordResets"
+            },
+            {
+              "Action": "dynamodb:UpdateItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "RESETLIMIT#ADDRESS#*",
+                    "RESETLIMIT#IP#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "count",
+                    "expiresAt"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-west-2:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "CountPasswordResets"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey",
+                "kms:Encrypt",
+                "kms:GenerateDataKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "dynamodb.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "TableKeyThroughDynamoDb"
             }
           ],
           "Version": "2012-10-17"
@@ -583,7 +648,8 @@
             "PASSWORD_RESET_FUNCTION": "supply-checkout-prod-password-reset",
             "PASSWORD_RESET_REGION": "us-east-1",
             "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
-            "SUPPLY_CHECKOUT_ENV": "prod"
+            "SUPPLY_CHECKOUT_ENV": "prod",
+            "TABLE_NAME": "supply-checkout-prod-app"
           }
         },
         "Handler": "index.handler",

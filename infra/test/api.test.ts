@@ -239,12 +239,13 @@ describe("functions", () => {
     expect(env("AuthFunction")).toMatchObject({ AUTH_URL: "https://auth.supplycheckout.com", CLIENT_ID: { Ref: expect.stringMatching(/webclientid/i) }, ALLOWED_ORIGINS: "https://app.supplycheckout.com" });
   });
 
-  it("let the password reset function invoke only the password reset function, in the primary region, and reach nothing else (supply-checkout-6uw.26)", () => {
+  it("let the password reset function count only its request limits and invoke only the password reset function, in the primary region (supply-checkout-6uw.26)", () => {
     for (const region of [EAST, WEST]) {
       const { template } = api(region);
       const [[id, fn]] = resources(template, "AWS::Lambda::Function").filter(([fid]) => fid.startsWith("PasswordResetFunction")) as [[string, Resource]];
       expect(fn.Properties.Environment).toMatchObject({
         Variables: {
+          TABLE_NAME: "supply-checkout-prod-app",
           CLIENT_ID: { Ref: expect.stringMatching(/webclientid/i) },
           ISSUER_URL: { Ref: expect.stringMatching(/issuerurl/i) },
           ALLOWED_ORIGINS: "https://app.supplycheckout.com",
@@ -264,14 +265,27 @@ describe("functions", () => {
           Action: "lambda:InvokeFunction",
           Resource: { "Fn::Join": ["", [`arn:aws:lambda:${EAST}:`, { Ref: "AWS::AccountId" }, ":function:supply-checkout-prod-password-reset"]] },
         },
+        {
+          Sid: "CountPasswordResets",
+          Effect: "Allow",
+          Action: "dynamodb:UpdateItem",
+          Resource: { "Fn::Join": ["", [`arn:aws:dynamodb:${region}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] },
+          Condition: {
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["RESETLIMIT#ADDRESS#*", "RESETLIMIT#IP#*"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "count", "expiresAt"] },
+            StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+          },
+        },
+        expect.objectContaining({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } }),
         { Effect: "Allow", Action: ["xray:PutTelemetryRecords", "xray:PutTraceSegments"], Resource: "*" },
       ]);
     }
   });
 
-  it("don't give any function's own role DynamoDB access", () => {
+  it("don't give any function's own role DynamoDB access, but the password reset function's its limits' counters", () => {
     const { template } = api();
     for (const [id, policy] of resources(template, "AWS::IAM::Policy")) {
+      if (id.startsWith("PasswordResetFunctionRole")) continue;
       expect(JSON.stringify(policy.Properties.PolicyDocument), id).not.toContain("dynamodb:");
     }
   });

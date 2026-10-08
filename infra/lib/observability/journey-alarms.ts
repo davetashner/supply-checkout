@@ -10,6 +10,7 @@ import {
 import { Construct } from "constructs";
 import { billingResourceNames } from "../../../backend/src/billing/names.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
+import { PASSWORD_RESET_HELP_PER_DAY } from "../../../backend/src/data/schema.js";
 import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import {
@@ -303,6 +304,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: `WelcomeEmailsRefused at least ${WELCOME_REFUSALS_ALARM_PER_HOUR} in an hour: SES refused a welcome email (sending paused, or a suppressed address). Counted apart from WelcomeEmailFailures; SES is out of the sandbox, so it no longer refuses unverified addresses and any refusal is worth a look (supply-checkout-6uw.25, supply-checkout-3sv.21).`,
       metric: business(BusinessMetric.WelcomeEmailsRefused, region, Duration.hours(1)),
       threshold: WELCOME_REFUSALS_ALARM_PER_HOUR - 1,
+      primaryOnly: true,
+    },
+    {
+      id: "password-reset-help-capped",
+      title: "Password reset help capped",
+      journeys: "J0",
+      severity: "P2",
+      rule: `Any PasswordResetHelpCapped in an hour: the help emails to addresses we can't send a reset code to reached their cap for the UTC day (PASSWORD_RESET_HELP_PER_DAY, ${PASSWORD_RESET_HELP_PER_DAY}), so no more go out until midnight UTC. Either many people without accounts are resetting, or someone is using the route to mail addresses that never signed up, which risks SES's bounce and complaint rates (supply-checkout-6uw.26).`,
+      metric: business(BusinessMetric.PasswordResetHelpCapped, region, Duration.hours(1)),
+      threshold: 0,
       primaryOnly: true,
     },
     {

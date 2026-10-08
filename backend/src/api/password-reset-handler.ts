@@ -1,22 +1,28 @@
 // Resetting a forgotten password from the app's sign-in screen
 // (supply-checkout-6uw.26, PASSWORD_RESET_ROUTES):
 //
-//   POST /auth/password-reset          {email}: hands the request to the
-//                                      password reset function (an
-//                                      asynchronous invoke) and answers 204.
+//   POST /auth/password-reset          {email}: counts the address's and the
+//                                      caller's IP address's limits, hands
+//                                      the request to the password reset
+//                                      function (an asynchronous invoke) and
+//                                      answers 204, or 429 past a limit.
 //   POST /auth/password-reset/confirm  {email, code, password}: Cognito's
 //                                      ConfirmForgotPassword, which sets the
 //                                      new password if the code is right.
 //
 // No account enumeration. Asking for a reset answers 204 whatever the
 // address: this function never looks the address up, and does the same work
-// (check the body, queue the request) for every address, so neither the answer
-// nor its timing depends on whether there's an account. The password reset
-// function (email/password-reset-handler.ts) decides, after the answer has
-// gone, whether Cognito emails a code or we email help, and applies the
-// per-address and per-IP limits. Only a malformed body (400), a refused
-// origin (403) or a request Lambda wouldn't queue (503) answers otherwise,
-// none of which depends on the address having an account.
+// (check the body, count the limits, queue the request) for every address, so
+// neither the answer nor its timing depends on whether there's an account.
+// The limits (data/password-resets.ts: per address and per IP address, by the
+// hour and the day) count requests, not accounts, so their 429 doesn't depend
+// on it either; past one, nothing is queued, and the person is pointed at the
+// sign-in page's own reset. The password reset function
+// (email/password-reset-handler.ts) decides, after the answer has gone,
+// whether Cognito emails a code or we email help. Only a malformed body (400),
+// a refused origin (403), a limit (429) or a request Lambda wouldn't queue
+// (503) answers otherwise, none of which depends on the address having an
+// account.
 //
 // Confirming maps Cognito's answers to the app's, and every way a code can
 // fail (wrong, expired, no such user, no code asked for) is the one answer,
@@ -31,9 +37,9 @@
 // password.
 
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from "aws-lambda";
-import { mailAddress } from "../data/index.js";
+import { type Db, mailAddress, resetAddressKey, resetIpKey, takePasswordReset } from "../data/index.js";
 import type { PasswordResetRequest } from "../email/names.js";
-import type { Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability } from "../observability/index.js";
 import { ApiError, errorFor, errorResponse, header, jsonBody, noContent } from "./http.js";
 import { PASSWORD_RESET_ROUTES, routeKey } from "./routes.js";
 
@@ -49,6 +55,9 @@ export interface PasswordResetConfig {
 export interface PasswordResetHandlerDeps {
   readonly config: PasswordResetConfig;
   readonly obs: Observability;
+  /** The app table, as the function's role reaches it: UpdateItem of PASSWORD_RESET_LIMIT_ATTRIBUTES in `RESETLIMIT#ADDRESS#` and `RESETLIMIT#IP#` partitions. */
+  readonly db: Db;
+  readonly now?: () => Date;
   /** Queues one request for the password reset function. Throws if Lambda didn't accept it. */
   readonly queue: (request: PasswordResetRequest) => Promise<void>;
   readonly fetch?: typeof fetch;
@@ -77,6 +86,8 @@ const codeWrong = () => new ApiError(400, "bad_request", "That code isn't right,
 const passwordInvalid = () =>
   new ApiError(400, "bad_request", "Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol, that you haven't used before", "password_invalid");
 const tooMany = () => new ApiError(429, "quota_exceeded", "Too many tries; wait a few minutes, then try again");
+/** Past a request limit: try later, or Managed Login's own reset, which has Cognito's limits instead of ours. */
+export const RESET_LIMITED = "Too many reset requests for now. Try again later, or choose Sign in and use the reset on that page";
 
 /** Cognito's refusals of ConfirmForgotPassword, by error type: every failed code is code_mismatch. */
 const REFUSALS = new Map<string, () => ApiError>(Object.entries({
@@ -102,7 +113,8 @@ function addressIn(body: Record<string, unknown>): string {
 }
 
 export function createPasswordResetHandler(deps: PasswordResetHandlerDeps) {
-  const { config, obs, queue } = deps;
+  const { config, obs, queue, db } = deps;
+  const now = deps.now ?? (() => new Date());
   if (!ISSUER.test(config.issuerUrl)) throw new Error("ISSUER_URL is not a Cognito user pool issuer");
   const endpoint = `${new URL(config.issuerUrl).origin}/`;
   const origins = new Set(config.allowedOrigins);
@@ -110,12 +122,21 @@ export function createPasswordResetHandler(deps: PasswordResetHandlerDeps) {
 
   async function requestReset(event: APIGatewayProxyEventV2) {
     const body = jsonBody(event, ["email"]);
-    addressIn(body);
-    const ip = event.requestContext?.http?.sourceIp;
-    if (typeof ip !== "string" || !ip) throw new ApiError(400, "bad_request", "No source address");
+    const address = addressIn(body);
+    let ipKey: string;
+    try {
+      ipKey = resetIpKey(String(event.requestContext?.http?.sourceIp ?? ""));
+    } catch {
+      throw new ApiError(400, "bad_request", "No source address");
+    }
+    if (!(await takePasswordReset(db, resetAddressKey(address), ipKey, now()))) {
+      obs.count(BusinessMetric.PasswordResetsLimited, 1, { limit: "request" });
+      obs.logger.info("Password reset", { outcome: "limited" });
+      throw new ApiError(429, "quota_exceeded", RESET_LIMITED, "rate_limited");
+    }
     try {
       // As typed (trimmed), so the function can look the address up as it was given as well as in its usual form
-      await queue({ email: (body.email as string).trim(), ip });
+      await queue({ email: (body.email as string).trim() });
     } catch (error) {
       obs.logger.error("Password reset not queued", { error: (error as Error).name });
       throw new ApiError(503, "unavailable", "Couldn't send that just now; try again");

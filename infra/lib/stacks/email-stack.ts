@@ -12,7 +12,7 @@ import { LambdaSubscription } from "aws-cdk-lib/aws-sns-subscriptions";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { GSI2, PASSWORD_RESET_LIMIT_ATTRIBUTES, PASSWORD_RESET_LIMIT_PREFIX, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
+import { GSI2, PASSWORD_RESET_HELP_PARTITIONS, PASSWORD_RESET_LIMIT_ATTRIBUTES, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
 import { EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, emailResourceNames, PASSWORD_RESET_ENV, WELCOME_ENV } from "../../../backend/src/email/names.js";
 import { SECURITY_NOTICE_EVENTS, SECURITY_NOTICES_ENV } from "../../../backend/src/identity/names.js";
 import { TEST_MAIL_DOMAIN_ENV } from "../../../backend/src/data/test-accounts.js";
@@ -94,12 +94,13 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  *
  * - The api stack's password reset function invokes this one asynchronously,
  *   by its fixed name (emailResourceNames().passwordResetFunction), with the
- *   address and the caller's IP address. Only that function's role is granted
+ *   address. Only that function's role is granted
  *   it.
  * - The function may call AdminGetUser and ListUsers on the app pool only,
  *   send the app's email (grantSendEmail), and UpdateItem naming only
- *   PASSWORD_RESET_LIMIT_ATTRIBUTES, returning nothing, in `RESETLIMIT#`
- *   partitions (its limits, keyed by hashes). Cognito's ForgotPassword is a
+ *   PASSWORD_RESET_LIMIT_ATTRIBUTES, returning nothing, in `RESETLIMIT#HELP`
+ *   partitions (the help emails' limits, keyed by hashes). The API counts the
+ *   requests' limits before it invokes this. Cognito's ForgotPassword is a
  *   public call (the web client's ID), so it needs no permission.
  * - No retries and no dead-letter queue: a request holds an address, and the
  *   person can simply ask again. A request older than 15 minutes is dropped.
@@ -277,14 +278,14 @@ export class EmailStack extends SupplyCheckoutStack {
         resources: [userPoolArn],
       }),
     );
-    // backend/src/data/password-resets.ts: the limits' counters, by hashes, returning nothing
+    // backend/src/data/password-resets.ts: the help emails' counters, by hashes, returning nothing (the API counts the requests)
     fn.addToRolePolicy(
       new PolicyStatement({
-        sid: "CountPasswordResets",
+        sid: "CountPasswordResetHelp",
         actions: ["dynamodb:UpdateItem"],
         resources: [tableArn],
         conditions: {
-          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${PASSWORD_RESET_LIMIT_PREFIX}*`] },
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...PASSWORD_RESET_HELP_PARTITIONS] },
           "ForAllValues:StringEquals": { "dynamodb:Attributes": [...PASSWORD_RESET_LIMIT_ATTRIBUTES] },
           StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
         },

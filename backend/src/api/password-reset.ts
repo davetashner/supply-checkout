@@ -1,5 +1,6 @@
 // Lambda entry point for the password reset routes (see password-reset-handler.ts).
 
+import { createDb } from "../data/index.js";
 import { eventInvoker } from "../identity/welcome-invoke.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { createPasswordResetHandler } from "./password-reset-handler.js";
@@ -19,4 +20,4 @@ const config = {
 };
 // The password reset function is in the primary region, beside the user pool and SES
 const queue = eventInvoker({ region: required(API_ENV.passwordResetRegion), functionName: required(API_ENV.passwordResetFunction), timeoutMs: 3_000 });
-export const handler = withObservability(obs, createPasswordResetHandler({ config, obs, queue }));
+export const handler = withObservability(obs, createPasswordResetHandler({ config, obs, queue, db: createDb() }));

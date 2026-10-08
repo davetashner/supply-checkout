@@ -92,6 +92,33 @@ test("an address that isn't one is refused before it's sent, and the API's refus
   await expect(account(page).getByRole("heading", { name: "Reset your password" })).toBeVisible();
 });
 
+test("past the API's limits, it points at the sign-in page's own reset", { tag: ["@J0"] }, async ({ page }) => {
+  const backend = await openReset(page);
+  const limited = { status: 429, body: { error: { code: "quota_exceeded", reason: "rate_limited", message: "Too many" } } };
+  const fallback = account(page).locator("#resetFallback");
+  await expect(fallback).toBeHidden();
+  backend.on("POST", "/auth/password-reset", limited);
+  await account(page).getByLabel("Email address").fill("pat@example.com");
+  await account(page).getByRole("button", { name: "Send code" }).click();
+  await expect(alert(page)).toHaveText("Too many reset requests for now. Try again in an hour, or reset your password on the sign-in page.");
+  await expect(fallback).toBeVisible();
+  const url = new URL(await account(page).getByRole("link", { name: "Go to the sign-in page" }).getAttribute("href"));
+  expect(url.origin + url.pathname).toBe(AUTH + "/oauth2/authorize");
+  await expectAccessible(page);
+  // Another failure hides it again; a code asked for once more works
+  backend.on("POST", "/auth/password-reset", { abort: true });
+  await account(page).getByRole("button", { name: "Send code" }).click();
+  await expect(alert(page)).toHaveText("Couldn't send that. Check your connection and try again.");
+  await expect(fallback).toBeHidden();
+  await account(page).getByRole("button", { name: "Send code" }).click();
+  await expect(account(page).getByRole("heading", { name: "Check your email" })).toBeVisible();
+  // And a new code past the limits, on the code screen
+  backend.on("POST", "/auth/password-reset", limited);
+  await account(page).getByRole("button", { name: "Send a new code" }).click();
+  await expect(alert(page)).toHaveText("Too many reset requests for now. Try again in an hour, or reset your password on the sign-in page.");
+  await expect(account(page).locator("#resetFallback")).toBeVisible();
+});
+
 test("the code and the new password are checked, and each refusal says what to do", { tag: ["@J0"] }, async ({ page }) => {
   const backend = await openReset(page);
   await askFor(page, "pat@example.com");

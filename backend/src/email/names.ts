@@ -63,14 +63,13 @@ export const WELCOME_ENV = {
 
 /**
  * What the API's password reset route (POST /auth/password-reset) hands the
- * password reset function (an asynchronous invoke, supply-checkout-6uw.26): the
- * address as the person typed it, trimmed, and the caller's IP address, for
- * the limits. The function decides everything else, out of the request's
+ * password reset function (an asynchronous invoke, supply-checkout-6uw.26),
+ * once it has counted the request's limits: the address as the person typed
+ * it, trimmed. The function decides everything else, out of the request's
  * sight, so the API's answer can't say whether the address has an account.
  */
 export interface PasswordResetRequest {
   readonly email: string;
-  readonly ip: string;
 }
 
 /** The password reset function's environment, besides what grantSendEmail sets. */

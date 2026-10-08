@@ -1,12 +1,13 @@
 // Password resets from the app's sign-in screen (supply-checkout-6uw.26):
 //
 // - the API's routes answer a reset request the same way whatever the
-//   address, without looking it up, and only queue it; confirming maps every
+//   address, without looking it up: they count the address's and IP
+//   address's limits (429 past one) and only queue it; confirming maps every
 //   failed code to one answer;
-// - the password reset function counts the limits first, then sends Cognito's
-//   code to an account that can have one, help to an address without one (or
-//   a Google or Apple one), and nothing to a disabled account or past a limit;
-// - its limits are all-or-nothing, keyed by hashes, within its IAM policy;
+// - the password reset function sends Cognito's code to an account that can
+//   have one, help to an address without one (or a Google or Apple one), and
+//   nothing to a disabled account or past the help emails' limits;
+// - the limits are all-or-nothing, keyed by hashes, each within its function's IAM policy;
 // - no address, IP address, code or password is logged.
 
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
@@ -23,7 +24,7 @@ import {
   takePasswordReset,
   takePasswordResetHelp,
 } from "../src/data/index.js";
-import { PASSWORD_RESET_LIMIT_ATTRIBUTES, PASSWORD_RESET_LIMIT_PREFIX } from "../src/data/schema.js";
+import { PASSWORD_RESET_HELP_PARTITIONS, PASSWORD_RESET_LIMIT_ATTRIBUTES, PASSWORD_RESET_LIMIT_PREFIX, PASSWORD_RESET_REQUEST_PARTITIONS } from "../src/data/schema.js";
 import { emailResourceNames, type PasswordResetRequest } from "../src/email/names.js";
 import { createPasswordResetHandler, resetRequestOf } from "../src/email/password-reset-handler.js";
 import { renderEmail } from "../src/email/templates.js";
@@ -72,8 +73,15 @@ function expectNothingPersonal() {
   expect(text).not.toMatch(/example\.com|pat\.lee|203\.0\.113|2001:db8|123456|Correct-Horse/i);
 }
 
-/** The password reset function's IAM policy (email stack): UpdateItem in RESETLIMIT# partitions naming only PASSWORD_RESET_LIMIT_ATTRIBUTES, returning nothing. */
-function policy(command: string, input: Record<string, unknown>): boolean {
+/**
+ * The two functions' IAM policies: UpdateItem naming only
+ * PASSWORD_RESET_LIMIT_ATTRIBUTES, returning nothing, in the API function's
+ * request partitions (api stack) or the worker's help partitions (email stack).
+ */
+const like = (patterns: readonly string[]) => (pk: string) => patterns.some((p) => (p.endsWith("*") ? pk.startsWith(p.slice(0, -1)) : pk === p));
+const apiPolicy = (command: string, input: Record<string, unknown>) => policyFor(like(PASSWORD_RESET_REQUEST_PARTITIONS), command, input);
+const policy = (command: string, input: Record<string, unknown>) => policyFor(like(PASSWORD_RESET_HELP_PARTITIONS), command, input);
+function policyFor(partition: (pk: string) => boolean, command: string, input: Record<string, unknown>): boolean {
   const one = (kind: string, body: Record<string, unknown>) => {
     const pk = String(((body.Key ?? {}) as { PK?: unknown }).PK ?? "");
     const names = Object.values((body.ExpressionAttributeNames ?? {}) as Record<string, string>);
@@ -81,6 +89,7 @@ function policy(command: string, input: Record<string, unknown>): boolean {
     return (
       (kind === "Update" || kind === "UpdateCommand") &&
       pk.startsWith(PASSWORD_RESET_LIMIT_PREFIX) &&
+      partition(pk) &&
       named.every((n) => (PASSWORD_RESET_LIMIT_ATTRIBUTES as readonly string[]).includes(n)) &&
       (body.ReturnValues === undefined || body.ReturnValues === "NONE")
     );
@@ -93,7 +102,10 @@ function policy(command: string, input: Record<string, unknown>): boolean {
 describe("the limits", () => {
   it("count reset requests per address and IP address, by the hour and the day, all or nothing", async () => {
     const table = new MemoryTable();
-    const db = table.guarded(policy);
+    const db = table.guarded(apiPolicy);
+    // The worker's role can't count requests, nor the API's help emails
+    await expect(takePasswordReset(table.guarded(policy), "a".repeat(64), "b".repeat(64), NOW)).rejects.toThrow("not authorized");
+    await expect(takePasswordResetHelp(db, "a".repeat(64), NOW)).rejects.toThrow("not authorized");
     const address = resetAddressKey(ADDRESS), ip = resetIpKey(IP), other = resetIpKey("198.51.100.1");
     for (let i = 0; i < PASSWORD_RESET_LIMITS.addressPerHour; i++) expect(await takePasswordReset(db, address, ip, NOW)).toBe(true);
     // The address's hour is used up, from any IP address; the refused request counts nowhere
@@ -124,11 +136,15 @@ describe("the limits", () => {
     const table = new MemoryTable();
     const db = table.guarded(policy);
     const address = resetAddressKey(ADDRESS);
-    expect(await takePasswordResetHelp(db, address, NOW)).toBe(true);
-    expect(await takePasswordResetHelp(db, address, NOW)).toBe(false);
-    expect(await takePasswordResetHelp(db, address, new Date("2026-10-09T00:00:01Z"))).toBe(true);
+    expect(await takePasswordResetHelp(db, address, NOW)).toBe("ok");
+    expect(await takePasswordResetHelp(db, address, NOW)).toBe("address");
+    expect(await takePasswordResetHelp(db, address, new Date("2026-10-09T00:00:01Z"))).toBe("ok");
     table.put({ PK: "RESETLIMIT#HELP", SK: "DAY#2026-10-08", count: PASSWORD_RESET_HELP_PER_DAY });
-    expect(await takePasswordResetHelp(db, resetAddressKey("someone@example.com"), NOW)).toBe(false);
+    expect(await takePasswordResetHelp(db, resetAddressKey("someone@example.com"), NOW)).toBe("cap");
+    // Both used up reads as the cap
+    expect(await takePasswordResetHelp(db, address, NOW)).toBe("cap");
+    // A cap of 0 sends none
+    expect(await takePasswordResetHelp(db, resetAddressKey("third@example.com"), new Date("2026-10-10T00:00:00Z"), 0)).toBe("cap");
     expect(table.get(`RESETLIMIT#HELP#${resetAddressKey("someone@example.com")}`, "DAY#2026-10-08")).toBeUndefined();
   });
 
@@ -139,11 +155,12 @@ describe("the limits", () => {
     table.beforeTransactWrite = () => {
       if (conflicts-- > 0) throw conflict();
     };
-    expect(await takePasswordResetHelp(table.db(), "a".repeat(64), NOW)).toBe(true);
+    expect(await takePasswordResetHelp(table.db(), "a".repeat(64), NOW)).toBe("ok");
     table.beforeTransactWrite = () => {
       throw conflict();
     };
-    expect(await takePasswordResetHelp(table.db(), "a".repeat(64), NOW)).toBe(false);
+    expect(await takePasswordResetHelp(table.db(), "a".repeat(64), NOW)).toBe("address");
+    expect(await takePasswordReset(table.db(), "a".repeat(64), "b".repeat(64), NOW)).toBe(false);
     table.beforeTransactWrite = () => {
       throw Object.assign(new Error("Transaction cancelled"), { name: "TransactionCanceledException" });
     };
@@ -171,6 +188,8 @@ describe("the limits", () => {
 
   it("are the schema's", () => {
     expect([...PASSWORD_RESET_LIMIT_ATTRIBUTES]).toEqual(["PK", "SK", "count", "expiresAt"]);
+    expect([...PASSWORD_RESET_REQUEST_PARTITIONS]).toEqual(["RESETLIMIT#ADDRESS#*", "RESETLIMIT#IP#*"]);
+    expect([...PASSWORD_RESET_HELP_PARTITIONS]).toEqual(["RESETLIMIT#HELP*"]);
     expect(emailResourceNames("prod").passwordResetFunction).toBe("supply-checkout-prod-password-reset");
   });
 });
@@ -201,7 +220,7 @@ describe("the password reset function", () => {
     mail = fakeMailer();
   });
 
-  const run = (event: unknown = { email: TYPED, ip: IP }) =>
+  const run = (event: unknown = { email: TYPED }) =>
     createPasswordResetHandler({ lookup: lookup as unknown as ResetLookup, db: table.guarded(policy), mailer: mail.mailer, obs: fakeObservability(), supportAddress: SUPPORT, now: () => NOW })(event);
   const outcome = () => (logs.find((l) => l.message === "Password reset")?.data as { outcome?: string }).outcome;
 
@@ -236,12 +255,12 @@ describe("the password reset function", () => {
     expect(mail.sent.map((s) => s.input)).toEqual([{ kind: "passwordResetHelp", supportAddress: SUPPORT, signInWith: "Google" }]);
     const apple = { ...google(), username: "SignInWithApple_001234.abc", attributes: { email: ADDRESS, identities: JSON.stringify([{ providerName: "SignInWithApple", providerType: "SignInWithApple", userId: "001234.abc" }]) } };
     lookup.byEmail.mockResolvedValue([apple]);
-    await run({ email: ADDRESS, ip: "198.51.100.2" });
+    await run({ email: ADDRESS });
     // One help email an address a day
     expect(mail.sent).toHaveLength(1);
     expect(outcome()).toBe("help");
     table.items.clear();
-    await run({ email: ADDRESS, ip: "198.51.100.2" });
+    await run({ email: ADDRESS });
     expect(mail.sent.at(-1)?.input).toEqual({ kind: "passwordResetHelp", supportAddress: SUPPORT, signInWith: "SignInWithApple" });
     expectNothingPersonal();
   });
@@ -270,31 +289,15 @@ describe("the password reset function", () => {
     logs = [];
     lookup.byAlias.mockResolvedValue(undefined);
     lookup.byEmail.mockResolvedValue([google({ enabled: false })]);
-    await run({ email: ADDRESS, ip: "198.51.100.3" });
+    await run({ email: ADDRESS });
     expect(outcome()).toBe("disabled");
     expect(mail.sent).toEqual([]);
     expect(lookup.forgotPassword).not.toHaveBeenCalled();
     // An enabled Google user beside a disabled one still gets help; another address's user doesn't count
     logs = [];
     lookup.byEmail.mockResolvedValue([google({ enabled: false }), google({ username: "Google_2", attributes: { email: ADDRESS, identities: JSON.stringify([{ providerName: "Google", providerType: "Google", userId: "2" }]) } }), user({ username: "x", attributes: { email: "other@example.com" } })]);
-    await run({ email: ADDRESS, ip: "198.51.100.4" });
+    await run({ email: ADDRESS });
     expect(mail.sent.map((s) => s.input)).toEqual([{ kind: "passwordResetHelp", supportAddress: SUPPORT, signInWith: "Google" }]);
-  });
-
-  it("counts the limits before looking the address up, and sends nothing past them", async () => {
-    for (let i = 0; i < PASSWORD_RESET_LIMITS.addressPerHour; i++) await run({ email: ADDRESS, ip: `198.51.100.${i}` });
-    const looked = lookup.byAlias.mock.calls.length;
-    logs = [];
-    metrics = [];
-    await run();
-    expect(outcome()).toBe("limited");
-    expect(lookup.byAlias).toHaveBeenCalledTimes(looked);
-    expect(metrics).toEqual([{ metric: BusinessMetric.PasswordResetsLimited, metadata: { limit: "request" } }]);
-    // An address with an account is counted the same way
-    lookup.byAlias.mockResolvedValue(user());
-    await run();
-    expect(lookup.forgotPassword).not.toHaveBeenCalled();
-    expectNothingPersonal();
   });
 
   it("counts Cognito's own limit on codes, and the help email's limits", async () => {
@@ -311,6 +314,14 @@ describe("the password reset function", () => {
     expect(outcome()).toBe("help_limited");
     expect(metrics).toEqual([{ metric: BusinessMetric.PasswordResetsLimited, metadata: { limit: "help" } }]);
     expect(mail.sent).toHaveLength(1);
+    // Everyone's cap has its own metric, for its alarm
+    metrics = [];
+    logs = [];
+    table.put({ PK: "RESETLIMIT#HELP", SK: "DAY#2026-10-08", count: PASSWORD_RESET_HELP_PER_DAY });
+    await run({ email: "someone@example.com" });
+    expect(outcome()).toBe("help_capped");
+    expect(metrics).toEqual([{ metric: BusinessMetric.PasswordResetHelpCapped, metadata: { limit: "help" } }]);
+    expect(mail.sent).toHaveLength(1);
   });
 
   it("logs a help email SES refused and doesn't throw, but throws anything else", async () => {
@@ -320,13 +331,13 @@ describe("the password reset function", () => {
     expect(logs).toContainEqual({ level: "warn", message: "Password reset help not sent", data: { error: "MessageRejected" } });
     const mailer = { send: async () => Promise.reject(new Error("boom")) };
     const handler = createPasswordResetHandler({ lookup: lookup as unknown as ResetLookup, db: table.db(), mailer, obs: fakeObservability(), supportAddress: SUPPORT });
-    await expect(handler({ email: "new@example.com", ip: IP })).rejects.toThrow("boom");
+    await expect(handler({ email: "new@example.com" })).rejects.toThrow("boom");
     lookup.byAlias.mockRejectedValue(new Error("AdminGetUser failed: 500 InternalErrorException"));
-    await expect(handler({ email: "new2@example.com", ip: IP })).rejects.toThrow("AdminGetUser failed");
+    await expect(handler({ email: "new2@example.com" })).rejects.toThrow("AdminGetUser failed");
   });
 
   it("does nothing with a request that isn't one", async () => {
-    for (const event of [null, {}, { email: ADDRESS }, { email: ADDRESS, ip: 7 }, { email: "x".repeat(321), ip: IP }, { email: ADDRESS, ip: "x".repeat(65) }, { email: "not an address", ip: IP }, { email: ADDRESS, ip: "nope" }, { email: 'a"b@example.com', ip: IP }]) {
+    for (const event of [null, {}, { email: 7 }, { email: "x".repeat(321) }, { email: "not an address" }, { email: 'a"b@example.com' }]) {
       logs = [];
       await run(event);
       expect(outcome(), JSON.stringify(event)).toBe("invalid");
@@ -334,7 +345,8 @@ describe("the password reset function", () => {
     expect(lookup.byAlias).not.toHaveBeenCalled();
     expect(table.items.size).toBe(0);
     expect(resetRequestOf(undefined)).toBeUndefined();
-    expect(resetRequestOf({ email: ADDRESS, ip: IP, extra: 1 })).toEqual({ email: ADDRESS, ip: IP });
+    // Only the address is taken: anything else in the event is dropped
+    expect(resetRequestOf({ email: ADDRESS, ip: IP, extra: 1 })).toEqual({ email: ADDRESS });
   });
 });
 
@@ -409,8 +421,10 @@ describe("the password reset routes", () => {
   let confirmed: Record<string, unknown>[];
   let reply: () => Response | Promise<Response>;
   let handler: ReturnType<typeof createApi>;
+  let table: MemoryTable;
 
   beforeEach(() => {
+    table = new MemoryTable();
     queued = [];
     confirmed = [];
     queue = async (request) => {
@@ -423,7 +437,7 @@ describe("the password reset routes", () => {
       confirmed.push(JSON.parse(String(init?.body)));
       return reply();
     }) as unknown as typeof globalThis.fetch;
-    handler = createApi({ config: { clientId: "web-client", issuerUrl: ISSUER, allowedOrigins: [APP] }, obs: fakeObservability(), queue: (r) => queue(r), fetch });
+    handler = createApi({ config: { clientId: "web-client", issuerUrl: ISSUER, allowedOrigins: [APP] }, obs: fakeObservability(), queue: (r) => queue(r), fetch, db: table.guarded(apiPolicy), now: () => NOW });
   });
 
   const event = (path: string, body: unknown, options: { origin?: string | null; ip?: string | null } = {}): APIGatewayProxyEventV2 =>
@@ -446,15 +460,18 @@ describe("the password reset routes", () => {
     for (const r of PASSWORD_RESET_ROUTES) expect(r.throttle.rate).toBeLessThanOrEqual(5);
   });
 
-  it("queue a reset request with the caller's IP address and answer 204, whatever the address", async () => {
+  it("queue a reset request, counted against the address's and IP address's limits, and answer 204, whatever the address", async () => {
     for (const email of [TYPED, " someone-else@example.org ", "x@example.com"]) {
       expect(await call("/auth/password-reset", { email })).toEqual({ status: 204, body: undefined });
     }
     expect(queued).toEqual([
-      { email: TYPED, ip: IP },
-      { email: "someone-else@example.org", ip: IP },
-      { email: "x@example.com", ip: IP },
+      { email: TYPED },
+      { email: "someone-else@example.org" },
+      { email: "x@example.com" },
     ]);
+    // Counted by the address's usual form and the IP address, both hashed
+    expect(table.get(`RESETLIMIT#ADDRESS#${resetAddressKey(ADDRESS)}`, "DAY#2026-10-08")).toMatchObject({ count: 1 });
+    expect(table.get(`RESETLIMIT#IP#${resetIpKey(IP)}`, "DAY#2026-10-08")).toMatchObject({ count: 3 });
     expect(logs.filter((l) => l.message === "Password reset").map((l) => l.data)).toEqual([{ outcome: "queued" }, { outcome: "queued" }, { outcome: "queued" }]);
     expectNothingPersonal();
   });
@@ -465,10 +482,34 @@ describe("the password reset routes", () => {
     expect(await call("/auth/password-reset", "nope")).toMatchObject({ status: 400 });
     expect(await call("/auth/password-reset", { email: 5 })).toMatchObject({ status: 400 });
     expect(await call("/auth/password-reset", { email: ADDRESS }, { ip: null })).toMatchObject({ status: 400, body: { error: { message: "No source address" } } });
+    expect(await call("/auth/password-reset", { email: ADDRESS }, { ip: "not-an-ip" })).toMatchObject({ status: 400, body: { error: { message: "No source address" } } });
     expect(await call("/auth/password-reset", { email: ADDRESS }, { origin: "https://evil.example" })).toMatchObject({ status: 403 });
     expect(await call("/auth/password-reset", { email: ADDRESS }, { origin: null })).toMatchObject({ status: 403 });
     const other = await handler({ ...event("/auth/password-reset", {}), routeKey: "POST /auth/other" });
     expect(other.statusCode).toBe(404);
+    expect(queued).toEqual([]);
+    expect(table.items.size).toBe(0);
+  });
+
+  it("answer 429 past the address's or the IP address's limit, pointing at the sign-in page's reset, and queue nothing", async () => {
+    const limited = { status: 429, body: { error: { code: "quota_exceeded", reason: "rate_limited", message: "Too many reset requests for now. Try again later, or choose Sign in and use the reset on that page" } } };
+    for (let i = 0; i < PASSWORD_RESET_LIMITS.addressPerHour; i++) expect((await call("/auth/password-reset", { email: ADDRESS }, { ip: `198.51.100.${i}` })).status).toBe(204);
+    // The address's, from another IP address, whatever its case
+    expect(await call("/auth/password-reset", { email: TYPED }, { ip: "198.51.100.200" })).toEqual(limited);
+    // The IP address's, for other addresses
+    for (let i = 0; i < PASSWORD_RESET_LIMITS.ipPerHour; i++) await call("/auth/password-reset", { email: `person${i}@example.com` }, { ip: "2001:db8:0:1::1" });
+    expect(await call("/auth/password-reset", { email: "one-more@example.com" }, { ip: "2001:db8:0:1::99" })).toEqual(limited);
+    expect(queued).toHaveLength(PASSWORD_RESET_LIMITS.addressPerHour + PASSWORD_RESET_LIMITS.ipPerHour);
+    expect(metrics.filter((m) => m.metric === BusinessMetric.PasswordResetsLimited)).toEqual([
+      { metric: BusinessMetric.PasswordResetsLimited, metadata: { limit: "request" } },
+      { metric: BusinessMetric.PasswordResetsLimited, metadata: { limit: "request" } },
+    ]);
+    expectNothingPersonal();
+  });
+
+  it("answer 500 when the limits can't be counted, and queue nothing", async () => {
+    handler = createApi({ config: { clientId: "web-client", issuerUrl: ISSUER, allowedOrigins: [APP] }, obs: fakeObservability(), queue, db: table.guarded(policy) });
+    expect(await call("/auth/password-reset", { email: ADDRESS })).toMatchObject({ status: 500, body: { error: { code: "internal" } } });
     expect(queued).toEqual([]);
   });
 
@@ -524,7 +565,7 @@ describe("the password reset routes", () => {
   });
 
   it("refuse to start with an issuer that isn't Cognito's", () => {
-    expect(() => createApi({ config: { clientId: "c", issuerUrl: "https://evil.example/pool", allowedOrigins: [APP] }, obs: fakeObservability(), queue })).toThrow(/ISSUER_URL/);
+    expect(() => createApi({ config: { clientId: "c", issuerUrl: "https://evil.example/pool", allowedOrigins: [APP] }, obs: fakeObservability(), queue, db: table.db() })).toThrow(/ISSUER_URL/);
   });
 });
 
@@ -537,10 +578,10 @@ describe("handing a request over", () => {
       return new Response(null, { status, headers: status === 202 ? {} : { "x-amzn-errortype": "TooManyRequestsException:http://internal" } });
     }) as unknown as typeof globalThis.fetch;
     const invoke = eventInvoker({ region: REGION, functionName: "supply-checkout-prod-password-reset", timeoutMs: 1000, fetch, credentials: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret" } });
-    await invoke({ email: ADDRESS, ip: IP });
+    await invoke({ email: ADDRESS });
     expect(calls[0]?.url).toBe(`https://lambda.${REGION}.amazonaws.com/2015-03-31/functions/supply-checkout-prod-password-reset/invocations`);
     expect(calls[0]?.headers.get("x-amz-invocation-type")).toBe("Event");
-    expect(JSON.parse(calls[0]?.body as string)).toEqual({ email: ADDRESS, ip: IP });
+    expect(JSON.parse(calls[0]?.body as string)).toEqual({ email: ADDRESS });
     status = 429;
     await expect(invoke({})).rejects.toMatchObject({ name: "TooManyRequestsException", message: "Invoke failed: 429 TooManyRequestsException" });
   });

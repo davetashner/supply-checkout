@@ -1827,7 +1827,7 @@
               "Condition": {
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [
-                    "RESETLIMIT#*"
+                    "RESETLIMIT#HELP*"
                   ]
                 },
                 "ForAllValues:StringEquals": {
@@ -1855,7 +1855,7 @@
                   ]
                 ]
               },
-              "Sid": "CountPasswordResets"
+              "Sid": "CountPasswordResetHelp"
             },
             {
               "Action": [
