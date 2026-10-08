@@ -34,6 +34,8 @@ export {
   MEMBERS_PER_TEAM,
   MEMBERS_PER_TRIAL_TEAM,
   memberCap,
+  MEMBER_NAME_MAX,
+  memberName,
   memberRole,
   PAID_STATUSES,
   PAYMENT_GRACE_DAYS,

@@ -202,6 +202,7 @@ import {
   removeMember,
   setMemberRole,
   setOwnMemberEmail,
+  setOwnMemberName,
   listInvites,
   listInvitesForEmail,
   listTeamsForUser,
@@ -408,7 +409,7 @@ function lastOwnerOf(names: string[]): string {
 }
 
 /** A member as the members routes return them: never the stored item as is. */
-const memberBody = (member: Member) => ({ userId: member.userId, email: member.email ?? null, role: member.role, joinedAt: member.joinedAt ?? null });
+const memberBody = (member: Member) => ({ userId: member.userId, name: member.displayName ?? null, email: member.email ?? null, role: member.role, joinedAt: member.joinedAt ?? null });
 
 /** Two addresses the same but for ASCII case and surrounding space, and neither empty. */
 const sameAddress = (a?: string, b?: string) => !!a?.trim() && !!b?.trim() && verifiedEmailHash(a) === verifiedEmailHash(b);
@@ -490,7 +491,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
             throw error;
           });
           if (!ctx) return undefined;
-          if (email) await keepMemberEmail(db, ctx, email);
+          await keepMemberProfile(db, ctx, email, user.name);
           return teamBody(await getTeam(db, ctx), ctx.role, new Date(now()));
         }),
       )
@@ -507,21 +508,25 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
 
   /**
    * Brings the caller's MEMBER email in one team up to their verified address
-   * (supply-checkout-xv3k): the members list and owner notices read it, and it
-   * was copied when they joined. Reads first, so an address already current
-   * costs no write. Closed teams are left as they are. Best effort: a failure
-   * is logged (the team ID and error name only) and the request goes on.
+   * (supply-checkout-xv3k), when they have one, and their name up to Cognito's
+   * (supply-checkout-lx7; removed if they cleared it): the members list and
+   * owner notices read them, and they were copied when they joined. Reads
+   * first, so a member already current costs no write. Closed teams are left
+   * as they are. Best effort: a failure is logged (the team ID and error name
+   * only, never the address or name) and the request goes on.
    */
-  async function keepMemberEmail(db: ReturnType<DbForAccount>, ctx: TeamContext, email: string): Promise<void> {
+  async function keepMemberProfile(db: ReturnType<DbForAccount>, ctx: TeamContext, email: string | undefined, name?: string): Promise<void> {
     if (ctx.closed) return;
-    // Two /me calls at once, around an address change, could each read and write: the
-    // last write wins, and if it carried the older address the next /me corrects it
-    // (both only ever write an address Cognito verified for this user). Self-healing.
+    // Two /me calls at once, around a change, could each read and write: the
+    // last write wins, and if it carried the older value the next /me corrects it
+    // (both only ever write what Cognito says for this user). Self-healing.
     try {
       const member = await getMember(db, ctx, ctx.userId);
-      if (member && member.email !== email) await setOwnMemberEmail(db, ctx, email);
+      if (!member) return;
+      if (email && member.email !== email) await setOwnMemberEmail(db, ctx, email);
+      if (member.displayName !== name) await setOwnMemberName(db, ctx, name);
     } catch (error) {
-      obs.logger.warn("Member email not updated", { teamId: ctx.teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      obs.logger.warn("Member details not updated", { teamId: ctx.teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
     }
   }
 
@@ -546,8 +551,8 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     }
   }
 
-  /** keepMemberEmail in every team the caller is in (their own USER# rows), each on a session for that team after the membership check. */
-  async function keepMemberEmails(userId: string, email: string): Promise<void> {
+  /** keepMemberProfile in every team the caller is in (their own USER# rows), each on a session for that team after the membership check. */
+  async function keepMemberEmails(userId: string, email: string, name: string | undefined): Promise<void> {
     const rows = await listTeamsForUser(dbFor({ userId }), userId);
     await Promise.all(
       rows.slice(0, MAX_TEAMS_PER_USER).map(async (row) => {
@@ -556,7 +561,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
           if (error instanceof ForbiddenError) return undefined;
           throw error;
         });
-        if (ctx) await keepMemberEmail(db, ctx, email);
+        if (ctx) await keepMemberProfile(db, ctx, email, name);
       }),
     );
   }
@@ -569,7 +574,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const db = dbFor({ userId, teamId: teamIdForRequest(userId, key) });
     // A test account (its verified address, from Cognito, at the test mail domain) makes a test team: metrics only
     const test = isTestAccount(user, deps.testMailDomain);
-    const { team, context, created } = await createTeam(db, { userId, email: verifiedEmail(user), test }, { name: body.name as string, requestKey: key }, new Date(now()));
+    const { team, context, created } = await createTeam(db, { userId, email: verifiedEmail(user), name: user.name, test }, { name: body.name as string, requestKey: key }, new Date(now()));
     if (created) obs.count(BusinessMetric.SignUps, 1, { teamId: team.teamId, ...testMark(team.test) });
     return json(created ? 201 : 200, { team: teamBody(team, context.role) });
   }
@@ -578,14 +583,15 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const inviteId = event.pathParameters?.inviteId;
     if (typeof inviteId !== "string" || !ID.test(inviteId)) throw new ApiError(400, "bad_request", "Invalid invite ID");
     const token = event.body ? jsonBody(event, ["token"]).token : undefined;
-    const email = verifiedEmail(await cognitoUser(event, userId));
+    const user = await cognitoUser(event, userId);
+    const email = verifiedEmail(user);
     if (!email) throw new ApiError(403, "permission_denied", "Verify your email address to accept invites");
     const at = new Date(now());
     const invite = await findInviteForEmail(dbFor({ userId, invitee: hashEmail(email) }), email, inviteId, at);
     // Unknown, expired, used, for someone else, or no token: one answer for all
     if (!invite || typeof token !== "string") throw new ApiError(404, "not_found", "This invite has expired, was already used, or is for another email address");
     const db = dbFor({ userId, teamId: invite.teamId });
-    const ctx = await acceptInvite(db, { userId, verifiedEmail: email }, invite, token, at);
+    const ctx = await acceptInvite(db, { userId, verifiedEmail: email, name: user.name }, invite, token, at);
     obs.count(BusinessMetric.InvitesAccepted, 1, { teamId: ctx.teamId, ...testMark(ctx.test) });
     const team = await getTeam(db, ctx);
     await queueSeatSync(ctx.teamId, team);
@@ -1020,7 +1026,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     // member item's email only names the member (the members list, owner
     // notices); it's never what entitles anyone to an invite.
     try {
-      await keepMemberEmails(userId, normalizeEmail(before.email));
+      await keepMemberEmails(userId, normalizeEmail(before.email), after.name);
     } catch (error) {
       obs.logger.warn("Member emails not updated", { code: (error as { name?: string } | null)?.name ?? "Unknown" });
     }

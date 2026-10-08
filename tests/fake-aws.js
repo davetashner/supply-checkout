@@ -96,7 +96,7 @@ const endAck = (data, delta) => {
 
 export class FakeBackend {
   // docs: { "<teamId>/<collection>/<id>": data }
-  // members: { "<teamId>": [{ userId, email, role, joinedAt }] }, for the members screen
+  // members: { "<teamId>": [{ userId, name, email, role, joinedAt }] }, for the members screen
   // teamInvites: { "<teamId>": [{ id, email, role, createdAt, expiresAt, inviteStatus, failureReason, failedAt }] },
   // the invites its owners see there (invites is the signed-in user's own, for /me)
   // supportActions: { "<teamId>": [{ eventId, ts, actor, action, reason, before, after }] }, newest first

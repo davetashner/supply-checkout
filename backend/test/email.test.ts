@@ -708,7 +708,7 @@ describe("email events", () => {
       type: "team", teamId: "t", name: "n", plan: "p", seats: 1, status: "active", homeRegion: "r", trialEndsAt: "d", owners: 1, members: 1, stripeCustomerId: "c", stripeSubscriptionId: "s", billingInterval: "month", currentPeriodEnd: "d", cancelAtPeriodEnd: false, stripeSyncedAt: "d", pastDueSince: "d", subscriptionEndedAt: "d", closedAt: "d", closedBy: "u", purgeAfter: "d", purging: "d", createdAt: "d", version: 1, test: true,
       compPlan: "p", compSeats: 1, compUntil: "d", compReason: "r", compBy: "o", compAt: "d", compMonths: 1,
     };
-    const member: Required<Member> = { type: "member", teamId: "t", userId: "u", role: "owner", email: "e", joinedAt: "d" };
+    const member: Required<Member> = { type: "member", teamId: "t", userId: "u", role: "owner", email: "e", displayName: "n", joinedAt: "d" };
     // Projects and products carry status, type, version and their document fields
     const others = [...Object.keys(team), ...Object.keys(member), "status", "type", "version", "GSI1PK", "GSI1SK", "GSI2SK", "GSI3PK", "GSI3SK", "expiresAt"];
     const written = EMAIL_EVENTS_WRITES.filter((a) => !["PK", "SK", "GSI2PK"].includes(a));

@@ -58,6 +58,8 @@ let totpFailure: Error | undefined;
 // How many sign-outs everywhere fail before one works
 let signOutFailures: number;
 let signOutRefusal: ApiError | undefined;
+// Each user's name as Cognito's GetUser gives it (CognitoUser.name), if any
+let names: Record<string, string>;
 let handler: ReturnType<typeof createAccountHandler>;
 // What beforeEach builds the handler with, for a test that adds to it
 let deps: AccountHandlerDeps;
@@ -88,6 +90,7 @@ beforeEach(() => {
   signOutFailures = 0;
   signOutRefusal = undefined;
   logs = [];
+  names = {};
   scopes = [];
   table = new MemoryTable();
   table.seedTeam("team-a", { [OWNER]: "owner", [PAT]: "contributor" });
@@ -103,7 +106,8 @@ beforeEach(() => {
     const user = USERS[token.replace(/^token-/, "")];
     if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
     const seen = verifiedNow.has(user.sub) ? { ...user, emailVerified: true, emailVerifiedInCognito: true } : user;
-    return totpOn.has(user.sub) ? { ...seen, totp: true } : seen;
+    const named = names[user.sub] ? { ...seen, name: names[user.sub] } : seen;
+    return totpOn.has(user.sub) ? { ...named, totp: true } : named;
   };
   const totp: TotpSetup = {
     async setPassword(token, proposed, previous) {
@@ -966,7 +970,7 @@ describe("keeping members' email current", () => {
     expect(JSON.parse(me.body as string).teams).toHaveLength(2);
     expect(memberEmail("team-a", PAT)).toBe("pat@example.com");
     expect(memberEmail("team-b", PAT)).toBe("pat-old@example.com");
-    expect(logs).toContainEqual(["Member email not updated", { teamId: "team-b", code: "ProvisionedThroughputExceededException" }]);
+    expect(logs).toContainEqual(["Member details not updated", { teamId: "team-b", code: "ProvisionedThroughputExceededException" }]);
     expect(JSON.stringify(logs)).not.toMatch(/pat@|pat-old@/);
   });
 
@@ -986,6 +990,102 @@ describe("keeping members' email current", () => {
     expect(table.get(`USER#${UNVERIFIED}`, "VERIFIED_EMAIL")).toBeDefined();
     expect(memberEmail("team-a", UNVERIFIED)).toBe("old@example.com");
     expect(logs).toContainEqual(["Member emails not updated", { code: "InternalServerError" }]);
+  });
+});
+
+describe("members' names (supply-checkout-lx7)", () => {
+  const memberOf = (team: string, user: string) => table.get(`TEAM#${team}`, `MEMBER#${user}`);
+  const memberUpdates = () => table.calls.filter((c) => c.command === "UpdateCommand" && c.partitions.some((p) => p.startsWith("TEAM#")));
+  const listed = async (team = "team-a") => (await call("GET", `/teams/${team}/members`)).body.members as { userId: string; name: string | null; email: string | null }[];
+
+  it("stores the owner's name when they create a team, and the owner sees it", async () => {
+    names[MALLORY] = "Mallory Mop";
+    const { body } = await create(MALLORY, "Mallory Cleaning", "create-key-n1");
+    const id = body.team.id as string;
+    expect(memberOf(id, MALLORY)).toMatchObject({ role: "owner", email: "mallory@example.com", displayName: "Mallory Mop" });
+    // Never under `name`, which the operators' index and the billing roles may read
+    expect(memberOf(id, MALLORY)).not.toHaveProperty("name");
+    const members = (await call("GET", `/teams/${id}/members`, { user: MALLORY })).body.members;
+    expect(members).toEqual([{ userId: MALLORY, name: "Mallory Mop", email: "mallory@example.com", role: "owner", joinedAt: new Date(now).toISOString() }]);
+  });
+
+  it("stores no name for someone without one, and lists theirs as null", async () => {
+    const { body } = await create(MALLORY, "Mallory Cleaning", "create-key-n2");
+    expect(memberOf(body.team.id as string, MALLORY)).not.toHaveProperty("displayName");
+    expect((await listed())[0]).toMatchObject({ userId: OWNER, name: null });
+  });
+
+  it("stores the name of someone who accepts an invite", async () => {
+    names[PAT] = "Pat Lee";
+    await table.seedTeam("team-b", { [OWNER]: "owner" });
+    const { inviteId, token } = await invite("pat@example.com", { team: "team-b", role: "viewer" });
+    expect((await accept(PAT, inviteId, token)).status).toBe(200);
+    expect(memberOf("team-b", PAT)).toMatchObject({ role: "viewer", displayName: "Pat Lee" });
+    expect((await listed("team-b")).find((m) => m.userId === PAT)?.name).toBe("Pat Lee");
+  });
+
+  it("keeps the caller's own name current on /me, removes it when they clear it, and writes nothing when it's current", async () => {
+    names[PAT] = "Pat Lee";
+    expect((await call("GET", "/me", { user: PAT })).status).toBe(200);
+    expect(memberOf("team-a", PAT)?.displayName).toBe("Pat Lee");
+    // Only the caller's own member item
+    expect(memberOf("team-a", OWNER)).not.toHaveProperty("displayName");
+    const writes = memberUpdates().length;
+    expect((await call("GET", "/me", { user: PAT })).status).toBe(200);
+    expect(memberUpdates()).toHaveLength(writes);
+    names[PAT] = "Patricia Lee";
+    await call("GET", "/me", { user: PAT });
+    expect((await listed()).find((m) => m.userId === PAT)?.name).toBe("Patricia Lee");
+    names = {};
+    await call("GET", "/me", { user: PAT });
+    expect(memberOf("team-a", PAT)).not.toHaveProperty("displayName");
+    expect((await listed()).find((m) => m.userId === PAT)?.name).toBeNull();
+    // A member with no name and no change costs no write
+    const after = memberUpdates().length;
+    await call("GET", "/me", { user: PAT });
+    expect(memberUpdates()).toHaveLength(after);
+  });
+
+  it("keeps the name current for someone whose email isn't verified, without touching their address", async () => {
+    table.put({ PK: "TEAM#team-a", SK: `MEMBER#${UNVERIFIED}`, type: "member", teamId: "team-a", userId: UNVERIFIED, role: "viewer", email: "old@example.com" });
+    table.put({ PK: `USER#${UNVERIFIED}`, SK: "TEAM#team-a", type: "userTeam", userId: UNVERIFIED, teamId: "team-a", teamName: "team-a", role: "viewer" });
+    names[UNVERIFIED] = "Una Verified";
+    expect((await call("GET", "/me", { user: UNVERIFIED })).status).toBe(200);
+    expect(memberOf("team-a", UNVERIFIED)).toMatchObject({ email: "old@example.com", displayName: "Una Verified" });
+  });
+
+  it("copies the name with a newly verified address", async () => {
+    table.put({ PK: "TEAM#team-a", SK: `MEMBER#${UNVERIFIED}`, type: "member", teamId: "team-a", userId: UNVERIFIED, role: "viewer", email: "old@example.com" });
+    table.put({ PK: `USER#${UNVERIFIED}`, SK: "TEAM#team-a", type: "userTeam", userId: UNVERIFIED, teamId: "team-a", teamName: "team-a", role: "viewer" });
+    names[UNVERIFIED] = "Una Verified";
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
+    expect((await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).status).toBe(204);
+    expect(memberOf("team-a", UNVERIFIED)).toMatchObject({ email: "pat@example.com", displayName: "Una Verified" });
+  });
+
+  it("leaves a closed team's member item as it is", async () => {
+    names[PAT] = "Pat Lee";
+    table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), closedAt: new Date(now).toISOString() });
+    await call("GET", "/me", { user: PAT });
+    expect(memberOf("team-a", PAT)).not.toHaveProperty("displayName");
+  });
+
+  it("never logs the name when the write fails", async () => {
+    names[PAT] = "Pat Secretname";
+    const original = table.scoped.bind(table);
+    table.scoped = (partitions) => {
+      const db = original(partitions);
+      return fakeDb(async (command) => {
+        const name = (command as { constructor: { name: string } }).constructor.name;
+        if (name === "UpdateCommand" && String((command.input.Key as { PK?: string }).PK) === "TEAM#team-a") {
+          throw Object.assign(new Error("Pat Secretname"), { name: "ProvisionedThroughputExceededException" });
+        }
+        return connection(db).doc.send(command as never);
+      });
+    };
+    expect((await handler(event("GET", "/me", { user: PAT }))).statusCode).toBe(200);
+    expect(logs).toContainEqual(["Member details not updated", { teamId: "team-a", code: "ProvisionedThroughputExceededException" }]);
+    expect(JSON.stringify(logs)).not.toMatch(/Secretname/);
   });
 });
 
