@@ -593,6 +593,91 @@ describe("security notices from CloudTrail", () => {
   });
 });
 
+// supply-checkout-6uw.32: the post confirmation trigger's asynchronous invoke after a confirmed reset
+describe("password reset notices from the post confirmation trigger", () => {
+  const AT = "2026-09-30T14:05:30.000Z";
+  const reset = (over: Record<string, unknown> = {}) => ({ type: "passwordReset", userId: SUB, at: AT, signedOut: true, ...over });
+
+  it("emails the verified address that the password was reset and the account signed out, once per window", async () => {
+    await handle(reset());
+    expect(lookups).toEqual([SUB]);
+    expect(mails.sent).toEqual([{ to: OWNER_EMAIL, input: { kind: "passwordReset", at: AT, signedOut: true }, tags: {} }]);
+    expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNotices, metadata: { kind: "passwordReset", via: "reset" } }]);
+    expect(logs).toContainEqual(["Security notice sent", { userId: SUB, kind: "passwordReset", via: "reset" }]);
+    expect(table.get(`USER#${SUB}`, "NOTICE#passwordReset")).toEqual({ PK: `USER#${SUB}`, SK: "NOTICE#passwordReset", noticeSentAt: new Date(NOW).toISOString() });
+    // A retried invoke sends nothing more
+    await handle(reset());
+    expect(mails.sent).toHaveLength(1);
+    expect(logs).toContainEqual(["Security notice already sent", { userId: SUB, kind: "passwordReset", via: "reset" }]);
+    expect(denied).toEqual([]);
+    expectNothingPersonal();
+  });
+
+  it("says nothing of a sign-out that didn't happen, and uses the time it runs when the request's isn't a date", async () => {
+    await handle(reset({ signedOut: false, at: "soon" }));
+    now += NOTICE_DEDUPE_MS + 1000;
+    await handle(reset({ signedOut: "yes", at: undefined }));
+    expect(mails.sent.map((m) => m.input)).toEqual([
+      { kind: "passwordReset", at: new Date(NOW).toISOString(), signedOut: false },
+      { kind: "passwordReset", at: new Date(now).toISOString(), signedOut: false },
+    ]);
+  });
+
+  it("isn't held back by a password notice sent just before", async () => {
+    await markNoticeSent(table.db(), SUB, "passwordSet", new Date(NOW));
+    await handle(reset());
+    expect(mails.sent.map((m) => m.input.kind)).toEqual(["passwordReset"]);
+  });
+
+  it("needs a sub, and counts a request without one", async () => {
+    for (const userId of [undefined, "", 'x" or sub = "y', 42]) await handle(reset({ userId }));
+    expect(lookups).toEqual([]);
+    expect(mails.sent).toEqual([]);
+    expect(metrics.map((m) => m.metadata)).toEqual(Array(4).fill({ kind: "passwordReset", reason: "no_user", via: "reset" }));
+  });
+
+  it("sends nothing for a user since deleted, and counts one with no verified address", async () => {
+    await handle(reset({ userId: OTHER_SUB }));
+    expect(counts).toEqual({});
+    accounts.set(SUB, account({ emailVerified: false }));
+    await handle(reset());
+    expect(mails.sent).toEqual([]);
+    expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordReset", reason: "no_address", via: "reset" } }]);
+  });
+
+  it("counts a failed lookup and throws it on, so Lambda tries again", async () => {
+    lookupFailure = new Error("AdminGetUser failed: 500 InternalErrorException");
+    await expect(handle(reset())).rejects.toThrow("InternalErrorException");
+    expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordReset", reason: "lookup_failed", via: "reset" } }]);
+    expect(logs).toContainEqual(["Security notice not sent", { userId: SUB, kind: "passwordReset", code: "AdminGetUser failed: 500 InternalErrorException", via: "reset" }]);
+  });
+
+  it("checks for an email change first, as every event does", async () => {
+    await recordNoticeAddress(table.db(), SUB, OWNER_EMAIL, emailSeenHash(OWNER_EMAIL));
+    accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
+    await handle(reset());
+    expect(mails.sent.map((m) => [m.to, m.input.kind])).toEqual([
+      [OWNER_EMAIL, "emailChanged"],
+      [ATTACKER_EMAIL, "passwordReset"],
+    ]);
+    expect(metrics.map((m) => m.metadata.via)).toEqual(["reset", "reset"]);
+    expectNothingPersonal();
+  });
+
+  it("counts anything else thrown, such as DynamoDB refusing a call, as the reset's", async () => {
+    const refusing = createSecurityNoticesHandler({ userPoolId: POOL, findAccount: async () => account(), db: table.guarded(() => false), mailer: mails.mailer, obs: fakeObservability(), now: () => NOW });
+    await expect(refusing(reset())).rejects.toMatchObject({ name: "AccessDeniedException" });
+    expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordReset", reason: "error", via: "reset" } }]);
+  });
+
+  it("takes only that request's shape as a reset: anything else is an event, and ignored unless it's one", async () => {
+    const other = { type: "other", userId: SUB };
+    await handle(other);
+    expect(lookups).toEqual([]);
+    expect(mails.sent).toEqual([]);
+  });
+});
+
 describe("security notice records", () => {
   it("claims a kind once per window, and each kind on its own", async () => {
     const db = table.db();

@@ -69,6 +69,12 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  *   notices dead-letter queue (SQS-encrypted, 14 days), as EventBridge does
  *   with one it couldn't deliver, so it can be replayed. A notice SES refuses
  *   isn't retried; it's counted (SecurityNoticeFailures).
+ * - A confirmed password reset (supply-checkout-6uw.32) reaches the function
+ *   from the identity stack's post confirmation trigger instead, an
+ *   asynchronous invoke by its fixed name
+ *   (emailResourceNames().securityNoticesFunction) with the user's sub. Only
+ *   the trigger's role is granted it (an identity policy; the function has no
+ *   resource policy for it). Retries and the dead-letter queue are the same.
  *
  * The welcome email (supply-checkout-6uw.25, backend/src/email/welcome-handler.ts):
  *
@@ -438,6 +444,8 @@ export class EmailStack extends SupplyCheckoutStack {
       reason: "This is the dead-letter queue: it holds security notice events the function or EventBridge couldn't deliver.",
     });
     const fn = new NodejsFunction(this, "SecurityNoticesFunction", {
+      // A fixed name: the identity stack's post confirmation trigger invokes it by name with a confirmed password reset (supply-checkout-6uw.32)
+      functionName: emailResourceNames(config.envName).securityNoticesFunction,
       role,
       logGroup,
       entry: `${BACKEND}src/identity/security-notices.ts`,
@@ -447,7 +455,7 @@ export class EmailStack extends SupplyCheckoutStack {
       architecture: Architecture.ARM_64,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      description: "Emails the account when its password, two-step sign-in or email is changed directly against Cognito",
+      description: "Emails the account when its password, two-step sign-in or email is changed directly against Cognito, or its password is reset",
       environment: { NODE_OPTIONS: "--enable-source-maps", TABLE_NAME: table, [SECURITY_NOTICES_ENV.userPoolId]: userPoolId },
       retryAttempts: 2,
       deadLetterQueue: deadLetters,

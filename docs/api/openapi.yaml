@@ -2545,7 +2545,9 @@ paths:
       description: |
         Cognito's ConfirmForgotPassword with the web client. Then sign in with
         the new password. Every way the code can fail (wrong, expired, never
-        sent) is `code_mismatch`.
+        sent) is `code_mismatch`. A confirmed reset signs the account out
+        everywhere and emails its verified address (the user pool's post
+        confirmation trigger, as for a reset through Managed Login).
       security: []
       parameters: [{ $ref: "#/components/parameters/origin" }]
       requestBody:

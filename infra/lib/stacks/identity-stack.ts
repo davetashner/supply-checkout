@@ -41,6 +41,7 @@ import {
   PROVIDER_EMAIL_VERIFIED_ATTRIBUTE,
   PROVIDER_HOSTED_DOMAIN,
   PROVIDER_HOSTED_DOMAIN_ATTRIBUTE,
+  SECURITY_NOTICES_FUNCTION_ENV,
   identityResourceNames,
 } from "../../../backend/src/identity/names.js";
 import { emailResourceNames, WELCOME_FUNCTION_ENV } from "../../../backend/src/email/names.js";
@@ -568,6 +569,10 @@ export class IdentityStack extends SupplyCheckoutStack {
    * could change the email with; and, for a sign-up (not a forgotten
    * password), hands the welcome email to its function (grantWelcome). On
    * every app pool, providers or not. It never fails the confirmation.
+   *
+   * After a confirmed password reset (supply-checkout-6uw.32), it signs the
+   * account out everywhere (AdminUserGlobalSignOut, on this pool only) and
+   * hands the notice to the security notices function (grantResetNotice).
    */
   private addPostConfirmationTrigger(): NodejsFunction {
     // A fixed name, for the "Sign-up trigger failing" alarm (journey-alarms.ts)
@@ -575,13 +580,54 @@ export class IdentityStack extends SupplyCheckoutStack {
       "PostConfirmation",
       "post-confirmation",
       "Records a new account's verified address for email change notices, and hands over its welcome email",
-      { TABLE_NAME: tableName(this.config.envName), [WELCOME_FUNCTION_ENV]: this.welcomeFunctionName },
+      {
+        TABLE_NAME: tableName(this.config.envName),
+        [WELCOME_FUNCTION_ENV]: this.welcomeFunctionName,
+        [SECURITY_NOTICES_FUNCTION_ENV]: emailResourceNames(this.config.envName).securityNoticesFunction,
+      },
       identityResourceNames(this.config.envName).postConfirmationFunction,
     );
     this.userPool.addTrigger(UserPoolOperation.POST_CONFIRMATION, fn);
     this.grantNoticeAddress(fn, "PostConfirmationNoticeAddress");
     this.grantWelcome(fn, "PostConfirmationWelcome");
+    this.grantResetNotice(fn);
     return fn;
+  }
+
+  /**
+   * Lets the post confirmation trigger act on a confirmed password reset
+   * (supply-checkout-6uw.32, backend/src/identity/post-confirmation-handler.ts):
+   * AdminUserGlobalSignOut on this pool only (the user Cognito's own event
+   * names), and lambda:InvokeFunction on the security notices function only,
+   * by its fixed name in this region and account (the email stack makes it,
+   * and deploys after this one, so it's named, not referenced), with the
+   * user's sub. Until the email stack has deployed it, the invoke fails,
+   * which is counted (SecurityNoticeFailures) and never fails the reset. A
+   * separate policy, attached after the pool exists (see addFederatedTriggers).
+   */
+  private grantResetNotice(fn: NodejsFunction): void {
+    new Policy(this, "PostConfirmationResetSignOut", {
+      roles: [fn.role as Role],
+      statements: [
+        new PolicyStatement({
+          sid: "SignOutAfterReset",
+          actions: ["cognito-idp:AdminUserGlobalSignOut"],
+          resources: [this.userPool.userPoolArn],
+        }),
+        new PolicyStatement({
+          sid: "QueueResetNotice",
+          actions: ["lambda:InvokeFunction"],
+          resources: [
+            Stack.of(this).formatArn({
+              service: "lambda",
+              resource: "function",
+              resourceName: emailResourceNames(this.config.envName).securityNoticesFunction,
+              arnFormat: ArnFormat.COLON_RESOURCE_NAME,
+            }),
+          ],
+        }),
+      ],
+    });
   }
 
   /** The welcome email function's fixed name (the email stack's; emailResourceNames). */

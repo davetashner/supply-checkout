@@ -88,6 +88,24 @@ export const SECURITY_NOTICE_EVENTS = {
   VerifyUserAttribute: "emailChanged",
 } as const;
 
+/**
+ * What the post confirmation trigger hands the security notices function (an
+ * asynchronous invoke) when a password reset is confirmed
+ * (PostConfirmation_ConfirmForgotPassword, supply-checkout-6uw.32): the user's
+ * sub from Cognito's own event, when (ISO 8601), and whether the trigger
+ * signed the account out everywhere. Never an address, a name or a username.
+ * Only the trigger's role may invoke the function (EventBridge's rule aside).
+ */
+export interface PasswordResetNoticeRequest {
+  readonly type: "passwordReset";
+  readonly userId: string;
+  readonly at: string;
+  readonly signedOut: boolean;
+}
+
+/** The post confirmation trigger's environment: the security notices function's name, to invoke. Without it, a reset sends no notice. */
+export const SECURITY_NOTICES_FUNCTION_ENV = "SECURITY_NOTICES_FUNCTION";
+
 /** The security notices function's environment: the app pool it looks users up in. */
 export const SECURITY_NOTICES_ENV = { userPoolId: "USER_POOL_ID" } as const;
 

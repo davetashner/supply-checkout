@@ -218,6 +218,12 @@ describe("email stack", () => {
       const t = email();
       const [, fn] = noticesFn(t);
       expect(fn.Properties).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 30 });
+      // A fixed name: the identity stack's post confirmation trigger invokes it by name with a confirmed reset (supply-checkout-6uw.32)
+      expect(fn.Properties.FunctionName).toBe("supply-checkout-prod-security-notices");
+      // EventBridge is the only principal in its resource policy; the trigger's role is granted the invoke by name
+      for (const [, perm] of resources(t, "AWS::Lambda::Permission").filter(([, p]) => JSON.stringify(p.Properties.FunctionName).includes(noticesFn(t)[0]))) {
+        expect(perm.Properties.Principal).toBe("events.amazonaws.com");
+      }
       const vars = (fn.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
       expect(vars).toMatchObject({ TABLE_NAME: "supply-checkout-prod-app", [EMAIL_ENV.fromAddress]: "noreply@supplycheckout.com", [EMAIL_ENV.appUrl]: "https://app.supplycheckout.com" });
       expect(JSON.stringify(vars.USER_POOL_ID)).toMatch(/SsmParameterValuesupplycheckoutprodidentityuserpoolid/);

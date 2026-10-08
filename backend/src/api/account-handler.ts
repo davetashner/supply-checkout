@@ -440,7 +440,7 @@ const CLOSED_NOTICES: NoticeMetrics = { sent: BusinessMetric.TeamClosedNotices, 
 const REOPENED_NOTICES: NoticeMetrics = { sent: BusinessMetric.TeamReopenedNotices, failures: BusinessMetric.TeamReopenedNoticeFailures, log: "Team reopened emails not sent" };
 
 /** An email to the account's own verified address about a change to how it signs in (noticeAccount). */
-type AccountNotice = SecurityNotice["kind"];
+type AccountNotice = Exclude<SecurityNotice["kind"], "passwordReset">;
 
 /** How long a security notice may wait on SES before the change is answered without it. */
 const NOTICE_TIMEOUT_MS = 3000;
