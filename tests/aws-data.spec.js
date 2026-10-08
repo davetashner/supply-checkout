@@ -8,8 +8,9 @@ import { FakeBackend, TEAM, USER, openAws, connected, sockets, emit, receive, dr
 
 
 const seeded = () => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`t1/${k}`, v]));
-// How many times each collection has been listed (first pages only)
-const lists = (backend) => Object.fromEntries(["products", "projects"].map((c) => [c, backend.requests("GET", `/teams/t1/${c}`).filter((r) => !r.query.cursor).length]));
+// How many times each collection has been listed (first pages only, and not the one-project
+// probe for anything older that a re-list with nothing recent makes after it: limit=1)
+const lists = (backend) => Object.fromEntries(["products", "projects"].map((c) => [c, backend.requests("GET", `/teams/t1/${c}`).filter((r) => !r.query.cursor && !r.query.limit).length]));
 const card = (page, name) => page.getByRole("button", { name: new RegExp(name) });
 // The day the page lists projects from at start (recentSince in src/aws/db.js)
 const SINCE = (() => { const now = new Date(); return `${new Date(now.getFullYear(), now.getMonth() - 6, 1).getFullYear()}-01-01`; })();
