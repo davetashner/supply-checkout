@@ -14,6 +14,7 @@ import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import {
   HELD_PURGE_GRACE_DAYS,
+  LAPSE_CHECKOUT_MAX_DELAY_DAYS,
   LAPSE_CLOSURES_ALARM_COUNT,
   LAPSE_CLOSURES_ALARM_HOURS,
   LAPSE_EVERY_HOURS,
@@ -791,7 +792,7 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       title: "Lapsed-team job failing",
       journeys: "J7, J8, J10",
       severity: "P2",
-      rule: `Any LapseFailures over ${2 * LAPSE_EVERY_HOURS} hours: the hourly lapsed-team job (primary region) couldn't handle a team whose trial or subscription lapsed (a read, write or Stripe call failed), couldn't deliver a team's deletion warning to any owner (so it won't close it), or wouldn't close a lapsed team because Stripe disagrees with our record (a live subscription for the customer, or the team's subscription or customer missing, maybe a Stripe key or mode mismatch). The team stays read-only and isn't deleted until it's resolved, past the date its owners were told. The log lines "Lapsed team not closed: Stripe disagrees", "Lapsed team's deletion warning not delivered" and "Lapsed team check failed" have the team, subscription and customer IDs. See docs/runbooks/lapsed-teams.md.`,
+      rule: `Any LapseFailures over ${2 * LAPSE_EVERY_HOURS} hours: the hourly lapsed-team job (primary region) couldn't handle a team whose trial or subscription lapsed (a read, write or Stripe call failed), couldn't deliver a team's deletion warning to any owner (so it won't close it), or wouldn't close a lapsed team because Stripe disagrees with our record (a live subscription, or the team's subscription or customer missing: maybe a Stripe key or mode mismatch), or an owner's Checkout held it ${LAPSE_CHECKOUT_MAX_DELAY_DAYS} days past its date (checkoutHeld). The team stays read-only and isn't deleted until it's resolved, past the date its owners were told. The log lines "Lapsed team not closed: Stripe disagrees", "Lapsed team's deletion warning not delivered" and "Lapsed team check failed" have the team, subscription and customer IDs. See docs/runbooks/lapsed-teams.md.`,
       metric: business(BusinessMetric.LapseFailures, region, Duration.hours(2 * LAPSE_EVERY_HOURS)),
       threshold: 0,
       primaryOnly: true,

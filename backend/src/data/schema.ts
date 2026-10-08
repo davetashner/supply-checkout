@@ -373,7 +373,9 @@ export const LAPSE_LIST_ATTRIBUTES = [PK, SK, GSI3PK, GSI3SK, "status", "trialEn
 /**
  * What the lapsed-team job may read of a team's META item (GetItem,
  * consistent): what billingAccess reads, the team's name for the owner
- * emails, its closure, Stripe IDs and version (the closure's condition), and
+ * emails, its closure, Stripe IDs and version (the closure's condition), when
+ * an owner last started Checkout (`stripeCheckoutAt`, so a team held by it is
+ * skipped before any Stripe call, supply-checkout-8jc.45), and
  * the test mark (`test`, supply-checkout-o60.12), which only tags its metrics.
  * Never documents, projects or members.
  */
@@ -393,6 +395,7 @@ export const LAPSE_READ_ATTRIBUTES = [
   "compPlan",
   "compUntil",
   "version",
+  "stripeCheckoutAt",
   "test",
 ] as const;
 

@@ -140,6 +140,7 @@ export interface OpsChecksProps {
  *   its OPS#OWNERS#* partitions naming only LAPSE_OWNER_ATTRIBUTES (an owner's
  *   email, for the notices); GetItem on `TEAM#` items naming only
  *   LAPSE_READ_ATTRIBUTES (billing fields, the name, Stripe IDs, version,
+ *   the last Checkout's time,
  *   and the test mark, which only tags its metrics);
  *   UpdateItem there naming only LAPSE_CLOSE_ATTRIBUTES, returning nothing
  *   (the closure: never status, plan, comps or Stripe IDs); GetItem and

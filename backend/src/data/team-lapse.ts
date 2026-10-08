@@ -116,6 +116,13 @@ export interface LapseTeam {
   readonly compPlan?: string;
   readonly compUntil?: string;
   readonly version: number;
+  /**
+   * When an owner last started Checkout (linkStripeCustomer, ISO 8601), if
+   * one has. A value that isn't a string (none this app writes) reads as "",
+   * which the job counts rather than parses: the closure's condition compares
+   * it as a string, so it would hold the team with nothing said.
+   */
+  readonly stripeCheckoutAt?: string;
   /** A test team (its META item's `test`, test-accounts.ts): read only to tag the job's metrics (testMark). Never decides anything. */
   readonly test?: true;
 }
@@ -129,6 +136,7 @@ export async function readLapseTeam(db: Db, teamId: string): Promise<LapseTeam |
   for (const field of ["status", "trialEndsAt", "createdAt", "closedAt", "purging", "stripeCustomerId", "stripeSubscriptionId", "pastDueSince", "subscriptionEndedAt", "compPlan", "compUntil"] as const) {
     if (typeof Item[field] === "string") team[field] = Item[field];
   }
+  if (Item.stripeCheckoutAt !== undefined) team.stripeCheckoutAt = typeof Item.stripeCheckoutAt === "string" ? Item.stripeCheckoutAt : "";
   if (Item.test === true) team.test = true;
   return team as unknown as LapseTeam;
 }

@@ -176,7 +176,7 @@ export class OpsDashboard extends Construct {
       // A new account's welcome email, once (supply-checkout-6uw.25)
       businessGraph("J1: welcome emails sent, failed and refused", [BusinessMetric.WelcomeEmails, BusinessMetric.WelcomeEmailFailures, BusinessMetric.WelcomeEmailsRefused]),
       // The lapsed-team job (primary region, supply-checkout-qdx): its emails, closures and failures, and its gauges
-      businessGraph("J7, J8, J10: lapsing teams' owners emailed (and not), lapsed teams closed for deletion (and held at the cap), failures", [BusinessMetric.LapseNotices, BusinessMetric.LapseNoticeFailures, BusinessMetric.LapsedTeamsClosed, BusinessMetric.LapseClosuresHeld, BusinessMetric.LapseFailures]),
+      businessGraph("J7, J8, J10: lapsing teams' owners emailed (and not), lapsed teams closed for deletion (and held at the cap or by a Checkout), failures", [BusinessMetric.LapseNotices, BusinessMetric.LapseNoticeFailures, BusinessMetric.LapsedTeamsClosed, BusinessMetric.LapseClosuresHeld, BusinessMetric.LapseCheckoutHeld, BusinessMetric.LapseFailures]),
       graph("J7, J8, J10: teams the lapsed-team job checked, read-only for billing, and left for lack of time", each((r) => [BusinessMetric.LapseTeamsChecked, BusinessMetric.LapseTeamsReadOnly, BusinessMetric.LapseTeamsUnstarted].map((name) => business(name, r, FIVE_MINUTES, "Maximum"))), WIDTH / 4),
     );
   }
