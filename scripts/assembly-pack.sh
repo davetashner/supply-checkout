@@ -30,8 +30,9 @@ mode="${1:-}"
 src="${2:-}"
 dest="${3:-}"
 account="${4:-}"
-[[ "$mode" == pack || "$mode" == unpack ]] && [[ -n "$src" && -n "$dest" ]] \
-  || die "usage: assembly-pack.sh pack|unpack <from> <to> <account ID>"
+if [[ ! ( "$mode" == pack || "$mode" == unpack ) || -z "$src" || -z "$dest" ]]; then
+  die "usage: assembly-pack.sh pack|unpack <from> <to> <account ID>"
+fi
 [[ "$account" =~ ^[0-9]{12}$ ]] || die "the account ID isn't 12 digits"
 [[ -d "$src" ]] || die "no folder $src"
 [[ ! -e "$dest" ]] || die "$dest already exists"
