@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { envMasker, main, parseArgs, results, summarize } from "../prod-summary.mjs";
+import { envMasker, main, parseArgs, results, signInLine, summarize } from "../prod-summary.mjs";
 import { fakeEnv } from "./helpers.mjs";
 
 const registry = {
@@ -128,4 +128,17 @@ test("the real registry loads into a summary of every step", () => {
   const s = summarize({ suites: [] }, real);
   const steps = real.journeys.flatMap((j) => j.steps).length;
   assert.equal(s.markdown.split("\n").filter((l) => /^\| J\d+\.\d+ /.test(l)).length, steps);
+});
+
+test("the summary counts the sign-ins through Managed Login and from saved sessions, per account", () => {
+  const ann = (...d) => d.map((description) => ({ type: "journeys-sign-in", description }));
+  const report = { suites: [{ title: "J0", specs: [
+    { title: "a", tags: ["@J0.2"], tests: [{ projectName: "desktop-chrome", status: "expected", results: [{ duration: 1, annotations: ann("crew: Managed Login") }] }] },
+    { title: "b", tags: ["@J0.3"], tests: [{ projectName: "iphone-safari", status: "flaky", results: [{ duration: 1, annotations: ann("crew: Managed Login", "viewer: saved session") }, { duration: 1, annotations: ann("crew: saved session", "nonsense") }] }] },
+    { title: "c", tags: ["@J0.3"], tests: [{ projectName: "desktop-chrome", status: "expected", annotations: ann("owner: Managed Login"), results: [{ duration: 1 }] }] },
+  ] }] };
+  assert.equal(signInLine(results(report)), "Sign-ins through Managed Login: crew 2, owner 1; from a saved session: crew 1, viewer 1.");
+  assert.match(summarize(report, { journeys: [] }).markdown, /Sign-ins through Managed Login: crew 2, owner 1; from a saved session: crew 1, viewer 1\./);
+  assert.equal(signInLine(results({ suites: [] })), "");
+  assert.doesNotMatch(summarize({ suites: [] }, { journeys: [] }).markdown, /Sign-ins/);
 });

@@ -9,7 +9,8 @@
 //   events), refuses any account deletion or team closure that assertDestructiveAllowed doesn't
 //   allow, and keeps a trace only for a failed test, started after sign-in.
 // - `signIn(page, role, { fresh })`: signs in as a long-lived account, reusing a session an
-//   earlier test of this browser project left (lib/sessions.mjs) unless `fresh`, and otherwise
+//   earlier test left (lib/sessions.mjs, shared by both browser projects) unless `fresh`, waiting
+//   up to 45 seconds for one on lease to come back, and otherwise
 //   through Managed Login (password, and a two-step code for owner), backing off on Managed
 //   Login's "Too many requests"; then checks the app's own GET /me with checkMe. At the end of
 //   the test (or at signIn.release(context)) the session goes back to the pool.
@@ -26,7 +27,7 @@ import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
 import { freshTotp } from "../../scripts/journeys/lib/totp.mjs";
 import { PASSWORD_CHOICE, formatScreen } from "../../scripts/journeys/lib/screen.mjs";
-import { createSessionPool, sessionCookie } from "../../scripts/journeys/lib/sessions.mjs";
+import { SIGN_IN, createSessionPool, sessionCookie } from "../../scripts/journeys/lib/sessions.mjs";
 import { assertNotTracing, markTracing, secretFill } from "../../scripts/journeys/lib/tracing.mjs";
 import { waitUntilConnected } from "../ui/app.js";
 
@@ -39,6 +40,8 @@ const TOO_MANY_REQUESTS = /too many requests|exceeded the request limit/i;
 export class TooManyRequests extends Error {}
 /** How long signIn waits before each new try after "Too many requests": two more tries at most. */
 export const RATE_LIMIT_BACKOFF_MS = [30_000, 60_000];
+/** How long signIn waits for a leased session to come back before signing in again. */
+export const SESSION_WAIT_MS = 45_000;
 
 export const test = base.extend({
   // eslint-disable-next-line no-empty-pattern -- Playwright fixtures take a destructured object
@@ -124,7 +127,6 @@ export const test = base.extend({
    * request. Tracing starts after it. `fresh` always goes through Managed Login (J0.2).
    */
   signIn: async ({ harness, identity, context }, use, testInfo) => {
-    const project = testInfo.project.name;
     const held = [];
     // Puts the context's sessions back in the pool: the refresh cookie as it is now, since the
     // app's refresh rotated it. A closed context has nothing to give back.
@@ -134,7 +136,7 @@ export const test = base.extend({
       if (!mine.length) return;
       let cookie;
       try { cookie = sessionCookie(await ctx.cookies(PROD.api), PROD.api); } catch { return; }
-      for (const h of mine) harness.sessions.put(project, h.role, cookie);
+      for (const h of mine) harness.sessions.put(h.role, cookie);
     };
     const signIn = async (page, role, { fresh = false } = {}) => {
       const account = harness.config.accounts[role];
@@ -147,7 +149,16 @@ export const test = base.extend({
         const meResponse = page.waitForResponse((r) => r.url() === `${PROD.api}/me` && r.request().method() === "GET", { timeout: 60_000 });
         // Awaited below; a sign-in that fails first ends the test, and that rejection isn't news
         meResponse.catch(() => {});
-        const session = fresh ? null : harness.sessions.take(project, role);
+        let session = fresh ? null : harness.sessions.take(role);
+        // Every session out on lease (the other worker has it): wait for it to come back rather
+        // than sign in again, if one was ever made
+        if (!fresh && !session && harness.sessions.wasIssued(role)) {
+          testInfo.setTimeout(testInfo.timeout + SESSION_WAIT_MS);
+          for (const until = Date.now() + SESSION_WAIT_MS; !session && Date.now() < until;) {
+            await page.waitForTimeout(2_000);
+            session = harness.sessions.take(role);
+          }
+        }
         if (session) await ctx.addCookies([session]);
         await page.goto("/");
         // A session the app can't refresh (revoked, or used past its rotation) shows sign-in
@@ -169,7 +180,9 @@ export const test = base.extend({
             continue;
           }
           await page.waitForURL((u) => u.origin === PROD.app, { timeout: 30_000 });
+          harness.sessions.markIssued(role);
         }
+        testInfo.annotations.push({ type: SIGN_IN, description: `${role}: ${reused ? "saved session" : "Managed Login"}` });
         const res = await meResponse;
         expect(res.status(), "GET /me after sign-in").toBe(200);
         const me = await res.json();

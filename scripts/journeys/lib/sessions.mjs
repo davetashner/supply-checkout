@@ -1,7 +1,10 @@
 // Signed-in sessions of the long-lived accounts, reused across a run's tests. Each password
 // sign-in through Managed Login also mails crew and viewer a code, and a dozen in a few minutes
-// hit Cognito's request limit ("Too many requests"), so each account signs in about once per
-// browser project and later tests reuse the session.
+// hit Cognito's request limit ("Too many requests"), so later tests reuse a session. The pool
+// is per account, shared by both browser projects (the cookie isn't tied to a browser): an
+// account goes through Managed Login once, plus once more for each test that needs it while
+// all its sessions are leased (the two workers overlapping), plus J0.2's own sign-in in each
+// project, which is always fresh.
 //
 // A session is the app's refresh-token cookie on the API's origin (HttpOnly, Path=/auth). The
 // tokens the app holds in memory aren't kept. Refresh tokens rotate (the old one dies 10 seconds
@@ -18,6 +21,8 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, w
 import path from "node:path";
 
 export const SESSIONS_DIR = "sessions";
+/** The annotation signIn adds for each sign-in ("<role>: Managed Login" or "<role>: saved session"), counted in the job summary. */
+export const SIGN_IN = "journeys-sign-in";
 const SAFE = /^[a-z0-9-]{1,40}$/;
 /** A session expiring sooner than this isn't worth taking. */
 const MIN_LIFE_S = 300;
@@ -37,16 +42,16 @@ export function sessionCookie(cookies, apiOrigin) {
  */
 export function createSessionPool(runDirectory, { masker, now = () => Date.now() / 1000 } = {}) {
   const root = path.join(runDirectory, SESSIONS_DIR);
-  const slot = (project, role) => {
-    if (!SAFE.test(project) || !SAFE.test(role)) throw new Error("A session slot is a project and a role in lowercase letters, digits and dashes");
-    return path.join(root, project, role);
+  const slot = (role) => {
+    if (!SAFE.test(role)) throw new Error("A session slot is a role in lowercase letters, digits and dashes");
+    return path.join(root, role);
   };
   const usable = (c) => c && typeof c.value === "string" && c.value && (c.expires === -1 || c.expires === undefined || c.expires - now() > MIN_LIFE_S);
   return {
     root,
-    /** A session for `role` in `project`, taken out of the pool, or null. */
-    take(project, role) {
-      const dir = slot(project, role);
+    /** A session for `role`, taken out of the pool, or null. */
+    take(role) {
+      const dir = slot(role);
       let names;
       try { names = readdirSync(dir).filter((n) => n.endsWith(".json")); } catch { return null; }
       for (const name of names) {
@@ -61,16 +66,26 @@ export function createSessionPool(runDirectory, { masker, now = () => Date.now()
       return null;
     },
     /** Puts a session (the latest cookie) back for the next test. */
-    put(project, role, cookie) {
+    put(role, cookie) {
       if (!usable(cookie)) return false;
       masker?.add(cookie.value);
-      const dir = slot(project, role);
+      const dir = slot(role);
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const name = `${randomBytes(8).toString("hex")}.json`;
       const tmp = path.join(dir, `${name}.tmp`);
       writeFileSync(tmp, JSON.stringify(cookie), { mode: 0o600 });
       renameSync(tmp, path.join(dir, name));
       return true;
+    },
+    /** Records that `role` has a session (one is out on lease or in the pool). */
+    markIssued(role) {
+      const dir = slot(role);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      writeFileSync(path.join(dir, `.issued-${randomBytes(4).toString("hex")}`), "", { mode: 0o600 });
+    },
+    /** Whether `role` was ever given a session this run (worth waiting for one to come back). */
+    wasIssued(role) {
+      try { return readdirSync(slot(role)).some((n) => n.startsWith(".issued-")); } catch { return false; }
     },
     /** Every token still in the pool (for the upload's leak check). */
     tokens() {
