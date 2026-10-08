@@ -121,6 +121,9 @@ jobs:
       critical: ${{ steps.verdict.outputs.critical }}
     env:
       TAG: ${{ inputs.tag }}
+      # A failed test's trace keeps no WebSocket frames: the live-updates subscribe frame carries
+      # the access token (upload-results.mjs drops them anyway, and refuses a token it finds)
+      PLAYWRIGHT_TRACING_NO_WEBSOCKET_FRAMES: "1"
     steps:
       # main's commit: this run's own (the deploy's, when it calls this), never a pull request's
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
