@@ -48,7 +48,7 @@ test("a screen is described by its path, headings, alerts, labels and controls, 
     fields: ["Email address (email)"],
     controls: ["radio Password", "radio Email message", "button Next", "link Signed in as crew.member@example.com", "button Journeys desktop secret"],
   }, masker.redact);
-  assert.match(line, new RegExp(`^page ${PROD.auth.replace(/\./g, "\\.")}/login/continue; `));
+  assert.ok(line.startsWith(`page ${PROD.auth}/login/continue; `), line);
   assert.doesNotMatch(line, /client_id|state|s3cr3t|redirect_uri/);
   assert.match(line, /headings "Sign in", "Choose a sign-in method";/);
   assert.match(line, /alerts none;/);
