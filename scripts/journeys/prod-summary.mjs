@@ -21,6 +21,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENV } from "./lib/config.mjs";
 import { MASKED_VALUES_FILE, createMasker, readMaskedValues } from "./lib/mask.mjs";
+import { SIGN_IN } from "./lib/sessions.mjs";
 
 export const PROJECTS = ["desktop-chrome", "iphone-safari"];
 const STEP = /^@?(J\d+\.\d+)$/;
@@ -28,6 +29,18 @@ const STEP_TITLE = /^(J\d+\.\d+)\b/;
 const RANK = { failed: 3, flaky: 2, passed: 1, skipped: 0 };
 // eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;]*m/g;
+
+/** "Sign-ins through Managed Login: crew 2, owner 1; from a saved session: crew 6, viewer 2", or "". */
+export function signInLine(all) {
+  const counts = { "Managed Login": new Map(), "saved session": new Map() };
+  for (const d of all.flatMap((r) => r.signIns ?? [])) {
+    const m = /^([a-z]+): (Managed Login|saved session)$/.exec(d);
+    if (m) counts[m[2]].set(m[1], (counts[m[2]].get(m[1]) ?? 0) + 1);
+  }
+  const part = (map) => [...map].sort(([a], [b]) => a.localeCompare(b)).map(([role, n]) => `${role} ${n}`).join(", ") || "none";
+  if (!counts["Managed Login"].size && !counts["saved session"].size) return "";
+  return `Sign-ins through Managed Login: ${part(counts["Managed Login"])}; from a saved session: ${part(counts["saved session"])}.`;
+}
 
 const outcome = (test) => ({ expected: "passed", unexpected: "failed", flaky: "flaky", skipped: "skipped" })[test.status] ?? "failed";
 
@@ -51,6 +64,8 @@ export function results(report) {
           duration: runs.reduce((n, r) => n + (r.duration ?? 0), 0),
           error,
           warnings: annotations.filter((a) => a.type === "journeys-warning").map((a) => a.description),
+          // How each try signed in (fixtures signIn): "<role>: Managed Login" or "<role>: saved session"
+          signIns: (runs.some((r) => r.annotations) ? runs.flatMap((r) => r.annotations ?? []) : test.annotations ?? []).filter((a) => a.type === SIGN_IN).map((a) => a.description),
         });
       }
     }
@@ -116,6 +131,7 @@ export function summarize(report, registry, { redact = (s) => s, warnings = [] }
     "",
     ...allWarnings.map((w) => `> **Warning:** ${w}`),
     ...(allWarnings.length ? [""] : []),
+    ...(signInLine(all) ? [signInLine(all), ""] : []),
     `| Step | ${PROJECTS.join(" | ")} | Time | Notes |`,
     `| --- | ${PROJECTS.map(() => "---").join(" | ")} | --- | --- |`,
     ...rows,
