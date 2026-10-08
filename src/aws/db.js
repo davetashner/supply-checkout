@@ -14,9 +14,13 @@
 // Not every project, at first (supply-checkout-1dg.11): a team's finished projects pile up over
 // the years, so the page lists `?since=<day>` (recentSince), the open projects and the finished
 // ones from then on, and the snapshot says so (`since`). loadOlder() lists every project, and
-// from then on every re-list does. Live events for a project not held are fetched, as any other,
-// so one someone reopens shows; a finished one from before the day leaves again at the next
-// re-list.
+// from then on every re-list does. A project this page fetched or wrote since it loaded (a live
+// event, its own write, a command's answer) stays held across those re-lists even if it's from
+// before the day, so one someone else edits or reopens, or one this page returned, doesn't vanish
+// from under the person looking at it. A re-list of every project holds only what it lists. When
+// the recent list is empty, one more request of a single project says whether the team has
+// older ones (`older`), so the first-run checklist doesn't ask a team with years of projects
+// to create its first.
 import { createLive } from "./live.js";
 import { COUNT_NOT_SAVED } from "../moves.js";
 
@@ -42,7 +46,7 @@ const sorted = (v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.
 const fields = (data) => JSON.stringify(sorted(Object.fromEntries(Object.entries(data).filter(([k]) => k !== "stock" && k !== "updatedAt"))));
 const snap = (id, doc) => ({ id, exists: !!doc, data: () => (doc ? structuredClone(doc.data) : undefined), metadata: META });
 
-function querySnap(docs, order, since) {
+function querySnap(docs, order, since, older) {
   const list = [...docs.values()].sort((a, b) => cmp(a.id, b.id));
   if (order) {
     // Missing or non-text values sort as "", so undated projects come last when newest-first
@@ -51,7 +55,7 @@ function querySnap(docs, order, since) {
     list.sort((a, b) => cmp(val(a), val(b)) * dir || cmp(a.id, b.id));
   }
   const out = list.map((d) => snap(d.id, d));
-  return { docs: out, size: out.length, empty: !out.length, docChanges: () => [], metadata: META, ...(since ? { since } : {}) };
+  return { docs: out, size: out.length, empty: !out.length, docChanges: () => [], metadata: META, ...(since ? { since } : {}), ...(older ? { older } : {}) };
 }
 
 // onClosed: a write was refused because an owner closed the team meanwhile; onEnded: because
@@ -67,7 +71,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   const queues = new Map();
   let removed = false;
   // all: list every project, not only the recent ones (loadOlder); since: the day the held list goes back to ("" for all)
-  const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false, fetched: [], held: null, all: name !== "projects", since: "" });
+  const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false, fetched: [], held: null, all: name !== "projects", since: "", kept: new Set(), older: false });
   const docPath = (name, id) => `${base}/${name}/${encodeURIComponent(id)}`;
 
   // Runs fn once every write to the same document sent before it has answered, so a write names
@@ -117,8 +121,8 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     const c = coll(name), held = c.docs.get(id);
     if (doc && held && doc.version < held.version) return;
     if (c.touched) c.touched.add(id);
-    if (doc) c.docs.set(id, doc);
-    else c.docs.delete(id);
+    if (doc) { c.docs.set(id, doc); c.kept.add(id); }
+    else { c.docs.delete(id); c.kept.delete(id); }
     notify(name);
   }
 
@@ -145,6 +149,11 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
         c.touched = new Set();
         const since = c.all ? "" : recentSince();
         const docs = await list(name, since);
+        // Held from before the day: kept (above); with every project listed, no longer needed
+        if (since) { for (const id of c.kept) if (!docs.has(id)) docs.set(id, c.docs.get(id)); }
+        else c.kept.clear();
+        // Nothing recent: whether there's anything older (one project, any)
+        c.older = !!since && !docs.size && (await api("GET", `${base}/${name}?limit=1`)).documents.length > 0;
         for (const id of c.touched) {
           const doc = c.docs.get(id);
           if (doc) docs.set(id, doc);
@@ -422,7 +431,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     return {
       orderBy: (field, dir = "asc") => query(name, { field, dir }),
       get: async () => querySnap(await list(name), order),
-      onSnapshot: (next, error) => listen(name, (c) => next(querySnap(c.docs, order, c.since)), error),
+      onSnapshot: (next, error) => listen(name, (c) => next(querySnap(c.docs, order, c.since, c.older)), error),
     };
   }
 

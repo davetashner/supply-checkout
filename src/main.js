@@ -19,7 +19,9 @@ let products = Object.create(null), projects = [], people = {};
 // The web build loads open and recent projects at start (supply-checkout-1dg.11): olderSince is
 // the day finished projects from before it aren't loaded yet ("" once they are, or with a runtime
 // that loads every project). A search, a year before it, an export or Show older projects loads them.
-let olderSince = "", olderLoading = false;
+// olderLoad: the listing of them under way (null when none is); olderExist: the team has projects,
+// though none recent (for the first-run checklist).
+let olderSince = "", olderLoad = null, olderExist = false;
 // kind: the Inventory's Supplies / Equipment filter ("all" shows both); equip: with Equipment
 // picked, what's in storage ("in") or still out on open projects ("out")
 // q: the project list's search; year: its year filter ("" for all years); years: the year groups
@@ -214,7 +216,7 @@ window.addEventListener("online", () => {
 // meanwhile, the page is read-only (canWrite) and it hides, as for a team that opens closed.
 function draw() {
   drawView();
-  if (firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, projects.length);
+  if (firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, projects.length || Number(olderExist));
 }
 function drawView() {
   $("#tab-projects").setAttribute("aria-pressed", ui.tab === "projects");
@@ -371,7 +373,7 @@ function drawList() {
       ${shown.length || adhoc ? "" : `<div class="empty">${!connected ? "Loading projects…" : q ? `No projects match “${esc(ui.q.trim())}”.` : ui.filter === "open" ? "Nothing is checked out right now." : "No projects here yet."}</div>`}
     </div>
     ${groupedHTML(grouped)}
-    ${olderSince && ui.filter !== "open" ? `<div class="older-row"><span class="muted">${olderLoading ? "Loading older projects…" : `Projects returned before ${olderSince.slice(0, 4)} aren't shown yet.`}</span>${olderLoading ? "" : `<button type="button" class="btn" id="loadOlder">Show older projects</button>`}</div>` : ""}`);
+    ${olderSince && ui.filter !== "open" ? `<div class="older-row"><span class="muted">${olderLoad ? "Loading older projects…" : `Projects returned before ${olderSince.slice(0, 4)} aren't shown yet.`}</span>${olderLoad ? "" : `<button type="button" class="btn" id="loadOlder">Show older projects</button>`}</div>` : ""}`);
   // Not in the HTML, so a redraw while someone types leaves the field (and its caret) alone;
   // set here when the list is drawn afresh (back from the Inventory)
   const box = $("#projectSearch");
@@ -387,13 +389,17 @@ $("#main").addEventListener("change", e => {
   draw();
 });
 // Fetches the finished projects not loaded at start (olderSince), once; the snapshot that
-// follows has them. Resolves when they're here, or it couldn't (and said so).
-async function loadOlder() {
-  if (!olderSince || olderLoading) return;
-  olderLoading = true; draw();
-  try { await db.loadOlder(); }
-  catch { toast("Couldn't load older projects. Check the connection and try again."); }
-  olderLoading = false; draw();
+// follows has them. Resolves when they're here, or it couldn't (and said so). A call while
+// they're being listed waits for that listing.
+function loadOlder() {
+  if (!olderSince) return Promise.resolve();
+  if (!olderLoad) {
+    olderLoad = db.loadOlder()
+      .catch(() => toast("Couldn't load older projects. Check the connection and try again."))
+      .then(() => { olderLoad = null; draw(); });
+    draw();
+  }
+  return olderLoad;
 }
 
 // A line's row: tapping it opens the line editor (lineModal)
@@ -1695,7 +1701,7 @@ draw();
   }, onErr);
   db.collection("projects").orderBy("date", "desc").onSnapshot(snap => {
     projects = snap.docs.map(liveProject);
-    olderSince = snap.since || "";
+    olderSince = snap.since || ""; olderExist = snap.older === true;
     if (sFirst) { sFirst = false; ready(); } else render();
   }, onErr);
 })();

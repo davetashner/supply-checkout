@@ -580,8 +580,13 @@ describe("documents (the app's db contract)", () => {
     expect(await ids({ since: "2026-01-01" })).toEqual(["closedBlank", "closedLate", "closedNew", "closedOn", "closedUndated", "openNoStatus", "openOld", "sheetOpen"]);
     // Without since: every project, as before
     expect(await ids({})).toEqual([...Object.keys(docs), "sheetOld", "sheetOpen"].sort());
+    // The old name of the route, through the rename's window, filters the same
+    const legacyRoute = await call("GET", "/teams/team-a/sheets", { query: { since: "2026-01-01" } });
+    expect(legacyRoute.status).toBe(200);
+    expect(legacyRoute.body.documents.map((d: { id: string }) => d.id).sort()).toEqual(await ids({ since: "2026-01-01" }));
+    expect((await call("GET", "/teams/team-a/sheets", { query: { since: "2026-01-01", limit: "5" } })).body.error.code).toBe("bad_request");
     // The filter runs in DynamoDB, on the team's partition only
-    const query = table.requests.filter((r) => r.command === "QueryCommand").at(-3)?.input as Record<string, unknown>;
+    const query = table.requests.filter((r) => r.command === "QueryCommand" && r.input.FilterExpression).at(-1)?.input as Record<string, unknown>;
     expect(query.KeyConditionExpression).toBe("PK = :pk AND begins_with(SK, :prefix)");
     expect(query.FilterExpression).toEqual(expect.any(String));
     expect((query.ExpressionAttributeValues as Record<string, unknown>)[":pk"]).toBe("TEAM#team-a");

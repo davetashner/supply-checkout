@@ -696,7 +696,7 @@ test.describe("older projects", { tag: ["@J6"] }, () => {
     await page.getByRole("button", { name: "Export data" }).click();
     await expect(page.locator("#toast")).toHaveText("Couldn't load older projects. Check the connection and try again.");
     await expect(modal(page)).toBeHidden();
-    // A second tap while the first is still listing does nothing more
+    // A second tap while the first is still listing waits for that listing, and lists nothing more
     const release = backend.hold("GET", (path, call) => path === "/teams/t1/projects" && !call.query.since);
     await page.getByRole("button", { name: "Export data" }).click();
     await expect.poll(() => fullLists(backend)).toBe(2);
@@ -704,6 +704,48 @@ test.describe("older projects", { tag: ["@J6"] }, () => {
     release();
     await expect(modal(page)).toContainText("5 projects and 2 inventory items");
     expect(fullLists(backend)).toBe(2);
+  });
+
+  test("Export data tapped while a search is listing the older projects waits for it, then opens", async ({ page }) => {
+    const backend = await open(page, older());
+    const release = backend.hold("GET", (path, call) => path === "/teams/t1/projects" && !call.query.since);
+    await page.getByRole("searchbox", { name: "Search projects" }).fill("oldf");
+    await expect.poll(() => fullLists(backend)).toBe(1);
+    await page.getByRole("button", { name: "Export data" }).click();
+    await page.waitForTimeout(100);
+    await expect(modal(page)).toBeHidden();
+    release();
+    await expect(modal(page)).toContainText("5 projects and 2 inventory items");
+    expect(fullLists(backend)).toBe(1);
+  });
+
+  test("an older project someone else edits stays open across re-lists", async ({ page }) => {
+    const backend = await open(page, older());
+    const v = backend.write("t1", "projects", "old", { ...backend.doc("t1", "projects", "old").data, client: "Oldfield & Sons" });
+    await emit(page, { v: 1, eventId: "o1", collection: "projects", id: "old", op: "put", version: v });
+    await returned(page);
+    await expect(yearGroup(page, OLD)).toContainText("2 projects");
+    await yearGroup(page, OLD).click();
+    await card(page, "Oldfield & Sons").click();
+    await expect(page.locator(".project-head")).toContainText("Oldfield & Sons");
+    // A re-list of the recent projects doesn't have it, and the page keeps it
+    await setVisible(page, true);
+    await expect.poll(() => lists(backend).projects).toBe(3);
+    await page.waitForTimeout(100);
+    await expect(page.locator(".project-head")).toContainText("Oldfield & Sons");
+    await page.getByRole("button", { name: "← All projects" }).click();
+    await expect(yearGroup(page, OLD)).toContainText("2 projects");
+    // Deleted by someone else: gone, and not kept
+    backend.docs.delete("t1/projects/old");
+    await emit(page, { v: 1, eventId: "o2", collection: "projects", id: "old", op: "delete", version: v });
+    await expect(yearGroup(page, OLD)).toContainText("1 project");
+    await setVisible(page, true);
+    await expect.poll(() => lists(backend).projects).toBe(4);
+    await expect(yearGroup(page, OLD)).toContainText("1 project");
+    // Once every project is listed, the list is all there is
+    await page.getByRole("button", { name: "Show older projects" }).click();
+    await expect(page.locator(".older-row")).toHaveCount(0);
+    expect(fullLists(backend)).toBe(1);
   });
 
   test("a live update to an older project not listed yet shows it, as someone reopens it", async ({ page }) => {

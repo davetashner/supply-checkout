@@ -15,8 +15,9 @@ const alert = (page) => page.locator("#accountError");
 // for that re-list before changing the session or the user's teams, or on a slow runner it
 // can meet the change first: an expired token refreshed before the write under test, or a
 // removal shown before the tab comes back.
+// (Not counting the one-project request that follows an empty list of recent projects, src/aws/db.js.)
 const relisted = (backend, team = "t1") =>
-  expect.poll(() => ["products", "projects"].map((c) => backend.requests("GET", `/teams/${team}/${c}`).length)).toEqual([2, 2]);
+  expect.poll(() => ["products", "projects"].map((c) => backend.requests("GET", `/teams/${team}/${c}`).filter((r) => !r.query.limit).length)).toEqual([2, 2]);
 
 async function expectAccessible(page) {
   const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
