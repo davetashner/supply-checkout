@@ -71,6 +71,7 @@ async function write(fn, okMsg, projectId) {
     return false;
   }
 }
+const STILL_OUT = "Return it or mark it lost before removing it.";
 const ADHOC_OPEN = "Another General Use project is open. Finish it before reopening this one.";
 const OFFLINE = "You're offline, so that wasn't saved. Try again when you're back online.";
 // Why the page is read-only, when the runtime says (the web build: an owner closed the team);
@@ -996,19 +997,28 @@ function lineModal(s, key) {
   const l = own(s.items || {}, key); if (!l) return;
   // Company equipment on loan has no price on the project (ADR 0017), and nor does the General Use project
   const equip = isEquipmentLine(l), bought = l.purchased === true, adhoc = isAdhoc(s);
+  // Company equipment's counts change only through checkout, return and lost (ADR 0017), which
+  // move stock and record why, so the editor shows them and doesn't change them. Nor is a line
+  // removed while some of it is still out: the server refuses that too (supply-checkout-1dg.17).
+  const eq = equip ? equipmentCounts(l) : null;
   // The open General Use project's line can move, whole, to an open client project (ADR 0017, section 5)
   const jobs = adhoc && s.status !== "closed" ? projects.filter(x => !isAdhoc(x) && x.status !== "closed") : null;
   openModal(`
     <h2>${esc(bought ? lineLabel(l) : l.name || "Item")}</h2>
     <div class="code">${esc(codeText(l.code))}</div>
-    <form id="f" style="display:grid;gap:14px">
-      ${equip ? `<p class="hint" style="margin:0">Company equipment: not charged.</p>` : adhoc ? `<p class="hint" style="margin:0">Taken for no job: not charged.</p>` : `<div class="field"><label for="fPrice">Price each on this project ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>`}
+    ${eq ? `<form id="f" style="display:grid;gap:14px">
+      <p class="hint" style="margin:0">Company equipment: not charged. Its counts change when it's checked out, returned, or marked lost at Finished Return.</p>
+      <div class="summary"><span>Taken <b>${eq.o}</b></span><span>Returned <b>${eq.r}</b></span>${eq.lost ? `<span>Lost or broken <b>${eq.lost}</b></span>` : ""}<span>Still out <b>${eq.still}</b></span></div>
+      ${eq.still ? `<p class="hint" style="margin:0">${STILL_OUT}</p>` : ""}
+      <div class="modal-actions">${eq.still ? "" : `<button type="button" class="btn danger" id="remove">Remove</button>`}<span class="spacer"></span><button type="button" class="btn primary" id="cancel">Close</button></div>
+    </form>` : `<form id="f" style="display:grid;gap:14px">
+      ${adhoc ? `<p class="hint" style="margin:0">Taken for no job: not charged.</p>` : `<div class="field"><label for="fPrice">Price each on this project ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>`}
       <div class="row2">
         <div class="field"><label for="fOut">Taken</label><input type="number" id="fOut" min="0" inputmode="numeric" value="${int(l.out)}"></div>
         ${bought ? "" : `<div class="field"><label for="fRet">Returned</label><input type="number" id="fRet" min="0" inputmode="numeric" value="${int(l.returned)}"></div>`}
       </div>
       <div class="modal-actions"><button type="button" class="btn danger" id="remove">Remove</button><span class="spacer"></span><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
-    </form>
+    </form>`}
     ${jobs ? `<form id="mv" class="move" style="display:grid;gap:10px;margin-top:18px">
       <h3>Move to a project</h3>
       ${jobs.length ? `<p class="hint" style="margin:0">The whole line, with its counts, goes to that project at the price it was taken at. Storage doesn't change.</p>
@@ -1023,15 +1033,19 @@ function lineModal(s, key) {
       const to = m.querySelector("#fTo").value, x = projects.find(j => j.id === to);
       saving(mv, () => closing(write(() => moveLine(db, (moves[to] ||= {}), s.id, key, to), `Moved to ${projectTitle(x)}`, s.id)));
     });
-    // The form is busy until it's removed, so it's removed once
-    armButton(m.querySelector("#remove"), "Tap to remove", () => busy(form, () => closing(write(() => removeLine(s.id, key), "Removed", s.id))));
-    onSubmit(form, () => {
-      // Taken never below what's back and lost; returned never above what isn't lost
+    // The form is busy until it's removed, so it's removed once. Refused for equipment still out
+    // that this page didn't know about (someone took more meanwhile): the latest is showing.
+    const remove = m.querySelector("#remove");
+    if (remove) armButton(remove, "Tap to remove", () => busy(form, () => closing(write(() => removeLine(s.id, key).catch(e => {
+      throw e && e.reason === "equipment_out" ? { code: "refused", message: `Some of this is still out, so it wasn't removed. ${STILL_OUT}` } : e;
+    }), "Removed", s.id))));
+    if (!eq) onSubmit(form, () => {
+      // Returned never above what's taken
       // Bought for the client: nothing comes back, so there's no returned to change
-      const lost = int(l.lost), out = Math.max(int(m.querySelector("#fOut").value), lost);
-      const returned = bought ? 0 : Math.min(int(m.querySelector("#fRet").value), out - lost);
+      const out = int(m.querySelector("#fOut").value);
+      const returned = bought ? 0 : Math.min(int(m.querySelector("#fRet").value), out);
       // Typed prices are kept in whole cents (ADR 0014); the server records who typed one on a bought line
-      const price = equip || adhoc ? {} : { price: Math.max(0, round2(m.querySelector("#fPrice").value)) };
+      const price = adhoc ? {} : { price: Math.max(0, round2(m.querySelector("#fPrice").value)) };
       const patch = bought ? { out, ...price } : { out, returned, ...price };
       saving(form, () => closing(write(() => db.doc("projects/" + s.id).update({ items: { [key]: patch } }), "Saved", s.id)));
     });
