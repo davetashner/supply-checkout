@@ -26,9 +26,13 @@ function addressedTo(raw, to) {
  * Waits for the app's mail to `to`, received after `since` (ms). `want` is "code" (a 6- to
  * 8-digit code) or "link" (a link to the app; `linkMatch` narrows which). Returns `{ code }` or
  * `{ link }`; throws MailTimeout after `timeoutMs`. Messages to `to` that fail the checks are
- * counted and reported (by reason only) and never used.
+ * counted and reported (by reason only) and never used. An address in `refuse` (the long-lived
+ * accounts) is refused at once.
  */
-export async function waitForMail({ s3, to, since, want = "code", linkMatch = () => true, masker, log = () => {}, timeoutMs = MAIL_TIMEOUT_MS, pollMs = MAIL_POLL_MS, now = Date.now, sleep = delay, expect = PROD }) {
+export async function waitForMail({ s3, to, since, want = "code", linkMatch = () => true, masker, log = () => {}, timeoutMs = MAIL_TIMEOUT_MS, pollMs = MAIL_POLL_MS, now = Date.now, sleep = delay, expect = PROD, refuse = [] }) {
+  // The long-lived accounts sign in by password, but Managed Login mails them a code first,
+  // every time, before "Try another way": their inbox holds unused codes, so never read one
+  if (refuse.some((a) => String(a).toLowerCase() === String(to).toLowerCase())) throw new Error("Refusing to wait for mail to a long-lived account: its inbox holds the unused codes of its password sign-ins");
   const seen = new Set();
   const deadline = now() + timeoutMs;
   const rejected = [];
@@ -67,4 +71,20 @@ export async function waitForMail({ s3, to, since, want = "code", linkMatch = ()
     if (now() >= deadline) throw new MailTimeout(`No genuine ${want} arrived within ${Math.round(timeoutMs / 1000)} seconds${rejected.length ? ` (refused ${rejected.length}: ${[...new Set(rejected)].join("; ")})` : ""}`);
     await sleep(pollMs);
   }
+}
+
+/**
+ * Deletes every message in inbox/ addressed to one of `to` (the long-lived accounts: the codes
+ * Managed Login mails before each password sign-in, never used). Returns how many it deleted;
+ * a message it can't read or delete is left for the inbox's one-day expiry.
+ */
+export async function sweepInbox({ s3, to, log = () => {} }) {
+  let deleted = 0;
+  for (const o of await s3.list("inbox/")) {
+    let raw;
+    try { raw = await s3.get(o.key); } catch { continue; }
+    if (!to.some((a) => addressedTo(raw, a))) continue;
+    try { await s3.remove(o.key); deleted++; } catch { log("Mailbox: couldn't delete an unused sign-in code (it expires in a day)"); }
+  }
+  return deleted;
 }
