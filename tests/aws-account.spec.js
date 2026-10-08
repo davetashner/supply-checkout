@@ -652,6 +652,52 @@ test.describe("first sign-in and teams", () => {
     await expectNoSideways(page);
   });
 
+  // Who is signed in, with their role in the team, stays on the team bar (supply-checkout-005.18)
+  for (const [role, label] of [["owner", "Owner"], ["contributor", "Contributor"], ["viewer", "Viewer"]]) {
+    test(`the team bar says who is signed in, as ${role === "owner" ? "an" : "a"} ${role}, and opens Account`, { tag: ["@J0.1"] }, async ({ page }) => {
+      await openAws(page, new FakeBackend({ teams: [{ ...TEAM, role }], docs: seeded() }));
+      await connected(page);
+      const who = page.locator(".teambar").getByRole("button", { name: `Signed in as Pat Lee, ${label}. Account`, exact: true });
+      await expect(who).toBeVisible();
+      await expect(who.locator(".who-name")).toHaveText("Pat Lee");
+      await expect(who.locator(".who-role")).toHaveText(label);
+      await expect(who.locator(".who-role")).toBeVisible();
+      await expect(who).toHaveAttribute("title", "Pat Lee");
+      await expectAccessible(page);
+      await who.click();
+      await expect(page.locator("#modal")).toContainText(`Signed in as ${USER.email}.`);
+    });
+  }
+
+  test("without a name, the team bar shows the email, cut short on a 375px phone in dark mode", { tag: ["@J0.1"] }, async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 740 });
+    await page.emulateMedia({ colorScheme: "dark" });
+    const email = "someone.with.a.rather.long.address@example.com";
+    await openAws(page, new FakeBackend({ user: { ...USER, email }, claims: { email }, teams: [TEAM, { ...TEAM, id: "t2", name: "A team with a rather long name, Incorporated" }], docs: seeded() }));
+    await connected(page);
+    const who = page.locator(".teambar").getByRole("button", { name: `Signed in as ${email}, Owner. Account`, exact: true });
+    await expect(who).toBeVisible();
+    await expect(who).toHaveAttribute("title", email);
+    // The whole address is there for a screen reader; on screen it ends in an ellipsis
+    const name = who.locator(".who-name");
+    await expect(name).toHaveText(email);
+    expect(await name.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+    await expect(who.locator(".who-role")).toBeVisible();
+    expect((await who.boundingBox()).width).toBeLessThan(343);
+    await expectNoSideways(page);
+    await expectAccessible(page);
+  });
+
+  test("on a desktop, a short name and role sit on the team bar in full", { tag: ["@J0.1"] }, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openAws(page, new FakeBackend({ claims: { given_name: "Pat", email: USER.email }, docs: seeded() }));
+    await connected(page);
+    const name = page.locator(".teambar .who-name");
+    await expect(name).toHaveText("Pat");
+    expect(await name.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(false);
+    await expectNoSideways(page);
+  });
+
   test("the team switcher fits a 320px phone", { tag: ["@J0.3"] }, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 640 });
     await openAws(page, new FakeBackend({ teams: [TEAM, { ...TEAM, id: "t2", name: "A team with a rather long name, Incorporated" }], docs: seeded() }));
