@@ -36,6 +36,7 @@ describe("settings", () => {
       configurationSet: "supply-checkout-prod-transactional",
       region: EAST,
       appUrl: "https://app.supplycheckout.com",
+      supportAddress: "support@supplycheckout.com",
     });
     expect(emailSettings({ ...config, envName: "staging" }).fromAddress).toBe("noreply@staging.supplycheckout.com");
   });
@@ -225,7 +226,7 @@ describe("email stack", () => {
         expect(perm.Properties.Principal).toBe("events.amazonaws.com");
       }
       const vars = (fn.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
-      expect(vars).toMatchObject({ TABLE_NAME: "supply-checkout-prod-app", [EMAIL_ENV.fromAddress]: "noreply@supplycheckout.com", [EMAIL_ENV.appUrl]: "https://app.supplycheckout.com" });
+      expect(vars).toMatchObject({ TABLE_NAME: "supply-checkout-prod-app", [EMAIL_ENV.fromAddress]: "noreply@supplycheckout.com", [EMAIL_ENV.appUrl]: "https://app.supplycheckout.com", [EMAIL_ENV.supportAddress]: "support@supplycheckout.com" });
       expect(JSON.stringify(vars.USER_POOL_ID)).toMatch(/SsmParameterValuesupplycheckoutprodidentityuserpoolid/);
       t.hasResourceProperties("AWS::Lambda::EventInvokeConfig", { FunctionName: { Ref: Match.anyValue() }, MaximumRetryAttempts: 2 });
       // What Lambda and EventBridge gave up on waits to be replayed, encrypted
@@ -445,6 +446,8 @@ describe("grantSendEmail", () => {
           [EMAIL_ENV.configurationSet]: "supply-checkout-prod-transactional",
           [EMAIL_ENV.region]: EAST,
           [EMAIL_ENV.appUrl]: "https://app.supplycheckout.com",
+          // The security notices name it (supply-checkout-3sv.12)
+          [EMAIL_ENV.supportAddress]: "support@supplycheckout.com",
         },
       },
     });

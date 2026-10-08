@@ -122,6 +122,8 @@ export interface RenderedEmail {
 export interface RenderOptions {
   /** `https://app.<env domain>`: every link in the message starts with it. */
   readonly appUrl: string;
+  /** `support@<env domain>`, which every security notice names (supply-checkout-3sv.12). A security notice won't render without it. */
+  readonly supportAddress?: string;
 }
 
 const ROLE_PHRASE: Record<InviteRole, string> = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
@@ -184,20 +186,55 @@ export function formatDateTime(value: string): string {
   return `${formatDate(value)} at ${time} UTC`;
 }
 
+/** A bare address with no spaces, quotes or angle brackets: the support address as the welcome email and the security notices show it. */
+const PLAIN_ADDRESS = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+
 /**
- * What a security notice says to do if the change wasn't the account's owner. It links
- * nowhere but the app, and asks for nothing: a message like this is what a phisher copies.
+ * What a security notice says to do if the change wasn't the account's owner
+ * (supply-checkout-3sv.12): the same recovery path in every kind, in order.
+ * It links nowhere but the app, and asks for nothing: a message like this is
+ * what a phisher copies. The last step names the support address, says what
+ * support will do (confirm it's their account first, then sign it out, and
+ * help reset the password and two-step sign-in), and what support never asks.
  */
-const NOT_YOU =
-  "If it wasn't you, someone else may be able to sign in to your account. Reset your password from the Supply Checkout sign-in page with a code sent to this address, check that the email address on your account is still yours, tell the other owners of your teams, and contact Supply Checkout support. We'll never ask you for your password or a sign-in code.";
+const IF_NOT_YOU: Record<SecurityNotice["kind"], string> = {
+  passwordSet: "If it wasn't you, someone else may be able to sign in to your account. Act now:",
+  twoStepOn:
+    "If it wasn't you, someone else may be able to sign in to your account, and may have turned this on to keep you out. Act now:",
+  passwordReset: "If it wasn't you, someone who can read this mailbox may have reset it. Act now:",
+  emailChanged:
+    "If it wasn't you, someone else may have taken over your account: sign-in codes and password resets now go to their address, so you can't reset your password yourself. Act now:",
+};
 
-/** NOT_YOU for a password reset: it took a code sent to this address, so the mailbox itself may be someone else's to read. */
-const RESET_NOT_YOU =
-  "If it wasn't you, someone who can read this mailbox may have reset it. Secure this email account first (change its password), then reset your Supply Checkout password again from the sign-in page, check that the email address on your account is still yours, tell the other owners of your teams, and contact Supply Checkout support. We'll never ask you for your password or a sign-in code.";
+/** First, the mailbox: every reset code goes to it. */
+const SECURE_MAILBOX = "1. Secure this email account: change its password, and check that nobody has added a forwarding rule or a recovery address you don't know.";
 
-/** NOT_YOU for an email change: codes and resets now go to the new address, so they can't help. */
-const EMAIL_NOT_YOU =
-  "If it wasn't you, someone else may have taken over your account: sign-in codes and password resets now go to their address. Contact Supply Checkout support from this address right away, and tell the other owners of your teams. We'll never ask you for your password or a sign-in code.";
+/** Then the Supply Checkout password, with a code sent to that mailbox (not after an email change: codes go to the new address). */
+const RESET_PASSWORD =
+  "2. Reset your Supply Checkout password: on the sign-in page, choose to reset it and enter the code we send to this address. Then check that the email address on your account is still yours, and tell the other owners of your teams.";
+
+/** After an email change, support is the only way back. */
+const EMAIL_CHANGED_STEP = "2. Tell the other owners of your teams.";
+
+/** The last step: write to support, from this address. */
+function contactSupport(supportAddress: string, step: number, kind: SecurityNotice["kind"]): string {
+  const stuck =
+    kind === "emailChanged"
+      ? ""
+      : " If you can't sign in, for example because it asks for a code from an authenticator app that isn't yours, support can get you back in.";
+  return `${step}. Write to Supply Checkout support at ${supportAddress} from this address, and say what you noticed.${stuck}`;
+}
+
+/** What support will do, and never ask: the last line of every security notice. */
+const SUPPORT_WILL =
+  "We'll confirm that the account is yours before we change anything, then sign it out everywhere and help you reset its password, email address and two-step sign-in. We'll never ask you for your password or a sign-in code.";
+
+/** The recovery path as paragraphs: the opening line, the steps, and what support will do. */
+function recoveryPath(kind: SecurityNotice["kind"], supportAddress: string): string[] {
+  if (!PLAIN_ADDRESS.test(supportAddress)) throw new Error("Invalid support address");
+  const steps = kind === "emailChanged" ? [SECURE_MAILBOX, EMAIL_CHANGED_STEP] : [SECURE_MAILBOX, RESET_PASSWORD];
+  return [IF_NOT_YOU[kind], ...steps, contactSupport(supportAddress, steps.length + 1, kind), SUPPORT_WILL];
+}
 
 interface Content {
   readonly subject: string;
@@ -274,8 +311,9 @@ function text(c: Content): string {
   ].join("\n");
 }
 
-function content(input: EmailInput, appUrl: string): Content {
-  if (input.kind === "passwordSet" || input.kind === "twoStepOn" || input.kind === "emailChanged" || input.kind === "passwordReset") return securityContent(input, appUrl);
+function content(input: EmailInput, options: RenderOptions): Content {
+  const { appUrl } = options;
+  if (input.kind === "passwordSet" || input.kind === "twoStepOn" || input.kind === "emailChanged" || input.kind === "passwordReset") return securityContent(input, appUrl, options.supportAddress ?? "");
   if (input.kind === "welcome") return welcomeContent(input, appUrl);
   if (input.kind === "passwordResetProvider") return resetProviderContent(input, appUrl);
   const team = teamLabel(input.teamName);
@@ -408,16 +446,17 @@ function content(input: EmailInput, appUrl: string): Content {
   }
 }
 
-/** A security notice: what changed on the account, when, and what to do if it wasn't them. */
-function securityContent(input: SecurityNotice, appUrl: string): Content {
+/** A security notice: what changed on the account, when, and what to do if it wasn't them (recoveryPath). */
+function securityContent(input: SecurityNotice, appUrl: string, supportAddress: string): Content {
   const when = formatDateTime(input.at);
+  const notYou = recoveryPath(input.kind, supportAddress);
   const button = { label: "Open Supply Checkout", url: appLink(appUrl, "/") };
   if (input.kind === "passwordSet") {
     return {
       subject: "A password was set on your Supply Checkout account",
       preheader: `Your password was set or changed on ${when}.`,
       heading: "Your password was set",
-      paragraphs: [`A new password was set on your Supply Checkout account on ${when}.`, "If this was you, you don't need to do anything.", NOT_YOU],
+      paragraphs: [`A new password was set on your Supply Checkout account on ${when}.`, "If this was you, you don't need to do anything.", ...notYou],
       button,
     };
   }
@@ -429,7 +468,7 @@ function securityContent(input: SecurityNotice, appUrl: string): Content {
       paragraphs: [
         `The password on your Supply Checkout account was reset on ${when}, with a code sent to this address.${input.signedOut ? " Devices that were signed in were signed out, though a session may keep working for up to an hour." : ""}`,
         "If this was you, you don't need to do anything.",
-        RESET_NOT_YOU,
+        ...notYou,
       ],
       button,
     };
@@ -442,7 +481,7 @@ function securityContent(input: SecurityNotice, appUrl: string): Content {
       paragraphs: [
         `The email address on your Supply Checkout account was changed on ${when}. We're writing to this address, the address the account had before, so you know. Account email and sign-in codes now go to the new address.`,
         "If this was you, you don't need to do anything.",
-        EMAIL_NOT_YOU,
+        ...notYou,
       ],
       button,
     };
@@ -454,14 +493,11 @@ function securityContent(input: SecurityNotice, appUrl: string): Content {
     paragraphs: [
       `Two-step sign-in was turned on for your Supply Checkout account on ${when}: signing in now takes your password and a code from an authenticator app. The account was signed out everywhere.`,
       "If this was you, you don't need to do anything.",
-      NOT_YOU,
+      ...notYou,
     ],
     button,
   };
 }
-
-/** A bare address with no spaces, quotes or angle brackets: the support address as the welcome email shows it. */
-const PLAIN_ADDRESS = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
 /**
  * Someone's given name as a greeting shows it: one line, at most 40
@@ -547,6 +583,6 @@ function resetProviderContent(input: ResetProviderEmail, appUrl: string): Conten
 
 /** Renders one message. Throws on a bad date or a link off the app's origin. */
 export function renderEmail(input: EmailInput, options: RenderOptions): RenderedEmail {
-  const c = content(input, options.appUrl);
+  const c = content(input, options);
   return { kind: input.kind, subject: c.subject, html: html(c), text: text(c) };
 }

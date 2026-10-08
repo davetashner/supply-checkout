@@ -24,6 +24,8 @@ export interface MailerOptions {
   readonly fromAddress: string;
   readonly configurationSet: string;
   readonly appUrl: string;
+  /** `support@<env domain>`, which the security notices name. */
+  readonly supportAddress: string;
   readonly ses: SesSender;
 }
 
@@ -57,8 +59,8 @@ function tagValue(name: string, value: string): string {
 }
 
 export function createMailer(options: MailerOptions): Mailer {
-  const { fromAddress, configurationSet, appUrl, ses } = options;
-  if (!fromAddress || !configurationSet || !appUrl) throw new Error("The mailer needs a From address, a configuration set and the app URL");
+  const { fromAddress, configurationSet, appUrl, supportAddress, ses } = options;
+  if (!fromAddress || !configurationSet || !appUrl || !supportAddress) throw new Error("The mailer needs a From address, a configuration set, the app URL and the support address");
   return {
     async send(to, input, tags = {}) {
       // A bare addr-spec only: SES would read a display name or a list as more than one address
@@ -70,7 +72,7 @@ export function createMailer(options: MailerOptions): Mailer {
       }
       let message: ReturnType<typeof renderEmail>;
       try {
-        message = renderEmail(input, { appUrl });
+        message = renderEmail(input, { appUrl, supportAddress });
       } catch {
         // A bad date or link in the input: our bug, not SES's, and named so
         throw new EmailNotSentError("RenderFailed");
@@ -131,6 +133,7 @@ export function mailerFromEnv(env: NodeJS.ProcessEnv = process.env): Mailer {
     fromAddress: need(EMAIL_ENV.fromAddress),
     configurationSet: need(EMAIL_ENV.configurationSet),
     appUrl: need(EMAIL_ENV.appUrl),
+    supportAddress: need(EMAIL_ENV.supportAddress),
     ses: new SESv2Client(sesClientConfig(need(EMAIL_ENV.region))),
   });
 }

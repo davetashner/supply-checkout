@@ -265,6 +265,8 @@ A complaint means the person asked not to get our mail, so remove a `COMPLAINT` 
 
 `support@supplycheckout.com` forwards to the owner's Gmail through [ImprovMX](https://improvmx.com)'s free plan, and the owner replies from Gmail as `support@` (`supply-checkout-6qd`). Revisit a shared inbox (Google Workspace or a help desk) when two people answer support.
 
+**The security notices name it** (`supply-checkout-3sv.12`). Every security notice (`passwordSet`, `twoStepOn`, `passwordReset`, `emailChanged`) ends with the same recovery path for a reader who didn't make the change: secure the mailbox, reset the password with a code sent to it (not after an email change, when codes go to the new address), tell the other owners, and write to `support@<env domain>` from that address, where support confirms the account is theirs before changing anything, then signs it out everywhere and helps reset its password, email address and two-step sign-in (`recoveryPath` in `backend/src/email/templates.ts`). The address reaches every sending function as `EMAIL_SUPPORT_ADDRESS`, which `grantSendEmail` sets, and a security notice won't render without a plain address. The operator's steps for a hijacked account are kept outside this public repo.
+
 **What the prod `domain` stack adds** (primary region, only when `supportMail` is set; `cdk.json` sets `"supportMail": "improvmx"`, and other environments ignore it). Keep it in `cdk.json`: a prod deploy without it removes the MX records and support@ stops receiving mail.
 
 - Apex MX: `10 mx1.improvmx.com` and `20 mx2.improvmx.com`, from ImprovMX's DNS setup guides, checked 2026-10-01 (`MAIL_FORWARDERS` in `lib/email.ts`).
