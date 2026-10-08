@@ -58,7 +58,7 @@ export interface PasswordResetDeps {
 export type ResetOutcome = "invalid" | "limited" | "code" | "code_limited" | "disabled" | "help" | "help_limited" | "help_refused";
 
 /** The request, if it's one: an address and an IP address, as strings of sane length. */
-export function passwordResetRequest(event: unknown): PasswordResetRequest | undefined {
+export function resetRequestOf(event: unknown): PasswordResetRequest | undefined {
   const { email, ip } = (event ?? {}) as { email?: unknown; ip?: unknown };
   if (typeof email !== "string" || email.length > 320 || typeof ip !== "string" || ip.length > 64) return undefined;
   return { email, ip };
@@ -102,7 +102,7 @@ export function createPasswordResetHandler(deps: PasswordResetDeps) {
   }
 
   async function handle(event: unknown): Promise<ResetOutcome> {
-    const request = passwordResetRequest(event);
+    const request = resetRequestOf(event);
     if (!request) return "invalid";
     let address: string, addressKey: string, ipKey: string;
     try {

@@ -25,7 +25,7 @@ import {
 } from "../src/data/index.js";
 import { PASSWORD_RESET_LIMIT_ATTRIBUTES, PASSWORD_RESET_LIMIT_PREFIX } from "../src/data/schema.js";
 import { emailResourceNames, type PasswordResetRequest } from "../src/email/names.js";
-import { createPasswordResetHandler, passwordResetRequest } from "../src/email/password-reset-handler.js";
+import { createPasswordResetHandler, resetRequestOf } from "../src/email/password-reset-handler.js";
 import { renderEmail } from "../src/email/templates.js";
 import type { PoolUser } from "../src/identity/cognito-admin.js";
 import { cognitoResetLookup, type ResetLookup } from "../src/identity/reset-lookup.js";
@@ -333,8 +333,8 @@ describe("the password reset function", () => {
     }
     expect(lookup.byAlias).not.toHaveBeenCalled();
     expect(table.items.size).toBe(0);
-    expect(passwordResetRequest(undefined)).toBeUndefined();
-    expect(passwordResetRequest({ email: ADDRESS, ip: IP, extra: 1 })).toEqual({ email: ADDRESS, ip: IP });
+    expect(resetRequestOf(undefined)).toBeUndefined();
+    expect(resetRequestOf({ email: ADDRESS, ip: IP, extra: 1 })).toEqual({ email: ADDRESS, ip: IP });
   });
 });
 
