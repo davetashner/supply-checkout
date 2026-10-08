@@ -22,7 +22,7 @@ import { MASKED_VALUES_FILE, createMasker } from "../../scripts/journeys/lib/mas
 import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
 import { freshTotp } from "../../scripts/journeys/lib/totp.mjs";
-import { formatScreen } from "../../scripts/journeys/lib/screen.mjs";
+import { PASSWORD_CHOICE, formatScreen } from "../../scripts/journeys/lib/screen.mjs";
 import { assertNotTracing, markTracing, secretFill } from "../../scripts/journeys/lib/tracing.mjs";
 import { waitUntilConnected } from "../ui/app.js";
 
@@ -168,14 +168,12 @@ export async function managedLogin(page, account, totpCode, { timeout = 20_000, 
   }
 }
 
-// A control naming the password that isn't a way to sign in with it
-const PASSWORD_CHOICE = /^(?!.*(forgot|reset|show|hide|change|new password)).*password/i;
 const OTHER_WAYS = /other (sign[- ]in )?(options|ways|methods)|another way|more (sign[- ]in )?options|choose (a|another) (sign[- ]in )?(option|method|way)/i;
 
 async function reachPassword(page, { timeout, redact, submit }) {
   const field = page.locator('input[type="password"]').first();
   const choices = [
-    { kind: "radio", locator: page.getByRole("radio", { name: /password/i }) },
+    { kind: "radio", locator: page.getByRole("radio", { name: PASSWORD_CHOICE }) },
     { kind: "button", locator: page.getByRole("button", { name: PASSWORD_CHOICE }) },
     { kind: "link", locator: page.getByRole("link", { name: PASSWORD_CHOICE }) },
   ];
@@ -190,7 +188,12 @@ async function reachPassword(page, { timeout, redact, submit }) {
     for (const { kind, locator } of choices) {
       if (done.has(kind) || !(await locator.first().isVisible())) continue;
       done.add(kind);
-      if (kind === "radio") { await locator.first().check(); await submit(); }
+      if (kind === "radio") {
+        // The email code's radio comes selected: Continue only once the password's is
+        await locator.first().check();
+        await expect(locator.first(), "the Password option is selected").toBeChecked();
+        await submit();
+      }
       else await locator.first().click();
       acted = true;
       break;

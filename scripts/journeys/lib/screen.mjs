@@ -31,3 +31,15 @@ export function formatScreen(screen, redact = (s) => s) {
     `controls ${list(s.controls, redact)}`,
   ].join("; ");
 }
+
+/**
+ * The names of a control that signs in with the password: exactly "Password", "Use (a|your)
+ * password" or "Sign in with (a|your) password" (Playwright trims and collapses an accessible
+ * name before matching). Never "Email one-time password", "Show password" or "Forgot your
+ * password?": Managed Login's "Choose a sign-in method" offers the email code first, already
+ * selected, and a looser match picked it.
+ */
+export const PASSWORD_CHOICE = /^(password|use (a |your )?password|sign in with (a |your )?password)$/i;
+
+/** Whether a control's accessible name is a way to sign in with the password (PASSWORD_CHOICE). */
+export const isPasswordChoice = (name) => PASSWORD_CHOICE.test(String(name ?? "").replace(/\s+/g, " ").trim());
