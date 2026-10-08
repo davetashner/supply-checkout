@@ -3372,8 +3372,9 @@ components:
                 code. `password_reset` (with `unauthenticated`, on any route
                 that takes the app's token): the session (the token's
                 `auth_time`) began before the account's password was last
-                reset; sign out, of Managed Login too, and sign in again with
-                the new password. Setting it up: `password_invalid` (the password
+                reset, or before it was last signed out everywhere
+                (`POST /me/sign-out-everywhere`); sign out, of Managed Login
+                too, and sign in again. Setting it up: `password_invalid` (the password
                 policy), `password_mismatch` (the current password is wrong
                 or missing), `federated_sign_in` (a Google or Apple user,
                 who has nothing to set up), and `signout_failed` (it's on, but

@@ -35,8 +35,9 @@ export type ErrorCode =
  * app) on. `mfa_sign_in_again`: a billing route for an owner whose session
  * began before two-step sign-in was turned on, so they sign in again with
  * the password and the code. `password_reset` (401 `unauthenticated`): the
- * session began before the account's password was reset (session-reset.ts),
- * so the app signs out, of Managed Login too, and asks for the new password. Setting it up: `password_invalid` (the password policy),
+ * session began before the account's password was reset, or it was signed
+ * out everywhere (session-reset.ts), so the app signs out, of Managed Login
+ * too, and asks to sign in again. Setting it up: `password_invalid` (the password policy),
  * `password_mismatch` (the current password is wrong or missing) and
  * `federated_sign_in` (a Google or Apple user, who has nothing to set up), and
  * `signout_failed` (it's on, but the user's other sessions weren't ended yet:

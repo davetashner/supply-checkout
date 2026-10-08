@@ -1123,7 +1123,12 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
    * caller can choose to stay signed in, and the app's next call is this one,
    * with a token from before. The caller has been signed out by then, so a
    * failed record doesn't fail the answer: it's logged as an error (the
-   * user ID and the error's name only).
+   * user ID and the error's name only) and counted (SecurityNoticeFailures,
+   * reason `record_reset`), which alarms. Either way (a write can land though
+   * its answer timed out), this container's cached reset time for the caller
+   * is then dropped (SessionCheck.forget), so
+   * sessions from before are refused here at once; other containers see it
+   * within RESET_CACHE_MS.
    */
   async function signOutEverywhere(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     if (event.body) jsonBody(event, []);
@@ -1133,6 +1138,12 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       await recordPasswordReset(dbFor({ userId }), userId, new Date(now()));
     } catch (error) {
       obs.logger.error("Sign-out time not recorded", { userId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      // Sessions from before the sign-out may still pass the API's check: raise "Security notices failing"
+      obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind: "signOutEverywhere", reason: "record_reset", via: "api" });
+    } finally {
+      // This container's cached time may be older now, even after a failure (a write that landed but
+      // whose answer timed out): the next request reads it again
+      deps.sessionCheck?.forget?.(userId);
     }
     return noContent();
   }

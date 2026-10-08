@@ -124,6 +124,8 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged,
   // the other user's.
   function refresh() {
     if (ended) return Promise.reject(ENDED);
+    // Refused for a password reset: refreshed tokens would keep the old sign-in time, so none is sent
+    if (resetting) return Promise.reject(RESETTING);
     if (signingOut) return Promise.reject({ code: "unavailable", message: "Signing out" });
     refreshing ||= post("/auth/refresh")
       .then((t) => {
@@ -142,8 +144,8 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged,
     return refreshing;
   }
 
-  // The API refused this session: it began before the account's password was reset
-  // (supply-checkout-6uw.33), and every call with its tokens will be refused the same way, so
+  // The API refused this session: it began before the account was last signed out everywhere
+  // (a password reset or change, or two-step sign-in turned on; supply-checkout-6uw.33), and every call with its tokens will be refused the same way, so
   // no refresh is tried (refreshed tokens keep the session's sign-in time). Said once; this
   // call and every later one (each refused the same way) never settle, so nothing behind
   // them shows an error or a sign-in screen over the one onPasswordReset shows, whose

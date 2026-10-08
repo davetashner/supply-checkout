@@ -46,7 +46,16 @@ import type { DataEvent } from "./data-handler.js";
 import { ApiError } from "./http.js";
 
 /** Refuses the request (ApiError) if the caller's session began before their password was last reset. */
-export type SessionCheck = (event: DataEvent, userId: string) => Promise<void>;
+export interface SessionCheck {
+  (event: DataEvent, userId: string): Promise<void>;
+  /**
+   * Drops what this container holds of the user's reset time, so the next
+   * request reads it again: after this function has just recorded a new one
+   * (POST /me/sign-out-everywhere), its own cache mustn't let sessions from
+   * before it through for RESET_CACHE_MS.
+   */
+  readonly forget?: (userId: string) => void;
+}
 
 /** When the user's password was last reset, in milliseconds, or undefined (data/password-reset-time.ts passwordResetAt). */
 export type ResetLookup = (userId: string) => Promise<number | undefined>;
@@ -60,9 +69,11 @@ export const RESET_CACHE_MS = 10_000;
 /** How many users' reset times a container keeps. */
 export const RESET_CACHE_USERS = 1_000;
 
-/** The answer to a session from before the reset: sign in again, with the new password. */
+/** The answer to a session from before the reset (or another sign-out everywhere): sign in again. */
 export function passwordReset(): ApiError {
-  return new ApiError(401, "unauthenticated", "Your password was reset after this session began. Sign in again with the new password.", "password_reset");
+  // Neutral: the record is also written when the account is signed out everywhere after a password change or
+  // turning two-step sign-in on (account-handler.ts, supply-checkout-6uw.34), not only after a reset
+  return new ApiError(401, "unauthenticated", "This account was signed out everywhere after this session began. Sign in again.", "password_reset");
 }
 
 /**
@@ -96,24 +107,36 @@ export function createSessionCheck(options: { lookup: ResetLookup; now?: () => n
     }
     const pending = reading.get(userId);
     if (pending) return pending;
-    const read = options
+    const read: Promise<number | undefined> = options
       .lookup(userId)
       .then((found) => {
-        cache.delete(userId);
-        cache.set(userId, { resetAt: found, until: now() + cacheMs });
-        if (cache.size > maxUsers) cache.delete(cache.keys().next().value as string);
+        // A read forgotten while it was on its way (forget) may be older than the record: it answers
+        // the request that made it, but isn't kept
+        if (reading.get(userId) === read) {
+          cache.delete(userId);
+          cache.set(userId, { resetAt: found, until: now() + cacheMs });
+          if (cache.size > maxUsers) cache.delete(cache.keys().next().value as string);
+        }
         return found;
       })
-      .finally(() => reading.delete(userId));
+      .finally(() => {
+        if (reading.get(userId) === read) reading.delete(userId);
+      });
     reading.set(userId, read);
     return read;
   }
 
-  return async (event, userId) => {
+  const check = async (event: DataEvent, userId: string) => {
     const at = await resetAt(userId);
     if (at === undefined) return;
     if (beganBeforeReset(event.requestContext.authorizer?.jwt?.claims?.auth_time, at)) throw passwordReset();
   };
+  return Object.assign(check, {
+    forget: (userId: string) => {
+      cache.delete(userId);
+      reading.delete(userId);
+    },
+  });
 }
 
 /**
