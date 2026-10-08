@@ -111,6 +111,22 @@ describe.skipIf(!endpoint)("company equipment (DynamoDB Local)", () => {
     expect(await lines(ctx)).toEqual({});
   });
 
+  it("leaves an equipment line's counts to the commands: a document write may only repeat them", async () => {
+    const ctx = await team();
+    await checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "ladder", quantity: 2 });
+    const v = await version(ctx);
+    // Out 0 and then a removal or Finished Return would lose track of what's out
+    await expect(updateDocument(db, ctx, "projects", "s1", { items: { ladder: { out: 0 } } }, { expectedVersion: v })).rejects.toThrow(InvalidInputError);
+    await expect(updateDocument(db, ctx, "projects", "s1", { items: { ladder: { returned: 2 } } }, { expectedVersion: v })).rejects.toThrow(InvalidInputError);
+    const whole = (await getDocument(db, ctx, "projects", "s1"))?.data ?? {};
+    await expect(setDocument(db, ctx, "projects", "s1", { ...whole, items: { ladder: { ...(whole.items as Record<string, object>).ladder, lost: 2 } } }, { expectedVersion: v })).rejects.toThrow(InvalidInputError);
+    expect(await version(ctx)).toBe(v);
+    // The project as read saves, and the line's counts stay as the checkout left them
+    await setDocument(db, ctx, "projects", "s1", { ...whole, client: "Echo Ltd" }, { expectedVersion: v });
+    expect((await lines(ctx)).ladder).toMatchObject({ out: 2, returned: 0 });
+    expect(await stock(ctx)).toBe(2);
+  });
+
   it("never lets concurrent returns and lost records take an equipment line past what went out", async () => {
     const ctx = await team();
     await checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "ladder", quantity: 3 });
