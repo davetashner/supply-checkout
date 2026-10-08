@@ -264,6 +264,27 @@ test.describe("seats", { tag: ["@J7.3"] }, () => {
     await expect(send(page)).toBeEnabled();
   });
 
+  test("a cap or members that arrive after the screen closed change nothing", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [{ ...TEAM, members: 2, memberCap: 4 }], members: { t1: [ME, SAM] }, teamInvites: { t1: [] } });
+    await openAws(page, backend);
+    await connected(page);
+    const asked = () => [backend.requests("GET", "/me").length, backend.requests("GET", PATH).length];
+    const [meBefore] = asked();
+    const me = backend.hold("GET", "/me"), members = backend.hold("GET", PATH);
+    await page.locator(".teambar").getByRole("button", { name: "Members" }).click();
+    await expect(dialog(page).getByRole("heading", { name: "Members" })).toBeVisible();
+    // Both asked for (the page may ask /me for other reasons too)
+    await expect.poll(() => { const [m, l] = asked(); return m > meBefore && l > 0; }).toBe(true);
+    await dialog(page).getByRole("button", { name: "Close", exact: true }).click();
+    await expect(page.locator("#overlay")).toBeHidden();
+    // The page fixture fails the test on the uncaught error a missing seat count would throw
+    me();
+    members();
+    await page.waitForTimeout(300);
+    await expect(page.locator("#overlay")).toBeHidden();
+    await expect(page.locator("#seats")).toHaveCount(0);
+  });
+
   test("keeps the cap it has when /me doesn't load or doesn't list the team", async ({ page }) => {
     const backend = new FakeBackend({ teams: [{ ...TEAM, members: 2, memberCap: 4 }], members: { t1: [ME, SAM] }, teamInvites: { t1: [] } });
     await openAws(page, backend);
