@@ -67,8 +67,10 @@ export interface SeatSyncDelivery {
  * - its group must be its customer, so its deduplication ID only ever drops that customer's syncs;
  * - its deduplication ID must be its own ID, so the ID the worker sees is the one SQS deduplicated by;
  * - a reconciliation ID (reconcileSeatSyncId) must be the reconciliation's for its customer, with reason
- *   `reconcile`, and reason `reconcile` must have one: whatever sent the ID first, the customer's
- *   reconciliation still happens.
+ *   `reconcile`, and reason `reconcile` must have one.
+ * A sender can still send a customer's reconciliation ID first, in that customer's group, and SQS then
+ * drops that night's reconciliation for the customer. A mismatched message doesn't become one: it's
+ * refused, goes to the dead-letter queue, and raises the Seat syncs stuck alarm.
  */
 export function checkSeatSyncDelivery(message: SeatSyncMessage, delivery: SeatSyncDelivery): SeatSyncMessage {
   const reconcile = RECONCILE_ID.exec(message.id);
