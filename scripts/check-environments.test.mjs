@@ -131,8 +131,8 @@ test("production-journeys: the same rules but no required reviewer, only when as
 });
 
 test("command line: --environment picks which to check", () => {
-  assert.deepEqual(parseArgs([]), { repo: DEFAULT_REPO, names: ENVIRONMENTS });
-  assert.deepEqual(parseArgs(["--environment", "production-journeys", "--repo", "o/r"]), { repo: "o/r", names: ["production-journeys"] });
+  assert.deepEqual(parseArgs([]), { repo: DEFAULT_REPO, names: ENVIRONMENTS, optional: [] });
+  assert.deepEqual(parseArgs(["--environment", "production-journeys", "--repo", "o/r"]), { repo: "o/r", names: ["production-journeys"], optional: [] });
   assert.deepEqual(parseArgs(["--environment", "production", "--environment", "production-journeys", "--environment", "production"]).names, ["production", "production-journeys"]);
   assert.throws(() => parseArgs(["--environment", "staging"]), /--environment must be one of production, production-stateful, production-journeys \(got "staging"\)/);
   assert.throws(() => parseArgs(["--environment"]), /Unknown argument: --environment/);
@@ -141,6 +141,40 @@ test("command line: --environment picks which to check", () => {
   assert.equal(calls.length, 2);
   // Missing, it's a problem (and the default run doesn't look at it)
   assert.match(main(["--repo", "o/r", "--environment", "production-journeys"], fakeApi({ "repos/o/r/environments/production-journeys": null }).api)[0], /production-journeys: doesn't exist/);
+});
+
+test("command line: --journeys adds the journeys environment without naming it", () => {
+  assert.deepEqual(parseArgs(["--journeys", "required"]), { repo: DEFAULT_REPO, names: [...ENVIRONMENTS, JOURNEYS_ENVIRONMENT], optional: [] });
+  assert.deepEqual(parseArgs(["--journeys", "if-present"]), { repo: DEFAULT_REPO, names: [...ENVIRONMENTS, JOURNEYS_ENVIRONMENT], optional: [JOURNEYS_ENVIRONMENT] });
+  // With --environment, only those and the journeys one
+  assert.deepEqual(parseArgs(["--environment", "production", "--journeys", "if-present"]).names, ["production", JOURNEYS_ENVIRONMENT]);
+  // Named outright, it's required whatever --journeys says, and listed once
+  assert.deepEqual(parseArgs(["--environment", JOURNEYS_ENVIRONMENT, "--journeys", "if-present"]), { repo: DEFAULT_REPO, names: [JOURNEYS_ENVIRONMENT], optional: [] });
+  assert.throws(() => parseArgs(["--journeys", "maybe"]), /--journeys must be one of required, if-present \(got "maybe"\)/);
+  assert.throws(() => parseArgs(["--journeys"]), /Unknown argument: --journeys/);
+  assert.throws(() => parseArgs(["--journeys", "required", "--journeys", "if-present"]), /Unknown argument: --journeys/);
+
+  // All three locked down: no problems, either way
+  for (const mode of ["required", "if-present"]) {
+    const { api, calls } = fakeApi();
+    const skipped = [];
+    assert.deepEqual(main(["--repo", "o/r", "--journeys", mode], api, skipped), []);
+    assert.deepEqual(skipped, []);
+    assert.ok(calls.includes("repos/o/r/environments/production-journeys/deployment-branch-policies?per_page=100"));
+  }
+  // Missing: a problem when required, skipped (and reported) when if-present
+  const missing = { "repos/o/r/environments/production-journeys": null };
+  assert.match(main(["--repo", "o/r", "--journeys", "required"], fakeApi(missing).api)[0], /production-journeys: doesn't exist/);
+  const skipped = [];
+  const { api, calls } = fakeApi(missing);
+  assert.deepEqual(main(["--repo", "o/r", "--journeys", "if-present"], api, skipped), []);
+  assert.deepEqual(skipped, [JOURNEYS_ENVIRONMENT]);
+  assert.ok(!calls.includes("repos/o/r/environments/production-journeys/deployment-branch-policies?per_page=100"));
+  // Present but not locked down: a problem in either mode
+  const open = { "repos/o/r/environments/production-journeys": { ...good(JOURNEYS_ENVIRONMENT), can_admins_bypass: true } };
+  for (const mode of ["required", "if-present"]) assert.match(main(["--repo", "o/r", "--journeys", mode], fakeApi(open).api)[0], /production-journeys: administrators can bypass/);
+  // if-present never excuses the deploy environments
+  assert.match(checkEnvironments("o/r", fakeApi({ "repos/o/r/environments/production": null }).api, ["production"], { optional: [JOURNEYS_ENVIRONMENT] })[0], /production: doesn't exist/);
 });
 
 test("the command's output and exit codes", () => {

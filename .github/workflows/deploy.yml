@@ -34,6 +34,14 @@ name: Deploy
 #                   demo as app-<tag> and demo-<tag> with the web publisher role, checks the
 #                   live router and the live site (scripts/check-web.mjs), and rolls both
 #                   channels back to what was live before if any of that fails
+#   journeys        after apply succeeded: calls ./.github/workflows/journeys.yml, which walks the
+#                   customer journeys against prod as test accounts (supply-checkout-o60.6) in the
+#                   journey tests' own environment, which only that file names
+#                   (scripts/check-workflow-environments.mjs). A failure fails the deploy. Skipped
+#                   until the owner switches the journey tests on (JOURNEYS_ENABLED, docs/releases.md)
+#   verdict         no environment, no AWS, contents: write: notes the journey tests' result on the
+#                   GitHub Release, and marks a failed release as a pre-release, which the release
+#                   job refuses to deploy again unless the run says allow-bad-release
 #
 # No AWS credentials exist before a job's sign-in step, and those jobs run only code from a
 # release commit on main; the deploy tooling (scripts/) comes from main's own commit, so an older
@@ -56,6 +64,10 @@ on:
         default: false
       allow-replacement:
         description: A planned migration - deploy the stateful stacks even if they replace or delete what holds data
+        type: boolean
+        default: false
+      allow-bad-release:
+        description: Deploy a release the journey tests marked as a pre-release (to redeploy after fixing the tests themselves)
         type: boolean
         default: false
 
@@ -97,17 +109,25 @@ jobs:
       # GitHub creates an environment with no protection the first time a job names one that
       # doesn't exist, and the deploy role trusts both of these. So before any job here names
       # one (dry runs too): both must exist, main only, with required reviewers and no admin
-      # bypass. This job has no AWS credentials.
+      # bypass. --journeys checks the journey tests' environment too (main only, no admin
+      # bypass), which the journeys role trusts, on every deploy, without this file naming it:
+      # once the journey tests are switched on it must exist; until then, if it exists it must
+      # be locked down. This job has no AWS credentials.
       - name: Check the deploy environments are locked down
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/check-environments.mjs --repo "$GITHUB_REPOSITORY"
+          JOURNEYS_ENABLED: ${{ vars.JOURNEYS_ENABLED }}
+        run: |
+          journeys=if-present
+          if [[ "$JOURNEYS_ENABLED" == true ]]; then journeys=required; fi
+          node scripts/check-environments.mjs --repo "$GITHUB_REPOSITORY" --journeys "$journeys"
       - name: Check the tag
         id: check
         env:
           TAG: ${{ inputs.tag }}
           REF: ${{ github.ref }}
           GH_TOKEN: ${{ github.token }}
+          ALLOW_BAD_RELEASE: ${{ inputs.allow-bad-release }}
         run: |
           # The jobs' `if` already skip any other ref; the production environment allows only main
           if [[ "$REF" != refs/heads/main ]]; then
@@ -129,6 +149,16 @@ jobs:
           if [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != false ]]; then
             echo "::error::$TAG has no published GitHub Release"
             exit 1
+          fi
+          # A release whose journey tests failed in prod is marked as a pre-release (the verdict
+          # job): not deployed again by accident. docs/releases.md, "When the journey tests fail"
+          if [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)" != false ]]; then
+            if [[ "$ALLOW_BAD_RELEASE" != true ]]; then
+              echo "::error::$TAG is a pre-release: its journey tests failed in prod (see its release notes). Deploy it only to redeploy after fixing the tests themselves, with allow-bad-release checked."
+              exit 1
+            fi
+            echo "::warning::allow-bad-release is on: deploying $TAG, a pre-release (its journey tests failed in prod)"
+            echo "> **allow-bad-release is on**: $TAG is a pre-release, marked when its journey tests failed in prod." >> "$GITHUB_STEP_SUMMARY"
           fi
           # CI passed on this commit in a real run on main, not just a check run with the right
           # name (any workflow with checks: write could post one): a ci.yml run for the push to
@@ -735,3 +765,55 @@ jobs:
               echo "**The deploy failed before publishing:** nothing on the web changed; see the failed step."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The customer journeys against prod (supply-checkout-o60.6), after the stacks, the web publish
+  # and the post-deploy checks all succeeded: there's no point signing in if the API doesn't
+  # answer. No approval of its own: the owner approved apply, and it deploys nothing. Its job
+  # names the journey tests' environment, whose secrets it gets there, so nothing is passed
+  # down (no `secrets: inherit`). A failure fails this run.
+  journeys:
+    name: Journeys
+    needs: [release, apply]
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && !inputs.dry-run
+      && needs.apply.result == 'success'
+    permissions:
+      contents: read
+      # journeys.yml's check job lists runs, so two journey runs never test prod at once
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/journeys.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+
+  # Notes the journey tests' result on the GitHub Release: on a pass, "Journey tests passed in
+  # prod"; on a failure, the failed steps, and the release becomes a pre-release, which the release
+  # job above refuses unless allow-bad-release. When the suite didn't run or didn't finish (switched
+  # off, set-up failure, cancelled), the release is left as it is. No AWS, no environment.
+  verdict:
+    name: Note the journey tests on the release
+    needs: [release, journeys]
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && !inputs.dry-run
+      && (needs.journeys.result == 'success' || needs.journeys.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts
+          persist-credentials: false
+      - name: Note the result on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+          SUITE: ${{ needs.journeys.outputs.suite }}
+          FAILED: ${{ needs.journeys.outputs.failed }}
+          CRITICAL: ${{ needs.journeys.outputs.critical }}
+        run: >-
+          node scripts/release-verdict.mjs --repo "$GITHUB_REPOSITORY" --tag "$TAG" --suite "$SUITE"
+          --failed "$FAILED" --critical "$CRITICAL"
+          --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
