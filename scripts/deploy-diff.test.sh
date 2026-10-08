@@ -36,7 +36,7 @@ check() { # name, description, condition
 }
 
 run changed $'Stack supply-checkout-prod-r-data\n[~] AWS::IAM::Role R RABC\n  "arn:aws:iam::123456789012:root"\n\n✨  Number of stacks with differences: 1' # public-safety: allow (a fake ID)
-check changed "diffs the stateful stacks only, read-only, from cdk.out" 'grep -qF -- "cdk diff --app cdk.out --exclusively --method template --no-color --no-notices supply-checkout-prod-*-domain supply-checkout-prod-*-data supply-checkout-prod-*-identity supply-checkout-prod-*-email supply-checkout-prod-*-backup supply-checkout-prod-*-audit" "$tmp/changed.calls"'
+check changed "diffs the stateful stacks only, read-only, from cdk.out" 'grep -qF -- "cdk diff --app cdk.out --no-lookups --exclusively --method template --no-color --no-notices supply-checkout-prod-*-domain supply-checkout-prod-*-data supply-checkout-prod-*-identity supply-checkout-prod-*-email supply-checkout-prod-*-backup supply-checkout-prod-*-audit" "$tmp/changed.calls"'
 check changed "says it changed, and scrubs the account ID from the log, the file and the summary" '[[ $rc == 0 ]] && grep -qx changed=true "$GITHUB_OUTPUT" && [[ "$out" != *123456789012* ]] && ! grep -q 123456789012 "$RUNNER_TEMP/diff-stateful.txt" "$GITHUB_STEP_SUMMARY" && grep -q "iam::<account>:root" "$GITHUB_STEP_SUMMARY" && grep -q "## Stateful stacks" "$GITHUB_STEP_SUMMARY"'
 
 run same $'Stack supply-checkout-prod-r-data\nThere were no differences\n\n✨  Number of stacks with differences: 0'

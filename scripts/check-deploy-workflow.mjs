@@ -10,13 +10,22 @@
 //   1. The workflow's own `permissions` don't grant id-token (`write-all` or `id-token: write`).
 //   2. A job that can request the token (its `permissions`, or the workflow's when it has none)
 //      checks out only main's commit, this workflow's own: every actions/checkout step says
-//      `ref: ${{ github.sha }}` and no other `repository`. It calls no reusable workflow.
-//   3. Except the jobs in AFTER_APPLY_APPROVAL, which deploy the release and so run its code:
+//      `ref: ${{ github.sha }}` and no other `repository`. It calls no reusable workflow and uses
+//      only actions/* actions (no local or composite action, which could come from elsewhere).
+//      Nothing in it (its env, a step's env, with or run) mentions the release commit
+//      (needs.release.outputs.sha), and no run step fetches code with git (checkout, fetch,
+//      clone, worktree, switch, pull) or gh (repo clone, pr checkout).
+//   3. No job that can request the token restores a cache (actions/cache, or setup-node's
+//      `cache`): build and synth run release code that could poison one (through NODE_OPTIONS in
+//      $GITHUB_ENV, say), and a cache is shared across runs. This holds for the apply jobs too.
+//   4. Except the jobs in AFTER_APPLY_APPROVAL, which deploy the release and so run its code:
 //      each must be past an apply approval, in an environment and after `plan`, or after such a
 //      job.
 //
-// Files the release's jobs hand over (artifacts, outputs) can still reach a job that has the
-// token; that job must treat them as data, which this can't check (docs/releases.md).
+// It's a tripwire, not a proof: a run step could still reach the release's code some other way
+// (a curl of the tarball, say), and files the release's jobs hand over (artifacts, outputs) still
+// reach a job that has the token, which must treat them as data (scripts/check-assembly.mjs,
+// docs/releases.md). Review deploy.yml changes with that in mind.
 //
 //   node scripts/check-deploy-workflow.mjs     (CI's "Lint and validate HTML" job)
 //
@@ -31,6 +40,8 @@ export const AFTER_APPLY_APPROVAL = ["apply-stateful", "apply", "journeys"];
 /** The plan job: an apply job must come after it. */
 export const PLAN_JOB = "plan";
 const MAIN_COMMIT = "${{ github.sha }}";
+const RELEASE_SHA = /needs\s*\.\s*release\s*\.\s*outputs\s*\.\s*sha/i;
+const FETCHES_CODE = /\bgit\b[^\n]*\b(checkout|fetch|clone|worktree|switch|pull|restore)\b|\bgh\b[^\n]*\b(repo\s+clone|pr\s+checkout)\b/i;
 
 const isMap = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const squash = (s) => String(s).replace(/\s+/g, "");
@@ -72,15 +83,33 @@ export function deployProblems(workflow) {
     if (!isMap(job)) continue;
     const permissions = job.permissions === undefined ? workflow.permissions : job.permissions;
     if (!grantsIdToken(permissions)) continue;
+    (Array.isArray(job.steps) ? job.steps : []).forEach((step, i) => {
+      const action = isMap(step) && typeof step.uses === "string" ? step.uses.trim().toLowerCase() : "";
+      const cached = /^actions\/cache(\/[a-z]+)?@/.test(action) || (/^actions\/setup-[a-z]+@/.test(action) && isMap(step.with) && step.with.cache !== undefined && step.with.cache !== false && step.with.cache !== "");
+      if (cached) problems.push(`job ${id}, step ${i + 1} (${step.name ?? step.uses}): the job can request the OIDC token, so it may restore no cache`);
+    });
     if (AFTER_APPLY_APPROVAL.includes(id)) {
       if (!afterApplyApproval(jobs, id)) problems.push(`job ${id} runs the release with the deploy role, so it must be past an apply approval: in an environment and after ${PLAN_JOB}, or after such a job`);
       continue;
     }
     if (job.uses !== undefined) problems.push(`job ${id} can request the OIDC token, so it may not call a reusable workflow (${job.uses})`);
+    if (JSON.stringify(job.env ?? {}).match(RELEASE_SHA)) problems.push(`job ${id} can request the OIDC token, so its env may not name the release commit (needs.release.outputs.sha)`);
     const steps = Array.isArray(job.steps) ? job.steps : [];
     steps.forEach((step, i) => {
-      if (!isMap(step) || typeof step.uses !== "string" || !/^actions\/checkout@/i.test(step.uses.trim())) return;
-      const name = `job ${id}, step ${i + 1} (${step.name ?? step.uses})`;
+      if (!isMap(step)) return;
+      const name = `job ${id}, step ${i + 1} (${step.name ?? step.uses ?? "run"})`;
+      if (RELEASE_SHA.test(JSON.stringify({ env: step.env, with: step.with, run: step.run }))) {
+        problems.push(`${name}: the job can request the OIDC token, so it may not name the release commit (needs.release.outputs.sha)`);
+      }
+      if (typeof step.run === "string" && FETCHES_CODE.test(step.run)) {
+        problems.push(`${name}: the job can request the OIDC token, so it may not fetch code with git or gh`);
+      }
+      if (step.uses === undefined) return;
+      if (typeof step.uses !== "string" || !/^actions\/[A-Za-z0-9_.-]+@/i.test(step.uses.trim())) {
+        problems.push(`${name}: the job can request the OIDC token, so it may use only actions/* actions, not ${step.uses}`);
+        return;
+      }
+      if (!/^actions\/checkout@/i.test(step.uses.trim())) return;
       const withs = isMap(step.with) ? step.with : {};
       if (squash(withs.ref ?? "") !== squash(MAIN_COMMIT)) {
         problems.push(`${name}: the job can request the OIDC token, so it may check out only main's commit (ref: ${MAIN_COMMIT}), not ${withs.ref === undefined ? "the default ref" : withs.ref}`);

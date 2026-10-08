@@ -6,9 +6,10 @@
 #
 # <group> is a group in scripts/deploy-stacks.mjs (stateless, stateful). It diffs the deployed
 # templates against cdk.out (--method template: reads only, so the read-only lookup role is
-# enough), takes every account ID out (scripts/scrub-account-ids.sed), prints the result, keeps
-# it in $RUNNER_TEMP/diff-<group>.txt for scripts/check-replacements.mjs, adds it to the job
-# summary under <title>, and sets the step output `changed` to true or false. A failed diff, or
+# enough; --no-lookups: no context lookups, whatever the assembly asks for), takes every
+# account ID out (scripts/scrub-account-ids.sed), prints the result, keeps it in
+# $RUNNER_TEMP/diff-<group>.txt for scripts/check-replacements.mjs, adds it to the job summary
+# under <title>, and sets the step output `changed` to true or false. A failed diff, or
 # output without CDK's "Number of stacks with differences" line, fails the step.
 #
 # Needs ENV_NAME, RUNNER_TEMP, GITHUB_OUTPUT and GITHUB_STEP_SUMMARY; CDK (default
@@ -26,7 +27,7 @@ read -r -a stacks <<< "$patterns"
 
 # The unscrubbed output never reaches the log or a file
 set +e
-"$cdk" diff --app cdk.out --exclusively --method template --no-color --no-notices "${stacks[@]}" 2>&1 \
+"$cdk" diff --app cdk.out --no-lookups --exclusively --method template --no-color --no-notices "${stacks[@]}" 2>&1 \
   | sed -E -f "$tools/scrub-account-ids.sed" > "$out"
 status=("${PIPESTATUS[@]}")
 set -e

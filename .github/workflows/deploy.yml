@@ -421,7 +421,6 @@ jobs:
     env:
       ENV_NAME: prod
       TAG: ${{ needs.release.outputs.tag }}
-      SHA: ${{ needs.release.outputs.sha }}
       AWS_REGION: ${{ needs.release.outputs.region }}
     steps:
       # main's tooling and main's infra/ (for its CDK CLI and cdk.json), nothing of the release's
@@ -544,6 +543,9 @@ jobs:
           if [[ "$COPY" == true ]]; then expected="$HASH_COPY"; else expected="$HASH_NO_COPY"; fi
           mkdir -p "$RUNNER_TEMP/plan"
           bash .deploy-tools/scripts/assembly-pack.sh unpack "$RUNNER_TEMP/assembly/backup-copy-$COPY" "$RUNNER_TEMP/plan/cdk.out" "$account"
+          # cdk.out isn't inert to the CLI: its manifest names the files cdk reads and the context
+          # lookups it makes. Only files in the folder, and no lookups (the diff has --no-lookups too)
+          node .deploy-tools/scripts/check-assembly.mjs "$RUNNER_TEMP/plan/cdk.out"
           hash="$(bash .deploy-tools/scripts/assembly-hash.sh "$RUNNER_TEMP/plan/cdk.out")"
           if [[ "$hash" != "$expected" ]]; then
             echo "::error::The unpacked assembly's hash ($hash) isn't the synth job's ($expected). Run the deploy again."

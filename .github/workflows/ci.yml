@@ -158,6 +158,16 @@ jobs:
       # ADR 0010: region names appear only in infra/lib/config.ts. Lambdas read
       # AWS_REGION and stacks take their region as a parameter.
       - run: node scripts/check-region-strings.mjs
+      # The deploy's synth job uploads the assembly as a public artifact, the account ID swapped
+      # for a placeholder (scripts/assembly-pack.sh). A name CDK generates for
+      # PhysicalName.GENERATE_IF_NEEDED hashes in the account, which no swap can take out
+      # (supply-checkout-pbp.39), so the stacks don't use it.
+      - name: No generated physical names
+        run: |
+          if grep -rnE 'GENERATE_IF_NEEDED|generatePhysicalName' infra/lib infra/bin; then
+            echo "::error::PhysicalName.GENERATE_IF_NEEDED hashes the account into the template, which the deploy uploads as a public artifact: name the resource instead"
+            exit 1
+          fi
 
   scripts:
     name: Shell scripts (shellcheck, land-pr tests)
