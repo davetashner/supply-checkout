@@ -253,13 +253,16 @@ for (const [name, answer] of [
 ]) {
   test(`a refresh answered with ${name} after the reset refusal leaves the reset screen as it is`, { tag: ["@J0"] }, async ({ page }) => {
     const backend = new FakeBackend();
-    let refreshes = 0, release;
+    let refreshes = 0, release, sent;
     const wait = new Promise((r) => { release = r; });
+    const refreshing = new Promise((r) => { sent = r; });
     // The second refresh, after sign-in's, is held until the refusal is on screen
-    backend.on("POST", (path) => path === "/auth/refresh" && ++refreshes === 2, { wait, ...answer });
-    // An expired token's 401 on one of the team's first lists sends that refresh; the other is refused for the reset
+    backend.on("POST", (path) => path === "/auth/refresh" && ++refreshes === 2 && (sent(), true), { wait, ...answer });
+    // An expired token's 401 on one of the team's first lists sends that refresh; the other is
+    // refused for the reset once that refresh is on its way. Answered first, the refusal would
+    // stop the refresh being sent at all (the next test), as Firefox sometimes did.
     backend.on("GET", "/teams/t1/products", { status: 401, body: { message: "Unauthorized" } });
-    backend.on("GET", "/teams/t1/projects", RESET_REFUSAL);
+    backend.on("GET", "/teams/t1/projects", { wait: refreshing, ...RESET_REFUSAL });
     await openAws(page, backend);
     await expect(account(page).getByRole("heading", { name: SIGNED_OUT })).toBeVisible();
     await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBe(2);
