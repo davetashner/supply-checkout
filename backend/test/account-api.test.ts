@@ -6,12 +6,13 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AccountScope, DbForAccount } from "../src/api/account-db.js";
-import { createAccountHandler } from "../src/api/account-handler.js";
+import { type AccountHandlerDeps, createAccountHandler } from "../src/api/account-handler.js";
 import type { CognitoUser, TotpSetup } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, createInvite, emailSeenHash, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, MEMBERS_PER_TRIAL_TEAM, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
+import { createSessionCheck } from "../src/api/session-reset.js";
+import { authorizeTeam, createInvite, emailSeenHash, passwordResetAt, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, MEMBERS_PER_TRIAL_TEAM, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { connection } from "../src/data/client.js";
 import { REGION, accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog } from "./helpers.js";
@@ -58,6 +59,8 @@ let totpFailure: Error | undefined;
 let signOutFailures: number;
 let signOutRefusal: ApiError | undefined;
 let handler: ReturnType<typeof createAccountHandler>;
+// What beforeEach builds the handler with, for a test that adds to it
+let deps: AccountHandlerDeps;
 
 function fakeObservability(): Observability {
   counts = {};
@@ -136,7 +139,8 @@ beforeEach(() => {
       verifiedNow.add(token.replace(/^token-/, ""));
     },
   };
-  handler = createAccountHandler({ dbFor, userInfo, emailCodes, totp, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, noticeTimeoutMs: 50, now: () => now });
+  deps = { dbFor, userInfo, emailCodes, totp, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, noticeTimeoutMs: 50, now: () => now };
+  handler = createAccountHandler(deps);
 });
 
 interface Request {
@@ -590,7 +594,9 @@ describe("two-step sign-in", () => {
   });
 
   it("still signs the caller out everywhere when the time can't be recorded, and logs it", async () => {
+    const forgotten: string[] = [];
     const refusing = createAccountHandler({
+      sessionCheck: Object.assign(async () => {}, { forget: (userId: string) => void forgotten.push(userId) }),
       dbFor: () => table.guarded((command) => command !== "UpdateCommand"),
       userInfo: async () => ({ sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false }),
       emailCodes: { send: async () => {}, verify: async () => {} },
@@ -610,6 +616,21 @@ describe("two-step sign-in", () => {
     // The same for the sign-out everywhere's record (supply-checkout-6uw.33): signed out, and logged
     expect((await refusing(event("POST", "/me/sign-out-everywhere"))).statusCode).toBe(204);
     expect(logs).toContainEqual(["Sign-out time not recorded", { userId: OWNER, code: "AccessDeniedException" }]);
+    // Counted, so it alarms ("Security notices failing", supply-checkout-6uw.34): sessions from before still pass
+    expect(counts[BusinessMetric.SecurityNoticeFailures]).toBe(1);
+    // Nothing was written, so nothing cached is dropped
+    expect(forgotten).toEqual([]);
+  });
+
+  // supply-checkout-6uw.34: the check's cache in this container doesn't let sessions from before the sign-out through
+  it("refuses a session from before the sign-out everywhere at once, not after the reset time's cache runs out", async () => {
+    handler = createAccountHandler({ ...deps, sessionCheck: createSessionCheck({ lookup: (userId) => passwordResetAt(table.db(), userId), now: () => now }) });
+    const before = { user: OWNER, claims: { sub: OWNER, token_use: "access", exp: String(Math.floor(now / 1000) + 600), iss: ISSUER, client_id: "web", auth_time: Math.floor(now / 1000) - 3600 } };
+    // No record yet: through, and that's kept for RESET_CACHE_MS
+    expect((await call("GET", "/me", before)).status).toBe(200);
+    expect(await call("POST", "/me/sign-out-everywhere", before)).toEqual({ status: 204, body: undefined });
+    expect(await call("GET", "/me", before)).toMatchObject({ status: 401, body: { error: { code: "unauthenticated", reason: "password_reset" } } });
+    expect(counts[BusinessMetric.SecurityNoticeFailures]).toBeUndefined();
   });
 
   it("checks the request before calling Cognito", async () => {

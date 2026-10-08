@@ -199,16 +199,18 @@ export async function start(config) {
       <p>${text}</p>
       <div class="actions"><a class="btn primary big" href="${esc(out)}" id="signInAgain" data-autofocus>Sign in again</a></div>`);
   }
-  // This session began before the account's password was reset (supply-checkout-6uw.33): the
-  // API refuses it everywhere, so stop, and offer to sign in again with the new password. Signing
+  // This session began before the account was last signed out everywhere (supply-checkout-6uw.33):
+  // after a password reset, or a password change or turning two-step sign-in on in another session,
+  // so the message names none of them (supply-checkout-6uw.34). The API refuses it everywhere, so
+  // stop, and offer to sign in again. Signing
   // out here and of Managed Login, whose session from before would otherwise sign straight back
   // in, keeps the team and drafts for the same person, as signing in again for billing does.
   function passwordWasReset() {
     owner = null;
     if (db) db.stop();
     closeModal();
-    show(`<h2>Your password was reset</h2>
-      <p>This session began before your account's password was reset, so it's been signed out. Sign in again with the new password.</p>
+    show(`<h2>Signed out everywhere</h2>
+      <p>This account was signed out everywhere after this session began, so it's been signed out here too. That happens when the password is reset or changed, or two-step sign-in is turned on. Sign in again.</p>
       <div class="actions"><button type="button" class="btn primary big" id="resetSignInAgain" data-autofocus>Sign in again</button></div>`, (el) => {
       el.querySelector("#resetSignInAgain").addEventListener("click", (e) => signOut(e, true));
     });

@@ -191,11 +191,13 @@ test("a sign-in that didn't finish says so until the person asks to reset their 
   await expect(alert(page)).toBeHidden();
 });
 
-// After a reset, the API refuses a session that began before it (supply-checkout-6uw.33,
-// backend/src/api/session-reset.ts): 401 `unauthenticated` with the reason `password_reset`
-const RESET_REFUSAL = { status: 401, body: { error: { code: "unauthenticated", message: "Your password was reset after this session began. Sign in again with the new password.", reason: "password_reset" } } };
+// After a reset, or another session's sign-out everywhere, the API refuses a session that began
+// before it (supply-checkout-6uw.33, backend/src/api/session-reset.ts): 401 `unauthenticated`
+// with the reason `password_reset`
+const RESET_REFUSAL = { status: 401, body: { error: { code: "unauthenticated", message: "This account was signed out everywhere after this session began. Sign in again.", reason: "password_reset" } } };
+const SIGNED_OUT = "Signed out everywhere";
 
-test("a session from before a password reset is stopped, and signs in again with the new password, keeping the team and drafts", { tag: ["@J0"] }, async ({ page }) => {
+test("a session from before a password reset is stopped, and signs in again, keeping the team and drafts", { tag: ["@J0"] }, async ({ page }) => {
   const backend = new FakeBackend();
   await openAws(page, backend);
   await connected(page);
@@ -203,8 +205,9 @@ test("a session from before a password reset is stopped, and signs in again with
   const refreshes = backend.requests("POST", "/auth/refresh").length;
   backend.on("GET", "/teams/t1/members", RESET_REFUSAL);
   await page.locator(".teambar").getByRole("button", { name: "Members" }).click();
-  await expect(account(page).getByRole("heading", { name: "Your password was reset" })).toBeVisible();
-  await expect(account(page).getByText("This session began before your account's password was reset, so it's been signed out. Sign in again with the new password.")).toBeVisible();
+  await expect(account(page).getByRole("heading", { name: SIGNED_OUT })).toBeVisible();
+  // Neutral: the same refusal follows a password change or two-step sign-in turned on in another session (supply-checkout-6uw.34)
+  await expect(account(page).getByText("This account was signed out everywhere after this session began, so it's been signed out here too. That happens when the password is reset or changed, or two-step sign-in is turned on. Sign in again.")).toBeVisible();
   await expect(account(page).getByRole("button", { name: "Sign in again" })).toBeFocused();
   await expect(page.locator("#overlay")).toBeHidden();
   // No refresh: refreshed tokens keep the session's sign-in time, and would be refused too
@@ -227,7 +230,7 @@ test("a session refused on several calls at once says so once", { tag: ["@J0"] }
   // The team's first lists, which go out together
   backend.on("GET", /^\/teams\/t1\/(products|projects)$/, RESET_REFUSAL, 2);
   await openAws(page, backend);
-  await expect(account(page).getByRole("heading", { name: "Your password was reset" })).toBeVisible();
+  await expect(account(page).getByRole("heading", { name: SIGNED_OUT })).toBeVisible();
   await expect.poll(() => backend.requests("GET", /^\/teams\/t1\/(products|projects)$/).length).toBe(2);
   await expect(account(page).getByRole("heading")).toHaveCount(1);
   await expect(page.locator("#toast")).toBeHidden();
@@ -238,7 +241,7 @@ test("a session refused as the app starts asks to sign in again before any team 
   const backend = new FakeBackend();
   backend.on("GET", "/me", RESET_REFUSAL);
   await openAws(page, backend);
-  await expect(account(page).getByRole("heading", { name: "Your password was reset" })).toBeVisible();
+  await expect(account(page).getByRole("heading", { name: SIGNED_OUT })).toBeVisible();
   expect(backend.requests("GET", /^\/teams\//)).toEqual([]);
 });
 
@@ -258,13 +261,32 @@ for (const [name, answer] of [
     backend.on("GET", "/teams/t1/products", { status: 401, body: { message: "Unauthorized" } });
     backend.on("GET", "/teams/t1/projects", RESET_REFUSAL);
     await openAws(page, backend);
-    await expect(account(page).getByRole("heading", { name: "Your password was reset" })).toBeVisible();
+    await expect(account(page).getByRole("heading", { name: SIGNED_OUT })).toBeVisible();
     await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBe(2);
     release();
     await page.waitForTimeout(300);
-    await expect(account(page).getByRole("heading")).toHaveText(["Your password was reset"]);
+    await expect(account(page).getByRole("heading")).toHaveText([SIGNED_OUT]);
     // The list isn't sent again with new tokens
     expect(backend.requests("GET", "/teams/t1/products")).toHaveLength(1);
     await expect(page.locator("#toast")).toBeHidden();
   });
 }
+
+// supply-checkout-6uw.34: once refused for the reset, a call's expired-token 401 that answers later sends no refresh
+test("a call refused as expired after the reset refusal sends no refresh", { tag: ["@J0"] }, async ({ page }) => {
+  const backend = new FakeBackend();
+  let release;
+  const wait = new Promise((r) => { release = r; });
+  // One of the team's first lists is refused for the reset; the other's expired-token 401 is held until that's on screen
+  backend.on("GET", "/teams/t1/projects", RESET_REFUSAL);
+  backend.on("GET", "/teams/t1/products", { wait, status: 401, body: { message: "Unauthorized" } });
+  await openAws(page, backend);
+  await expect(account(page).getByRole("heading", { name: SIGNED_OUT })).toBeVisible();
+  const refreshes = backend.requests("POST", "/auth/refresh").length;
+  release();
+  await expect.poll(() => backend.requests("GET", "/teams/t1/products").length).toBe(1);
+  await page.waitForTimeout(300);
+  expect(backend.requests("POST", "/auth/refresh")).toHaveLength(refreshes);
+  await expect(account(page).getByRole("heading")).toHaveText([SIGNED_OUT]);
+  await expect(page.locator("#toast")).toBeHidden();
+});

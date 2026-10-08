@@ -120,6 +120,41 @@ describe("createSessionCheck", () => {
     expect(lookups).toEqual([USER]);
   });
 
+  // supply-checkout-6uw.34: after this container records a sign-out everywhere (account-handler.ts)
+  it("reads the record again after forget, and never keeps a read that was on its way when it was forgotten", async () => {
+    const pending: ((value: number | undefined) => void)[] = [];
+    const lookups: string[] = [];
+    const check = createSessionCheck({
+      lookup: (userId) => {
+        lookups.push(userId);
+        return new Promise((resolve) => pending.push(resolve));
+      },
+      now: () => NOW,
+    });
+    const forget = check.forget as (userId: string) => void;
+    // Cached with no record, then forgotten: read again, and refused
+    const first = check(event(old), USER);
+    (pending.shift() as (value: number | undefined) => void)(undefined);
+    await expect(first).resolves.toBeUndefined();
+    // The record is written now
+    forget(USER);
+    const second = check(event(old), USER);
+    expect(lookups).toEqual([USER, USER]);
+    // Forgotten while that read is on its way: a new request reads again, and the stale read answers only its own
+    forget(USER);
+    const third = check(event(old), USER);
+    expect(lookups).toEqual([USER, USER, USER]);
+    (pending.shift() as (value: number | undefined) => void)(undefined);
+    await expect(second).resolves.toBeUndefined();
+    (pending.shift() as (value: number | undefined) => void)(NOW);
+    await expect(third).rejects.toMatchObject({ reason: "password_reset" });
+    // The newer read is the one kept
+    await expect(check(event(old), USER)).rejects.toMatchObject({ reason: "password_reset" });
+    expect(lookups).toHaveLength(3);
+    // Forgetting a user who isn't cached does nothing
+    forget("someone-else");
+  });
+
   it("refuses the request when the record can't be read, and doesn't keep the failure", async () => {
     let fail = true;
     const { check, lookups } = setup(() => (fail ? Object.assign(new Error("down"), { name: "ProvisionedThroughputExceededException" }) : undefined));
