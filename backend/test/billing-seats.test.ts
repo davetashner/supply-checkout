@@ -6,7 +6,7 @@
 import { SendMessageCommand } from "@aws-sdk/client-sqs";
 import { beforeEach, describe, expect, it } from "vitest";
 import { entitlementDrift, type EntitlementStripe, UNRECORDED_GRACE_SECONDS } from "../src/billing/entitlements.js";
-import { parseSeatSync, seatQuantity, type SeatStripe, type SeatSubscription, type SeatSyncMessage, seatUpdateKey, sqsSeatSyncQueue } from "../src/billing/seats.js";
+import { parseSeatSync, reconcileSeatSyncId, seatQuantity, type SeatStripe, type SeatSubscription, type SeatSyncMessage, seatUpdateKey, sqsSeatSyncQueue } from "../src/billing/seats.js";
 import type { SQSEvent } from "aws-lambda";
 import type { CompDiscountStripe } from "../src/billing/comp-discount.js";
 import { createBillingWorker, type QueueMessage, type SubscriptionLike, type WorkerStripe } from "../src/billing/worker.js";
@@ -618,16 +618,44 @@ describe("seat sync messages", () => {
     const applied: QueueMessage[] = [];
     const deliveries: string[] = [];
     const handler = createWorkerHandler(async (m, delivery) => void (applied.push(m), deliveries.push(delivery)), obs(), SEATS_ARN);
-    const record = (id: string, source: string, body: unknown) => ({ messageId: id, eventSourceARN: source, body: JSON.stringify(body), attributes: { MessageGroupId: `g-${id}` } }) as unknown as SQSEvent["Records"][number];
+    // Each in its own group, so one refused doesn't hold back the next; a seat sync's deduplication ID is its own
+    const record = (id: string, source: string, body: unknown, customer = `g-${id}`) =>
+      ({ messageId: id, eventSourceARN: source, body: JSON.stringify(body), attributes: { MessageGroupId: customer, MessageDeduplicationId: (body as { id?: string }).id } }) as unknown as SQSEvent["Records"][number];
     const event = { eventId: "evt_1", type: "invoice.paid", created: 1, customer: CUSTOMER };
     const result = await handler({
-      Records: [record("m1", SEATS_ARN, seats()), record("m2", EVENTS_ARN, event), record("m3", EVENTS_ARN, seats()), record("m4", SEATS_ARN, event)],
+      Records: [record("m1", SEATS_ARN, seats(), CUSTOMER), record("m2", EVENTS_ARN, event), record("m3", EVENTS_ARN, seats()), record("m4", SEATS_ARN, event)],
     });
     expect(applied).toEqual([seats(), event]);
     // Each with the SQS message ID that delivered it (for the seat update's idempotency key)
     expect(deliveries).toEqual(["m1", "m2"]);
     // A seat sync passed off as an event, and the reverse, are refused
     expect(result.batchItemFailures).toEqual([{ itemIdentifier: "m3" }, { itemIdentifier: "m4" }]);
+  });
+
+  it("refuses a seat sync that doesn't match its delivery, so no sender can drop another customer's sync (supply-checkout-8jc.26)", async () => {
+    const SEATS_ARN = "arn:aws:sqs:test-local-1:account:supply-checkout-prod-seat-syncs.fifo";
+    const applied: string[] = [];
+    const handler = createWorkerHandler(async (m) => void applied.push("kind" in m ? m.id : m.eventId), obs(), SEATS_ARN);
+    const OTHER = "cus_test_2";
+    const RECONCILE = reconcileSeatSyncId("2026-09-28", CUSTOMER);
+    const record = (id: string, body: SeatSyncMessage, group: string = body.customer, dedupe: string = body.id) =>
+      ({ messageId: id, eventSourceARN: SEATS_ARN, body: JSON.stringify(body), attributes: { MessageGroupId: group, MessageDeduplicationId: dedupe } }) as unknown as SQSEvent["Records"][number];
+    const one = async (r: SQSEvent["Records"][number]) => (await handler({ Records: [r] })).batchItemFailures.length === 0;
+    expect(RECONCILE).toBe(`reconcile-2026-09-28-${CUSTOMER}`);
+    // Taken: a membership sync, and the nightly reconciliation's, each in its own customer's group under its own ID
+    expect(await one(record("ok1", seats("membership", "seats-1")))).toBe(true);
+    expect(await one(record("ok2", seats("reconcile", RECONCILE)))).toBe(true);
+    // Refused: another customer's group, no group, a deduplication ID that isn't its own (or none)
+    expect(await one(record("bad1", seats("membership", "seats-2"), OTHER))).toBe(false);
+    expect(await one({ ...record("bad2", seats("membership", "seats-3")), attributes: {} } as unknown as SQSEvent["Records"][number])).toBe(false);
+    expect(await one(record("bad3", seats("membership", "seats-4"), CUSTOMER, RECONCILE))).toBe(false);
+    // Refused: the reconciliation's ID for another customer, or with another reason, and reason reconcile without its ID
+    expect(await one(record("bad4", seats("reconcile", reconcileSeatSyncId("2026-09-28", OTHER))))).toBe(false);
+    expect(await one(record("bad5", seats("comp", RECONCILE)))).toBe(false);
+    expect(await one(record("bad6", seats("reconcile", "seats-5")))).toBe(false);
+    expect(await one(record("bad7", seats("reconcile", "reconcile-yesterday-" + CUSTOMER)))).toBe(false);
+    expect(applied).toEqual(["seats-1", RECONCILE]);
+    expect(logs.filter((l) => l[1] === "Billing event failed").map((l) => l[2])).toEqual(["bad1", "bad2", "bad3", "bad4", "bad5", "bad6", "bad7"].map((messageId) => ({ messageId, code: "SeatSyncMismatch" })));
   });
 
   it("queues on the billing queue in the customer's group, deduplicated by its own ID", async () => {

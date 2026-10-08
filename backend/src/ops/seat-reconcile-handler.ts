@@ -18,7 +18,9 @@
 // of teams it queued as the SeatReconcileTeams gauge, zero included, whose
 // absence alarms ("Seat reconciliation not running").
 //
-// Deduplication: one message per customer per UTC day, so a second run the
+// Deduplication: one message per customer per UTC day, within the customer's
+// message group (the queue's deduplicationScope, supply-checkout-8jc.26, so no
+// other sender can drop it by sending its ID first), so a second run the
 // same day (by hand, after a deploy) within SQS's five minutes queues nothing
 // twice. A run after that queues the same message IDs again, as new SQS
 // messages: the worker folds the SQS message ID into Stripe's idempotency key
@@ -34,7 +36,7 @@
 // ended are listed too, for a resubscription we never heard about.
 
 import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
-import type { SeatSyncMessage } from "../billing/seat-queue.js";
+import { reconcileSeatSyncId, type SeatSyncMessage } from "../billing/seat-queue.js";
 import { type Db, listTeamsToReconcile } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { SEAT_RECONCILE_BATCH } from "./names.js";
@@ -65,7 +67,7 @@ export function createSeatReconcileHandler(deps: SeatReconcileDeps) {
     for (let i = 0; i < teams.length; i += SEAT_RECONCILE_BATCH) {
       const batch = teams.slice(i, i + SEAT_RECONCILE_BATCH);
       const entries = batch.map((team, n) => {
-        const message: SeatSyncMessage = { kind: "seats", id: `reconcile-${day}-${team.stripeCustomerId}`, customer: team.stripeCustomerId, reason: "reconcile", created: Math.floor(at / 1000) };
+        const message: SeatSyncMessage = { kind: "seats", id: reconcileSeatSyncId(day, team.stripeCustomerId), customer: team.stripeCustomerId, reason: "reconcile", created: Math.floor(at / 1000) };
         return { Id: String(n), MessageBody: JSON.stringify(message), MessageGroupId: team.stripeCustomerId, MessageDeduplicationId: message.id };
       });
       const result = await sqs.send(new SendMessageBatchCommand({ QueueUrl: deps.queueUrl, Entries: entries }));

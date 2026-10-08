@@ -17,7 +17,7 @@ import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import { ArnPrincipal, Effect, PolicyDocument, PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Alias, Architecture, type IFunction, Runtime } from "aws-cdk-lib/aws-lambda";
 import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
-import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
+import { DeduplicationScope, FifoThroughputLimit, Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { type BundlingOptions, NodejsFunction, OutputFormat } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup } from "aws-cdk-lib/aws-logs";
 import { AaaaRecord, ARecord, RecordTarget } from "aws-cdk-lib/aws-route53";
@@ -776,12 +776,15 @@ export class ApiStack extends SupplyCheckoutStack {
    *   dead-letter queue (the "Billing events stuck" alarm). Only the webhook
    *   may send to it.
    * - The seat sync queue (supply-checkout-l50) is FIFO too, grouped by
-   *   Stripe customer, with its own dead-letter queue ("Seat syncs stuck"):
+   *   Stripe customer and deduplicated within the group, with its own
+   *   dead-letter queue ("Seat syncs stuck"):
    *   the account function sends one after a membership change, and the
    *   nightly seat reconciliation (observability/ops-checks.ts) one per team.
    *   A seat sync names only a Stripe customer; the worker finds the team
    *   from its link, and takes only seat syncs from this queue
-   *   (SEAT_QUEUE_ARN), so neither sender can pass off a Stripe event.
+   *   (SEAT_QUEUE_ARN), so neither sender can pass off a Stripe event, and
+   *   only seat syncs whose customer and ID match their group and
+   *   deduplication ID, so neither can drop another customer's sync.
    * - The worker applies each event, and sets a subscription's seat
    *   quantity to the team's billed members. Its own role can't reach the
    *   table: it may read the Stripe secret key, send owner emails (grantSendEmail), and
@@ -841,6 +844,9 @@ export class ApiStack extends SupplyCheckoutStack {
     const seatQueue = new Queue(this, "SeatSyncsQueue", {
       queueName: names.seatQueue,
       fifo: true,
+      // Deduplicated within a customer's group, so one sender can't drop another customer's sync by sending its ID first (supply-checkout-8jc.26)
+      deduplicationScope: DeduplicationScope.MESSAGE_GROUP,
+      fifoThroughputLimit: FifoThroughputLimit.PER_MESSAGE_GROUP_ID,
       encryption: QueueEncryption.SQS_MANAGED,
       enforceSSL: true,
       visibilityTimeout: Duration.seconds(workerTimeout.toSeconds() * 6),

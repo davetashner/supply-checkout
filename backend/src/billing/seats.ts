@@ -79,7 +79,7 @@ import type { SeatSyncMessage } from "./seat-queue.js";
 import type { DbForWorker } from "./worker-db.js";
 
 // The message, its check and its sender live in seat-queue.ts, which imports no data code: the functions that only send (account, ops) need nothing else
-export { parseSeatSync, SEAT_SYNC_REASONS, type SeatQueueSender, type SeatSyncMessage, type SeatSyncQueue, type SeatSyncReason, sqsSeatSyncQueue } from "./seat-queue.js";
+export { checkSeatSyncDelivery, parseSeatSync, reconcileSeatSyncId, SEAT_SYNC_REASONS, type SeatQueueSender, type SeatSyncDelivery, type SeatSyncMessage, type SeatSyncQueue, type SeatSyncReason, sqsSeatSyncQueue } from "./seat-queue.js";
 
 /** The seat quantity for a number of billed members. A team always has an owner, so at least one. */
 export function seatQuantity(billedMembers: number): number {
