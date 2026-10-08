@@ -48,6 +48,7 @@
 .member{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:8px}
 .member:first-child{border-top:0;padding-top:0}
 .member-name{flex:1 1 180px;min-width:0;overflow-wrap:anywhere}
+.member-email{font-size:14px}
 .member select{flex:0 1 160px}
 #membersList{display:grid;gap:10px}
 #membersList p{margin:0}

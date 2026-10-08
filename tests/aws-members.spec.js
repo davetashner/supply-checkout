@@ -145,6 +145,51 @@ test("fits a 320px screen", { tag: ["@J3"] }, async ({ page }) => {
   expect(await page.locator("#modal").evaluate((m) => m.scrollWidth - m.clientWidth)).toBeLessThanOrEqual(0);
 });
 
+// supply-checkout-lx7: the name from each member's account, with their email under it
+test("shows each member's name with their email, and names them in toasts", { tag: ["@J3"] }, async ({ page }) => {
+  const backend = new FakeBackend({
+    members: {
+      t1: [
+        { ...ME, name: "Pat Lee" },
+        { ...SAM, name: "Sam <b>Ortiz</b>" },
+        { userId: "u-named", name: "Nia Noemail", email: null, role: "viewer", joinedAt: JOINED },
+        NOEMAIL,
+      ],
+    },
+  });
+  await openMembers(page, backend);
+  await expect(dialog(page).locator(".member")).toHaveCount(4);
+  const me = row(page, "Pat Lee");
+  await expect(me).toContainText("(you)");
+  await expect(me.locator(".member-email")).toHaveText("pat@example.com");
+  // A name is text, never markup
+  const sam = row(page, "Sam <b>Ortiz</b>");
+  await expect(sam.locator("b")).toHaveCount(0);
+  await expect(sam.locator(".member-email")).toHaveText("sam@example.com");
+  await expect(row(page, "Nia Noemail").locator(".member-email")).toHaveText("No email address");
+  // Without a name, the email as before
+  await expect(row(page, "without an email").locator(".member-email")).toHaveCount(0);
+  await expect(page.getByRole("combobox", { name: "Role for Sam <b>Ortiz</b>" })).toHaveValue("contributor");
+  expect(await modalViolations(page)).toEqual([]);
+
+  await sam.getByRole("combobox").selectOption("viewer");
+  await expect(page.locator("#toast")).toHaveText("Sam <b>Ortiz</b> is now a viewer");
+  await row(page, "Nia Noemail").getByRole("button", { name: "Remove" }).click();
+  await row(page, "Nia Noemail").getByRole("button", { name: "Tap again to remove" }).click();
+  await expect(page.locator("#toast")).toHaveText("Removed Nia Noemail from the team");
+});
+
+test("names fit a 320px screen in dark mode", { tag: ["@J3"] }, async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  const long = "Bartholomew-Alexander Wolfeschlegelsteinhausenbergerdorff Montgomery-Smythe";
+  await openMembers(page, new FakeBackend({ members: { t1: [{ ...ME, name: "Pat Lee" }, { ...SAM, name: long, email: "a-very-long-address-for-someone@example.com" }] } }));
+  await expect(row(page, long).locator(".member-email")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+  expect(await page.locator("#modal").evaluate((m) => m.scrollWidth - m.clientWidth)).toBeLessThanOrEqual(0);
+  expect(await modalViolations(page)).toEqual([]);
+});
+
 test.describe("seats", { tag: ["@J7.3"] }, () => {
   const DAY = 86400e3;
   const invite = (id, email, expiresIn, extra = {}) => ({ id, email, role: "contributor", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + expiresIn).toISOString(), inviteStatus: "pending", failureReason: null, failedAt: null, ...extra });

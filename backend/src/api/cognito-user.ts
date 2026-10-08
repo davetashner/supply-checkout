@@ -45,6 +45,7 @@
 // the password, the secret nor the code is ever logged.
 
 import { isDowngradePending, isFederatedOnly, isRecordedEmail, linkedUser } from "../identity/email-verified-handler.js";
+import { memberName } from "../data/index.js";
 import { ApiError } from "./http.js";
 
 /** Deletes the user whose access token this is. */
@@ -53,6 +54,13 @@ export type DeleteUser = (accessToken: string) => Promise<void>;
 export interface CognitoUser {
   readonly sub: string;
   readonly email?: string;
+  /**
+   * Their name, from `given_name` and `family_name` (sign-up, or Google or
+   * Apple), made safe to store and show by memberName(); absent when they have
+   * none. The user can change both, so it's never a reason to trust anything,
+   * and never logged. Copied to their MEMBER items (supply-checkout-lx7).
+   */
+  readonly name?: string;
   /** True only when Cognito says `email_verified` is "true" with no downgrade pending (and, for a linked user, the email is the recorded one). */
   readonly emailVerified: boolean;
   /**
@@ -135,9 +143,11 @@ export function cognitoUserInfo(issuerUrl: string, doFetch: typeof fetch = fetch
     const attributes: Record<string, string | undefined> = Object.fromEntries(
       (Array.isArray(UserAttributes) ? UserAttributes : []).filter((a) => typeof a?.Name === "string" && typeof a.Value === "string").map((a) => [a.Name, a.Value]),
     );
+    const name = memberName(attributes.given_name, attributes.family_name);
     return {
       sub: attributes.sub ?? "",
       email: attributes.email,
+      ...(name ? { name } : {}),
       emailVerified: emailVerifiedFrom(Username, attributes),
       emailVerifiedInCognito: attributes.email_verified === "true",
       totp: Array.isArray(UserMFASettingList) && UserMFASettingList.includes(SOFTWARE_TOKEN_MFA) && PreferredMfaSetting === SOFTWARE_TOKEN_MFA,

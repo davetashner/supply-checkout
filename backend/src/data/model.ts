@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { InvalidInputError } from "./errors.js";
 import { keys } from "./keys.js";
-import { hasHiddenCharacter } from "../text/hidden-characters.js";
+import { hasHiddenCharacter, withoutHiddenCharacters } from "../text/hidden-characters.js";
 
 /** Roles in a team (ADR 0007). `system` is for server processes such as Stripe webhooks. */
 export type Role = "owner" | "contributor" | "viewer" | "system";
@@ -135,7 +135,36 @@ export interface Member {
   readonly userId: string;
   readonly role: MemberRole;
   readonly email?: string;
+  /**
+   * Their name from Cognito (given_name and family_name, from sign-up or from
+   * Google or Apple), as memberName() makes it; absent when they have none.
+   * Copied when they create a team or accept an invite, and kept current on
+   * /me (supply-checkout-lx7). Only the team's owners see it (GET /members),
+   * as they see the email. The person can change it themselves, so it's shown
+   * beside the email, never instead of it, and never logged. Not called
+   * `name`: the team's META item has one, and the operators' index and the
+   * billing and lapse roles may read that attribute anywhere in a team's
+   * partition (OPS_INDEX_ATTRIBUTES, BILLING_READ_ATTRIBUTES,
+   * LAPSE_READ_ATTRIBUTES); none of them may read this one.
+   */
+  readonly displayName?: string;
   readonly joinedAt: string;
+}
+
+/** The longest name a MEMBER item keeps (memberName). */
+export const MEMBER_NAME_MAX = 100;
+
+/**
+ * A member's name as it's stored and shown: given and family names joined, on
+ * one line, without control or invisible characters (they could reorder or
+ * hide what an owner reads), cut to MEMBER_NAME_MAX; undefined when nothing's
+ * left. Each part is user-writable in Cognito, so neither is trusted.
+ */
+export function memberName(given: unknown, family: unknown): string | undefined {
+  const part = (value: unknown) => (typeof value === "string" ? withoutHiddenCharacters(value.slice(0, 4 * MEMBER_NAME_MAX)) : "");
+  const flat = `${part(given)} ${part(family)}`.replace(/\s+/g, " ").trim();
+  if (!flat) return undefined;
+  return flat.length > MEMBER_NAME_MAX ? withoutHiddenCharacters(flat.slice(0, MEMBER_NAME_MAX)).trimEnd() : flat;
 }
 
 /** A row in the team switcher: the reverse of a MEMBER item. */

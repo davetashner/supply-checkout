@@ -86,6 +86,7 @@ import {
   revokeInvite,
   setMemberRole,
   setOwnMemberEmail,
+  setOwnMemberName,
   setProjectLine,
   closeTeam,
   TeamClosedError,
@@ -400,6 +401,35 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await closeTeam(db, owner, { confirmName: "Echo Cleaning" });
       const closed = await authorizeTeam(db, contributor.userId, owner.teamId);
       await expect(setOwnMemberEmail(db, closed, "contributor.newer@example.com")).rejects.toThrow(TeamClosedError);
+    });
+
+    // supply-checkout-lx7
+    it("keeps the member's own display name, removes it when cleared, and not in a closed team", async () => {
+      const { owner, contributor, viewer } = await team();
+      expect(await setOwnMemberName(db, viewer, "Vic Viewer")).toBe(true);
+      expect(await getMember(db, owner, viewer.userId)).toMatchObject({ displayName: "Vic Viewer", role: "viewer", email: expect.any(String) });
+      // Already current, or already none: no write
+      expect(await setOwnMemberName(db, viewer, "Vic Viewer")).toBe(false);
+      expect(await setOwnMemberName(db, contributor, undefined)).toBe(false);
+      expect(await setOwnMemberName(db, viewer, "Victoria Viewer")).toBe(true);
+      expect((await getMember(db, owner, viewer.userId))?.displayName).toBe("Victoria Viewer");
+      expect(await setOwnMemberName(db, viewer, undefined)).toBe(true);
+      expect(await getMember(db, owner, viewer.userId)).not.toHaveProperty("displayName");
+      // Only a name memberName() made: never one with hidden characters, or too long
+      await expect(setOwnMemberName(db, viewer, "Vic\u202E")).rejects.toThrow(InvalidInputError);
+      await expect(setOwnMemberName(db, viewer, " Vic")).rejects.toThrow(InvalidInputError);
+      await expect(setOwnMemberName(db, viewer, "v".repeat(101))).rejects.toThrow(InvalidInputError);
+      // An owner's operators' index entry never carries it
+      const ownerItem = await rawItem(db, `TEAM#${owner.teamId}`, `MEMBER#${owner.userId}`);
+      expect(await setOwnMemberName(db, owner, "Olive Owner")).toBe(true);
+      expect(await rawItem(db, `TEAM#${owner.teamId}`, `MEMBER#${owner.userId}`)).toEqual({ ...ownerItem, displayName: "Olive Owner" });
+      // Gone meanwhile (left the team): nothing is recreated
+      await removeMember(db, viewer, viewer.userId);
+      expect(await setOwnMemberName(db, viewer, "Vic Viewer")).toBe(false);
+      expect(await rawItem(db, `TEAM#${owner.teamId}`, `MEMBER#${viewer.userId}`)).toBeUndefined();
+      await closeTeam(db, owner, { confirmName: "Echo Cleaning" });
+      const closed = await authorizeTeam(db, contributor.userId, owner.teamId);
+      await expect(setOwnMemberName(db, closed, "Cora Contributor")).rejects.toThrow(TeamClosedError);
     });
 
     // supply-checkout-u0vv

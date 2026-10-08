@@ -1508,6 +1508,7 @@ paths:
       description: |
         Owners first, then contributors, then viewers, each by email. `email`
         is the address the member joined with, or `null` if there wasn't one.
+        `name` is the name on their account, or `null` if they have none.
       responses:
         "200":
           description: The team's members.
@@ -3303,9 +3304,13 @@ components:
         failedAt: { type: [string, "null"], format: date-time }
     Member:
       type: object
-      required: [userId, email, role, joinedAt]
+      required: [userId, name, email, role, joinedAt]
       properties:
         userId: { type: string }
+        name:
+          type: [string, "null"]
+          maxLength: 100
+          description: "Their name from their account (given and family names, from sign-up or Google or Apple), on one line and without invisible characters; null if they have none. Copied when they create a team or accept an invite, and kept current each time they load the app (`GET /me`). They choose it themselves, so show it beside the email, not instead of it. Only owners list members, so only the team's owners see it."
         email: { type: [string, "null"], description: The address they joined with. }
         role: { type: string, enum: [owner, contributor, viewer] }
         joinedAt: { type: [string, "null"], format: date-time }
