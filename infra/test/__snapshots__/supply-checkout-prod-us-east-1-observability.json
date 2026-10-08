@@ -154,6 +154,25 @@
                 "Service": "events.amazonaws.com"
               },
               "Resource": "*",
+              "Sid": "AllowCostAlertChangesToEncrypt"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:GenerateDataKey*"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Resource": "*",
               "Sid": "AllowSupportSmtpUserAlertToEncrypt"
             }
           ],
@@ -717,6 +736,41 @@
                 "Ref": "AlarmTopicsP213C63151"
               },
               "Sid": "AllowCostAnomaliesToPublish"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":events:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":rule/supply-checkout-prod-operator-cost-alert-changes"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP213C63151"
+              },
+              "Sid": "AllowCostAlertChangesToPublish"
             },
             {
               "Action": "sns:Publish",
@@ -5698,6 +5752,150 @@
         "AlarmTopicsP2Policy8BE19EA4",
         "AlarmTopicsP213C63151"
       ]
+    },
+    "CostAlertsChanges11670D29": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The cost budgets, their notifications or subscribers, or the cost anomaly monitor or subscription were deleted or changed outside a deploy (supply-checkout-3sv.19)",
+        "EventPattern": {
+          "source": [
+            "aws.budgets",
+            "aws.ce"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "userIdentity": {
+              "invokedBy": [
+                {
+                  "exists": false
+                },
+                {
+                  "anything-but": "cloudformation.amazonaws.com"
+                }
+              ]
+            },
+            "$or": [
+              {
+                "eventSource": [
+                  "budgets.amazonaws.com"
+                ],
+                "eventName": [
+                  "DeleteBudget",
+                  "UpdateBudget",
+                  "CreateNotification",
+                  "UpdateNotification",
+                  "DeleteNotification",
+                  "CreateSubscriber",
+                  "UpdateSubscriber",
+                  "DeleteSubscriber"
+                ],
+                "requestParameters": {
+                  "budgetName": [
+                    "supply-checkout-prod-monthly",
+                    "supply-checkout-prod-bedrock"
+                  ]
+                }
+              },
+              {
+                "eventSource": [
+                  "budgets.amazonaws.com"
+                ],
+                "eventName": [
+                  "UpdateBudget"
+                ],
+                "requestParameters": {
+                  "newBudget": {
+                    "budgetName": [
+                      "supply-checkout-prod-monthly",
+                      "supply-checkout-prod-bedrock"
+                    ]
+                  }
+                }
+              },
+              {
+                "eventSource": [
+                  "ce.amazonaws.com"
+                ],
+                "eventName": [
+                  "DeleteAnomalyMonitor",
+                  "UpdateAnomalyMonitor"
+                ],
+                "requestParameters": {
+                  "monitorArn": [
+                    {
+                      "Fn::GetAtt": [
+                        "CostAlertsMonitor6895C43D",
+                        "MonitorArn"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "eventSource": [
+                  "ce.amazonaws.com"
+                ],
+                "eventName": [
+                  "DeleteAnomalySubscription",
+                  "UpdateAnomalySubscription"
+                ],
+                "requestParameters": {
+                  "subscriptionArn": [
+                    {
+                      "Fn::GetAtt": [
+                        "CostAlertsSubscriptionEABF71E9",
+                        "SubscriptionArn"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-cost-alert-changes",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP213C63151"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the cost alerts at <detail-eventTime>, outside a deploy (CloudTrail event <detail-eventID> says who). The budget or cost anomaly alerts may be silenced. Follow \\\"When the cost alerts are changed\\\" in docs/observability.md.\""
+            }
+          }
+        ]
+      }
     },
     "SupportSmtpWatchUserChanges23FABB0B": {
       "Type": "AWS::Events::Rule",

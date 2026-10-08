@@ -11,7 +11,17 @@ import { BusinessMetric, METRICS_NAMESPACE, TEST_SKIPPED_METRICS } from "../../b
 import { APPROVED_REGIONS, configFromContext, type DeploymentConfig, GLOBAL_SERVICES_REGION, RECEIPT_MODEL_ID } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
-import { BEDROCK_BUDGET_SERVICES, costAlertsFromContext, DEFAULT_BEDROCK_BUDGET_USD, DEFAULT_COST_ANOMALY_USD, DEFAULT_MONTHLY_BUDGET_USD } from "../lib/observability/cost-alerts.js";
+import {
+  ANOMALY_MONITOR_EVENTS,
+  ANOMALY_SUBSCRIPTION_EVENTS,
+  BEDROCK_BUDGET_SERVICES,
+  BUDGET_EVENTS,
+  COST_ALERT_RULE_SUFFIX,
+  costAlertsFromContext,
+  DEFAULT_BEDROCK_BUDGET_USD,
+  DEFAULT_COST_ANOMALY_USD,
+  DEFAULT_MONTHLY_BUDGET_USD,
+} from "../lib/observability/cost-alerts.js";
 import { BEDROCK_SPEND_ALARM_USD_PER_DAY, journeyAlarmSpecs, SET_ASIDE_INCIDENT_AT, WELCOME_REFUSALS_ALARM_PER_HOUR } from "../lib/observability/journey-alarms.js";
 import { ROUTER_FAILING_ABOVE, RUM_EVENTS_FLOOD_PER_HOUR, RUM_EVENTS_SURGE_PER_HOUR, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
 import { rumAppMonitorName } from "../lib/web/rum.js";
@@ -252,7 +262,7 @@ describe("alarm topics", () => {
         // (and the P2 topic takes the alert-route rule's, tested below)
         // (and the deletion records bucket's change rule, tested with the watch)
         // (and the global services region's P2 topic takes the budget's and Cost Anomaly Detection's, tested with the cost alerts)
-        const allow = all.filter((a) => !["AllowOperatorPoolAlertToPublish", "AllowBackupChangeAlertsToPublish", "AllowAlertRouteChangesToPublish", "AllowDeletionsBucketAlertToPublish", "AllowSupportSmtpUserAlertToPublish", "AllowBudgetsToPublish", "AllowCostAnomaliesToPublish"].includes(String(a.Sid)));
+        const allow = all.filter((a) => !["AllowOperatorPoolAlertToPublish", "AllowBackupChangeAlertsToPublish", "AllowAlertRouteChangesToPublish", "AllowDeletionsBucketAlertToPublish", "AllowSupportSmtpUserAlertToPublish", "AllowBudgetsToPublish", "AllowCostAnomaliesToPublish", "AllowCostAlertChangesToPublish"].includes(String(a.Sid)));
         if (all.length !== allow.length) expect([r, topics[0]]).toEqual([EAST, expect.stringMatching(/^AlarmTopicsP[12]/)]);
         expect(allow).toEqual([
           {
@@ -365,6 +375,10 @@ describe("cost alerts (supply-checkout-jxq)", () => {
     { sid: "AllowCostAnomaliesToPublish", service: "costalerts.amazonaws.com", source: ACCOUNT_SOURCE("ce", "anomalysubscription/*") },
   ];
   const conditionFor = (source: unknown) => ({ StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } }, ArnLike: { "aws:SourceArn": source } });
+  const costRule = (t: Template) => {
+    const [rule] = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id]) => id.startsWith("CostAlerts"));
+    return (rule as [string, { Properties: Record<string, unknown> }])[1].Properties;
+  };
   const topicRef = (t: Template, severity: "P1" | "P2") => {
     const [id] = Object.keys(t.findResources("AWS::SNS::Topic", { Properties: { TopicName: `supply-checkout-prod-alarms-${severity.toLowerCase()}` } }));
     return id as string;
@@ -495,17 +509,104 @@ describe("cost alerts (supply-checkout-jxq)", () => {
     t.hasResourceProperties("AWS::CE::AnomalySubscription", { ThresholdExpression: Match.stringLikeRegexp('"Values":\\["7.5"\\]') });
   });
 
-  it("subscribe to an existing monitor from context instead of creating one", () => {
-    const arn = `arn:aws:ce::${"1".repeat(12)}:anomalymonitor/0a1b2c3d-4e5f-6789-abcd-ef0123456789`;
-    const t = observability(EAST, { costAnomalyMonitorArn: arn });
+  it("subscribe to an existing monitor from context instead of creating one, in the deploying account only (supply-checkout-3sv.19)", () => {
+    const id = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
+    const arn = (account: string) => `arn:aws:ce::${account}:anomalymonitor/${id}`;
+    const inThisAccount = { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":ce::", { Ref: "AWS::AccountId" }, `:anomalymonitor/${id}`]] };
+    // Account-agnostic synth: the monitor's ID in the deploying account, whatever account the ARN names
+    const t = observability(EAST, { costAnomalyMonitorArn: arn("1".repeat(12)) });
     t.resourceCountIs("AWS::CE::AnomalyMonitor", 0);
-    t.hasResourceProperties("AWS::CE::AnomalySubscription", { MonitorArnList: [arn] });
+    t.hasResourceProperties("AWS::CE::AnomalySubscription", { MonitorArnList: [inThisAccount] });
+    // ...and the watch names the same monitor
+    expect(JSON.stringify(costRule(t).EventPattern)).toContain(`:anomalymonitor/${id}`);
+    // A deploy (the account known at synth): the ARN's account must be it
+    const deploy = (account: string) => build({ costAnomalyMonitorArn: arn(account) }, { account: "2".repeat(12) }).region(EAST).observability;
+    expect(() => deploy("1".repeat(12))).toThrow(/costAnomalyMonitorArn names a monitor in another account/);
+    Template.fromStack(deploy("2".repeat(12))).hasResourceProperties("AWS::CE::AnomalySubscription", { MonitorArnList: [inThisAccount] });
+  });
+
+  it("tell P2 when the budgets, their notifications or subscribers, or the anomaly monitor or subscription are deleted or changed outside a deploy (supply-checkout-3sv.19)", () => {
+    expect([...BUDGET_EVENTS].sort()).toEqual(
+      ["DeleteBudget", "UpdateBudget", "CreateNotification", "UpdateNotification", "DeleteNotification", "CreateSubscriber", "UpdateSubscriber", "DeleteSubscriber"].sort(),
+    );
+    expect([...ANOMALY_MONITOR_EVENTS]).toEqual(["DeleteAnomalyMonitor", "UpdateAnomalyMonitor"]);
+    expect([...ANOMALY_SUBSCRIPTION_EVENTS]).toEqual(["DeleteAnomalySubscription", "UpdateAnomalySubscription"]);
+    const t = observability();
+    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id]) => id.startsWith("CostAlerts"));
+    expect(rules).toHaveLength(1);
+    const [, rule] = rules[0] as [string, { Properties: Record<string, unknown> }];
+    expect(rule.Properties.Name).toBe(operatorRuleName("prod", COST_ALERT_RULE_SUFFIX));
+    const [monitor] = Object.keys(t.findResources("AWS::CE::AnomalyMonitor"));
+    const [subscription] = Object.keys(t.findResources("AWS::CE::AnomalySubscription"));
+    const budgets = ["supply-checkout-prod-monthly", "supply-checkout-prod-bedrock"];
+    expect(rule.Properties.EventPattern).toEqual({
+      source: ["aws.budgets", "aws.ce"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        // A CloudFormation deploy's own calls don't alert
+        userIdentity: { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] },
+        $or: [
+          { eventSource: ["budgets.amazonaws.com"], eventName: [...BUDGET_EVENTS], requestParameters: { budgetName: budgets } },
+          { eventSource: ["budgets.amazonaws.com"], eventName: ["UpdateBudget"], requestParameters: { newBudget: { budgetName: budgets } } },
+          { eventSource: ["ce.amazonaws.com"], eventName: [...ANOMALY_MONITOR_EVENTS], requestParameters: { monitorArn: [{ "Fn::GetAtt": [monitor, "MonitorArn"] }] } },
+          { eventSource: ["ce.amazonaws.com"], eventName: [...ANOMALY_SUBSCRIPTION_EVENTS], requestParameters: { subscriptionArn: [{ "Fn::GetAtt": [subscription, "SubscriptionArn"] }] } },
+        ],
+      },
+    });
+    expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: topicRef(t, "P2") } })]);
+    const target = JSON.stringify(rule.Properties.Targets);
+    expect(target).toContain("$.detail.eventID");
+    expect(target).toContain("When the cost alerts are changed");
+    // Only this rule, by ARN, may publish to P2 for it, and not to P1
+    const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+    expect(statements.filter((st) => st.Sid === "AllowCostAlertChangesToPublish")).toEqual([
+      {
+        Sid: "AllowCostAlertChangesToPublish",
+        Effect: "Allow",
+        Principal: { Service: "events.amazonaws.com" },
+        Action: "sns:Publish",
+        Resource: { Ref: topicRef(t, "P2") },
+        Condition: {
+          ArnEquals: {
+            "aws:SourceArn": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":events:", { Ref: "AWS::Region" }, ":", { Ref: "AWS::AccountId" }, `:rule/${rule.Properties.Name}`]] },
+          },
+        },
+      },
+    ]);
+    // EventBridge may use the topics' key, for this account only
+    const keyStatements = Object.values(t.findResources("AWS::KMS::Key")).flatMap((k) => (k.Properties.KeyPolicy as { Statement: Record<string, unknown>[] }).Statement);
+    const services = (x: Record<string, unknown>) => [(x.Principal as { Service?: string | string[] } | undefined)?.Service ?? []].flat();
+    const forEvents = keyStatements.filter((x) => services(x).some((service) => service === "events.amazonaws.com"));
+    expect(forEvents.length).toBeGreaterThan(0);
+    for (const st of forEvents) {
+      expect(st).toMatchObject({ Effect: "Allow", Action: ["kms:Decrypt", "kms:GenerateDataKey*"], Condition: { StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } } } });
+    }
+    // Not where the cost alerts aren't
+    expect(Object.keys(observability(WEST).findResources("AWS::Events::Rule")).filter((id) => id.startsWith("CostAlerts"))).toEqual([]);
+  });
+
+  it("are watched by the operator rule-tampering rules, which are in the same region for prod", () => {
+    expect(config.primaryRegion).toBe(GLOBAL_SERVICES_REGION);
+    const name = operatorRuleName("prod", COST_ALERT_RULE_SUFFIX);
+    expect(name.startsWith(operatorRulePrefix("prod"))).toBe(true);
+    expect(operatorRuleName("a".repeat(16), COST_ALERT_RULE_SUFFIX).length).toBeLessThanOrEqual(64);
+    const tampering = Object.values(observability(GLOBAL_SERVICES_REGION).findResources("AWS::Events::Rule"))
+      .map((r) => r.Properties)
+      .filter((r) => [operatorRuleName("prod", OPERATOR_RULE_SUFFIXES.OperatorRuleTampering), tamperingWatchRuleName("prod")].includes(r.Name));
+    expect(tampering).toHaveLength(2);
+    for (const rule of tampering) {
+      for (const branch of (rule.EventPattern as { detail: { $or: { requestParameters: Record<string, unknown[]> }[] } }).detail.$or) {
+        expect(Object.values(branch.requestParameters)[0]).toContainEqual({ prefix: operatorRulePrefix("prod") });
+      }
+    }
   });
 
   it("reject settings that aren't a sensible number of dollars or a monitor ARN", () => {
     const ctx = (values: Record<string, unknown>) => ({ tryGetContext: (k: string) => values[k] });
     expect(costAlertsFromContext(ctx({}))).toEqual({ monthlyBudgetUsd: DEFAULT_MONTHLY_BUDGET_USD, bedrockBudgetUsd: DEFAULT_BEDROCK_BUDGET_USD, anomalyUsd: DEFAULT_COST_ANOMALY_USD });
-    for (const bad of [0, -5, "abc", "", 10_001, Number.NaN, true, null]) {
+    // Amounts round to the cent, so the threshold expression never says "1e-7"
+    expect(costAlertsFromContext(ctx({ monthlyBudgetUsd: "0.01", bedrockBudgetUsd: 12.345, costAnomalyUsd: 0.016 }))).toMatchObject({ monthlyBudgetUsd: 0.01, bedrockBudgetUsd: 12.35, anomalyUsd: 0.02 });
+    for (const bad of [0, -5, "abc", "", 10_001, Number.NaN, true, null, 0.0000001, "1e-7", 0.009]) {
       expect(() => costAlertsFromContext(ctx({ monthlyBudgetUsd: bad })), String(bad)).toThrow(/monthlyBudgetUsd/);
       expect(() => costAlertsFromContext(ctx({ bedrockBudgetUsd: bad })), String(bad)).toThrow(/bedrockBudgetUsd/);
       expect(() => costAlertsFromContext(ctx({ costAnomalyUsd: bad })), String(bad)).toThrow(/costAnomalyUsd/);
@@ -1871,8 +1972,10 @@ describe("operator pool alerts (ADR 0015)", () => {
 
   function operatorRules() {
     const t = observability();
-    // The deletion records watch's rules are tested with the watch
-    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch") && !id.startsWith("SupportSmtpWatch"));
+    // The deletion records watch's, the support SMTP user's and the cost alerts' rules are tested with them
+    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(
+      ([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch") && !id.startsWith("SupportSmtpWatch") && !id.startsWith("CostAlerts"),
+    );
     expect(rules).toHaveLength(30);
     const byId = (prefix: string) => {
       // Logical IDs end in an 8-character hash
@@ -1982,10 +2085,12 @@ describe("operator pool alerts (ADR 0015)", () => {
     // Only these rules may publish
     const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
     const fromEvents = statements.filter((st) => (st.Principal as { Service?: unknown } | undefined)?.Service === "events.amazonaws.com");
-    expect(fromEvents).toHaveLength(5);
+    expect(fromEvents).toHaveLength(6);
     expect(fromEvents).toEqual(expect.arrayContaining([
       // The support SMTP user's rule, on the P2 topic (tested with the watch)
       expect.objectContaining({ Sid: "AllowSupportSmtpUserAlertToPublish" }),
+      // The cost alerts' change rule, on the P2 topic (tested with the cost alerts)
+      expect.objectContaining({ Sid: "AllowCostAlertChangesToPublish" }),
       expect.objectContaining({
         Sid: "AllowOperatorPoolAlertToPublish",
         Condition: { ArnEquals: { "aws:SourceArn": [admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, ...inputs, ...authorizers, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
@@ -2220,7 +2325,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     for (const rule of [tampering, tamperingWatch]) expect(JSON.stringify(rule.props.Targets)).toContain("an operator alert rule");
     // So every rule the prefix is meant to cover must have a fixed name under it: every rule in the stack but the deletion records watch's three
     const names = Object.entries(t.findResources("AWS::Events::Rule"))
-      .filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch") && !id.startsWith("SupportSmtpWatch") && !id.startsWith("DeletionsRuleTampering"))
+      .filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch") && !id.startsWith("SupportSmtpWatch") && !id.startsWith("CostAlerts") && !id.startsWith("DeletionsRuleTampering"))
       .map(([, r]) => r.Properties.Name as unknown);
     expect(names).toHaveLength(Object.keys(OPERATOR_RULE_SUFFIXES).length);
     expect(names.sort()).toEqual(Object.values(OPERATOR_RULE_SUFFIXES).map((suffix) => `supply-checkout-prod-operator-${suffix}`).sort());
