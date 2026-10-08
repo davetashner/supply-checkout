@@ -293,6 +293,7 @@ const stillOut = (line: Record<string, unknown> | undefined) => (line ? counted(
  *   when (`priceSetBy`, `priceSetAt`), so a typed price can be traced.
  * - A project isn't closed (`status: "closed"`) while an equipment line has
  *   something still out: EquipmentOutError (409).
+ * - A project's `closedAt` is the server's: stampClosedAt.
  */
 function checkKinds(collection: Collection, data: DocumentData, actor: Actor, before?: StoredDocument): DocumentData {
   const stored = before?.data;
@@ -301,6 +302,7 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
     return data;
   }
   if (!sameValue(data.kind, stored?.kind)) throw new InvalidInputError("A project's kind is set by the server");
+  stampClosedAt(data, stored, actor.at);
   const storedLines = isMap(stored?.items) ? stored.items : {};
   const lines = isMap(data.items) ? data.items : {};
   for (const [key, line] of Object.entries(lines)) {
@@ -351,6 +353,21 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
     }
   }
   return data;
+}
+
+/**
+ * A project's `closedAt` is the server's (supply-checkout-1dg.16): the list
+ * `since` a day keeps a finished project by it (recentFilter), so it can't
+ * come from a device's clock. A write that finishes the project (or makes a
+ * finished one) stamps it with the write's time; any other write keeps what's
+ * stored, or none, so a reopened project keeps the time it was last finished.
+ * A `closedAt` in the request, which older versions of the app send, is
+ * ignored rather than refused.
+ */
+function stampClosedAt(data: DocumentData, stored: DocumentData | undefined, at: string): void {
+  if (data.status === "closed" && stored?.status !== "closed") data.closedAt = at;
+  else if (stored !== undefined && Object.hasOwn(stored, "closedAt")) data.closedAt = stored.closedAt;
+  else delete data.closedAt;
 }
 
 /** The app's update: nested maps merge key by key; anything else replaces. */

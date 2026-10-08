@@ -68,6 +68,19 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     await expect(updateDocument(db, ctx, "projects", "missing", { a: 1 })).rejects.toThrow(NotFoundError);
   });
 
+  it("stamps a project's closedAt with the server's time when it's finished, ignoring the app's (supply-checkout-1dg.16)", async () => {
+    const ctx = await team();
+    const now = (iso: string) => ({ now: new Date(iso) });
+    await setDocument(db, ctx, "projects", "s1", { client: "Echo", date: "2020-01-05", status: "open", items: {}, closedAt: "2026-01-05T00:00:00.000Z" }, now("2026-01-05T09:00:00Z"));
+    expect((await getDocument(db, ctx, "projects", "s1"))?.data).not.toHaveProperty("closedAt");
+    await updateDocument(db, ctx, "projects", "s1", { status: "closed", closedAt: "2025-02-01T09:00:00.000Z" }, now("2026-02-01T09:00:00Z"));
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PROJECT#s1")).toMatchObject({ status: "closed", closedAt: "2026-02-01T09:00:00.000Z" });
+    // So the list since a day keeps the old project finished on it
+    expect((await listDocuments(db, ctx, "projects", { since: "2026-02-01" })).items.map((d) => d.id)).toEqual(["s1"]);
+    await updateDocument(db, ctx, "projects", "s1", { status: "open", closedAt: "2027-01-01T00:00:00.000Z" }, now("2026-03-01T09:00:00Z"));
+    expect((await getDocument(db, ctx, "projects", "s1"))?.data).toMatchObject({ status: "open", closedAt: "2026-02-01T09:00:00.000Z" });
+  });
+
   it("keeps each project line's barcode through set and deep-merge update", async () => {
     const ctx = await team();
     const gloves = { code: "0123456789", name: "Gloves", price: 12.5, out: 3, returned: 0 };
