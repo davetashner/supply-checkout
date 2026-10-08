@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import { GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { authorizeTeam, closeTeam, ConflictError, createTeam, type Db, ForbiddenError, getDocument, InvalidInputError, listDocuments, listMovements, quickTake, setDocument, TeamClosedError, type TeamContext } from "../src/data/index.js";
+import { authorizeTeam, closeTeam, ConflictError, createTeam, type Db, ForbiddenError, getDocument, InvalidInputError, listDocuments, listMovements, quickTake, setDocument, TeamClosedError, type TeamContext, updateDocument } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { keys } from "../src/data/keys.js";
 import { legacy } from "../src/data/legacy-sheets.js";
@@ -357,6 +357,139 @@ describe("parseArtifactExport: General Use projects (ADR 0017)", () => {
   });
 });
 
+// Company equipment (ADR 0017): an item on loan, lost and charged for on a client's project, one
+// bought for the client at the markup and one at a typed price, and a General Use project's.
+// What the exporter writes: the documents as stored, with each project's totals from project-math.js.
+const EQUIPMENT_EXPORT = {
+  app: "Supply Checkout",
+  exportedAt: "2026-09-30T12:00:00.000Z",
+  inventory: [
+    { key: "ladder", kind: "equipment", code: "LAD-8", name: "Step ladder, 8 ft", cost: 120, stock: 2, updatedAt: "2026-09-01T08:00:00.000Z" },
+    { key: "drill", kind: "equipment", code: "", name: "Cordless drill", cost: 80.004, price: null },
+    { key: "tape", kind: "supply", code: "TAPE-1", name: "Painter's tape", price: 3, stock: 10 },
+  ],
+  projects: [
+    {
+      id: "j-equip",
+      client: "Harbor View Apartments",
+      date: "2026-09-10",
+      status: "open",
+      items: {
+        ladder: { kind: "equipment", code: "LAD-8", name: "Step ladder, 8 ft", cost: 120, out: 3, returned: 1, lost: 1, lostCharge: 150, takenBy: "Pat Example", takenAt: "2026-09-10T14:00:00.000Z" },
+        "ladder:bought": { code: "LAD-8", name: "Step ladder, 8 ft", price: 150, cost: 120, out: 1, returned: 0, purchased: true, priceSet: "markup" },
+        "drill:bought": { code: "", name: "Cordless drill", price: 99.5, cost: 80, out: 1, returned: 0, purchased: true, priceSet: "manual", priceSetBy: "user-owner-1", priceSetAt: "2026-09-10T15:00:00.000Z" },
+        tape: { code: "TAPE-1", name: "Painter's tape", price: 3, out: 2, returned: 1 },
+      },
+      // Equipment on loan isn't in the totals; the lost ladder's charge and count are
+      totals: { taken: 4, returned: 1, used: 4, charge: 402.5 },
+    },
+    {
+      id: "adhoc-1",
+      kind: "adhoc",
+      client: "",
+      date: "2026-09-12",
+      status: "open",
+      items: { drill: { kind: "equipment", code: "", name: "Cordless drill", cost: 80, out: 2, returned: 0, lost: 1, takenBy: "Jordan", takenAt: "2026-09-12T09:00:00.000Z" } },
+      totals: { taken: 0, returned: 0, used: 0, charge: 0 },
+    },
+  ],
+};
+
+describe("parseArtifactExport: company equipment (ADR 0017)", () => {
+  it("keeps an item's kind, and a line's kind, lost, lostCharge, takenBy, takenAt, purchased and priceSet", () => {
+    const p = parseArtifactExport(JSON.stringify(EQUIPMENT_EXPORT));
+    expect(p.errors).toEqual([]);
+    expect(p.ignoredFields).toEqual({});
+    expect(p.products).toEqual([
+      { key: "ladder", kind: "equipment", code: "LAD-8", name: "Step ladder, 8 ft", cost: 120, stock: 2, updatedAt: "2026-09-01T08:00:00.000Z" },
+      // Equipment has no client price; its value is its cost, rounded to cents
+      { key: "drill", kind: "equipment", code: "", name: "Cordless drill", cost: 80 },
+      { key: "tape", kind: "supply", code: "TAPE-1", name: "Painter's tape", price: 3, stock: 10 },
+    ]);
+    const [job, adhoc] = p.projects;
+    expect(job?.items).toEqual(EQUIPMENT_EXPORT.projects[0]?.items);
+    expect(adhoc?.items).toEqual(EQUIPMENT_EXPORT.projects[1]?.items);
+    expect(p.totals.get("j-equip")).toEqual({ taken: 4, returned: 1, used: 4, chargeCents: 40250 });
+    expect(p.totals.get("adhoc-1")).toEqual({ taken: 0, returned: 0, used: 0, chargeCents: 0 });
+  });
+
+  it("adds totals as project-math.js does: equipment on loan apart, a lost charge in them", () => {
+    expect(
+      projectTotals({
+        onLoan: { kind: "equipment", name: "", out: 4, returned: 1, lost: 1 },
+        lostCharged: { kind: "equipment", name: "", price: 9, out: 3, returned: 0, lost: 2, lostCharge: 40.5 },
+        zeroCharge: { kind: "equipment", name: "", out: 1, returned: 0, lost: 1, lostCharge: 0 },
+        supply: { name: "", price: 1.15, out: 7, returned: 2 },
+        noPrice: { name: "", out: 1, returned: 0 },
+      }),
+    ).toEqual({ taken: 8, returned: 2, used: 8, chargeCents: 4050 + 575 });
+  });
+
+  it("refuses values the document routes refuse, naming the field and never the value", () => {
+    const lines: [string, Record<string, unknown>, string][] = [
+      ["a", { name: "A", price: 1, kind: "tool" }, 'kind is "equipment" or left out'],
+      ["a", { name: "A", price: 1, purchased: "yes" }, "purchased is true or left out"],
+      ["a:bought", { name: "A", price: 1, out: 1 }, 'a line bought for the client has purchased: true and a key ending ":bought", and no other line has either'],
+      ["a", { name: "A", price: 1, out: 1, purchased: true }, 'a line bought for the client has purchased: true and a key ending ":bought", and no other line has either'],
+      ["a:bought", { kind: "equipment", name: "A", price: 1, out: 1, purchased: true }, "a line bought for the client has no kind"],
+      ["a:bought", { name: "A", price: 1, out: 1, returned: 1, purchased: true }, "nothing bought for the client comes back, so its returned stays 0"],
+      ["a", { name: "A", price: 1, out: 1, lost: 1 }, "lost is only on company equipment lines"],
+      ["a", { name: "A", price: 1, out: 1, lostCharge: 5 }, "lostCharge is only on company equipment lines"],
+      ["a", { name: "A", price: 1, out: 1, takenBy: "Pat Example" }, "takenBy is only on company equipment lines"],
+      ["a", { name: "A", price: 1, out: 1, takenAt: "2026-09-01T00:00:00Z" }, "takenAt is only on company equipment lines"],
+      ["a", { kind: "equipment", name: "A", out: 2, lost: 1.5 }, "lost must be a whole number from 0 to 1000000"],
+      ["a", { kind: "equipment", name: "A", out: 2, returned: 1, lost: 2 }, "returned and lost add up to more than out"],
+      ["a", { kind: "equipment", name: "A", out: 2, lost: 1, lostCharge: -1 }, "lostCharge must be an amount from 0 to 1000000"],
+      ["a", { kind: "equipment", name: "A", out: 2, takenBy: 5 }, "takenBy isn't text"],
+      ["a", { kind: "equipment", name: "A", out: 2, takenBy: "Pat\u202eExample" }, "takenBy has an invisible or control character in it"],
+      ["a", { kind: "equipment", name: "A", out: 2, takenAt: "soon" }, "takenAt isn't a date and time"],
+      ["a", { name: "A", price: 1, out: 1, priceSet: "manual" }, "priceSet is only on lines bought for the client"],
+      ["a:bought", { name: "A", price: 1, out: 1, purchased: true, priceSet: "typed" }, 'priceSet is "markup" or "manual"'],
+      ["a:bought", { name: "A", price: 1, out: 1, purchased: true, priceSet: "markup", priceSetBy: "u1" }, 'priceSetBy and priceSetAt are only on a price someone typed (priceSet "manual")'],
+      ["a:bought", { name: "A", price: 1, out: 1, purchased: true, priceSetAt: "2026-09-01T00:00:00Z" }, 'priceSetBy and priceSetAt are only on a price someone typed (priceSet "manual")'],
+      ["a:bought", { name: "A", price: 1, out: 1, purchased: true, priceSet: "manual", priceSetAt: "later" }, "priceSetAt isn't a date and time"],
+      // A supply's line needs its price; only equipment on loan goes without
+      ["a", { name: "A", out: 1 }, "price must be an amount from 0 to 1000000"],
+    ];
+    const adhocLines: [string, Record<string, unknown>, string][] = [
+      ["a", { kind: "equipment", name: "A", out: 2, lost: 1, lostCharge: 5 }, "lostCharge is only on a client's project"],
+      ["a:bought", { name: "A", price: 1, out: 1, purchased: true }, "nothing on a General Use project is bought for a client"],
+    ];
+    const p = parseArtifactExport(
+      JSON.stringify({
+        app: "Supply Checkout",
+        inventory: [
+          { key: "tool", kind: "tool", price: 1 },
+          { key: "supply-no-price", kind: "supply" },
+          { key: "x:bought", kind: "equipment" },
+          { key: "x_bought", kind: "equipment" },
+        ],
+        projects: [
+          ...lines.map(([key, l], i) => ({ id: `s-${i}`, client: "Oak Lane Dental", date: "2026-09-01", items: { [key]: l } })),
+          ...adhocLines.map(([key, l], i) => ({ id: `adhoc-${i + 1}`, kind: "adhoc", client: "", date: "2026-09-01", status: "closed", items: { [key]: l } })),
+        ],
+      }),
+    );
+    expect(p.errors).toEqual([
+      { at: 'inventory[0] key "tool"', message: 'kind is "supply" or "equipment", or left out' },
+      { at: 'inventory[1] key "supply-no-price"', message: "price must be an amount from 0 to 1000000" },
+      { at: 'inventory[2] key "x:bought"', message: 'key can\'t end in ":bought", which is kept for lines bought for the client' },
+      ...lines.flatMap(([key, , message], i) => [
+        { at: `projects[${i}] id "s-${i}".items[${JSON.stringify(key)}]`, message },
+        { at: `projects[${i}] id "s-${i}"`, message: "has lines with problems (listed separately)" },
+      ]),
+      ...adhocLines.flatMap(([key, , message], i) => [
+        { at: `projects[${lines.length + i}] id "adhoc-${i + 1}".items[${JSON.stringify(key)}]`, message },
+        { at: `projects[${lines.length + i}] id "adhoc-${i + 1}"`, message: "has lines with problems (listed separately)" },
+      ]),
+    ]);
+    // The key ending "_bought" is any other key
+    expect(p.products).toEqual([{ key: "x_bought", kind: "equipment", code: "", name: "" }]);
+    expect(p.projects).toEqual([]);
+    expect(JSON.stringify(p.errors)).not.toMatch(/Pat|Oak Lane|u1/);
+  });
+});
+
 describe.skipIf(!endpoint)("the artifact import (DynamoDB Local)", () => {
   const table = useTable();
   let db: Db;
@@ -434,6 +567,34 @@ describe.skipIf(!endpoint)("the artifact import (DynamoDB Local)", () => {
     // An import with no General Use projects leaves no pointer
     const other = await team();
     expect((await run(other.ctx)).result).not.toHaveProperty("adhocOpen");
+  });
+
+  it("imports company equipment as it was, and a later write to its project still works (ADR 0017, section 8)", async () => {
+    const { ctx } = await team();
+    const text = JSON.stringify(EQUIPMENT_EXPORT);
+    const { plan, result, check } = await run(ctx, text);
+    expect(plan.conflicts).toEqual([]);
+    expect(result).toMatchObject({ productsCreated: 3, projectsCreated: 2, movements: 2, adhocOpen: "adhoc-1" });
+    expect(check).toEqual({ productsChecked: 3, projectsChecked: 2, stockBefore: 12, stockAfter: 12, chargeBeforeCents: 40250, chargeAfterCents: 40250, mismatches: [] });
+    expect((await getDocument(db, ctx, "products", "ladder"))?.data).toEqual({ kind: "equipment", code: "LAD-8", name: "Step ladder, 8 ft", cost: 120, stock: 2, updatedAt: "2026-09-01T08:00:00.000Z" });
+    expect((await getDocument(db, ctx, "products", "drill"))?.data).toMatchObject({ kind: "equipment", cost: 80 });
+    expect((await getDocument(db, ctx, "products", "drill"))?.data).not.toHaveProperty("price");
+    expect((await getDocument(db, ctx, "products", "tape"))?.data).toMatchObject({ kind: "supply", price: 3 });
+    const job = await getDocument(db, ctx, "projects", "j-equip");
+    expect(job?.data.items).toEqual(EQUIPMENT_EXPORT.projects[0]?.items);
+    expect((await getDocument(db, ctx, "projects", "adhoc-1"))?.data).toMatchObject({ kind: "adhoc", items: EQUIPMENT_EXPORT.projects[1]?.items });
+
+    // A re-run finds everything there, kinds and all
+    expect((await run(ctx, text)).plan).toMatchObject({ products: [], projects: [], productsPresent: 3, projectsPresent: 2, conflicts: [] });
+    // An item there as a supply, with the file's equipment under its key, is a conflict
+    const other = await team();
+    await setDocument(db, other.ctx, "products", "ladder", { code: "LAD-8", name: "Step ladder, 8 ft", cost: 120 });
+    expect((await planArtifactImport(db, other.ctx, parseArtifactExport(text))).conflicts).toContainEqual({ at: 'item key "ladder"', message: "the team already has an item with this key, with other values" });
+
+    // The document routes take the imported lines as they are: the app's next save of the project, and a line edit
+    await setDocument(db, ctx, "projects", "j-equip", { ...job?.data, client: "Harbor View Apartments (east)" }, { expectedVersion: 1 });
+    const edited = await updateDocument(db, ctx, "projects", "j-equip", { items: { tape: { returned: 2 }, "ladder:bought": { out: 2 } } });
+    expect(edited.after.data.items).toMatchObject({ tape: { returned: 2 }, "ladder:bought": { out: 2, purchased: true, priceSet: "markup" }, ladder: { kind: "equipment", lost: 1, lostCharge: 150, takenBy: "Pat Example" } });
   });
 
   it("finishes an import that stopped part-way", async () => {
