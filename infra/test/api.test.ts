@@ -971,6 +971,9 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
     // The worker reads the team's test mark, for its metrics only (supply-checkout-o60.12), and can never write it
     expect(BILLING_READ_ATTRIBUTES).toContain("test");
     expect(BILLING_UPDATE_ATTRIBUTES).not.toContain("test");
+    // The nightly entitlement check conditions its fix on the version it read (supply-checkout-8jc.27)
+    expect(BILLING_READ_ATTRIBUTES).toContain("version");
+    expect(BILLING_UPDATE_ATTRIBUTES).toContain("version");
     // supply-checkout-6e4b: PutItem only (append-only), the tagged team's operator audit only, an audit item's attributes only
     expect(audit).toEqual({
       Sid: "CompDiscountAuditPutOnly",

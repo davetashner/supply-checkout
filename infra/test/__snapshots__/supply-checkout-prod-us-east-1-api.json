@@ -3798,7 +3798,8 @@
                         "role",
                         "email",
                         "userId",
-                        "test"
+                        "test",
+                        "version"
                       ]
                     },
                     "StringEqualsIfExists": {

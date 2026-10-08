@@ -83,35 +83,56 @@ describe.skipIf(!endpoint)("billing on DynamoDB Local", () => {
     expect(await getBillingTeam(table.db, ctx, now)).toMatchObject({ status: "trialing", stripeSubscriptionId: "sub_test_1", closed: false, purging: false, readOnly: false });
   });
 
-  it("with asRead (the nightly entitlement check), applies only while the team is as it was read (supply-checkout-8jc.9)", async () => {
+  it("with asRead (the nightly entitlement check), applies only at the version read (supply-checkout-8jc.9, 8jc.27)", async () => {
     const { team, customer, ctx } = await linkedTeam();
     // A new team: trialing on the trial plan, one seat, no subscription
     const read = await getBillingTeam(table.db, ctx, now);
-    expect(read).toMatchObject({ status: "trialing", plan: "trial", seats: 1 });
-    const asRead = { status: "trialing", plan: "trial", seats: 1 };
+    expect(read).toMatchObject({ status: "trialing", plan: "trial", seats: 1, version: 2 });
+    const version = read?.version ?? -1;
     // An event applied meanwhile: the check's older state must not overwrite it
     expect(await applySubscription(table.db, ctx, state(customer, { status: "active" }), now)).toBe("applied");
-    await expect(applySubscription(table.db, ctx, state(customer), now, asRead)).rejects.toBeInstanceOf(ConflictError);
-    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ status: "active" });
-    // Read again, it applies
-    const now2 = { status: "active", plan: "starter", seats: 3, subscriptionId: "sub_test_1" };
-    expect(await applySubscription(table.db, ctx, state(customer, { status: "past_due" }), now, now2)).toBe("applied");
-    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ status: "past_due", stripeSubscriptionId: "sub_test_1" });
-    // A read that found no subscription, when there is one now
-    await expect(applySubscription(table.db, ctx, state(customer), now, { status: "past_due", plan: "starter", seats: 3 })).rejects.toBeInstanceOf(ConflictError);
+    await expect(applySubscription(table.db, ctx, state(customer), now, { version })).rejects.toBeInstanceOf(ConflictError);
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ status: "active", version: version + 1 });
+    // Read again, it applies, and moves the version
+    const again = await getBillingTeam(table.db, ctx, now);
+    expect(again).toMatchObject({ status: "active", version: version + 1 });
+    expect(await applySubscription(table.db, ctx, state(customer, { status: "past_due" }), now, { version: again?.version ?? -1 })).toBe("applied");
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ status: "past_due", stripeSubscriptionId: "sub_test_1", version: version + 2 });
+    // A version that isn't a whole number is refused before the write
+    await expect(applySubscription(table.db, ctx, state(customer), now, { version: 1.5 })).rejects.toThrow("whole number");
+    await expect(applySubscription(table.db, ctx, state(customer), now, { version: -1 })).rejects.toThrow("whole number");
   });
 
-  it("with asRead, also refuses a cancellation applied meanwhile, and takes a team never applied as renewing", async () => {
+  it("with asRead, refuses a change and back (A to B to A) or a period end applied meanwhile, which compare equal by value", async () => {
     const { team, customer, ctx } = await linkedTeam();
-    expect(await getBillingTeam(table.db, ctx, now)).toMatchObject({ cancelAtPeriodEnd: false });
-    // Never applied reads as false
-    expect(await applySubscription(table.db, ctx, state(customer), now, { status: "trialing", plan: "trial", seats: 1, cancelAtPeriodEnd: false })).toBe("applied");
-    const read = { status: "trialing", plan: "starter", seats: 3, subscriptionId: "sub_test_1", cancelAtPeriodEnd: false };
+    expect(await applySubscription(table.db, ctx, state(customer), now)).toBe("applied");
+    const read = await getBillingTeam(table.db, ctx, now);
+    const asRead = { version: read?.version ?? -1 };
+    // Cancelled and renewed again between the check's read and its write: every field is as read
     expect(await applySubscription(table.db, ctx, state(customer, { cancelAtPeriodEnd: true }), now)).toBe("applied");
-    await expect(applySubscription(table.db, ctx, state(customer), now, read)).rejects.toBeInstanceOf(ConflictError);
-    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ cancelAtPeriodEnd: true });
-    expect(await applySubscription(table.db, ctx, state(customer), now, { ...read, cancelAtPeriodEnd: true })).toBe("applied");
-    expect(await getBillingTeam(table.db, ctx, now)).toMatchObject({ cancelAtPeriodEnd: false });
+    expect(await applySubscription(table.db, ctx, state(customer), now)).toBe("applied");
+    expect(await getBillingTeam(table.db, ctx, now)).toMatchObject({ status: read?.status, plan: read?.plan, seats: read?.seats, cancelAtPeriodEnd: read?.cancelAtPeriodEnd });
+    await expect(applySubscription(table.db, ctx, state(customer, { status: "past_due" }), now, asRead)).rejects.toBeInstanceOf(ConflictError);
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ status: "trialing", cancelAtPeriodEnd: false });
+    // Only the period end moved (a renewal): the version still refuses the older state
+    const renewedRead = await getBillingTeam(table.db, ctx, now);
+    expect(await applySubscription(table.db, ctx, state(customer, { currentPeriodEnd: "2026-12-01T00:00:00.000Z" }), now)).toBe("applied");
+    await expect(applySubscription(table.db, ctx, state(customer), now, { version: renewedRead?.version ?? -1 })).rejects.toBeInstanceOf(ConflictError);
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ currentPeriodEnd: "2026-12-01T00:00:00.000Z" });
+  });
+
+  it("with asRead, two writers racing from one read: exactly one applies", async () => {
+    const { team, customer, ctx } = await linkedTeam();
+    const read = await getBillingTeam(table.db, ctx, now);
+    const asRead = { version: read?.version ?? -1 };
+    const results = await Promise.allSettled([
+      applySubscription(table.db, ctx, state(customer, { status: "active" }), now, asRead),
+      applySubscription(table.db, ctx, state(customer, { status: "past_due" }), now, asRead),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const lost = results.find((r) => r.status === "rejected");
+    expect(lost?.status === "rejected" && lost.reason).toBeInstanceOf(ConflictError);
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ version: asRead.version + 1 });
   });
 
   it("records a reopen's pending resync, and finishes it only for that closure (supply-checkout-85qp)", async () => {

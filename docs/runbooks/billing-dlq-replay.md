@@ -76,7 +76,7 @@ The billing worker's log has `Entitlement drift` for each team, with the fields 
 - A drift for a team whose own event was in flight at 07:00 UTC fixes itself: ignore it if that event shows up in the log minutes later.
 - `cancelAtPeriodEnd` in the fields means a cancellation at the period's end (or a renewal) we never recorded, such as one made while the team was closed, whose events the worker skips. The first night after this field was added to the check (`supply-checkout-85qp`) may show a one-time wave of these, for teams set to cancel whose cancellation was never recorded: expected, and already fixed.
 - Before turning off a pending cancellation by hand (for a reopened team, say), remember that resuming a `trialing` subscription converts it to paid at its trial end, and resuming a `past_due` one has Stripe retry its card: both charge the customer.
-- The fix is conditioned on the team's status, plan, seats, subscription and cancellation being as the check read them, compared by value. A change and back between the read and the write, or a change only to the period end, isn't seen, so the check's older state can win for a while. The next event for the subscription, or the next night, corrects it.
+- The fix is conditioned on the team's version being the one the check read, so an event applied between the read and the write (even a change and back, or a change only to the period end) is never overwritten: the check's write fails and its retry reads the team again.
 
 ## Dry runs in test mode
 

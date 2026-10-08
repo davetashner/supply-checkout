@@ -632,7 +632,9 @@ export const STRIPE_LINK_READ_ATTRIBUTES = [PK, SK, "teamId"] as const;
  * reopen's pending resync and what decides it, billing/reopening.ts), and
  * what the access rules read (billingAccess: the trial's end and the team's
  * creation, and when it went past due or ended), and the test mark (`test`,
- * supply-checkout-o60.12), which only tags its metrics.
+ * supply-checkout-o60.12), which only tags its metrics, and the META item's
+ * `version`, which the nightly entitlement check conditions its fix on
+ * (supply-checkout-8jc.27).
  * Never documents, projects or anything else.
  */
 export const BILLING_READ_ATTRIBUTES = [
@@ -662,6 +664,7 @@ export const BILLING_READ_ATTRIBUTES = [
   "email",
   "userId",
   "test",
+  "version",
 ] as const;
 
 /**

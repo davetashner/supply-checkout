@@ -166,6 +166,12 @@ export interface BillingTeam {
    * the worker's metrics (testMark). Never decides anything.
    */
   readonly test?: true;
+  /**
+   * The META item's version as read: every write to the team's billing,
+   * closure or comp moves it, so applySubscription's `asRead` conditions on it
+   * (the nightly entitlement check, supply-checkout-8jc.27).
+   */
+  readonly version: number;
 }
 
 /** The team's billing state, or undefined if its META item is gone (purged). */
@@ -177,8 +183,8 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
       Key: keys.team(ctx.teamId),
       ConsistentRead: true,
       ProjectionExpression:
-        "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil, compMonths, cancelAtPeriodEnd, stripeResyncFor, stripeReopenedAt, stripeCancelledFor, trialEndsAt, createdAt, pastDueSince, subscriptionEndedAt, #test",
-      ExpressionAttributeNames: { "#name": "name", "#status": "status", "#plan": "plan", "#test": "test" },
+        "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil, compMonths, cancelAtPeriodEnd, stripeResyncFor, stripeReopenedAt, stripeCancelledFor, trialEndsAt, createdAt, pastDueSince, subscriptionEndedAt, #test, #version",
+      ExpressionAttributeNames: { "#name": "name", "#status": "status", "#plan": "plan", "#test": "test", "#version": "version" },
     }),
   );
   if (!Item) return undefined;
@@ -208,6 +214,7 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
     ...(typeof Item.compMonths === "number" ? { compMonths: Item.compMonths } : {}),
     compLive: liveComp(Item, now) !== undefined,
     ...(Item.test === true ? { test: true as const } : {}),
+    version: typeof Item.version === "number" ? Item.version : 0,
   };
 }
 
@@ -306,14 +313,9 @@ export async function listOwnerContacts(db: Db, ctx: TeamContext): Promise<{ rea
   return out;
 }
 
-/** The billing fields of a team as they were read (getBillingTeam), for applySubscription's `asRead`. */
+/** The team as it was read (getBillingTeam), for applySubscription's `asRead`: its META item's version. */
 export interface BillingAsRead {
-  readonly status: string;
-  readonly plan: string;
-  readonly seats: number;
-  readonly subscriptionId?: string;
-  /** Whether it won't renew, as read: compared too when given (the nightly entitlement check). */
-  readonly cancelAtPeriodEnd?: boolean;
+  readonly version: number;
 }
 
 /** A subscription as the billing worker applies it to its team (ADR 0009). */
@@ -351,12 +353,12 @@ export interface SubscriptionState {
  * is never deleted for it). Each is removed with any other status.
  *
  * With `asRead` (the nightly entitlement check, billing/entitlements.ts),
- * also conditioned on the team's status, plan, seats, subscription and
- * `cancelAtPeriodEnd` being as they were read, so a Stripe event applied
- * meanwhile is almost never overwritten with the older state the check
- * fetched. It compares values, not a version: a change and back (A to B to
- * A) between the read and the write, or a change only to `currentPeriodEnd`,
- * isn't seen, and the next event or night corrects it.
+ * also conditioned on the team's version being the one read
+ * (supply-checkout-8jc.27): every write to the META item's billing, closure or
+ * comp moves it, this one included, so any Stripe event applied meanwhile
+ * (even one that changed a field and changed it back, or changed only
+ * `currentPeriodEnd`) is never overwritten with the older state the check
+ * fetched.
  *
  * Returns "applied", or "ignored" when the team is gone, closed, being purged
  * or belongs to another customer by the time of the write. Any other failed
@@ -406,21 +408,9 @@ export async function applySubscription(db: Db, ctx: TeamContext, state: Subscri
   } else removes.push("subscriptionEndedAt");
   const unchanged: string[] = [];
   if (asRead) {
-    // Every team is created with a status, plan and seats (createTeam); an absent one reads as "" or 0
-    const same = (path: string, key: string, value: string | number, absent: string | number) => {
-      values[key] = value;
-      unchanged.push(value === absent ? `(${path} = ${key} OR attribute_not_exists(${path}))` : `${path} = ${key}`);
-    };
-    same("#status", ":readStatus", asRead.status, "");
-    same("#plan", ":readPlan", asRead.plan, "");
-    same("seats", ":readSeats", asRead.seats, 0);
-    if (asRead.subscriptionId === undefined) unchanged.push("attribute_not_exists(stripeSubscriptionId)");
-    else same("stripeSubscriptionId", ":readSub", id(asRead.subscriptionId, "Stripe subscription ID"), "");
-    if (asRead.cancelAtPeriodEnd !== undefined) {
-      // Never applied reads as false
-      values[":readCape"] = asRead.cancelAtPeriodEnd;
-      unchanged.push(asRead.cancelAtPeriodEnd ? "cancelAtPeriodEnd = :readCape" : "(cancelAtPeriodEnd = :readCape OR attribute_not_exists(cancelAtPeriodEnd))");
-    }
+    if (!Number.isInteger(asRead.version) || asRead.version < 0) throw new ConflictError("A team's version must be a whole number");
+    values[":readVersion"] = asRead.version;
+    unchanged.push("#version = :readVersion");
   }
   const subscription = state.replaces !== undefined ? "(attribute_not_exists(stripeSubscriptionId) OR stripeSubscriptionId = :sub OR stripeSubscriptionId = :replaces)" : "(attribute_not_exists(stripeSubscriptionId) OR stripeSubscriptionId = :sub)";
   if (state.replaces !== undefined) values[":replaces"] = state.replaces;
@@ -432,7 +422,7 @@ export async function applySubscription(db: Db, ctx: TeamContext, state: Subscri
         UpdateExpression: `SET ${sets.join(", ")}${removes.length ? ` REMOVE ${removes.join(", ")}` : ""}`,
         // Never recreates a purged team, never touches a closed or purging one
         ConditionExpression: [`attribute_exists(PK) AND stripeCustomerId = :customer AND attribute_not_exists(closedAt) AND attribute_not_exists(purging) AND ${subscription}`, ...unchanged].join(" AND "),
-        ExpressionAttributeNames: { "#status": "status", "#version": "version", ...(state.plan !== undefined || asRead ? { "#plan": "plan" } : {}) },
+        ExpressionAttributeNames: { "#status": "status", "#version": "version", ...(state.plan !== undefined ? { "#plan": "plan" } : {}) },
         ExpressionAttributeValues: values,
       }),
     );
