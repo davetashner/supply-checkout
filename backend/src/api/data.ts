@@ -5,6 +5,7 @@
 import { createObservability, withObservability } from "../observability/index.js";
 import { createDataHandler } from "./data-handler.js";
 import { API_ENV } from "./routes.js";
+import { sessionCheckFromEnv } from "./session-reset.js";
 import { teamScopedDbs } from "./team-db.js";
 
 const roleArn = process.env[API_ENV.dataRoleArn];
@@ -12,4 +13,4 @@ const roleArn = process.env[API_ENV.dataRoleArn];
 if (!roleArn) throw new Error(`${API_ENV.dataRoleArn} is not set`);
 
 const obs = createObservability({ service: "data-api" });
-export const handler = withObservability(obs, createDataHandler({ dbForTeam: teamScopedDbs({ roleArn }), obs }));
+export const handler = withObservability(obs, createDataHandler({ dbForTeam: teamScopedDbs({ roleArn }), obs, sessionCheck: sessionCheckFromEnv() }));

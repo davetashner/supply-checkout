@@ -45,7 +45,7 @@ import {
   identityResourceNames,
 } from "../../../backend/src/identity/names.js";
 import { emailResourceNames, WELCOME_FUNCTION_ENV } from "../../../backend/src/email/names.js";
-import { NOTICE_ADDRESS_CHECK_ATTRIBUTES, NOTICE_ADDRESS_RECORD_ATTRIBUTES, tableName, VERIFIED_EMAIL_ATTRIBUTES } from "../../../backend/src/data/schema.js";
+import { NOTICE_ADDRESS_CHECK_ATTRIBUTES, NOTICE_ADDRESS_RECORD_ATTRIBUTES, PASSWORD_RESET_RECORD_ATTRIBUTES, tableName, VERIFIED_EMAIL_ATTRIBUTES } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import {
@@ -571,8 +571,10 @@ export class IdentityStack extends SupplyCheckoutStack {
    * every app pool, providers or not. It never fails the confirmation.
    *
    * After a confirmed password reset (supply-checkout-6uw.32), it signs the
-   * account out everywhere (AdminUserGlobalSignOut, on this pool only) and
-   * hands the notice to the security notices function (grantResetNotice).
+   * account out everywhere (AdminUserGlobalSignOut, on this pool only),
+   * records the reset's time, which the API compares with each session's
+   * auth_time (supply-checkout-6uw.33), and hands the notice to the security
+   * notices function (grantResetNotice).
    */
   private addPostConfirmationTrigger(): NodejsFunction {
     // A fixed name, for the "Sign-up trigger failing" alarm (journey-alarms.ts)
@@ -602,8 +604,16 @@ export class IdentityStack extends SupplyCheckoutStack {
    * by its fixed name in this region and account (the email stack makes it,
    * and deploys after this one, so it's named, not referenced), with the
    * user's sub. Until the email stack has deployed it, the invoke fails,
-   * which is counted (SecurityNoticeFailures) and never fails the reset. A
-   * separate policy, attached after the pool exists (see addFederatedTriggers).
+   * which is counted (SecurityNoticeFailures) and never fails the reset.
+   * And recording the reset's time (data/password-reset-time.ts,
+   * supply-checkout-6uw.33): UpdateItem naming only the keys and
+   * `passwordResetAt` (PASSWORD_RESET_RECORD_ATTRIBUTES), which no other item
+   * has, returning nothing, and no read. IAM can't name the user (a trigger
+   * has no per-user session) or the sort key, so this is every USER#
+   * partition: the code only ever writes PASSWORD_RESET, for the user
+   * Cognito's own event names, on a condition that names that sort key. The
+   * table's key is grantNoticeAddress's statement. A separate policy,
+   * attached after the pool exists (see addFederatedTriggers).
    */
   private grantResetNotice(fn: NodejsFunction): void {
     new Policy(this, "PostConfirmationResetSignOut", {
@@ -613,6 +623,16 @@ export class IdentityStack extends SupplyCheckoutStack {
           sid: "SignOutAfterReset",
           actions: ["cognito-idp:AdminUserGlobalSignOut"],
           resources: [this.userPool.userPoolArn],
+        }),
+        new PolicyStatement({
+          sid: "RecordPasswordReset",
+          actions: ["dynamodb:UpdateItem"],
+          resources: [Stack.of(this).formatArn({ service: "dynamodb", resource: "table", resourceName: tableName(this.config.envName) })],
+          conditions: {
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": [...PASSWORD_RESET_RECORD_ATTRIBUTES] },
+            StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+          },
         }),
         new PolicyStatement({
           sid: "QueueResetNotice",

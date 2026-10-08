@@ -43,6 +43,8 @@ function api(region: string = EAST, context: Record<string, unknown> = {}, overr
 }
 
 type Resource = { Properties: Record<string, unknown>; [k: string]: unknown };
+/** The functions whose own roles read the password reset record (supply-checkout-6uw.33). */
+const RESET_READERS = ["DataFunction", "AccountFunction", "BillingFunction", "ReceiptsFunction"] as const;
 const resources = (t: Template, type: string) => Object.entries(t.findResources(type)) as [string, Resource][];
 
 describe("HTTP API routes", () => {
@@ -282,11 +284,43 @@ describe("functions", () => {
     }
   });
 
-  it("don't give any function's own role DynamoDB access, but the password reset function's its limits' counters", () => {
+  it("don't give any function's own role DynamoDB access, but the password reset function's its limits' counters, and the reset time's read", () => {
     const { template } = api();
     for (const [id, policy] of resources(template, "AWS::IAM::Policy")) {
       if (id.startsWith("PasswordResetFunctionRole")) continue;
-      expect(JSON.stringify(policy.Properties.PolicyDocument), id).not.toContain("dynamodb:");
+      const statements = (policy.Properties.PolicyDocument as { Statement: { Sid?: string }[] }).Statement.filter((s) => !(RESET_READERS.some((r) => id.startsWith(`${r}Role`)) && s.Sid === "ReadPasswordResetTime"));
+      expect(JSON.stringify(statements), id).not.toContain("dynamodb:");
+    }
+  });
+
+  // supply-checkout-6uw.33
+  it("let the data, account, billing and receipts functions' own roles read only when a user's password was last reset", () => {
+    for (const region of [EAST, WEST]) {
+      const { template } = api(region);
+      const table = { "Fn::Join": ["", [`arn:aws:dynamodb:${region}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] };
+      const readers = resources(template, "AWS::IAM::Policy").filter(([, p]) => JSON.stringify(p.Properties.PolicyDocument).includes("ReadPasswordResetTime"));
+      expect(readers.map(([id]) => id.replace(/RoleDefaultPolicy.*$/, "")).sort()).toEqual([...RESET_READERS].sort());
+      for (const [id, policy] of readers) {
+        const statements = (policy.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement;
+        expect(statements.filter((s) => s.Sid === "ReadPasswordResetTime"), id).toEqual([
+          {
+            Sid: "ReadPasswordResetTime",
+            Effect: "Allow",
+            Action: "dynamodb:GetItem",
+            Resource: table,
+            Condition: {
+              "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+              "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "passwordResetAt"] },
+              // Required: a GetItem without a projection mustn't read the whole item
+              StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+            },
+          },
+        ]);
+        // The table's key, through DynamoDB only
+        expect(statements.filter((s) => s.Sid === "TableKeyThroughDynamoDb"), id).toEqual([
+          expect.objectContaining({ Action: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"], Condition: { StringEquals: { "kms:ViaService": { "Fn::Join": ["", ["dynamodb.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } } } }),
+        ]);
+      }
     }
   });
 });
@@ -616,9 +650,9 @@ describe("receipts function and receipt-access role (ADR 0008)", () => {
       expect(RECEIPT_MODEL_REGIONS.every((r) => r.startsWith("us-"))).toBe(true);
       expect(RECEIPT_MODEL_REGIONS).toContain(region);
       expect(JSON.stringify(bedrock)).not.toContain("*");
-      // Besides Bedrock: writing its own logs and assuming its own role; nothing else
+      // Besides Bedrock: writing its own logs, assuming its own role and reading when the caller's password was reset; nothing else
       const other = statements.filter((s) => !JSON.stringify(s.Action).includes("bedrock:")).map((s) => s.Action);
-      expect(other).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], ["sts:AssumeRole", "sts:TagSession"]]);
+      expect(other).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], ["sts:AssumeRole", "sts:TagSession"], "dynamodb:GetItem", ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"]]);
     }
   });
 

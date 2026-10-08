@@ -641,6 +641,40 @@
               "Sid": "SignOutAfterReset"
             },
             {
+              "Action": "dynamodb:UpdateItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "USER#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "passwordResetAt"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "RecordPasswordReset"
+            },
+            {
               "Action": "lambda:InvokeFunction",
               "Effect": "Allow",
               "Resource": {

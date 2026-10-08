@@ -58,7 +58,12 @@
 //                                   sign-in" below), then emails the account's
 //                                   verified address ("Security notices").
 //   POST /me/sign-out-everywhere    Signs the caller out everywhere: what the
-//                                   app sends when turning TOTP on couldn't.
+//                                   app sends after changing the password
+//                                   (unless the caller opts out), and when
+//                                   turning TOTP on couldn't. Then records the
+//                                   time as the password reset record's, so
+//                                   the API refuses every session from before
+//                                   it too (supply-checkout-6uw.33).
 //   PATCH /me/preferences           The caller's own app preferences: the What's
 //                                   New banner on or off, and the local date it
 //                                   was last shown (data/preferences.ts). GET /me
@@ -75,6 +80,8 @@
 // 1. API Gateway's JWT authorizer checks the Cognito access token; this handler
 //    re-checks it (an access token from our issuer, not expired) and takes the
 //    user only from `sub`. Nothing in the path, query or body names a user.
+//    A session that began before the user's password was last reset is
+//    refused (session-reset.ts, supply-checkout-6uw.33).
 // 2. The email comes from Cognito (GetUser with the caller's own token), and
 //    only a verified one lists invites. Accepting also needs the invite's
 //    token from the emailed link, checked against the stored hash in the same
@@ -203,6 +210,7 @@ import {
   noticeAddress,
   recordNoticeAddress,
   recordTotpOn,
+  recordPasswordReset,
   hasEnded,
   isTestAccount,
   billingAccess,
@@ -243,10 +251,13 @@ import type { CognitoUser, DeleteUser, EmailCodes, TotpSetup, UserInfo } from ".
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
 import { accessToken, ApiError, errorResponse, header, json, jsonBody, noContent, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
+import type { SessionCheck } from "./session-reset.js";
 import { ACCOUNT_ROUTES, type AccountRoute, IDEMPOTENCY_HEADER, routeKey } from "./routes.js";
 
 export interface AccountHandlerDeps {
   readonly dbFor: DbForAccount;
+  /** Refuses a session from before the caller's last password reset (session-reset.ts). The Lambda entry always sets it. */
+  readonly sessionCheck?: SessionCheck;
   readonly userInfo: UserInfo;
   /** Emails the caller a verification code and checks it (cognito-user.ts). */
   readonly emailCodes: EmailCodes;
@@ -1101,11 +1112,28 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     }
   }
 
-  /** Ends every session the caller has (GlobalSignOut with their own token), this one too. */
+  /**
+   * Ends every session the caller has (GlobalSignOut with their own token),
+   * this one too. GlobalSignOut revokes refresh tokens only, so the time is
+   * then recorded as the password reset record's (data/password-reset-time.ts,
+   * supply-checkout-6uw.33): every API route refuses a session from before it,
+   * an access token or a Managed Login session cookie's (session-reset.ts).
+   * After a password change it's the takeover response, so it's recorded
+   * here, after the sign-out, rather than at POST /me/password: there the
+   * caller can choose to stay signed in, and the app's next call is this one,
+   * with a token from before. The caller has been signed out by then, so a
+   * failed record doesn't fail the answer: it's logged as an error (the
+   * user ID and the error's name only).
+   */
   async function signOutEverywhere(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     if (event.body) jsonBody(event, []);
     await cognitoUser(event, userId);
     await endEverySession(accessToken(event), userId);
+    try {
+      await recordPasswordReset(dbFor({ userId }), userId, new Date(now()));
+    } catch (error) {
+      obs.logger.error("Sign-out time not recorded", { userId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+    }
     return noContent();
   }
 
@@ -1167,6 +1195,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       if (!action) throw new ApiError(404, "not_found", "No such route");
       const userId = callerId(event, now());
       if (event.requestContext.authorizer.jwt.claims.iss !== deps.issuerUrl) throw new ApiError(401, "unauthenticated", "Sign in again");
+      await deps.sessionCheck?.(event, userId);
       const response = await actions[action](event, userId);
       status = response.statusCode ?? 200;
       return response;

@@ -2,14 +2,15 @@
 // post confirmation trigger, which Cognito runs after ConfirmForgotPassword
 // from the app or Managed Login, signs the account out everywhere
 // (AdminUserGlobalSignOut) and hands the security notices function the
-// user's sub; a sign-up does neither; a failure never fails the reset, and is
+// user's sub, and records the reset's time (supply-checkout-6uw.33); a
+// sign-up does none of it; a failure never fails the reset, and is
 // logged with the error's name only and counted.
 
 import type { PostConfirmationTriggerEvent } from "aws-lambda";
 import { beforeEach, describe, expect, it } from "vitest";
 import { globalSignOut } from "../src/identity/cognito-admin.js";
 import type { PasswordResetNoticeRequest } from "../src/identity/names.js";
-import { createPostConfirmationHandler, SIGN_OUT_TIMEOUT_MS, WELCOME_BUDGET_MS, WELCOME_INVOKE_TIMEOUT_MS } from "../src/identity/post-confirmation-handler.js";
+import { createPostConfirmationHandler, RECORD_RESET_TIMEOUT_MS, SIGN_OUT_TIMEOUT_MS, WELCOME_BUDGET_MS, WELCOME_INVOKE_TIMEOUT_MS } from "../src/identity/post-confirmation-handler.js";
 import { eventInvoker } from "../src/identity/welcome-invoke.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { REGION } from "./helpers.js";
@@ -64,12 +65,22 @@ const event = (triggerSource = "PostConfirmation_ConfirmForgotPassword", over: R
     ...over,
   }) as unknown as PostConfirmationTriggerEvent;
 
-function setup(options: { signOutFails?: unknown; sendFails?: unknown; now?: () => number; signOut?: boolean; send?: boolean } = {}) {
+function setup(options: { signOutFails?: unknown; sendFails?: unknown; recordFails?: unknown; later?: boolean; now?: () => number; signOut?: boolean; send?: boolean; record?: boolean } = {}) {
   const signedOut: [string, string][] = [];
   const queued: PasswordResetNoticeRequest[] = [];
+  const recorded: [string, string][] = [];
   const handler = createPostConfirmationHandler({
     rememberNoticeAddress: async () => "present",
     obs: fakeObservability(),
+    ...(options.record === false
+      ? {}
+      : {
+          recordReset: async (userId: string, at: Date) => {
+            if (options.recordFails !== undefined) throw options.recordFails;
+            recorded.push([userId, at.toISOString()]);
+            return options.later !== true;
+          },
+        }),
     ...(options.signOut === false
       ? {}
       : {
@@ -88,26 +99,28 @@ function setup(options: { signOutFails?: unknown; sendFails?: unknown; now?: () 
         }),
     now: options.now ?? (() => NOW),
   });
-  return { handler, signedOut, queued };
+  return { handler, signedOut, queued, recorded };
 }
 
 const summary = () => logs.find((l) => l.message === "Notice address")?.data;
 
 describe("the post confirmation trigger after a password reset", () => {
-  it("signs the account out everywhere and hands the notice over, with the sub, the time and the sign-out", async () => {
-    const { handler, signedOut, queued } = setup();
+  it("records the reset's time, signs the account out everywhere and hands the notice over, with the sub, the time and the sign-out", async () => {
+    const { handler, signedOut, queued, recorded } = setup();
     const confirmed = event();
     expect(await handler(confirmed)).toBe(confirmed);
+    expect(recorded).toEqual([[SUB, new Date(NOW).toISOString()]]);
     expect(signedOut).toEqual([[POOL, USERNAME]]);
     expect(queued).toEqual([{ type: "passwordReset", userId: SUB, at: new Date(NOW).toISOString(), signedOut: true }]);
-    expect(summary()).toEqual({ triggerSource: "PostConfirmation_ConfirmForgotPassword", outcome: "present", signOut: "done", resetNotice: "queued" });
+    expect(summary()).toEqual({ triggerSource: "PostConfirmation_ConfirmForgotPassword", outcome: "present", resetRecorded: "recorded", signOut: "done", resetNotice: "queued" });
     expect(metrics).toEqual([]);
     expectNothingPersonal();
   });
 
-  it("does neither for a sign-up", async () => {
-    const { handler, signedOut, queued } = setup();
+  it("does none of it for a sign-up", async () => {
+    const { handler, signedOut, queued, recorded } = setup();
     await handler(event("PostConfirmation_ConfirmSignUp"));
+    expect(recorded).toEqual([]);
     expect(signedOut).toEqual([]);
     expect(queued).toEqual([]);
     expect(summary()).toEqual({ triggerSource: "PostConfirmation_ConfirmSignUp", outcome: "present" });
@@ -155,8 +168,11 @@ describe("the post confirmation trigger after a password reset", () => {
       await handler(event(undefined, { request }));
       expect(signedOut).toEqual([[POOL, USERNAME]]);
       expect(queued).toEqual([]);
-      expect(summary()).toMatchObject({ resetNotice: "no-sub" });
-      expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordReset", reason: "no_user", via: "reset" } }]);
+      expect(summary()).toMatchObject({ resetRecorded: "no-sub", resetNotice: "no-sub" });
+      expect(metrics).toEqual([
+        { metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordReset", reason: "record_reset", via: "reset" } },
+        { metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordReset", reason: "no_user", via: "reset" } },
+      ]);
     }
   });
 
@@ -182,12 +198,44 @@ describe("the post confirmation trigger after a password reset", () => {
       expect(queued).toHaveLength(fits ? 1 : 0);
       expect(metrics).toEqual(fits ? [] : [{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordReset", reason: "deferred", via: "reset" } }]);
     }
-    // The sign-out, the notice address's two calls and the invoke fit inside Cognito's 5 seconds
-    expect(SIGN_OUT_TIMEOUT_MS + 2_000 + WELCOME_INVOKE_TIMEOUT_MS).toBeLessThanOrEqual(WELCOME_BUDGET_MS);
+    // The sign-out and the reset record (side by side), the notice address's two calls and the invoke fit inside Cognito's 5 seconds
+    expect(Math.max(SIGN_OUT_TIMEOUT_MS, RECORD_RESET_TIMEOUT_MS) + 2_000 + WELCOME_INVOKE_TIMEOUT_MS).toBeLessThanOrEqual(WELCOME_BUDGET_MS);
   });
 
-  it("does nothing more without the sign-out or the notice function", async () => {
-    const { handler } = setup({ signOut: false, send: false });
+  it("says when a later reset was already recorded, and counts nothing", async () => {
+    const { handler } = setup({ later: true });
+    await handler(event());
+    expect(summary()).toMatchObject({ resetRecorded: "not-later", signOut: "done", resetNotice: "queued" });
+    expect(metrics).toEqual([]);
+  });
+
+  it("never fails the reset: a failed record is logged by the error's name with the sub, counted, and the sign-out and notice still go", async () => {
+    for (const failure of [Object.assign(new Error(`AccessDenied for ${USERNAME}`), { name: "AccessDeniedException" }), null]) {
+      logs = [];
+      metrics = [];
+      const { handler, signedOut, queued } = setup({ recordFails: failure });
+      const confirmed = event();
+      expect(await handler(confirmed)).toBe(confirmed);
+      expect(logs).toContainEqual({ level: "error", message: "Password reset time not recorded", data: { userId: SUB, code: failure ? "AccessDeniedException" : "Unknown" } });
+      expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordReset", reason: "record_reset", via: "reset" } }]);
+      expect(signedOut).toEqual([[POOL, USERNAME]]);
+      expect(queued).toHaveLength(1);
+      expect(summary()).toMatchObject({ resetRecorded: "failed", signOut: "done", resetNotice: "queued" });
+      expectNothingPersonal();
+    }
+  });
+
+  it("records nothing without a valid sub, and counts it", async () => {
+    const { handler, recorded } = setup({ send: false });
+    await handler(event(undefined, { request: { userAttributes: { sub: "not-a-sub" } } }));
+    expect(recorded).toEqual([]);
+    expect(logs).toContainEqual({ level: "error", message: "Password reset time not recorded", data: { code: "NoSub" } });
+    expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordReset", reason: "record_reset", via: "reset" } }]);
+    expect(summary()).toMatchObject({ resetRecorded: "no-sub" });
+  });
+
+  it("does nothing more without the record, the sign-out or the notice function", async () => {
+    const { handler } = setup({ signOut: false, send: false, record: false });
     await handler(event());
     expect(summary()).toEqual({ triggerSource: "PostConfirmation_ConfirmForgotPassword", outcome: "present" });
     expect(metrics).toEqual([]);
