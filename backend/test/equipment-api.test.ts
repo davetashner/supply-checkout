@@ -306,7 +306,7 @@ describe("Finished Return with equipment out", () => {
     project({ status: "closed", items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 1 } } });
     expect(await patchProject({ client: "Echo Ltd" })).toMatchObject({ status: 200 });
     // Its counts stay the commands' (below); a line the write adds can't put more out
-    expect(await patchProject({ items: { drill: { name: "Drill", kind: "equipment", out: 1, returned: 0 } } })).toMatchObject({ status: 409, body: { error: { reason: "equipment_out" } } });
+    expect(await patchProject({ items: { drill: { name: "Drill", kind: "equipment", out: 1, returned: 0 } } })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(/^A new equipment line has nothing out/) } } });
     expect(await patchProject({ items: { drill: { name: "Drill", kind: "equipment", out: 1, returned: 1 } } })).toMatchObject({ status: 200 });
   });
 });
@@ -315,7 +315,7 @@ describe("project documents and the new fields", () => {
   beforeEach(seed);
 
   it("take an equipment line, and keep a line's kind as it was first saved", async () => {
-    expect(await patchProject({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 0, returned: 0 } } })).toMatchObject({ status: 200 });
     expect(await patchProject({ items: { ladder: { kind: "supply" } } })).toMatchObject({ status: 400, body: { error: { message: 'A line\'s kind is "equipment" or left out' } } });
     await call("POST", CHECKOUT, { operationId: op(), productKey: "0123", quantity: 1 });
     expect(await patchProject({ items: { "0123": { kind: "equipment" } } })).toMatchObject({ status: 400, body: { error: { message: "A line's kind can't change" } } });
@@ -325,7 +325,7 @@ describe("project documents and the new fields", () => {
   });
 
   it("allow lost and a charge on equipment lines only, the charge on a client's project only, and check their types", async () => {
-    expect(await patchProject({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 1, lostCharge: 25.5 } } })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 1, lost: 1, lostCharge: 25.5 } } })).toMatchObject({ status: 200 });
     expect(await patchProject({ items: { ladder: { lostCharge: 20 } } })).toMatchObject({ status: 200 });
     const refused = [
       [{ drill: { name: "Drill", kind: "equipment", out: 2, returned: 0, lost: 1.5 } }, "lost is a whole number, on company equipment lines only"],
@@ -401,7 +401,7 @@ describe("project documents and the new fields", () => {
 
   it("leave an equipment line's counts to the commands: a write may only repeat them, so two writes can't remove or close past what's out", async () => {
     project({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 3, returned: 1, lost: 1 }, drill: { name: "Drill", kind: "equipment", out: 1 }, "0123": { name: "Gloves", price: 1, out: 2, returned: 0 } } });
-    const changing = { status: 400, body: { error: { code: "bad_request", message: "An equipment line's out, returned and lost change only through checkout, return and lost (POST .../projects/{projectId}/checkout, /return, /lost)" } } };
+    const changing = { status: 400, body: { error: { code: "bad_request", message: "An equipment line's out, returned and lost change only through checkout, return, lost and move (POST .../projects/{projectId}/checkout, /return, /lost, /move)" } } };
     const v = projectVersion();
     for (const ladder of [{ out: 1 }, { out: 0 }, { out: 4 }, { returned: 2 }, { returned: 0 }, { lost: 2 }, { lost: 0 }, { lost: null }, { out: 2, returned: 0, lost: 0 }]) {
       expect(await patchProject({ items: { ladder } }), JSON.stringify(ladder)).toMatchObject(changing);
@@ -423,6 +423,34 @@ describe("project documents and the new fields", () => {
     expect(await patchProject({ items: { ladder: { name: "Ladder", out: 3, returned: 1, lost: 1 }, drill: { returned: 0, lost: 0 } } })).toMatchObject({ status: 200 });
     expect(await patchProject({ items: { "0123": { out: 5, returned: 1 } } })).toMatchObject({ status: 200 });
     expect(items()).toMatchObject({ ladder: { name: "Ladder", out: 3, returned: 1, lost: 1 }, drill: { out: 1, returned: 0, lost: 0 }, "0123": { out: 5, returned: 1 } });
+  });
+
+  it("add an equipment line by a write only with nothing out, so equipment goes out only through the commands (supply-checkout-1dg.18)", async () => {
+    const adding = { status: 400, body: { error: { code: "bad_request", message: "A new equipment line has nothing out: equipment goes out only through checkout, quick take and move (POST .../projects/{projectId}/checkout, /adhoc/checkout, .../projects/{projectId}/move)" } } };
+    const v = projectVersion();
+    for (const ladder of [{ out: 1 }, { out: 3, returned: 1 }, { out: 3, returned: 1, lost: 1 }, { out: "1" }, { out: 1.5, returned: 1.5 }, { returned: -1 }, { out: null }, { out: 1, returned: "1" }, {}, { returned: 0 }]) {
+      expect(await patchProject({ items: { ladder: { name: "Step ladder", kind: "equipment", ...ladder } } }), JSON.stringify(ladder)).toMatchObject(adding);
+    }
+    // A PUT, of a new project too
+    const whole = { client: "Echo", date: "2026-10-01", status: "open", items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0 } } };
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: whole, expectedVersion: v })).toMatchObject(adding);
+    expect(await call("PUT", "/teams/team-a/projects/s9", { data: whole, expectedVersion: 0 })).toMatchObject(adding);
+    // The phantom stock from the #680 review: nothing out by a write, so a return finds nothing to bring back
+    expect(await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 2 })).toMatchObject({ status: 400 });
+    expect(stockOf("ladder")).toBe(ladder.stock);
+    expect(projectVersion()).toBe(v);
+    // Nothing out is fine: zeros, or every piece back or lost; and a supply line's counts are the write's
+    for (const [key, line] of [["ladder", { out: 0 }], ["drill", { out: 0, returned: 0, lost: 0 }], ["saw", { out: 3, returned: 2, lost: 1 }]] as const) {
+      expect(await patchProject({ items: { [key]: { name: key, kind: "equipment", ...line } } }), key).toMatchObject({ status: 200 });
+    }
+    expect(await patchProject({ items: { tape: { name: "Tape", price: 2, out: 4, returned: 0 } } })).toMatchObject({ status: 200 });
+    // A line removed and written again is a new line
+    expect(await patchProject({ items: { drill: null } })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { drill: { name: "Drill", kind: "equipment", out: 1 } } })).toMatchObject(adding);
+    // Taking one is a checkout, which moves stock and records it
+    expect(await call("POST", CHECKOUT, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 200 });
+    expect(items().ladder).toMatchObject({ kind: "equipment", out: 1 });
+    expect(stockOf("ladder")).toBe(ladder.stock - 1);
   });
 
   it("don't hold a line the write doesn't change to returned + lost <= out", async () => {

@@ -28,6 +28,9 @@
 //    (line() has the rules). Like `createdBy`, a line's `takenBy` and
 //    `priceSetBy` are claude.ai user IDs: dropped, and counted in the report. A
 //    finished project with equipment still out is imported, with a warning.
+//    Equipment out is copied as it was, though a document write can't add a
+//    line with any (supply-checkout-1dg.18): the artifact's checkouts already
+//    took it from storage.
 //    Marks of recent saves (`ops`) and the claude.ai user IDs in `createdBy`
 //    are dropped: the name the artifact showed (`preparedBy`) becomes the
 //    project's `createdByName`, as for a project made without a signed-in user.

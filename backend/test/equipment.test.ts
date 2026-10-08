@@ -127,6 +127,20 @@ describe.skipIf(!endpoint)("company equipment (DynamoDB Local)", () => {
     expect(await stock(ctx)).toBe(2);
   });
 
+  it("adds an equipment line by a document write only with nothing out, so a return can't make stock (supply-checkout-1dg.18)", async () => {
+    const ctx = await team();
+    const v = await version(ctx);
+    await expect(updateDocument(db, ctx, "projects", "s1", { items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0 } } }, { expectedVersion: v })).rejects.toThrow(InvalidInputError);
+    expect(await version(ctx)).toBe(v);
+    await expect(returnItems(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "ladder", quantity: 2 })).rejects.toThrow(InvalidInputError);
+    expect(await stock(ctx)).toBe(4);
+    // With nothing out it saves, and a checkout takes from storage as usual
+    await updateDocument(db, ctx, "projects", "s1", { items: { ladder: { name: "Step ladder", kind: "equipment", out: 0, returned: 0 } } }, { expectedVersion: v });
+    await checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "ladder", quantity: 1 });
+    expect((await lines(ctx)).ladder).toMatchObject({ kind: "equipment", out: 1, returned: 0 });
+    expect(await stock(ctx)).toBe(3);
+  });
+
   it("never lets concurrent returns and lost records take an equipment line past what went out", async () => {
     const ctx = await team();
     await checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "ladder", quantity: 3 });

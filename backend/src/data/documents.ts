@@ -299,7 +299,10 @@ const sameCount = (a: unknown, b: unknown) => sameValue(a, b) || ((a === undefin
  *   movement: a write to an existing equipment line may only repeat them
  *   (supply-checkout-1dg.17). Otherwise two writes (`out: 0`, then null)
  *   would remove, or close a project over, a line with equipment still out.
- *   A line the write adds is held to the rules above.
+ *   A line the write adds is held to the rules above, and has nothing still
+ *   out (supply-checkout-1dg.18): equipment goes out only through checkout,
+ *   quick take and move. The artifact import (artifact-import.ts) doesn't come
+ *   through here, and copies what the artifact had out as it was.
  * - `takenBy` and `takenAt` (the checkout command's), and `priceSetBy` and
  *   `priceSetAt`, are the server's: a write may only repeat what's stored.
  * - A line bought for the client (`purchased: true`, keyed
@@ -351,7 +354,7 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
       else line.priceSet = old.priceSet;
     }
     if (old && equipment && EQUIPMENT_COUNTS.some((field) => !sameCount(line[field], old[field]))) {
-      throw new InvalidInputError("An equipment line's out, returned and lost change only through checkout, return and lost (POST .../projects/{projectId}/checkout, /return, /lost)");
+      throw new InvalidInputError("An equipment line's out, returned and lost change only through checkout, return, lost and move (POST .../projects/{projectId}/checkout, /return, /lost, /move)");
     }
     if (has("lost") && (!equipment || !isWhole(line.lost))) throw new InvalidInputError("lost is a whole number, on company equipment lines only");
     if (has("lostCharge")) {
@@ -361,6 +364,14 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
     // Counts the write changes: what came back and what was lost can't be more than went out
     if (!sameValue(line, old) && typeof line.out === "number" && counted(line.returned) + counted(line.lost) > line.out) {
       throw new InvalidInputError("A line's returned and lost can't add up to more than its out");
+    }
+    // A line the write adds has nothing out: a whole out (which a checkout can add to), and a whole
+    // returned and lost if any, with out = returned + lost.
+    // Equipment goes out only through checkout, quick take and move, which take it from storage or
+    // carry it from the General Use project; one written out here would come back as stock nobody
+    // took (supply-checkout-1dg.18)
+    if (!old && equipment && (!isWhole(line.out) || EQUIPMENT_COUNTS.some((field) => has(field) && !isWhole(line[field])) || stillOut(line) !== 0)) {
+      throw new InvalidInputError("A new equipment line has nothing out: equipment goes out only through checkout, quick take and move (POST .../projects/{projectId}/checkout, /adhoc/checkout, .../projects/{projectId}/move)");
     }
   }
   // Removing an equipment line (left out of a PUT, or null in a PATCH) with something still out is

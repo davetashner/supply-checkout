@@ -390,6 +390,12 @@ export class FakeBackend {
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
     const badCost = coll === "projects" && Object.values(data.items || {}).some((l) => l && typeof l === "object" && "cost" in l && !cents(l.cost));
     if (badCost) return err(400, "bad_request");
+    // An equipment line a write adds has nothing out: equipment goes out only through the commands
+    // (checkKinds in backend/src/data/documents.ts, supply-checkout-1dg.18)
+    const whole = (n) => Number.isInteger(n) && n >= 0;
+    const emptyLine = (l) => whole(l.out) && ["returned", "lost"].every((f) => !(f in l) || whole(l[f])) && l.out === (l.returned || 0) + (l.lost || 0);
+    const added = (k, l) => l && typeof l === "object" && l.kind === "equipment" && !Object.hasOwn(cur?.data.items || {}, k);
+    if (coll === "projects" && Object.entries(data.items || {}).some(([k, l]) => added(k, l) && !emptyLine(l))) return err(400, "bad_request");
     // No project closes while company equipment is still out on it (ADR 0017, documents.ts)
     const stillOut = (l) => l && l.kind === "equipment" && (l.out || 0) - (l.returned || 0) - (l.lost || 0) > 0;
     if (coll === "projects" && data.status === "closed" && cur?.data.status !== "closed" && Object.values(data.items || {}).some(stillOut)) {
