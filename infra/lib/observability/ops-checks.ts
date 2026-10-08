@@ -87,10 +87,11 @@ export interface OpsChecksProps {
  * - `teamPurge` isn't a check: every PURGE_EVERY_HOURS it deletes the closed
  *   teams whose read-only period has ended (backend/src/ops/team-purge-handler.ts).
  *   It may Query only GSI1's closed-teams partition there (listing keys, or
- *   Select COUNT for its overdue gauge), and on the table only GetItem, Query
+ *   Select COUNT for its overdue gauge), and on the table only Query
  *   (SPECIFIC_ATTRIBUTES) and DeleteItem on `TEAM#`, `USER#` and `STRIPE#`
  *   partitions, naming only TEAM_PURGE_ATTRIBUTES (keys, the closure fields,
- *   the Stripe customer and link), and UpdateItem on `TEAM#` partitions
+ *   the Stripe customer and link), GetItem on `TEAM#` partitions only, with a
+ *   projection (Select SPECIFIC_ATTRIBUTES, required), and UpdateItem on `TEAM#` partitions
  *   naming only TEAM_PURGE_MARK_ATTRIBUTES, to mark a team `purging` before
  *   it deletes anything: it deletes whole items without reading documents,
  *   emails or names. A GetItem of a `TEAM#` item may also name the team's
@@ -254,9 +255,12 @@ export class OpsChecks extends Construct {
     this.teamPurge.addToRolePolicy(
       new PolicyStatement({
         sid: "DeleteClosedTeamItems",
-        // GetItem reads a team's closure fields (dynamodb:Attributes), DeleteItem
-        // removes each item, returning nothing
-        actions: ["dynamodb:GetItem", "dynamodb:DeleteItem"],
+        // DeleteItem removes each item, returning nothing. No GetItem here: a GetItem without
+        // a projection may carry neither dynamodb:Attributes nor dynamodb:Select, and
+        // ForAllValues passes on an empty set, so it would read whole items (emails in USER#,
+        // names in META). The purge reads only through ReadClosedTeamFields, which requires
+        // a projection (supply-checkout-3sv.22)
+        actions: ["dynamodb:DeleteItem"],
         resources: [tableArn],
         conditions: {
           "ForAllValues:StringLike": purgePartitions,
@@ -267,16 +271,18 @@ export class OpsChecks extends Construct {
     );
     this.teamPurge.addToRolePolicy(
       new PolicyStatement({
-        sid: "ReadClosedTeamTestMark",
-        // A closed team's META item read as DeleteClosedTeamItems allows, with its test mark
-        // (supply-checkout-o60.12), which only tags the purge's metrics. GetItem only, team
-        // partitions only, projected: the index, the key listings and the deletes never name it
+        sid: "ReadClosedTeamFields",
+        // The purge's only GetItem: a closed team's META item, its closure fields and its test
+        // mark (supply-checkout-o60.12), which only tags the purge's metrics. Team partitions
+        // only (it never reads a USER# or STRIPE# item), and projected: Select must be
+        // SPECIFIC_ATTRIBUTES, not IfExists, so a read without a projection is denied
+        // (supply-checkout-3sv.22). The index, the key listings and the deletes never name `test`
         actions: ["dynamodb:GetItem"],
         resources: [tableArn],
         conditions: {
           "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
           "ForAllValues:StringEquals": { "dynamodb:Attributes": [...TEAM_PURGE_READ_ATTRIBUTES] },
-          StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
         },
       }),
     );
@@ -473,8 +479,9 @@ export class OpsChecks extends Construct {
         conditions: {
           "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
           "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_READ_ATTRIBUTES] },
-          // As the reopen role's: a projection (which sets Select SPECIFIC_ATTRIBUTES), never the whole item
-          StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          // A projection (which sets Select SPECIFIC_ATTRIBUTES), never the whole item. Required, not IfExists, so a
+          // GetItem without one is denied (supply-checkout-3sv.22): readLapseTeam, its only caller, always projects
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
         },
       }),
     );

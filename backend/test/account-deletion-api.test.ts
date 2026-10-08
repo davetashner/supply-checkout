@@ -4,8 +4,9 @@
 // session tags allow, as IAM would (account-db.ts). test/closing.test.ts runs
 // the same data functions against DynamoDB Local.
 
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import Stripe from "stripe";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccountScope, DbForAccount } from "../src/api/account-db.js";
 import { createAccountHandler } from "../src/api/account-handler.js";
 import type { CognitoUser } from "../src/api/cognito-user.js";
@@ -832,7 +833,42 @@ function liveSubscription(fields: Partial<SubscriptionLike> = {}): SubscriptionL
 }
 
 describe("purging closed teams", () => {
-  const purge = (at: number) => createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => at })();
+  // Every read the purge makes, in every test here, is one its role allows (infra ReadClosedTeamFields,
+  // supply-checkout-3sv.22): GetItem of a TEAM# item with a projection, so DynamoDB sets dynamodb:Select
+  // SPECIFIC_ATTRIBUTES, which the role requires. Never a GetItem without one (it would return the whole item), and
+  // no Scan, batch or transactional read, which the role has no statement for
+  const unprojected: { command: string; input: Record<string, unknown> }[] = [];
+  const projectedRead = (command: string, input: Record<string, unknown>) => {
+    if (["ScanCommand", "BatchGetCommand", "TransactGetCommand"].includes(command)) return false;
+    if (command !== "GetCommand") return true;
+    return String((input.Key as { PK?: unknown } | undefined)?.PK).startsWith("TEAM#") && typeof input.ProjectionExpression === "string" && input.Select === undefined;
+  };
+  const purgeDb = (check: (command: string, input: Record<string, unknown>) => boolean = () => true) =>
+    table.guarded((command, input) => {
+      if (projectedRead(command, input)) return check(command, input);
+      unprojected.push({ command, input });
+      return false;
+    });
+  beforeEach(() => {
+    unprojected.length = 0;
+  });
+  afterEach(() => {
+    expect(unprojected).toEqual([]);
+  });
+
+  it("refuses a read its role wouldn't allow: a GetItem without a projection, or of a USER# or STRIPE# item", async () => {
+    const db = purgeDb();
+    const { doc } = connection(db);
+    for (const Key of [{ PK: "TEAM#team-a", SK: "META" }, { PK: "USER#u1", SK: "TEAM#team-a" }, { PK: "STRIPE#cus_1", SK: "TEAM" }]) {
+      await expect(doc.send(new GetCommand({ TableName: db.tableName, Key }))).rejects.toMatchObject({ name: "AccessDeniedException" });
+    }
+    await expect(doc.send(new GetCommand({ TableName: db.tableName, Key: { PK: "USER#u1", SK: "TEAM#team-a" }, ProjectionExpression: "PK" }))).rejects.toMatchObject({ name: "AccessDeniedException" });
+    expect(await doc.send(new GetCommand({ TableName: db.tableName, Key: { PK: "TEAM#team-a", SK: "META" }, ProjectionExpression: "closedAt" }))).toBeDefined();
+    expect(unprojected.map(({ command }) => command)).toEqual(["GetCommand", "GetCommand", "GetCommand", "GetCommand"]);
+    unprojected.length = 0;
+  });
+
+  const purge = (at: number) => createTeamPurgeHandler({ db: purgeDb(), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => at })();
 
   it("deletes a closed team, its members' switcher rows and its Stripe link once 30 days have passed, and nothing else", async () => {
     table.put({ ...(meta("team-a") as Record<string, unknown>), stripeCustomerId: "cus_123" });
@@ -951,7 +987,7 @@ describe("purging closed teams", () => {
     expect(await purge(NOW)).toEqual({ purged: 0, failed: 0, due: 2, overdue: 0 });
     expect(meta("team-a")).toBeDefined();
     expect(meta("team-b")).toBeDefined();
-    expect(await purgeTeam(table.db(undefined), "team-missing", new Date(NOW))).toEqual({ deleted: 0, skipped: true });
+    expect(await purgeTeam(purgeDb(), "team-missing", new Date(NOW))).toEqual({ deleted: 0, skipped: true });
     table.put({ ...(meta("team-a") as Record<string, unknown>), purgeAfter: "2026-01-02T00:00:00.000Z", stripeCustomerId: "cus_9" });
     table.put({ PK: "STRIPE#cus_9", SK: "TEAM", type: "stripeLink", customerId: "cus_9", teamId: "team-other" });
     await expect(purge(NOW)).rejects.toThrow("1 of 2 closed teams weren't purged");
@@ -967,7 +1003,7 @@ describe("purging closed teams", () => {
     // Each read of the clock moves it past the budget, so the run starts at the time set here and stops before the team
     const step = PURGE_BUDGET_MS + 1;
     let clock = due + DAY - 1000 - step;
-    const stuck = () => createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => (clock += step) })();
+    const stuck = () => createTeamPurgeHandler({ db: purgeDb(), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => (clock += step) })();
     expect((await stuck()).overdue).toBe(0);
     clock = due + DAY + 1000 - step;
     expect((await stuck()).overdue).toBe(1);
@@ -985,7 +1021,7 @@ describe("purging closed teams", () => {
     await close("team-a");
     await close("team-b");
     let clock = NOW + 40 * DAY;
-    const run = createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => (clock += PURGE_BUDGET_MS + 1) })();
+    const run = createTeamPurgeHandler({ db: purgeDb(), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => (clock += PURGE_BUDGET_MS + 1) })();
     // Ten days past their deletion date and not reached: overdue. The three entries it didn't
     // write aren't listed, but they're counted: nothing will ever delete them, so a person should look
     expect(await run).toEqual({ purged: 0, failed: 0, due: 2, overdue: 5 });
@@ -1003,7 +1039,7 @@ describe("purging closed teams", () => {
     team("team-new", {}, { closedAt: "2026-08-27T00:00:00.000Z", purgeAfter: "2026-09-26T00:00:00.000Z", GSI1PK: "TEAMS#CLOSED", GSI1SK: "2026-09-26T00:00:00.000Z#team-new" });
     let clock = NOW;
     // Out of time before the first team
-    const stuck = createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => (clock += PURGE_BUDGET_MS + 1) });
+    const stuck = createTeamPurgeHandler({ db: purgeDb(), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => (clock += PURGE_BUDGET_MS + 1) });
     expect(await stuck()).toEqual({ purged: 0, failed: 0, due: 100, overdue: 130 });
     expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(130);
     // A run that deletes the 100 it listed leaves the other 30 overdue
@@ -1014,7 +1050,7 @@ describe("purging closed teams", () => {
 
   it("sends no gauge when it can't read the index, so the not-running alarm sees the gap", async () => {
     await close("team-a");
-    const db = table.guarded((command, input) => !(command === "QueryCommand" && input.Select === "COUNT"));
+    const db = purgeDb((command, input) => !(command === "QueryCommand" && input.Select === "COUNT"));
     await expect(createTeamPurgeHandler({ db, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW + 40 * DAY })()).rejects.toMatchObject({ name: "AccessDeniedException" });
     expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBeUndefined();
   });
@@ -1023,11 +1059,11 @@ describe("purging closed teams", () => {
     await close("team-a");
     const at = new Date(NOW + 31 * DAY);
     let deletes = 0;
-    const db = table.guarded((command) => command !== "DeleteCommand" || ++deletes < 3);
+    const db = purgeDb((command) => command !== "DeleteCommand" || ++deletes < 3);
     await expect(purgeTeam(db, "team-a", at)).rejects.toMatchObject({ name: "AccessDeniedException" });
     expect(meta("team-a")).toMatchObject({ purging: at.toISOString(), closedAt: expect.any(String) });
     // The next run carries on, and finishes it
-    expect((await purgeTeam(table.db(undefined), "team-a", new Date(at.getTime() + 3_600_000))).skipped).toBe(false);
+    expect((await purgeTeam(purgeDb(), "team-a", new Date(at.getTime() + 3_600_000))).skipped).toBe(false);
     expect(partition("TEAM#team-a")).toEqual([]);
   });
 
@@ -1092,12 +1128,12 @@ describe("purging closed teams", () => {
 
   it("sends Stripe the same idempotency key again when the change was made but not recorded", async () => {
     await subscribedAndClosed();
-    const db = table.guarded((command, input) => !(command === "UpdateCommand" && String(input.UpdateExpression).includes("stripeCancelledFor")));
+    const db = purgeDb((command, input) => !(command === "UpdateCommand" && String(input.UpdateExpression).includes("stripeCancelledFor")));
     const run = (at: number, on = db) => createTeamPurgeHandler({ db: on, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => at })();
     await expect(run(NOW + 3_600_000)).rejects.toThrow("1 closed teams' subscriptions weren't ended");
     // Stripe took it; the retry sees it's already set to cancel and changes nothing, then records it
     stripe.state.subs.set("sub_123", liveSubscription());
-    await run(NOW + 2 * 3_600_000, table.db(undefined));
+    await run(NOW + 2 * 3_600_000, purgeDb());
     expect(stripe.state.updates.map((u) => u.key)).toEqual([closingKey("cancel_at_period_end", "team-a", new Date(NOW).toISOString(), "sub_123"), closingKey("cancel_at_period_end", "team-a", new Date(NOW).toISOString(), "sub_123")]);
     expect(meta("team-a")?.stripeCancelledFor).toBe(new Date(NOW).toISOString());
   });
@@ -1249,7 +1285,7 @@ describe("purging closed teams", () => {
   });
 
   it("fails the run, with no gauge, when it can't count the teams set aside", async () => {
-    const db = table.guarded((command, input) => !(command === "QueryCommand" && String(input.ProjectionExpression).includes("stripeSetAsideReason")));
+    const db = purgeDb((command, input) => !(command === "QueryCommand" && String(input.ProjectionExpression).includes("stripeSetAsideReason")));
     await expect(createTeamPurgeHandler({ db, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW })()).rejects.toThrow("1 closed teams' subscriptions weren't ended");
     expect(logs).toContainEqual(["error", "Closed teams set aside not counted", { error: "AccessDeniedException" }]);
     expect(gauges[BusinessMetric.ClosedTeamsSetAside]).toBeUndefined();
@@ -1386,7 +1422,7 @@ describe("purging closed teams", () => {
     await subscribedAndClosed();
     anotherSubscribedAndClosed();
     stripe.state.refuse.set("sub_123", refusal("resource_invalid_state"));
-    const db = table.guarded((command, input) => !(command === "UpdateCommand" && String(input.UpdateExpression).includes("stripeSetAsideFor")));
+    const db = purgeDb((command, input) => !(command === "UpdateCommand" && String(input.UpdateExpression).includes("stripeSetAsideFor")));
     await expect(createTeamPurgeHandler({ db, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW + 3_600_000 })()).rejects.toThrow("1 closed teams' subscriptions weren't ended");
     expect(logs).toContainEqual(["error", "Closed team's subscription not ended", { teamId: "team-a", error: "AccessDeniedException", request: "cancel_at_period_end", type: "StripeInvalidRequestError", code: "resource_invalid_state", status: 400, requestId: "req_9" }]);
     expect(meta("team-a")?.stripeSetAsideFor).toBeUndefined();
@@ -1399,7 +1435,7 @@ describe("purging closed teams", () => {
     for (const k of ["closedAt", "closedBy", "purgeAfter", "GSI1PK", "GSI1SK"]) Reflect.deleteProperty(open, k);
     // Reopened after the listing, before the consistent re-read: nothing sent to Stripe
     let reopened = false;
-    const racing = table.guarded((command) => {
+    const racing = purgeDb((command) => {
       if (command === "GetCommand" && !reopened) {
         reopened = true;
         table.put(open);
@@ -1486,7 +1522,7 @@ describe("purging closed teams", () => {
   it("stops ending subscriptions after half its time budget, leaving the rest for the next run", async () => {
     await subscribedAndClosed();
     let clock = NOW + 3_600_000;
-    const run = createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => (clock += PURGE_BUDGET_MS / 2 + 1) });
+    const run = createTeamPurgeHandler({ db: purgeDb(), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => (clock += PURGE_BUDGET_MS / 2 + 1) });
     await run();
     expect(stripe.state.retrieves).toEqual([]);
     expect(logs).toContainEqual(["info", "Ended closed teams' subscriptions", { listed: 1, ended: 0, failed: 0, setAside: 0 }]);
@@ -1494,7 +1530,7 @@ describe("purging closed teams", () => {
 
   it("fails the run, without purging, when it can't list the closed teams' subscriptions", async () => {
     await subscribedAndClosed();
-    const db = table.guarded((command, input) => !(command === "QueryCommand" && String(input.ProjectionExpression).includes("stripeCancelledFor")));
+    const db = purgeDb((command, input) => !(command === "QueryCommand" && String(input.ProjectionExpression).includes("stripeCancelledFor")));
     await expect(createTeamPurgeHandler({ db, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW + 3_600_000 })()).rejects.toThrow("1 closed teams' subscriptions weren't ended");
     expect(logs).toContainEqual(["error", "Closed teams' subscriptions not listed", { error: "AccessDeniedException" }]);
     // The purge and its gauge still ran
@@ -1605,7 +1641,7 @@ describe("purging closed teams", () => {
     const due = NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000;
     const before = partition("TEAM#team-a").length;
     stripe.state.customersDown = true;
-    const noQueue = table.guarded((command) => command !== "PutCommand");
+    const noQueue = purgeDb((command) => command !== "PutCommand");
     await expect(createTeamPurgeHandler({ db: noQueue, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => due })()).rejects.toThrow("1 of 1 closed teams weren't purged");
     expect(partition("TEAM#team-a")).toHaveLength(before);
     expect(table.get("STRIPE#cus_123", "TEAM")).toBeDefined();
@@ -1633,7 +1669,7 @@ describe("purging closed teams", () => {
     table.put({ PK: STRIPE_DELETIONS_PARTITION, SK: "team-y", teamId: "team-y", stripeCustomerId: "cus_y", queuedAt: new Date(NOW - 2 * DAY).toISOString() });
     stripe.state.customers.add("cus_y");
     // Deleted in Stripe, but the queue entry can't be removed
-    const noDelete = table.guarded((command, input) => !(command === "DeleteCommand" && isQueueRequest(input)));
+    const noDelete = purgeDb((command, input) => !(command === "DeleteCommand" && isQueueRequest(input)));
     await expect(createTeamPurgeHandler({ db: noDelete, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW })()).rejects.toThrow("2 queued Stripe customer deletions couldn't be read, were refused or couldn't be cleared");
     // Oldest first
     expect(stripe.state.deleteAttempts).toEqual(["cus_y", "cus_gone"]);
@@ -1651,7 +1687,7 @@ describe("purging closed teams", () => {
 
   it("fails the run, with no queue gauges, when it can't read the queue, and fails it for an entry it didn't write, never sending that to Stripe", async () => {
     await close("team-a");
-    const noQueue = table.guarded((command, input) => !(command === "QueryCommand" && isQueueRequest(input)));
+    const noQueue = purgeDb((command, input) => !(command === "QueryCommand" && isQueueRequest(input)));
     await expect(createTeamPurgeHandler({ db: noQueue, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW + 31 * DAY })()).rejects.toThrow("1 queued Stripe customer deletions couldn't be read, were refused or couldn't be cleared");
     // The purge itself still ran
     expect(meta("team-a")).toBeUndefined();
@@ -1693,7 +1729,7 @@ describe("purging closed teams", () => {
 
   it("fails the run, sending nothing to Stripe, when it can't check a queued team, and keeps the entry", async () => {
     table.put({ PK: STRIPE_DELETIONS_PARTITION, SK: "team-x", teamId: "team-x", stripeCustomerId: "cus_x", queuedAt: new Date(NOW - DAY).toISOString() });
-    const db = table.guarded((command, input) => !(command === "GetCommand" && (input.Key as { PK?: string }).PK === "TEAM#team-x"));
+    const db = purgeDb((command, input) => !(command === "GetCommand" && (input.Key as { PK?: string }).PK === "TEAM#team-x"));
     await expect(createTeamPurgeHandler({ db, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW })()).rejects.toThrow("1 queued Stripe customer deletions");
     expect(stripe.state.deleteAttempts).toEqual([]);
     expect(logs).toContainEqual(["error", "Queued Stripe customer deletion not checked", { teamId: "team-x", customerId: "cus_x", error: "AccessDeniedException" }]);
@@ -1715,7 +1751,7 @@ describe("purging closed teams", () => {
     table.put({ ...(meta("team-b") as Record<string, unknown>), stripeCustomerId: "cus_b" });
     stripe.state.customers.add("cus_b");
     await close("team-b");
-    const db = table.guarded((command, input) => !(command === "DeleteCommand" && isQueueRequest(input)));
+    const db = purgeDb((command, input) => !(command === "DeleteCommand" && isQueueRequest(input)));
     await expect(createTeamPurgeHandler({ db, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 2000 })()).rejects.toThrow("1 queued Stripe customer deletions");
     expect(meta("team-b")).toBeUndefined();
     expect(logs).toContainEqual(["warn", "Queued Stripe customer deletion not cleared after the purge deleted it", { teamId: "team-b", customerId: "cus_b", error: "AccessDeniedException" }]);
@@ -1725,7 +1761,7 @@ describe("purging closed teams", () => {
     table.put({ PK: STRIPE_DELETIONS_PARTITION, SK: "team-x", teamId: "team-x", stripeCustomerId: "cus_x", queuedAt: new Date(NOW - 3_600_000).toISOString() });
     let clock = NOW;
     // Each read of the clock moves it past the budget
-    expect(await createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => (clock += PURGE_BUDGET_MS + 1) })()).toMatchObject({ failed: 0 });
+    expect(await createTeamPurgeHandler({ db: purgeDb(), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => (clock += PURGE_BUDGET_MS + 1) })()).toMatchObject({ failed: 0 });
     expect(stripe.state.deleteAttempts).toEqual([]);
     expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBe(1);
     expect(gauges[BusinessMetric.StripeCustomerDeletionOldestHours]).toBeGreaterThan(1);
@@ -1770,7 +1806,7 @@ describe("purging closed teams", () => {
     // Held even when asked directly, whatever the reason
     for (const reason of ["NotFound", "CustomerMismatch", "PermanentError"]) {
       table.put({ ...(meta("team-a") as Record<string, unknown>), stripeSetAsideReason: reason });
-      expect(await purgeTeam(table.db(undefined), "team-a", new Date(overdueAt))).toEqual({ deleted: 0, skipped: true, held: true });
+      expect(await purgeTeam(purgeDb(), "team-a", new Date(overdueAt))).toEqual({ deleted: 0, skipped: true, held: true });
     }
     expect(meta("team-a")?.purging).toBeUndefined();
     // A person ends it by hand and records it as done (the runbook): the next run purges it
@@ -1828,7 +1864,7 @@ describe("purging closed teams", () => {
     table.put({ ...(meta("team-b") as Record<string, unknown>), stripeSetAsideFor: "2026-01-01T00:00:00.000Z", stripeSetAsideReason: "NotFound" });
     const forcedAt = Date.parse(meta("team-a")?.purgeAfter as string) + HELD_PURGE_GRACE_DAYS * DAY + 1000;
     // Stops at its first delete of team-a's items
-    const stopping = table.guarded((command, input) => !(command === "DeleteCommand" && String((input.Key as { PK?: string } | undefined)?.PK).startsWith("USER#")));
+    const stopping = purgeDb((command, input) => !(command === "DeleteCommand" && String((input.Key as { PK?: string } | undefined)?.PK).startsWith("USER#")));
     await expect(createTeamPurgeHandler({ db: stopping, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => forcedAt })()).rejects.toThrow("weren't purged");
     expect(meta("team-a")).toMatchObject({ purging: new Date(forcedAt).toISOString() });
     expect(counts[BusinessMetric.HeldTeamsPurged]).toBeUndefined();
@@ -1846,7 +1882,7 @@ describe("purging closed teams", () => {
     table.put({ ...(meta("team-a") as Record<string, unknown>), stripeSetAsideFor: closedAt, stripeSetAsideReason: "CustomerMismatch" });
     await close("team-b");
     const overdueAt = NOW + (CLOSED_TEAM_RETENTION_DAYS + 2) * DAY;
-    const db = table.guarded((command, input) => !(command === "QueryCommand" && String(input.ProjectionExpression).includes("stripeSetAsideReason")));
+    const db = purgeDb((command, input) => !(command === "QueryCommand" && String(input.ProjectionExpression).includes("stripeSetAsideReason")));
     await expect(createTeamPurgeHandler({ db, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => overdueAt })()).rejects.toThrow("1 closed teams' subscriptions weren't ended");
     expect(meta("team-a")).toBeDefined();
     expect(meta("team-b")).toBeUndefined();
@@ -1858,7 +1894,7 @@ describe("purging closed teams", () => {
     await close("team-a");
     const closedAt = meta("team-a")?.closedAt as string;
     let setAside = false;
-    const racing = table.guarded((command, input) => {
+    const racing = purgeDb((command, input) => {
       if (command === "GetCommand" && !setAside && String(input.ProjectionExpression).includes("stripeSetAsideFor")) {
         setAside = true;
         table.put({ ...(meta("team-a") as Record<string, unknown>), stripeSetAsideFor: closedAt, stripeSetAsideReason: "PermanentError" });
@@ -1884,7 +1920,7 @@ describe("purging closed teams", () => {
       };
     };
     setAsideAfterRead();
-    expect(await purgeTeam(table.db(undefined), "team-a", new Date(NOW + 31 * DAY))).toEqual({ deleted: 0, skipped: true, held: true });
+    expect(await purgeTeam(purgeDb(), "team-a", new Date(NOW + 31 * DAY))).toEqual({ deleted: 0, skipped: true, held: true });
     expect(meta("team-a")?.purging).toBeUndefined();
     expect(stripe.state.deletes).toEqual([]);
     // Through the run: its subscription was ended first (recorded), then it's set aside as the purge reads it
@@ -1912,7 +1948,7 @@ describe("purging closed teams", () => {
         table.put(open);
       }
     };
-    expect(await purgeTeam(table.db(undefined), "team-a", new Date(NOW + 31 * DAY))).toEqual({ deleted: 0, skipped: true });
+    expect(await purgeTeam(purgeDb(), "team-a", new Date(NOW + 31 * DAY))).toEqual({ deleted: 0, skipped: true });
     expect(partition("TEAM#team-a")).toHaveLength(before);
     expect(meta("team-a")?.purging).toBeUndefined();
   });
