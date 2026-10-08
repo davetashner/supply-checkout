@@ -368,8 +368,10 @@ export function openMembers(api, team, me, leave, invited) {
       if (invites) invites.setFull(!!cap && members.length + waiting >= cap);
     }
 
-    // How many seats are used, once the members have loaded
+    // How many seats are used, once the members have loaded. Not once the screen is gone: /me
+    // or the members can answer after it closed (or the session ended and closed it)
     function seats() {
+      if (!list.isConnected) return;
       const el = m.querySelector("#seats");
       el.hidden = !(cap && loaded);
       if (!el.hidden) el.textContent = `${members.length} of ${cap} members`;
