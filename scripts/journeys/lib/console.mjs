@@ -4,17 +4,40 @@
 import { PROD } from "./config.mjs";
 
 const RUM = /^https:\/\/dataplane\.rum\.[a-z0-9-]+\.amazonaws\.com\//;
+// One project or item: GET /teams/{teamId}/projects/{id} or /products/{key}
+const DOCUMENT = /^\/teams\/[^/?#]+\/(?:projects|products)\/[^/?#]+$/;
+
+const pathOf = (url, origin) => {
+  try {
+    const u = new URL(url);
+    return u.origin === origin && !u.search ? u.pathname : null;
+  } catch { return null; }
+};
 /**
  * Whether a console error isn't a failure:
  * - an aborted request to the RUM data plane (the fixtures abort them);
  * - the 401 of the token refresh before sign-in.
- * A 404 for a project or item is a failure: the app doesn't fetch a document it deleted, or one
- * a live event said was deleted, again for a late event about an earlier save (src/aws/db.js).
+ * A 404 for one project or item isn't one either, but isn't expected: see isDocumentNotFound.
  */
 export function isExpectedConsoleError(text, url) {
   if (RUM.test(url ?? "") && /Failed to load resource|net::ERR_FAILED/.test(text)) return true;
   if (url === `${PROD.api}/auth/refresh` && /status of 401/.test(text)) return true;
   return false;
+}
+
+/** The annotation a test adds for each 404 for a project or item, counted in the run summary. */
+export const NOT_FOUND_WARNING = "journeys-not-found";
+
+/**
+ * Whether a console error is a 404 for one project or item. The app doesn't fetch a document it
+ * deleted, or one a live event said was deleted, again for a late event about an earlier save
+ * (src/aws/db.js), but a race can still get one: a fetch in flight when the document is deleted,
+ * or a delete and a new document under the same ID in the same second. The app takes the 404 as
+ * "deleted", as it should, and the browser logs it. It's a warning in the summary, not a
+ * failure: a failed run after a deploy fails the deploy, and this race mustn't fail a release.
+ */
+export function isDocumentNotFound(text, url) {
+  return /^Failed to load resource: the server responded with a status of 404\b/.test(text) && DOCUMENT.test(pathOf(url, PROD.api) ?? "");
 }
 
 // The RUM web client gets guest credentials from Cognito Identity before it sends anything.

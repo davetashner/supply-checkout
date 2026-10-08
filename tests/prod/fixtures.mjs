@@ -21,7 +21,7 @@ import { createCognito } from "../../scripts/journeys/lib/cognito.mjs";
 import { PROD, TEAM_FOR_PROJECT, readConfig, runDir, runId, secretValues } from "../../scripts/journeys/lib/config.mjs";
 import { GuardError, assertDestructiveAllowed, checkMe } from "../../scripts/journeys/lib/guards.mjs";
 import { waitForMail } from "../../scripts/journeys/lib/mailbox.mjs";
-import { consoleFailure, isExpectedConsoleError, isExpectedPageError } from "../../scripts/journeys/lib/console.mjs";
+import { consoleFailure, isDocumentNotFound, isExpectedConsoleError, isExpectedPageError, NOT_FOUND_WARNING } from "../../scripts/journeys/lib/console.mjs";
 import { MASKED_VALUES_FILE, createMasker } from "../../scripts/journeys/lib/mask.mjs";
 import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
@@ -87,7 +87,10 @@ export const test = base.extend({
     page.on("pageerror", (e) => { if (appOrigins.has(originOf(page.url())) && !isExpectedPageError(e.message)) errors.push(`pageerror: ${e.message}`); });
     page.on("console", (m) => {
       const url = m.location()?.url ?? "";
-      if (m.type() === "error" && appOrigins.has(originOf(url || page.url())) && !isExpectedConsoleError(m.text(), url)) errors.push(consoleFailure(m.text(), url));
+      if (m.type() !== "error" || !appOrigins.has(originOf(url || page.url())) || isExpectedConsoleError(m.text(), url)) return;
+      // A project or item 404 is counted in the summary, not a failure (lib/console.mjs)
+      if (isDocumentNotFound(m.text(), url)) testInfo.annotations.push({ type: NOT_FOUND_WARNING, description: consoleFailure(m.text(), url) });
+      else errors.push(consoleFailure(m.text(), url));
     });
     await page.context().route(RUM, (r) => r.abort());
     // Account deletion and team closure only as the run's throwaway, on a team the run created
@@ -306,5 +309,5 @@ export function readScreen(page) {
   });
 }
 
-export { consoleFailure, isExpectedConsoleError, isExpectedPageError };
+export { consoleFailure, isDocumentNotFound, isExpectedConsoleError, isExpectedPageError, NOT_FOUND_WARNING };
 export { expect, secretFill };

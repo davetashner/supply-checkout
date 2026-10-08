@@ -3,16 +3,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PROD } from "../lib/config.mjs";
-import { consoleFailure, isExpectedConsoleError, isExpectedPageError } from "../lib/console.mjs";
+import { consoleFailure, isDocumentNotFound, isExpectedConsoleError, isExpectedPageError } from "../lib/console.mjs";
 import { createMasker } from "../lib/mask.mjs";
 import { formatScreen, isPasswordChoice } from "../lib/screen.mjs";
 
 const NOT_FOUND = "Failed to load resource: the server responded with a status of 404 ()";
 
-test("a 404 is never expected, a project's or item's included", () => {
+test("a 404 for one project or item is a warning, not expected; any other 404 is a failure", () => {
+  for (const url of [`${PROD.api}/teams/t1/products/e2e-1-201`, `${PROD.api}/teams/t%201/projects/p-1`]) {
+    assert.equal(isDocumentNotFound(NOT_FOUND, url), true, url);
+    assert.equal(isExpectedConsoleError(NOT_FOUND, url), false, url);
+  }
   for (const url of [
-    `${PROD.api}/teams/t1/products/e2e-1-201`,
-    `${PROD.api}/teams/t%201/projects/p-1`,
     `${PROD.api}/teams/t1/products`,
     `${PROD.api}/teams/t1/settings`,
     `${PROD.api}/teams/t1/receipts/usage`,
@@ -24,9 +26,13 @@ test("a 404 is never expected, a project's or item's included", () => {
     "",
     undefined,
     "not a url",
-  ]) assert.equal(isExpectedConsoleError(NOT_FOUND, url), false, String(url));
+  ]) {
+    assert.equal(isExpectedConsoleError(NOT_FOUND, url), false, String(url));
+    assert.equal(isDocumentNotFound(NOT_FOUND, url), false, String(url));
+  }
   // Another status for the same document is a failure
   for (const status of [400, 403, 409, 500]) {
+    assert.equal(isDocumentNotFound(`Failed to load resource: the server responded with a status of ${status} ()`, `${PROD.api}/teams/t1/products/a`), false, String(status));
     assert.equal(isExpectedConsoleError(`Failed to load resource: the server responded with a status of ${status} ()`, `${PROD.api}/teams/t1/products/a`), false, String(status));
   }
 });

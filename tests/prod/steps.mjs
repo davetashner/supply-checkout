@@ -12,7 +12,7 @@ import { readFile } from "node:fs/promises";
 import { runBarcode, runName } from "../../scripts/journeys/lib/addresses.mjs";
 import { PROD } from "../../scripts/journeys/lib/config.mjs";
 import { switchTeam, teamPicker } from "../ui/index.js";
-import { consoleFailure, expect, isExpectedConsoleError, isExpectedPageError } from "./fixtures.mjs";
+import { consoleFailure, expect, isDocumentNotFound, isExpectedConsoleError, isExpectedPageError, NOT_FOUND_WARNING } from "./fixtures.mjs";
 
 /**
  * The run's names and barcodes for one test: `name("towels")` is `E2E <runId> J4 towels r0`,
@@ -105,7 +105,9 @@ export async function download(page, button) {
 
 /**
  * Collects the app's uncaught errors and console errors on `page` (from `origins`, less the
- * expected ones in lib/console.mjs) until `stop()`, which returns them.
+ * expected ones in lib/console.mjs) until `stop()`, which returns them. A 404 for a project or
+ * item isn't one of them: it's added to `warnings`, and as an annotation on `testInfo` if given,
+ * for the summary to count.
  *
  * Stop before closing a context the test made itself: Playwright's runner screenshots the pages
  * of such a context as it closes (screenshot: "only-on-failure" can't know yet whether the test
@@ -114,16 +116,19 @@ export async function download(page, button) {
  * 'unsafe-inline' does not appear in the style-src directive" as the page's own console error
  * (prod run 37724792313, J4 and J9 on iPhone). tests/prod-second-page.spec.js shows it.
  */
-export function watchAppErrors(page, origins) {
-  const errors = [];
+export function watchAppErrors(page, origins, testInfo) {
+  const errors = [], warnings = [];
   let on = true;
   const fromApp = (url) => { try { return origins.includes(new URL(url).origin); } catch { return false; } };
   page.on("pageerror", (e) => { if (on && fromApp(page.url()) && !isExpectedPageError(e.message)) errors.push(`pageerror: ${e.message}`); });
   page.on("console", (m) => {
     const url = m.location()?.url ?? "";
-    if (on && m.type() === "error" && fromApp(url || page.url()) && !isExpectedConsoleError(m.text(), url)) errors.push(consoleFailure(m.text(), url));
+    if (!on || m.type() !== "error" || !fromApp(url || page.url()) || isExpectedConsoleError(m.text(), url)) return;
+    if (!isDocumentNotFound(m.text(), url)) { errors.push(consoleFailure(m.text(), url)); return; }
+    warnings.push(consoleFailure(m.text(), url));
+    testInfo?.annotations.push({ type: NOT_FOUND_WARNING, description: consoleFailure(m.text(), url) });
   });
-  return { errors, stop: () => { on = false; return [...errors]; } };
+  return { errors, warnings, stop: () => { on = false; return [...errors]; } };
 }
 
 // The second context's device: the browser project's own, without the test-runner options
@@ -148,7 +153,7 @@ export async function secondPage({ browser, harness, signIn, testInfo }, role) {
     return route.fallback();
   });
   const page = await context.newPage();
-  const watch = watchAppErrors(page, [PROD.app, PROD.api]);
+  const watch = watchAppErrors(page, [PROD.app, PROD.api], testInfo);
   // signIn starts a trace when it's done; this context is never traced
   page.startTrace = async () => {};
   await signIn(page, role);

@@ -21,6 +21,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENV } from "./lib/config.mjs";
 import { MASKED_VALUES_FILE, createMasker, readMaskedValues } from "./lib/mask.mjs";
+import { NOT_FOUND_WARNING } from "./lib/console.mjs";
 import { SIGN_IN } from "./lib/sessions.mjs";
 
 export const PROJECTS = ["desktop-chrome", "iphone-safari"];
@@ -40,6 +41,18 @@ export function signInLine(all) {
   const part = (map) => [...map].sort(([a], [b]) => a.localeCompare(b)).map(([role, n]) => `${role} ${n}`).join(", ") || "none";
   if (!counts["Managed Login"].size && !counts["saved session"].size) return "";
   return `Sign-ins through Managed Login: ${part(counts["Managed Login"])}; from a saved session: ${part(counts["saved session"])}.`;
+}
+
+/**
+ * The count of 404s for a project or item, and where: a live event racing a delete, which the
+ * app handles. It doesn't fail the run; if it keeps happening, it's worth a bead.
+ */
+export function notFoundLine(all) {
+  const hit = all.filter((r) => r.notFound > 0);
+  const n = hit.reduce((sum, r) => sum + r.notFound, 0);
+  if (!n) return "";
+  const where = [...new Set(hit.map((r) => `${r.steps.join(", ") || r.title} (${r.project})`))].join("; ");
+  return `${n} ${n === 1 ? "fetch" : "fetches"} of a project or item got a 404 (a live event racing a delete, which the app takes as deleted): ${where}. Not a failure; file a bead if it keeps happening.`;
 }
 
 const outcome = (test) => ({ expected: "passed", unexpected: "failed", flaky: "flaky", skipped: "skipped" })[test.status] ?? "failed";
@@ -66,6 +79,8 @@ export function results(report) {
           warnings: annotations.filter((a) => a.type === "journeys-warning").map((a) => a.description),
           // How each try signed in (fixtures signIn): "<role>: Managed Login" or "<role>: saved session"
           signIns: (runs.some((r) => r.annotations) ? runs.flatMap((r) => r.annotations ?? []) : test.annotations ?? []).filter((a) => a.type === SIGN_IN).map((a) => a.description),
+          // A 404 for a project or item (lib/console.mjs isDocumentNotFound), counted, not failed
+          notFound: (runs.some((r) => r.annotations) ? runs.flatMap((r) => r.annotations ?? []) : test.annotations ?? []).filter((a) => a.type === NOT_FOUND_WARNING).length,
         });
       }
     }
@@ -123,6 +138,8 @@ export function summarize(report, registry, { redact = (s) => s, warnings = [] }
   }
   const untagged = all.filter((r) => !r.steps.length);
   const allWarnings = [...new Set([...warnings, ...all.flatMap((r) => r.warnings)])].map(redact);
+  const notFound = notFoundLine(all);
+  if (notFound) allWarnings.push(redact(notFound));
   const ok = failed.length === 0;
   const lines = [
     "## Journey tests in prod",
