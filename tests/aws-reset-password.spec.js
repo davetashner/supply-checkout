@@ -117,6 +117,11 @@ test("past the API's limits, it points at the sign-in page's own reset", { tag: 
   await expect(fallback).toBeHidden();
   await account(page).getByRole("button", { name: "Send code" }).click();
   await expect(account(page).getByRole("heading", { name: "Check your email" })).toBeVisible();
+  // API Gateway's own throttle: a bare 429 with no error code reads the same
+  backend.on("POST", "/auth/password-reset", { status: 429, body: { message: "Too Many Requests" } });
+  await account(page).getByRole("button", { name: "Send a new code" }).click();
+  await expect(alert(page)).toHaveText("Too many reset requests for now. Try again in an hour, or reset your password on the sign-in page.");
+  await expect(account(page).locator("#resetFallback")).toBeVisible();
   // And a new code past the limits, on the code screen
   backend.on("POST", "/auth/password-reset", limited);
   await account(page).getByRole("button", { name: "Send a new code" }).click();

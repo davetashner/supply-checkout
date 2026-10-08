@@ -30,7 +30,8 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
     busy(el, true);
     try { await post("/auth/password-reset", { email }); return true; }
     catch (e) {
-      const limited = e.code === "quota_exceeded";
+      // API Gateway's own throttle answers a bare 429 ({"message":"Too Many Requests"}), which reads as internal
+      const limited = e.code === "quota_exceeded" || e.status === 429;
       setError(limited ? "Too many reset requests for now. Try again in an hour, or reset your password on the sign-in page."
         : e.code === "bad_request" ? "Enter your email address, like name@example.com." : "Couldn't send that. Check your connection and try again.");
       el.querySelector("#resetFallback").hidden = !limited;
