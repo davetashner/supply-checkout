@@ -16,7 +16,7 @@ import { openModal, closeModal, toast } from "../dom.js";
 
 // The user pool's password policy (infra), as people read it and as password managers do
 export const RULES = "At least 12 characters, with upper and lower case letters, a number and a symbol.";
-const MANAGER_RULES = "minlength: 12; required: lower; required: upper; required: digit; required: special;";
+export const MANAGER_RULES = "minlength: 12; required: lower; required: upper; required: digit; required: special;";
 
 // What went wrong setting the password, in words, or null for anything else. `required`: the
 // user has a password for sure (two-step sign-in is on), so leaving it empty isn't an option.

@@ -212,6 +212,21 @@ export const RECEIPT_TRIAL_CAP_ATTRIBUTES = [PK, SK, "count", "expiresAt"] as co
 export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;
 
 /**
+ * The partition prefix of the password reset limits (supply-checkout-6uw.26,
+ * data/password-resets.ts): `RESETLIMIT#ADDRESS#<hash>` and
+ * `RESETLIMIT#IP#<hash>` count reset requests for one address (its
+ * inviteLimitKey) and from one IP address, and `RESETLIMIT#NOTES` every help
+ * email sent, one item per window with a TTL. The password reset function's
+ * role reaches only these partitions, only with UpdateItem, only
+ * PASSWORD_RESET_LIMIT_ATTRIBUTES and nothing returned. No address or IP
+ * address is stored, only their hashes.
+ */
+export const PASSWORD_RESET_LIMIT_PREFIX = "RESETLIMIT#";
+
+/** The only attributes the password reset function may name: the keys, the window's count and its expiry (TTL). */
+export const PASSWORD_RESET_LIMIT_ATTRIBUTES = [PK, SK, "count", "expiresAt"] as const;
+
+/**
  * The operators' index (ADR 0015), sparse, with an INCLUDE projection of only
  * OPS_INDEX_ATTRIBUTES. It serves the ops function, whose role may query it
  * but has no read access to any TEAM# partition, so an operator can list teams

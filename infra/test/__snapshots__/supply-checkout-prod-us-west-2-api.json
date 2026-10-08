@@ -441,6 +441,232 @@
         ]
       }
     },
+    "PasswordResetFunctionLogsF561149B": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "PasswordResetFunctionRole980C7B7E": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the password-reset function",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "PasswordResetFunctionRoleDefaultPolicy49E31CEC": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "PasswordResetFunctionLogsF561149B",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "lambda:InvokeFunction",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:lambda:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":function:supply-checkout-prod-password-reset"
+                  ]
+                ]
+              },
+              "Sid": "QueuePasswordResets"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "PasswordResetFunctionRoleDefaultPolicy49E31CEC",
+        "Roles": [
+          {
+            "Ref": "PasswordResetFunctionRole980C7B7E"
+          }
+        ]
+      }
+    },
+    "PasswordResetFunctionA939B071": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-west-2"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Password resets from the app's sign-in screen: queues a request, and confirms a code",
+        "Environment": {
+          "Variables": {
+            "ALLOWED_ORIGINS": "https://app.supplycheckout.com",
+            "CLIENT_ID": {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentitywebclientidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "ISSUER_URL": {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentityissuerurlC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "NODE_OPTIONS": "--enable-source-maps",
+            "PASSWORD_RESET_FUNCTION": "supply-checkout-prod-password-reset",
+            "PASSWORD_RESET_REGION": "us-east-1",
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "PasswordResetFunctionLogsF561149B"
+          }
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "PasswordResetFunctionRole980C7B7E",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 10,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "PasswordResetFunctionRoleDefaultPolicy49E31CEC",
+        "PasswordResetFunctionRole980C7B7E"
+      ]
+    },
+    "PasswordResetFunctionCurrentVersion8630C029<code hash>": {
+      "Type": "AWS::Lambda::Version",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "PasswordResetFunctionA939B071"
+        }
+      },
+      "Metadata": {
+        "aws:cdk:do-not-refactor": true
+      }
+    },
+    "PasswordResetFunctionXRayWrite7370BC4C": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "PasswordResetFunctionXRayWrite7370BC4C",
+        "Roles": [
+          {
+            "Ref": "PasswordResetFunctionRole980C7B7E"
+          }
+        ]
+      }
+    },
     "AccountFunctionLogs6EBC7204": {
       "Type": "AWS::Logs::LogGroup",
       "Properties": {
@@ -6440,6 +6666,113 @@
         }
       }
     },
+    "HttpApiPOSTauthpasswordresetPasswordResetIntegration05F940CD": {
+      "Type": "AWS::ApiGatewayV2::Integration",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "IntegrationType": "AWS_PROXY",
+        "IntegrationUri": {
+          "Ref": "PasswordResetFunctionLiveAEF67337"
+        },
+        "PayloadFormatVersion": "2.0"
+      }
+    },
+    "HttpApiPOSTauthpasswordresetPasswordResetIntegrationPermissionD3C7138D": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "PasswordResetFunctionLiveAEF67337"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/auth/password-reset"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTauthpasswordresetCB0B77BA": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "POST /auth/password-reset",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiPOSTauthpasswordresetPasswordResetIntegration05F940CD"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTauthpasswordresetconfirmPasswordResetIntegrationPermission7D1055ED": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "PasswordResetFunctionLiveAEF67337"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/auth/password-reset/confirm"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTauthpasswordresetconfirm7A184FC4": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "POST /auth/password-reset/confirm",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiPOSTauthpasswordresetPasswordResetIntegration05F940CD"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTauthsessionAuthIntegration113028DA": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -6752,6 +7085,14 @@
           "POST /billing/webhook": {
             "ThrottlingRateLimit": 20,
             "ThrottlingBurstLimit": 50
+          },
+          "POST /auth/password-reset": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
+          "POST /auth/password-reset/confirm": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
           }
         },
         "StageName": "$default",
@@ -6785,6 +7126,11 @@
         "HttpApiPATCHmepreferences176919F2",
         "HttpApiPATCHteamsteamIdmembersuserIdAccountIntegrationPermission15C68DE8",
         "HttpApiPATCHteamsteamIdmembersuserIdEF500EC2",
+        "HttpApiPOSTauthpasswordresetconfirmPasswordResetIntegrationPermission7D1055ED",
+        "HttpApiPOSTauthpasswordresetconfirm7A184FC4",
+        "HttpApiPOSTauthpasswordresetPasswordResetIntegrationPermissionD3C7138D",
+        "HttpApiPOSTauthpasswordresetPasswordResetIntegration05F940CD",
+        "HttpApiPOSTauthpasswordresetCB0B77BA",
         "HttpApiPOSTbillingwebhookCCC3C5D6",
         "HttpApiPOSTbillingwebhookWebhookIntegrationPermission4C2CCE6A",
         "HttpApiPOSTbillingwebhookWebhookIntegrationD22CECA0",
@@ -6893,6 +7239,21 @@
         "FunctionVersion": {
           "Fn::GetAtt": [
             "BillingWebhookFunctionCurrentVersion86E3184E<code hash>",
+            "Version"
+          ]
+        },
+        "Name": "live"
+      }
+    },
+    "PasswordResetFunctionLiveAEF67337": {
+      "Type": "AWS::Lambda::Alias",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "PasswordResetFunctionA939B071"
+        },
+        "FunctionVersion": {
+          "Fn::GetAtt": [
+            "PasswordResetFunctionCurrentVersion8630C029<code hash>",
             "Version"
           ]
         },

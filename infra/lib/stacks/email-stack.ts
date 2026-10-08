@@ -12,8 +12,8 @@ import { LambdaSubscription } from "aws-cdk-lib/aws-sns-subscriptions";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { GSI2, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
-import { EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, emailResourceNames, WELCOME_ENV } from "../../../backend/src/email/names.js";
+import { GSI2, PASSWORD_RESET_LIMIT_ATTRIBUTES, PASSWORD_RESET_LIMIT_PREFIX, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
+import { EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, emailResourceNames, PASSWORD_RESET_ENV, WELCOME_ENV } from "../../../backend/src/email/names.js";
 import { SECURITY_NOTICE_EVENTS, SECURITY_NOTICES_ENV } from "../../../backend/src/identity/names.js";
 import { TEST_MAIL_DOMAIN_ENV } from "../../../backend/src/data/test-accounts.js";
 import type { DeploymentConfig } from "../config.js";
@@ -89,6 +89,21 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  *   dead-letter queue (SQS-encrypted, 14 days: a sub and a sign-up method, no
  *   address), which alarms ("Welcome emails dropped").
  *
+ * Password resets asked for in the app (supply-checkout-6uw.26,
+ * backend/src/email/password-reset-handler.ts):
+ *
+ * - The api stack's password reset function invokes this one asynchronously,
+ *   by its fixed name (emailResourceNames().passwordResetFunction), with the
+ *   address and the caller's IP address. Only that function's role is granted
+ *   it.
+ * - The function may call AdminGetUser and ListUsers on the app pool only,
+ *   send the app's email (grantSendEmail), and UpdateItem naming only
+ *   PASSWORD_RESET_LIMIT_ATTRIBUTES, returning nothing, in `RESETLIMIT#`
+ *   partitions (its limits, keyed by hashes). Cognito's ForgotPassword is a
+ *   public call (the web client's ID), so it needs no permission.
+ * - No retries and no dead-letter queue: a request holds an address, and the
+ *   person can simply ask again. A request older than 15 minutes is dropped.
+ *
  * Deploy after the data stack (the table's key ARN, from SSM), the primary
  * region's domain stack (the topic) and the identity stack (the app pool's ID
  * and ARN, from SSM).
@@ -100,6 +115,8 @@ export class EmailStack extends SupplyCheckoutStack {
   readonly securityNoticeEvents: Rule;
   readonly welcome: NodejsFunction;
   readonly welcomeDeadLetterQueue: Queue;
+  /** Password resets asked for in the app: a code, or help for an address with no account (supply-checkout-6uw.26). */
+  readonly passwordReset: NodejsFunction;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "email", layer: "stateless" });
@@ -213,6 +230,75 @@ export class EmailStack extends SupplyCheckoutStack {
 
     [this.securityNotices, this.securityNoticeEvents] = this.addSecurityNotices(config, table, tableArn, tableKeyArn);
     [this.welcome, this.welcomeDeadLetterQueue] = this.addWelcome(config, table, tableArn, tableKeyArn);
+    this.passwordReset = this.addPasswordReset(config, table, tableArn, tableKeyArn);
+  }
+
+  /** The password reset function (see the class comment). */
+  private addPasswordReset(config: DeploymentConfig, table: string, tableArn: string, tableKeyArn: string): NodejsFunction {
+    const identity = identityOutputParameters(config.envName);
+    const userPoolArn = StringParameter.valueForStringParameter(this, identity.userPoolArn);
+    const logGroup = new LogGroup(this, "PasswordResetLogs", { retention: LOG_RETENTION });
+    const role = new Role(this, "PasswordResetRole", {
+      assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
+      description: "Execution role for the password reset function",
+    });
+    role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
+    // A fixed name: the api stack's password reset function invokes it by name
+    const fn = new NodejsFunction(this, "PasswordResetFunction", {
+      functionName: emailResourceNames(config.envName).passwordResetFunction,
+      role,
+      logGroup,
+      entry: `${BACKEND}src/email/password-reset.ts`,
+      projectRoot: BACKEND,
+      depsLockFilePath: `${BACKEND}package-lock.json`,
+      runtime: Runtime.NODEJS_24_X,
+      architecture: Architecture.ARM_64,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      description: "Sends a password reset code, or help for an address with no account (supply-checkout-6uw.26)",
+      environment: {
+        NODE_OPTIONS: "--enable-source-maps",
+        TABLE_NAME: table,
+        [PASSWORD_RESET_ENV.userPoolId]: StringParameter.valueForStringParameter(this, identity.userPoolId),
+        [PASSWORD_RESET_ENV.clientId]: StringParameter.valueForStringParameter(this, identity.webClientId),
+        [WELCOME_ENV.supportAddress]: supportAddress(config),
+      },
+      // The request holds an address: never kept in a queue, and not tried again
+      retryAttempts: 0,
+      maxEventAge: Duration.minutes(15),
+      bundling,
+    });
+    // noreply@ only, through the configuration set (lib/email.ts)
+    grantSendEmail(fn, config);
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "FindAppUsers",
+        actions: ["cognito-idp:AdminGetUser", "cognito-idp:ListUsers"],
+        resources: [userPoolArn],
+      }),
+    );
+    // backend/src/data/password-resets.ts: the limits' counters, by hashes, returning nothing
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "CountPasswordResets",
+        actions: ["dynamodb:UpdateItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${PASSWORD_RESET_LIMIT_PREFIX}*`] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...PASSWORD_RESET_LIMIT_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "TableKeyThroughDynamoDb",
+        actions: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"],
+        resources: [tableKeyArn],
+        conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
+      }),
+    );
+    return fn;
   }
 
   /** The welcome email function and its dead-letter queue (see the class comment). */

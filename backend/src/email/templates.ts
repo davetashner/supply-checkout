@@ -81,7 +81,16 @@ export type EmailInput =
    * already, so the next step is that team rather than a new one.
    * `supportAddress` is `support@<env domain>`.
    */
-  | { readonly kind: "welcome"; readonly givenName?: string; readonly invited: boolean; readonly supportAddress: string };
+  | { readonly kind: "welcome"; readonly givenName?: string; readonly invited: boolean; readonly supportAddress: string }
+  /**
+   * Someone asked to reset the password for an address we can't send a reset
+   * code to (supply-checkout-6uw.26): it has no account, or none with a
+   * password we can reset (not confirmed, not verified). With `signInWith`,
+   * the address is a Google or Apple account's, which has no password. Sent
+   * only to that address, so only its owner learns this. Nothing in it comes
+   * from the request but the recipient.
+   */
+  | { readonly kind: "passwordResetHelp"; readonly signInWith?: "Google" | "SignInWithApple"; readonly supportAddress: string };
 
 /** The security notices, to an account's own address rather than a team's owners. */
 export type SecurityNotice = Extract<EmailInput, { kind: "passwordSet" | "twoStepOn" | "emailChanged" }>;
@@ -89,8 +98,11 @@ export type SecurityNotice = Extract<EmailInput, { kind: "passwordSet" | "twoSte
 /** The welcome email (welcomeContent). */
 export type WelcomeEmail = Extract<EmailInput, { kind: "welcome" }>;
 
-/** A notice about a team, to its owners: every kind but an invite, the security notices and the welcome email. */
-export type TeamNoticeInput = Exclude<EmailInput, { kind: "invite" } | SecurityNotice | WelcomeEmail>;
+/** Help for a password reset we couldn't send a code for (resetHelpContent). */
+export type ResetHelpEmail = Extract<EmailInput, { kind: "passwordResetHelp" }>;
+
+/** A notice about a team, to its owners: every kind but an invite, the security notices, the welcome email and password reset help. */
+export type TeamNoticeInput = Exclude<EmailInput, { kind: "invite" } | SecurityNotice | WelcomeEmail | ResetHelpEmail>;
 
 export interface RenderedEmail {
   readonly kind: EmailKind;
@@ -185,7 +197,12 @@ interface Content {
   readonly button: { readonly label: string; readonly url: string };
   /** A closing line under the button, e.g. when a link expires. */
   readonly note?: string;
+  /** Why the recipient is getting it, when that isn't their account or an invitation (FOOTER). */
+  readonly footer?: string;
 }
+
+/** Why someone is getting the app's email, at the foot of every message unless it says otherwise. */
+const FOOTER = "You're getting this email because of your Supply Checkout account or an invitation to a team. It was sent from an address that doesn't take replies.";
 
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const INK = "#1f2933";
@@ -222,7 +239,7 @@ function html(c: Content): string {
     `<p style="margin:0 0 16px 0;font-family:${FONT};font-size:13px;line-height:20px;color:${MUTED};">If the button doesn't work, copy this link into your browser:<br><a href="${url}" target="_blank" style="color:${ACCENT};word-break:break-all;">${url}</a></p>`,
     ...(c.note ? [`<p style="margin:0 0 16px 0;font-family:${FONT};font-size:13px;line-height:20px;color:${MUTED};">${escapeHtml(c.note)}</p>`] : []),
     "</td></tr>",
-    `<tr><td style="padding:16px 32px 24px 32px;border-top:1px solid #e4e7eb;font-family:${FONT};font-size:12px;line-height:18px;color:${MUTED};">You're getting this email because of your Supply Checkout account or an invitation to a team. It was sent from an address that doesn't take replies.</td></tr>`,
+    `<tr><td style="padding:16px 32px 24px 32px;border-top:1px solid #e4e7eb;font-family:${FONT};font-size:12px;line-height:18px;color:${MUTED};">${escapeHtml(c.footer ?? FOOTER)}</td></tr>`,
     "</table>",
     "</td></tr></table>",
     "</body>",
@@ -240,7 +257,7 @@ function text(c: Content): string {
     ...(c.note ? [c.note, ""] : []),
     "--",
     "Supply Checkout",
-    "You're getting this email because of your Supply Checkout account or an invitation to a team. It was sent from an address that doesn't take replies.",
+    c.footer ?? FOOTER,
     "",
   ].join("\n");
 }
@@ -248,6 +265,7 @@ function text(c: Content): string {
 function content(input: EmailInput, appUrl: string): Content {
   if (input.kind === "passwordSet" || input.kind === "twoStepOn" || input.kind === "emailChanged") return securityContent(input, appUrl);
   if (input.kind === "welcome") return welcomeContent(input, appUrl);
+  if (input.kind === "passwordResetHelp") return resetHelpContent(input, appUrl);
   const team = teamLabel(input.teamName);
   switch (input.kind) {
     case "invite": {
@@ -473,6 +491,53 @@ function welcomeContent(input: WelcomeEmail, appUrl: string): Content {
       questions,
     ],
     button: { label: "Create your team", url },
+  };
+}
+
+const PROVIDER_NAMES = { Google: "Google", SignInWithApple: "Apple" } as const;
+
+/**
+ * Help for a password reset we sent no code for (supply-checkout-6uw.26): why
+ * there was none, and the ways in that might work. It says nothing about any
+ * account but the one this address may have, asks for nothing and links only
+ * to the app, like the welcome email.
+ */
+function resetHelpContent(input: ResetHelpEmail, appUrl: string): Content {
+  if (!PLAIN_ADDRESS.test(input.supportAddress)) throw new Error("Invalid support address");
+  const asked = "Someone, probably you, asked to reset the Supply Checkout password for this email address.";
+  const ignore = "If you didn't ask for this, you can ignore this email. Nothing about any account has changed.";
+  const questions = `Questions? Write to us at ${input.supportAddress}.`;
+  const footer = "You're getting this email because someone asked to reset a Supply Checkout password for this address. It was sent from an address that doesn't take replies.";
+  const button = { label: "Open Supply Checkout", url: appLink(appUrl, "/") };
+  if (input.signInWith) {
+    const provider = PROVIDER_NAMES[input.signInWith];
+    if (!provider) throw new Error("Invalid provider");
+    return {
+      subject: `Sign in to Supply Checkout with ${provider}`,
+      preheader: `This address signs in with ${provider}, so there's no password to reset.`,
+      heading: `Sign in with ${provider}`,
+      paragraphs: [
+        `${asked} This address signs in to Supply Checkout with ${provider}, so it has no Supply Checkout password to reset, and we haven't sent a reset code.`,
+        `To sign in, open Supply Checkout, choose Sign in, then choose ${provider} and use this address.`,
+        ignore,
+        questions,
+      ],
+      button,
+      footer,
+    };
+  }
+  return {
+    subject: "About your Supply Checkout password reset",
+    preheader: "We couldn't send a reset code to this address. Here's what you can do.",
+    heading: "We couldn't reset a password for this address",
+    paragraphs: [
+      `${asked} There's no Supply Checkout account with a password we can reset for this address, so we haven't sent a reset code.`,
+      "You may have signed up with a different email address, or with Google or Apple: try signing in that way. Or you may not have an account yet: open Supply Checkout, choose Sign in, then create one with this address.",
+      ignore,
+      questions,
+    ],
+    button,
+    footer,
   };
 }
 

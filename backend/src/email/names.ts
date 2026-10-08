@@ -32,6 +32,11 @@ export const emailResourceNames = (envName: string) => ({
   welcomeFunction: `supply-checkout-${envName}-welcome-email`,
   /** Welcome requests (a user's sub and how they signed up) the function failed on after Lambda's retries, to replay ("Welcome emails dropped"). */
   welcomeDeadLetterQueue: `supply-checkout-${envName}-welcome-email-dlq`,
+  /**
+   * The password reset function (supply-checkout-6uw.26). A fixed name: the
+   * API's password reset function, in the api stack, invokes it by name.
+   */
+  passwordResetFunction: `supply-checkout-${envName}-password-reset`,
 });
 
 /** How a new account was made: an email code (Cognito's own sign-up), or a first Google or Apple sign-in. */
@@ -54,6 +59,26 @@ export const WELCOME_ENV = {
   userPoolId: "USER_POOL_ID",
   /** `support@<env domain>`, which the email names for questions. */
   supportAddress: "SUPPORT_ADDRESS",
+} as const;
+
+/**
+ * What the API's password reset route (POST /auth/password-reset) hands the
+ * password reset function (an asynchronous invoke, supply-checkout-6uw.26): the
+ * address as the person typed it, trimmed, and the caller's IP address, for
+ * the limits. The function decides everything else, out of the request's
+ * sight, so the API's answer can't say whether the address has an account.
+ */
+export interface PasswordResetRequest {
+  readonly email: string;
+  readonly ip: string;
+}
+
+/** The password reset function's environment, besides what grantSendEmail sets. */
+export const PASSWORD_RESET_ENV = {
+  /** The app pool it looks the address up in. */
+  userPoolId: "USER_POOL_ID",
+  /** The web app's public client, for Cognito's ForgotPassword. */
+  clientId: "CLIENT_ID",
 } as const;
 
 /** The triggers' environment: the welcome email function's name, to invoke. Without it, they send no welcome. */
@@ -79,7 +104,7 @@ export const EMAIL_ENV = {
 export const EMAIL_TAGS = { kind: "kind", teamId: "teamId", inviteId: "inviteId" } as const;
 
 /** The kinds of message the app sends (templates.ts). */
-export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "deletionWarning", "passwordSet", "twoStepOn", "emailChanged", "welcome"] as const;
+export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "deletionWarning", "passwordSet", "twoStepOn", "emailChanged", "welcome", "passwordResetHelp"] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
 
 /**

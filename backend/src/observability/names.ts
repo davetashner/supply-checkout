@@ -136,6 +136,10 @@ export const BusinessMetric = {
   WelcomeEmailFailures: "WelcomeEmailFailures",
   /** Welcome emails SES refused (sending paused, a suppressed address); `via` in metadata (J1). */
   WelcomeEmailsRefused: "WelcomeEmailsRefused",
+  /** Help emails sent for a password reset asked for in the app for an address we can't send a code to (supply-checkout-6uw.26); `signInWith` (Google, SignInWithApple, none) in metadata. */
+  PasswordResetHelpEmails: "PasswordResetHelpEmails",
+  /** Password reset requests that sent nothing because of a limit: `limit` in metadata (request: the address's or IP address's; help: the help emails'; cognito: Cognito's own on codes). */
+  PasswordResetsLimited: "PasswordResetsLimited",
   /** Accounts their users deleted: the Cognito user and every row that named them. */
   AccountsDeleted: "AccountsDeleted",
   /** Closed teams deleted by the scheduled purge once their read-only period ended. */
