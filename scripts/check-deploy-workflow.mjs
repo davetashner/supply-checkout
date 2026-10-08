@@ -1,0 +1,109 @@
+#!/usr/bin/env node
+// Keeps the release commit's code away from the production OIDC token in the deploy workflow
+// (supply-checkout-pbp.39). A job with `id-token: write` can ask GitHub for an OIDC token, and in
+// the production environments that token is the deploy role. Code from the release commit (its
+// npm dependencies, its CDK app, its build) that runs in such a job can ask for it too, from any
+// step: blanking ACTIONS_ID_TOKEN_REQUEST_* for one step doesn't stop it reaching the later ones
+// through $GITHUB_ENV, $GITHUB_PATH, BASH_ENV or a process left running. So in
+// .github/workflows/deploy.yml, parsed as YAML (anchors and aliases followed):
+//
+//   1. The workflow's own `permissions` don't grant id-token (`write-all` or `id-token: write`).
+//   2. A job that can request the token (its `permissions`, or the workflow's when it has none)
+//      checks out only main's commit, this workflow's own: every actions/checkout step says
+//      `ref: ${{ github.sha }}` and no other `repository`. It calls no reusable workflow.
+//   3. Except the jobs in AFTER_APPLY_APPROVAL, which deploy the release and so run its code:
+//      each must be past an apply approval, in an environment and after `plan`, or after such a
+//      job.
+//
+// Files the release's jobs hand over (artifacts, outputs) can still reach a job that has the
+// token; that job must treat them as data, which this can't check (docs/releases.md).
+//
+//   node scripts/check-deploy-workflow.mjs     (CI's "Lint and validate HTML" job)
+//
+// Exits 1 with the problems listed, 0 when there are none.
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseWorkflow } from "./check-workflow-environments.mjs";
+
+/** Jobs that run the release commit's code with the deploy role, after an apply approval. */
+export const AFTER_APPLY_APPROVAL = ["apply-stateful", "apply", "journeys"];
+/** The plan job: an apply job must come after it. */
+export const PLAN_JOB = "plan";
+const MAIN_COMMIT = "${{ github.sha }}";
+
+const isMap = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const squash = (s) => String(s).replace(/\s+/g, "");
+
+/** Whether these permissions (a job's or the workflow's) let a job request an OIDC token. */
+export function grantsIdToken(permissions) {
+  if (typeof permissions === "string") return permissions.trim() === "write-all";
+  return isMap(permissions) && String(permissions["id-token"]).trim() === "write";
+}
+
+/** Every job a job needs, directly or not. */
+export function needsClosure(jobs, id, seen = new Set()) {
+  const needs = jobs[id]?.needs;
+  for (const n of typeof needs === "string" ? [needs] : Array.isArray(needs) ? needs : []) {
+    if (seen.has(n)) continue;
+    seen.add(n);
+    needsClosure(jobs, n, seen);
+  }
+  return seen;
+}
+
+/** Whether a job is past an apply approval: in an environment and after plan, or after such a job. */
+export function afterApplyApproval(jobs, id, seen = new Set()) {
+  if (seen.has(id)) return false;
+  seen.add(id);
+  const job = jobs[id];
+  if (!isMap(job)) return false;
+  const before = needsClosure(jobs, id);
+  if (job.environment !== undefined && before.has(PLAN_JOB)) return true;
+  return [...before].some((n) => n !== id && afterApplyApproval(jobs, n, seen));
+}
+
+/** Every problem with a parsed deploy workflow. */
+export function deployProblems(workflow) {
+  const problems = [];
+  if (grantsIdToken(workflow.permissions)) problems.push("the workflow's permissions grant id-token; grant it per job");
+  const jobs = isMap(workflow.jobs) ? workflow.jobs : {};
+  for (const [id, job] of Object.entries(jobs)) {
+    if (!isMap(job)) continue;
+    const permissions = job.permissions === undefined ? workflow.permissions : job.permissions;
+    if (!grantsIdToken(permissions)) continue;
+    if (AFTER_APPLY_APPROVAL.includes(id)) {
+      if (!afterApplyApproval(jobs, id)) problems.push(`job ${id} runs the release with the deploy role, so it must be past an apply approval: in an environment and after ${PLAN_JOB}, or after such a job`);
+      continue;
+    }
+    if (job.uses !== undefined) problems.push(`job ${id} can request the OIDC token, so it may not call a reusable workflow (${job.uses})`);
+    const steps = Array.isArray(job.steps) ? job.steps : [];
+    steps.forEach((step, i) => {
+      if (!isMap(step) || typeof step.uses !== "string" || !/^actions\/checkout@/i.test(step.uses.trim())) return;
+      const name = `job ${id}, step ${i + 1} (${step.name ?? step.uses})`;
+      const withs = isMap(step.with) ? step.with : {};
+      if (squash(withs.ref ?? "") !== squash(MAIN_COMMIT)) {
+        problems.push(`${name}: the job can request the OIDC token, so it may check out only main's commit (ref: ${MAIN_COMMIT}), not ${withs.ref === undefined ? "the default ref" : withs.ref}`);
+      }
+      if (withs.repository !== undefined) problems.push(`${name}: the job can request the OIDC token, so it may not check out another repository (${withs.repository})`);
+    });
+  }
+  return problems;
+}
+
+/** Every problem with the deploy workflow's text. */
+export function deployTextProblems(text) {
+  const { value, error } = parseWorkflow(text);
+  if (error) return [`can't be read as a workflow (${error})`];
+  return deployProblems(value);
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  const file = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".github", "workflows", "deploy.yml");
+  const problems = deployTextProblems(readFileSync(file, "utf8"));
+  if (problems.length) {
+    console.error(`deploy.yml lets release code near the production OIDC token:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
+    process.exit(1);
+  }
+  console.log(`check-deploy-workflow: only ${AFTER_APPLY_APPROVAL.join(", ")} run release code where the production OIDC token can be requested, each past an apply approval`);
+}

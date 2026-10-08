@@ -83,6 +83,9 @@ jobs:
       # Only journeys.yml may name the journey tests' environment, and nothing a pull request starts
       # may reach it (supply-checkout-o60.4). It parses the workflows with the yaml package.
       - run: node scripts/check-workflow-environments.mjs
+      # In the deploy workflow, no job that can request the production OIDC token runs the
+      # release commit's code before an apply approval (supply-checkout-pbp.39)
+      - run: node scripts/check-deploy-workflow.mjs
       # The operator page's logic (ops/lib/), with a 100% coverage gate; its UI runs in the
       # Playwright suites (tests/ops.spec.js, with BUILD=web)
       - run: npm run test:ops
@@ -495,6 +498,21 @@ jobs:
           second="$(bash ../scripts/assembly-hash.sh cdk.out)"
           echo "$first $second"
           if [[ "$first" != "$second" ]]; then echo "::error::Two synths of this commit differ, so the deploy's plan/apply hash check would always fail"; exit 1; fi
+      # The deploy's synth job uploads the assembly with the account ID swapped for a placeholder
+      # and its plan job swaps it back (scripts/assembly-pack.sh): with an account, as there, the
+      # unpacked copy must reach the synth's own hash, or no deploy could pass its plan.
+      - name: A packed and unpacked assembly keeps its hash
+        env:
+          ACCOUNT: "111122223333"
+        run: |
+          rm -rf cdk.out
+          CDK_DEFAULT_ACCOUNT="$ACCOUNT" npx cdk synth --quiet
+          synth="$(bash ../scripts/assembly-hash.sh cdk.out)"
+          bash ../scripts/assembly-pack.sh pack cdk.out "$RUNNER_TEMP/packed" "$ACCOUNT"
+          bash ../scripts/assembly-pack.sh unpack "$RUNNER_TEMP/packed" "$RUNNER_TEMP/unpacked" "$ACCOUNT"
+          unpacked="$(bash ../scripts/assembly-hash.sh "$RUNNER_TEMP/unpacked")"
+          echo "$synth $unpacked"
+          if [[ "$synth" != "$unpacked" ]]; then echo "::error::The packed and unpacked assembly's hash isn't the synth's, so the deploy's plan would always fail"; exit 1; fi
       - run: npm run synth:all-regions
       # The backup account's vault stack is a separate CDK app (bin/backup-account.ts)
       - run: npm run synth:backup-account
