@@ -17,14 +17,14 @@
 //    them, which a failed test's page and URLs show), the values the run masked (the
 //    masked-values file), and anything shaped like a token, an address or an account ID.
 // 3. Refuses to upload anything if any file it would upload (binary ones too) holds a password
-//    or the TOTP secret, as is, JSON-escaped or URL-encoded (checked before and after step 2),
+//    or the TOTP secret, as is, JSON-escaped, URL-encoded or form-encoded (checked before and after step 2),
 //    or still holds an ::add-mask:: command after it, naming the files (never the values).
 //
-// Each trace (.zip) is unpacked first (lib/traces.mjs): the Authorization, Cookie and Set-Cookie
-// headers and cookie lists go from every request and response in its .network and .trace
-// entries, as do the bodies of /auth calls (their resources/ files), and it's repacked only if no
-// entry still holds a password, the TOTP secret, a saved session's refresh token or anything
-// shaped like a JWT; otherwise the upload is refused. A trace that can't be unpacked can't be
+// Each trace (.zip) is unpacked first (lib/traces.mjs): the Authorization, Cookie, Set-Cookie and
+// Sec-WebSocket-Protocol headers and cookie lists go from every request and response in its
+// .network and .trace entries, as do the bodies of /auth calls and WebSocket frames (their
+// resources/ files), and it's repacked only if no entry still holds a password, the TOTP secret, a
+// saved session's refresh token or anything shaped like a JWT or JWE; otherwise the upload is refused. A trace that can't be unpacked can't be
 // checked, so it's deleted rather than uploaded. The fixtures keep sign-in out of traces as well
 // (lib/tracing.mjs).
 //
@@ -70,8 +70,8 @@ export function filesToUpload(dir) {
 
 export class UploadRefused extends Error {}
 
-/** The forms a secret can take in a file: as is, JSON-escaped and URL-encoded. */
-export const leakForms = (secret) => [...new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)])];
+/** The forms a secret can take in a file: as is, JSON-escaped, URL-encoded and form-encoded. */
+export const leakForms = (secret) => [...new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret), new URLSearchParams({ x: secret }).toString().slice(2)])];
 
 /** The files (relative paths) that hold any form of any of `secrets`, or an ::add-mask:: command. */
 export function findLeaks(dir, files, secrets, { addMask = true } = {}) {

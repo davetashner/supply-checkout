@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
-import { SENSITIVE_HEADERS, isAuthUrl, leakingEntries, scrubTrace, stripHeaders } from "../lib/traces.mjs";
+import { SENSITIVE_HEADERS, isAuthUrl, isWebSocket, leakingEntries, scrubTrace, stripHeaders } from "../lib/traces.mjs";
 import { UploadRefused, scrubTraces, upload } from "../upload-results.mjs";
 import { fakeEnv, fakeS3 } from "./helpers.mjs";
 
@@ -16,6 +16,10 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
 // Built here so no token-shaped literal sits in the repository
 const ACCESS = `${b64({ alg: "RS256", kid: "fake-key" })}.${b64({ sub: "fake-user", token_use: "access" })}.fake-signature-part`;
 const REFRESH = "fake-refresh-cookie-value-0123";
+// Cognito's refresh token is a JWE: five parts, the second empty
+const JWE_TOKEN = `${b64({ cty: "JWT", enc: "A256GCM", alg: "RSA-OAEP" })}..fake-iv-part0.fake-ciphertext-part.fake-tag-part0`;
+// The live-updates WebSocket's subprotocol (src/aws/live.js): the access token, base64url-encoded
+const WS_PROTOCOL = `aws-appsync-event-ws, header-${b64({ host: "live.example.test", Authorization: ACCESS })}`;
 const OTHER_COOKIE = "fake-other-cookie-value";
 
 const h = (pairs) => Object.entries(pairs).map(([name, value]) => ({ name, value }));
@@ -38,6 +42,10 @@ function fixtureTrace() {
       content: { size: 40, mimeType: "application/json", _sha1: "refresh-response" },
     }),
     resource(`${API}/auth/session`, { content: { size: 40, mimeType: "application/json", text: JSON.stringify({ accessToken: ACCESS }) } }),
+    // The live-updates WebSocket: the token in the handshake and in the frames file
+    { type: "resource-snapshot", snapshot: { _resourceType: "websocket", request: { method: "GET", url: "wss://live.example.test/event/realtime", headers: h({ "Sec-WebSocket-Protocol": WS_PROTOCOL }) }, response: { status: 101, headers: h({ "sec-websocket-protocol": "aws-appsync-event-ws" }), content: { size: -1, mimeType: "x-unknown", _file: "resources/0f1e-guid.jsonl" } } } },
+    // A HAR-style entry embeds the frames instead
+    { type: "resource-snapshot", snapshot: { request: { method: "GET", url: "wss://live.example.test/event/realtime", headers: [] }, response: { status: 101, headers: [], content: { size: -1 } }, _webSocketMessages: [{ type: "send", data: JSON.stringify({ authorization: { Authorization: ACCESS } }) }] } },
   ];
   const events = [
     { type: "context-options", options: { extraHTTPHeaders: h({ "X-Extra": "1", AUTHORIZATION: `Bearer ${ACCESS}` }), storageState: { cookies: [{ name: "sc_refresh", value: REFRESH }] } } },
@@ -54,6 +62,9 @@ function fixtureTrace() {
     "resources/refresh-request.txt": strToU8("{}"),
     "resources/refresh-response": strToU8(JSON.stringify({ accessToken: ACCESS })),
     "resources/page.jpeg": new Uint8Array([0xff, 0xd8, 0xff, 0x00]),
+    "resources/0f1e-guid.jsonl": strToU8(`${JSON.stringify({ type: "send", opcode: 1, data: JSON.stringify({ type: "subscribe", authorization: { Authorization: ACCESS, host: "live.example.test" } }) })}\n`),
+    // A frames file no entry names (a snapshot written before the first frame) goes too
+    "resources/1a2b-guid.jsonl": strToU8(`${JSON.stringify({ type: "receive", data: "{}" })}\n`),
   });
 }
 
@@ -62,15 +73,19 @@ const text = (entries, name) => strFromU8(entries[name]);
 test("a scrubbed trace has no Authorization, Cookie or Set-Cookie, no cookie lists and no /auth bodies", () => {
   const { zip, leaks, dropped } = scrubTrace(fixtureTrace(), [Buffer.from("Owner-password-fake")]);
   assert.deepEqual(leaks, []);
-  assert.deepEqual(dropped, ["resources/refresh-request.txt", "resources/refresh-response"]);
+  assert.deepEqual(dropped, ["resources/0f1e-guid.jsonl", "resources/1a2b-guid.jsonl", "resources/refresh-request.txt", "resources/refresh-response"]);
   const entries = unzipSync(zip);
   assert.deepEqual(Object.keys(entries).sort(), ["resources/items.json", "resources/page.jpeg", "trace.network", "trace.stacks", "trace.trace"]);
   const all = Object.keys(entries).map((n) => text(entries, n)).join("\n");
-  for (const secret of [ACCESS, REFRESH, OTHER_COOKIE, "sc_refresh", "storageState"]) assert.ok(!all.includes(secret), secret);
-  assert.doesNotMatch(all, /"(authorization|cookie|set-cookie)"/i);
+  for (const secret of [ACCESS, REFRESH, OTHER_COOKIE, WS_PROTOCOL.split("header-")[1], "sc_refresh", "storageState", "_webSocketMessages"]) assert.ok(!all.includes(secret), secret);
+  assert.doesNotMatch(all, /"(authorization|cookie|set-cookie|sec-websocket-protocol)"/i);
   // Everything else is kept: other headers, the non-auth body, the trace events themselves
   const network = text(entries, "trace.network").trim().split("\n").map((l) => JSON.parse(l));
-  assert.equal(network.length, 3);
+  assert.equal(network.length, 5);
+  assert.deepEqual(network[3].snapshot.request.headers, []);
+  assert.deepEqual(network[3].snapshot.response.content, { size: -1, mimeType: "x-unknown" });
+  assert.equal(network[3].snapshot._resourceType, "websocket");
+  assert.deepEqual(Object.keys(network[4].snapshot).sort(), ["request", "response"]);
   assert.deepEqual(network[0].snapshot.request.headers, [{ name: "Accept", value: "*/*" }]);
   assert.deepEqual(network[0].snapshot.request.cookies, []);
   assert.equal(network[0].snapshot.response.content._file, "resources/items.json");
@@ -96,12 +111,15 @@ test("a trace that still holds a secret or a JWT after scrubbing is named, by en
   });
   const { leaks } = scrubTrace(zip, [Buffer.from(pw)]);
   assert.deepEqual(leaks, ["resources/page.html", "trace.trace"]);
+  assert.deepEqual(leakingEntries({ a: strToU8(`refresh ${JWE_TOKEN}`), b: strToU8("a.b.c.d.e") }, []), ["a"]);
   assert.deepEqual(leakingEntries({ a: strToU8("eyJabc.eyJdef.ghi") }, []), []);
   assert.throws(() => scrubTrace(Buffer.from("PK not a zip")));
 });
 
 test("the helpers: which headers, which URLs", () => {
-  assert.deepEqual(SENSITIVE_HEADERS, ["authorization", "proxy-authorization", "cookie", "set-cookie"]);
+  assert.deepEqual(SENSITIVE_HEADERS, ["authorization", "proxy-authorization", "cookie", "set-cookie", "sec-websocket-protocol"]);
+  assert.ok(isWebSocket({ _resourceType: "websocket" }) && isWebSocket({ request: { url: "WS://x.example.test/" } }));
+  assert.ok(!isWebSocket({ request: { url: `${API}/x` } }) && !isWebSocket(undefined));
   assert.deepEqual(stripHeaders([{ name: "Cookie", value: "x" }, { name: "Accept" }, "s", 1, null]), [{ name: "Accept" }, "s", 1, null]);
   assert.deepEqual(stripHeaders({ cookies: "not a list", Headers: { "Set-Cookie": "x", "X-A": "1" } }), { cookies: "not a list", Headers: { "X-A": "1" } });
   for (const url of [`${API}/auth`, `${API}/auth/refresh`, "https://login.example.test/oauth2/token", "https://cognito-idp.us-east-1.amazonaws.com/"]) assert.ok(isAuthUrl(url), url);
@@ -127,7 +145,8 @@ test("upload-results uploads a trace only scrubbed, deletes one it can't unpack,
   assert.deepEqual(s3.calls, [["upload", dir, "runs/77-1/"]]);
   assert.ok(!existsSync(path.join(dir, "test-results/b/trace.zip")));
   const entries = unzipSync(readFileSync(path.join(dir, "test-results/a/trace.zip")));
-  assert.ok(!Object.values(entries).some((e) => Buffer.from(e).includes(REFRESH)));
+  // Not refused: the token in the WebSocket's handshake and frames is scrubbed, not left to refuse
+  for (const secret of [REFRESH, ACCESS, WS_PROTOCOL]) assert.ok(!Object.values(entries).some((e) => Buffer.from(e).includes(secret)), secret);
 
   // The account's password in a trace (an evaluate's argument, say) refuses the whole upload
   const env = fakeEnv();

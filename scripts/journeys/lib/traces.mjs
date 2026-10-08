@@ -3,11 +3,13 @@
 // refresh cookie and the Set-Cookie that sets it) in the .network and .trace entries, and their
 // bodies as resources/ files (/auth/session and /auth/refresh answer with an access token). The
 // zip is compressed, so the upload's byte-level leak check can't see inside it; this unpacks it,
-// strips those, checks every entry, and repacks it.
+// strips those, checks every entry, and repacks it. The live-updates WebSocket (src/aws/live.js)
+// carries the access token twice: base64url-encoded in its Sec-WebSocket-Protocol handshake
+// header, and as is in its subscribe frame, which a trace keeps in a resources/<guid>.jsonl file.
 import { unzipSync, zipSync } from "fflate";
 
 /** Headers (and HAR cookie lists) never kept in an uploaded trace. */
-export const SENSITIVE_HEADERS = ["authorization", "proxy-authorization", "cookie", "set-cookie"];
+export const SENSITIVE_HEADERS = ["authorization", "proxy-authorization", "cookie", "set-cookie", "sec-websocket-protocol"];
 const sensitive = (name) => typeof name === "string" && SENSITIVE_HEADERS.includes(name.toLowerCase());
 const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -44,29 +46,42 @@ function dropBody(body) {
   return files;
 }
 
+/** True for a WebSocket's entry: its frames are its "body", and they can carry a token. */
+export const isWebSocket = (snapshot) => snapshot?._resourceType === "websocket" || /^wss?:/i.test(String(snapshot?.request?.url ?? ""));
+
 /** One trace event, scrubbed, and the resources/ files of the bodies it dropped. */
 function scrubEvent(event) {
   const clean = stripHeaders(event);
   const snapshot = clean?.snapshot;
-  if (clean?.type !== "resource-snapshot" || !isAuthUrl(snapshot?.request?.url)) return { event: clean, drop: [] };
-  return { event: clean, drop: [...dropBody(snapshot.request.postData), ...dropBody(snapshot.response?.content)] };
+  if (clean?.type !== "resource-snapshot" || !isObject(snapshot)) return { event: clean, drop: [] };
+  const ws = isWebSocket(snapshot);
+  if (!ws && !isAuthUrl(snapshot.request?.url)) return { event: clean, drop: [] };
+  // A HAR embeds a WebSocket's frames instead
+  delete snapshot._webSocketMessages;
+  return { event: clean, drop: [...dropBody(snapshot.request?.postData), ...dropBody(snapshot.response?.content)] };
 }
 
 // A JWT whose header and payload are both JSON (each part starts "eyJ"): an access or ID token
 const JWT = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
+// A JWE (five parts, the header JSON, the key part empty for direct encryption): Cognito's
+// refresh token
+const JWE = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
 
-/** The entries (names) that hold any of `needles` (Buffers) or anything shaped like a JWT. */
+/** The entries (names) that hold any of `needles` (Buffers) or anything shaped like a JWT or JWE. */
 export function leakingEntries(entries, needles) {
   return Object.entries(entries).filter(([, bytes]) => {
     const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    return needles.some((n) => buf.includes(n)) || JWT.test(buf.toString("latin1"));
+    if (needles.some((n) => buf.includes(n))) return true;
+    const text = buf.toString("latin1");
+    return JWT.test(text) || JWE.test(text);
   }).map(([name]) => name).sort();
 }
 
 /**
  * A scrubbed copy of a trace.zip: every .trace and .network entry without sensitive headers or
  * cookies (a line that isn't JSON is dropped, since it can't be checked), and without the bodies
- * of auth calls and their resources/ files. `leaks` names the entries that still hold one of
+ * of auth calls, a WebSocket's frames, and their resources/ files (every resources/*.jsonl too,
+ * which is where Playwright keeps WebSocket frames, in case an entry didn't name its file). `leaks` names the entries that still hold one of
  * `needles` or a JWT; the caller refuses to upload the trace if there are any. Throws if the
  * zip can't be read.
  */
@@ -88,6 +103,7 @@ export function scrubTrace(zip, needles = []) {
     }
     entries[name] = encoder.encode(lines.length ? `${lines.join("\n")}\n` : "");
   }
+  for (const name of Object.keys(entries)) if (/^resources\/[^/]+\.jsonl$/.test(name)) dropped.add(name);
   for (const f of dropped) delete entries[f];
   return { zip: zipSync(entries, { level: 6 }), leaks: leakingEntries(entries, needles), dropped: [...dropped].sort() };
 }

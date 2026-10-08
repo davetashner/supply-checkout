@@ -284,6 +284,7 @@ test("upload-results refuses on a password or the TOTP secret in any form, anywh
     ["report.json", JSON.stringify({ steps: [{ title: `Fill "${pw}"` }] })],
     ["test-results/a/note.txt", JSON.stringify(`said "${pw}"`)],
     ["test-results/a/url.bin", `https://x.example/?p=${encodeURIComponent(pw)}`],
+    ["test-results/a/form.bin", `user=x&${new URLSearchParams({ password: pw })}`],
   ];
   for (const [file, body] of cases) {
     const { temp } = runDirWith({ "report.json": "{}", [file]: body, "test-results/a/ok.txt": "fine" });
@@ -291,7 +292,7 @@ test("upload-results refuses on a password or the TOTP secret in any form, anywh
     await assert.rejects(upload({ env: uploadEnv(temp), s3For: () => s3 }), (e) => e instanceof UploadRefused && e.message.endsWith(` is in ${file}`) && !e.message.includes(pw), file);
     assert.deepEqual(s3.calls, [], file);
   }
-  assert.deepEqual(leakForms('a"b c/d'), ['a"b c/d', 'a\\"b c/d', "a%22b%20c%2Fd"]);
+  assert.deepEqual(leakForms('a"b c/d!'), ['a"b c/d!', 'a\\"b c/d!', "a%22b%20c%2Fd!", "a%22b+c%2Fd%21"]);
   assert.deepEqual(scrubReport({ a: ["x\n::add-mask::y", 1, null], stdout: [] }, (s) => s), { a: ["x", 1, null] });
   const { dir } = runDirWith({ "ok.txt": "fine" });
   assert.deepEqual(findLeaks(dir, ["ok.txt"], [pw]), []);
