@@ -618,8 +618,8 @@ describe("two-step sign-in", () => {
     expect(logs).toContainEqual(["Sign-out time not recorded", { userId: OWNER, code: "AccessDeniedException" }]);
     // Counted, so it alarms ("Security notices failing", supply-checkout-6uw.34): sessions from before still pass
     expect(counts[BusinessMetric.SecurityNoticeFailures]).toBe(1);
-    // Nothing was written, so nothing cached is dropped
-    expect(forgotten).toEqual([]);
+    // Dropped anyway: a write can land though its answer failed (a timeout), so the cache is read again
+    expect(forgotten).toEqual([OWNER]);
   });
 
   // supply-checkout-6uw.34: the check's cache in this container doesn't let sessions from before the sign-out through
