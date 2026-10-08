@@ -10,7 +10,7 @@ import { createBillingHandler } from "../src/api/billing-handler.js";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { createReceiptsHandler } from "../src/api/receipts-handler.js";
 import { ACCOUNT_ROUTES, BILLING_ROUTES, DATA_ROUTES, RECEIPT_ROUTES, routeKey } from "../src/api/routes.js";
-import { beganBeforeReset, createSessionCheck, passwordReset, RESET_CACHE_MS, RESET_SKEW_MS, type SessionCheck, sessionCheckFromEnv } from "../src/api/session-reset.js";
+import { alongside, beganBeforeReset, createSessionCheck, passwordReset, RESET_CACHE_MS, RESET_SKEW_MS, type SessionCheck, sessionCheckFromEnv } from "../src/api/session-reset.js";
 import { passwordResetAt, recordPasswordReset } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
 import { fakeDb, offlineDb } from "./helpers.js";
@@ -98,6 +98,28 @@ describe("createSessionCheck", () => {
     expect(lookups).toEqual(["a", "b", "c", "b"]);
   });
 
+  it("shares one read among concurrent requests for a user that isn't cached", async () => {
+    let release: (value: number | undefined) => void = () => {};
+    const lookups: string[] = [];
+    const check = createSessionCheck({
+      lookup: (userId) => {
+        lookups.push(userId);
+        return new Promise((resolve) => (release = resolve));
+      },
+      now: () => NOW,
+    });
+    const both = Promise.allSettled([check(event(old), USER), check(event(fresh), USER)]);
+    await Promise.resolve();
+    expect(lookups).toEqual([USER]);
+    release(NOW);
+    const [first, second] = await both;
+    expect(first).toMatchObject({ status: "rejected", reason: { reason: "password_reset" } });
+    expect(second).toEqual({ status: "fulfilled", value: undefined });
+    // Then from the cache
+    await expect(check(event(fresh), USER)).resolves.toBeUndefined();
+    expect(lookups).toEqual([USER]);
+  });
+
   it("refuses the request when the record can't be read, and doesn't keep the failure", async () => {
     let fail = true;
     const { check, lookups } = setup(() => (fail ? Object.assign(new Error("down"), { name: "ProvisionedThroughputExceededException" }) : undefined));
@@ -105,6 +127,34 @@ describe("createSessionCheck", () => {
     fail = false;
     await expect(check(event(fresh), USER)).resolves.toBeUndefined();
     expect(lookups).toEqual([USER, USER]);
+  });
+});
+
+describe("alongside", () => {
+  const no = (message: string) => Promise.reject(new Error(message));
+  it("answers as if the session check came first", async () => {
+    await expect(alongside(no("refused"), () => no("not a member"))).rejects.toThrow("refused");
+    await expect(alongside(no("refused"), async () => "ctx")).rejects.toThrow("refused");
+    await expect(alongside(Promise.resolve(), () => no("not a member"))).rejects.toThrow("not a member");
+    await expect(alongside(Promise.resolve(), async () => "ctx")).resolves.toBe("ctx");
+    await expect(alongside(undefined, async () => "ctx")).resolves.toBe("ctx");
+  });
+  it("starts both at once, and turns work that throws at once into a refusal", async () => {
+    const started: string[] = [];
+    let pass = () => {};
+    const check = new Promise<void>((resolve) => (pass = resolve));
+    const result = alongside(check, async () => {
+      started.push("work");
+      return "ctx";
+    });
+    expect(started).toEqual(["work"]);
+    pass();
+    await expect(result).resolves.toBe("ctx");
+    await expect(
+      alongside(Promise.resolve(), () => {
+        throw new Error("sync");
+      }),
+    ).rejects.toThrow("sync");
   });
 });
 
@@ -119,14 +169,19 @@ describe("the password reset record", () => {
   it("reads only passwordResetAt in the user's own partition, strongly consistent", async () => {
     const inputs: Record<string, unknown>[] = [];
     const answers: unknown[] = [{ Item: { passwordResetAt: "2026-10-08T11:59:00.000Z" } }, {}, { Item: { passwordResetAt: "garbage" } }, { Item: { passwordResetAt: 5 } }];
-    const db = fakeDb(async (command) => {
+    const signals: unknown[] = [];
+    const db = fakeDb(async (command, options) => {
       inputs.push(command.input);
+      signals.push((options as { abortSignal?: unknown } | undefined)?.abortSignal);
       return answers.shift();
     });
-    expect(await passwordResetAt(db, USER)).toBe(Date.parse("2026-10-08T11:59:00.000Z"));
+    expect(await passwordResetAt(db, USER, { timeoutMs: 2000 })).toBe(Date.parse("2026-10-08T11:59:00.000Z"));
     expect(await passwordResetAt(db, USER)).toBeUndefined();
     expect(await passwordResetAt(db, USER)).toBeUndefined();
     expect(await passwordResetAt(db, USER)).toBeUndefined();
+    // With a deadline when asked
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(signals[1]).toBeUndefined();
     expect(inputs[0]).toEqual({
       TableName: "fake",
       Key: { PK: `USER#${USER}`, SK: "PASSWORD_RESET" },

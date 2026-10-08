@@ -132,7 +132,7 @@
                     "passwordResetAt"
                   ]
                 },
-                "StringEqualsIfExists": {
+                "StringEquals": {
                   "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
                 }
               },
@@ -974,7 +974,7 @@
                     "passwordResetAt"
                   ]
                 },
-                "StringEqualsIfExists": {
+                "StringEquals": {
                   "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
                 }
               },
@@ -1518,7 +1518,7 @@
                     "passwordResetAt"
                   ]
                 },
-                "StringEqualsIfExists": {
+                "StringEquals": {
                   "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
                 }
               },
@@ -2274,7 +2274,7 @@
                     "passwordResetAt"
                   ]
                 },
-                "StringEqualsIfExists": {
+                "StringEquals": {
                   "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
                 }
               },

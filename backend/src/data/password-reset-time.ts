@@ -13,8 +13,10 @@
 // the app's tokens reach refuses a token whose `auth_time` is earlier
 // (api/session-reset.ts).
 //
-// Only the trigger writes it, with the time it ran (after Cognito changed the
-// password), and the time only ever moves later (recordPasswordReset's
+// The trigger writes it, with the time it ran (after Cognito changed the
+// password), and so does the account API's POST /me/sign-out-everywhere (what
+// the app sends after a password change), after its GlobalSignOut, which
+// leaves the same sessions working. The time only ever moves later (recordPasswordReset's
 // condition), so a retried or slow trigger can't move it back. Deleting the
 // account removes it with the user's other rows.
 //
@@ -66,7 +68,7 @@ export async function recordPasswordReset(db: Db, userId: string, at: Date, opti
 }
 
 /** When the user's password was last reset, in milliseconds, if it's recorded (strongly consistent). */
-export async function passwordResetAt(db: Db, userId: string): Promise<number | undefined> {
+export async function passwordResetAt(db: Db, userId: string, options: PasswordResetCallOptions = {}): Promise<number | undefined> {
   const { Item } = await connection(db).doc.send(
     new GetCommand({
       TableName: db.tableName,
@@ -75,6 +77,7 @@ export async function passwordResetAt(db: Db, userId: string): Promise<number | 
       ExpressionAttributeNames: { "#at": "passwordResetAt" },
       ConsistentRead: true,
     }),
+    sendOptions(options),
   );
   const at = typeof Item?.passwordResetAt === "string" ? Date.parse(Item.passwordResetAt) : Number.NaN;
   return Number.isFinite(at) ? at : undefined;

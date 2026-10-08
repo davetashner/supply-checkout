@@ -75,7 +75,7 @@ import { BusinessMetric, type Observability, testMark } from "../observability/i
 import { ApiError, errorFor as apiErrorFor, errorResponse, json, jsonBody, noContent, notMember, viewOnly } from "./http.js";
 import { requireRole } from "./roles.js";
 import { DATA_ROUTES, type DataRoute, routeKey } from "./routes.js";
-import type { SessionCheck } from "./session-reset.js";
+import { alongside, type SessionCheck } from "./session-reset.js";
 import type { DbForTeam } from "./team-db.js";
 
 export type DataEvent = APIGatewayProxyEventV2WithJWTAuthorizer;
@@ -409,10 +409,10 @@ export function createDataHandler(deps: DataHandlerDeps) {
       // An old client still on `/sheets` (supply-checkout-005.6): counted, then served as `/projects`
       if (route.legacy) deps.obs.count(BusinessMetric.LegacySheetsRouteCalls, 1, { route: routeKey(route) });
       const userId = callerId(event, now());
-      await deps.sessionCheck?.(event, userId);
       if (typeof teamId !== "string") throw new ApiError(400, "bad_request", "Missing team ID");
       try {
-        ctx = await authorizeTeam(deps.dbForTeam(teamId), userId, teamId, new Date(now()));
+        // The session check alongside the membership check, its refusal first (session-reset.ts)
+        ctx = await alongside(deps.sessionCheck?.(event, userId), () => authorizeTeam(deps.dbForTeam(teamId), userId, teamId, new Date(now())));
       } catch (error) {
         // Not a member, or no such team: the same answer for both, so the
         // response doesn't reveal which teams exist

@@ -241,3 +241,30 @@ test("a session refused as the app starts asks to sign in again before any team 
   await expect(account(page).getByRole("heading", { name: "Your password was reset" })).toBeVisible();
   expect(backend.requests("GET", /^\/teams\//)).toEqual([]);
 });
+
+// A refresh on its way when the API refuses the session for a reset: its answer, new tokens or
+// a session that's over, mustn't replace the reset screen
+for (const [name, answer] of [
+  ["new tokens", { late: true }],
+  ["a session that's over", { status: 401, body: { error: { code: "unauthenticated", message: "Signed out" } } }],
+]) {
+  test(`a refresh answered with ${name} after the reset refusal leaves the reset screen as it is`, { tag: ["@J0"] }, async ({ page }) => {
+    const backend = new FakeBackend();
+    let refreshes = 0, release;
+    const wait = new Promise((r) => { release = r; });
+    // The second refresh, after sign-in's, is held until the refusal is on screen
+    backend.on("POST", (path) => path === "/auth/refresh" && ++refreshes === 2, { wait, ...answer });
+    // An expired token's 401 on one of the team's first lists sends that refresh; the other is refused for the reset
+    backend.on("GET", "/teams/t1/products", { status: 401, body: { message: "Unauthorized" } });
+    backend.on("GET", "/teams/t1/projects", RESET_REFUSAL);
+    await openAws(page, backend);
+    await expect(account(page).getByRole("heading", { name: "Your password was reset" })).toBeVisible();
+    await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBe(2);
+    release();
+    await page.waitForTimeout(300);
+    await expect(account(page).getByRole("heading")).toHaveText(["Your password was reset"]);
+    // The list isn't sent again with new tokens
+    expect(backend.requests("GET", "/teams/t1/products")).toHaveLength(1);
+    await expect(page.locator("#toast")).toBeHidden();
+  });
+}

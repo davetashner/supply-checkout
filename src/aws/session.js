@@ -63,6 +63,8 @@ const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-"
 const random = (n) => b64url(crypto.getRandomValues(new Uint8Array(n)));
 // Why a call is refused once the session has ended here
 const ENDED = { code: "unauthenticated", message: "Signed out" };
+// Why a refresh is dropped once the API has refused the session for a password reset
+const RESETTING = { code: "unauthenticated", message: "Password reset" };
 const claimsOf = (jwt) => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))));
 
 export function createSession(config, { onSignedOut, onRefreshed, onUserChanged, onPasswordReset }) {
@@ -126,12 +128,16 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged,
     refreshing ||= post("/auth/refresh")
       .then((t) => {
         if (ended) throw ENDED;
+        // The reset screen stays: a refresh on its way when the API refused the session for a
+        // password reset neither takes up new tokens (they'd keep the old sign-in time) nor
+        // shows the sign-in screen over it
+        if (resetting) throw RESETTING;
         // Someone else signed in in another tab (the refresh cookie is shared), and this tab
         // didn't hear of it: never take up their tokens here
         if (claimsOf(t.idToken).sub !== user) { end(); onUserChanged(); throw ENDED; }
         accept(t);
         onRefreshed();
-      }, (e) => { if (e.code === "unauthenticated") { tokens = null; onSignedOut(); } throw e; })
+      }, (e) => { if (e.code === "unauthenticated" && !resetting) { tokens = null; onSignedOut(); } throw e; })
       .finally(() => { refreshing = null; });
     return refreshing;
   }
@@ -216,7 +222,8 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged,
       try { return await send(); }
       catch (e) {
         if (e.code !== "unauthenticated") throw e;
-        await refresh();
+        // A refresh dropped for a password reset leaves this call unanswered, as the reset's own are
+        await refresh().catch((r) => (resetting ? passwordWasReset() : Promise.reject(r)));
         return send();
       }
     },

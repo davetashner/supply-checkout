@@ -311,7 +311,8 @@ describe("functions", () => {
             Condition: {
               "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
               "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "passwordResetAt"] },
-              StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+              // Required: a GetItem without a projection mustn't read the whole item
+              StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
             },
           },
         ]);

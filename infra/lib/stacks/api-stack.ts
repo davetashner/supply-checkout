@@ -1329,8 +1329,8 @@ export class ApiStack extends SupplyCheckoutStack {
    * Lets a function refuse a session from before the caller's last password
    * reset (backend/src/api/session-reset.ts, supply-checkout-6uw.33), with its
    * own role: GetItem naming only the keys and `passwordResetAt`
-   * (PASSWORD_RESET_RECORD_ATTRIBUTES, which no other item has), projected,
-   * in `USER#` partitions, and the table's key through DynamoDB. No other
+   * (PASSWORD_RESET_RECORD_ATTRIBUTES, which no other item has), and only
+   * projected (dynamodb:Select SPECIFIC_ATTRIBUTES required), in `USER#` partitions, and the table's key through DynamoDB. No other
    * action, attribute or partition. The function's own role has no per-user
    * session, so IAM can't name the caller or the sort key: the code reads
    * only `USER#<sub>` / `PASSWORD_RESET` for the verified token's `sub`, and
@@ -1347,7 +1347,8 @@ export class ApiStack extends SupplyCheckoutStack {
         conditions: {
           "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
           "ForAllValues:StringEquals": { "dynamodb:Attributes": [...PASSWORD_RESET_RECORD_ATTRIBUTES] },
-          StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          // Required, not IfExists: a GetItem without a projection may carry neither key, and would read the whole item
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
         },
       }),
     );

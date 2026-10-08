@@ -60,7 +60,7 @@ import { callerId, type DataEvent, errorFor } from "./data-handler.js";
 import { ApiError, errorResponse, json, jsonBody, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
 import { RECEIPT_ROUTES, routeKey } from "./routes.js";
-import type { SessionCheck } from "./session-reset.js";
+import { alongside, type SessionCheck } from "./session-reset.js";
 import type { DbForTeamUser } from "./team-db.js";
 
 /**
@@ -236,11 +236,11 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
     try {
       if (!route) throw new ApiError(404, "not_found", "No such route");
       const userId = callerId(event, now());
-      await deps.sessionCheck?.(event, userId);
       if (typeof teamId !== "string") throw new ApiError(400, "bad_request", "Missing team ID");
       let ctx: TeamContext;
       try {
-        ctx = await authorizeTeam(deps.dbFor(teamId, userId), userId, teamId, new Date(now()));
+        // The session check alongside the membership check, its refusal first (session-reset.ts)
+        ctx = await alongside(deps.sessionCheck?.(event, userId), () => authorizeTeam(deps.dbFor(teamId, userId), userId, teamId, new Date(now())));
       } catch (error) {
         // Not a member, or no such team: one answer for both
         if (error instanceof ForbiddenError) throw notMember();

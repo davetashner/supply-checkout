@@ -1434,7 +1434,11 @@ paths:
       description: |
         Cognito's GlobalSignOut with the caller's own access token: their
         refresh tokens stop working, and Cognito refuses their access tokens
-        (so the billing routes do). The app sends it when turning two-step
+        (so the billing routes do). Then the time is recorded as the
+        account's password reset time, so every route refuses a session
+        from before it (`password_reset`), a Managed Login session's
+        too. The app sends it after changing the password (unless the
+        caller unticks Sign out everywhere), and when turning two-step
         sign-in on answered `signout_failed`.
       requestBody:
         required: false

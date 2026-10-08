@@ -607,6 +607,9 @@ describe("two-step sign-in", () => {
     expect(response.statusCode).toBe(204);
     expect(totpCalls).toEqual([["signOutEverywhere", `token-${OWNER}`]]);
     expect(logs).toContainEqual(["Two-step sign-in time not recorded", { userId: OWNER, code: "AccessDeniedException" }]);
+    // The same for the sign-out everywhere's record (supply-checkout-6uw.33): signed out, and logged
+    expect((await refusing(event("POST", "/me/sign-out-everywhere"))).statusCode).toBe(204);
+    expect(logs).toContainEqual(["Sign-out time not recorded", { userId: OWNER, code: "AccessDeniedException" }]);
   });
 
   it("checks the request before calling Cognito", async () => {
@@ -642,6 +645,19 @@ describe("two-step sign-in", () => {
     expect(await call("POST", "/me/sign-out-everywhere", { user: FEDERATED, body: {} })).toEqual({ status: 204, body: undefined });
     expect(totpCalls).toEqual([["signOutEverywhere", `token-${OWNER}`], ["signOutEverywhere", `token-${FEDERATED}`]]);
     expect((await call("POST", "/me/sign-out-everywhere", { body: { all: true } })).status).toBe(400);
+  });
+
+  // supply-checkout-6uw.33: after the sign-out, the API refuses every session from before it too
+  it("records the sign-out's time as the password reset record's, in the caller's own partition, only after the sign-out", async () => {
+    // Changing the password records nothing: the caller may choose to stay signed in, and the app's next call is the sign-out
+    expect((await call("POST", "/me/password", { body: { password: "Correct-Horse-9", currentPassword: "Old-Horse-9" } })).status).toBe(204);
+    expect(table.get(`USER#${OWNER}`, "PASSWORD_RESET")).toBeUndefined();
+    expect(await call("POST", "/me/sign-out-everywhere")).toEqual({ status: 204, body: undefined });
+    expect(table.get(`USER#${OWNER}`, "PASSWORD_RESET")).toEqual({ PK: `USER#${OWNER}`, SK: "PASSWORD_RESET", passwordResetAt: new Date(now).toISOString() });
+    // A sign-out that fails records nothing
+    signOutRefusal = new ApiError(401, "unauthenticated", "Sign in again");
+    expect((await call("POST", "/me/sign-out-everywhere", { user: FEDERATED })).status).toBe(401);
+    expect(table.get(`USER#${FEDERATED}`, "PASSWORD_RESET")).toBeUndefined();
   });
 
   it("tries a throttled sign-out everywhere again, but not one refused for a revoked token", async () => {
