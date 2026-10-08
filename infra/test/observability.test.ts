@@ -575,7 +575,10 @@ describe("cost alerts (supply-checkout-jxq)", () => {
     ]);
     // EventBridge may use the topics' key, for this account only
     const keyStatements = Object.values(t.findResources("AWS::KMS::Key")).flatMap((k) => (k.Properties.KeyPolicy as { Statement: Record<string, unknown>[] }).Statement);
-    for (const st of keyStatements.filter((x) => JSON.stringify(x.Principal ?? {}).includes("events.amazonaws.com"))) {
+    const services = (x: Record<string, unknown>) => [(x.Principal as { Service?: string | string[] } | undefined)?.Service ?? []].flat();
+    const forEvents = keyStatements.filter((x) => services(x).includes("events.amazonaws.com"));
+    expect(forEvents.length).toBeGreaterThan(0);
+    for (const st of forEvents) {
       expect(st).toMatchObject({ Effect: "Allow", Action: ["kms:Decrypt", "kms:GenerateDataKey*"], Condition: { StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } } } });
     }
     // Not where the cost alerts aren't
