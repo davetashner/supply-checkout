@@ -490,6 +490,7 @@ async function once(id, fn) {
   pending = null; draw();
 }
 
+// closedAt here is only for the moment before the server answers: the server stamps its own time (supply-checkout-1dg.16)
 const finish = id => write(() => db.doc("projects/" + id).update({ status: "closed", closedAt: new Date().toISOString() }), "Return finished", id);
 
 // Before you finish: for each piece of equipment still out, how many are back, how many were

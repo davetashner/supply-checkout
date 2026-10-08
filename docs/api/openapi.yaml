@@ -92,6 +92,10 @@ info:
       that doesn't track stock or doesn't exist yet, is 400 `bad_request` and
       changes nothing. A new item starts counting with a `count` adjustment
       after it's created. See [commands.md](commands.md).
+    - A project's `closedAt` is the server's too, but isn't refused: older
+      versions of the app send it, and it's ignored. The write that finishes
+      a project (`status` to `closed`) stamps it with the server's time;
+      every other write keeps the stored value (supply-checkout-1dg.16).
     - Every other field is kept exactly as written. The `Product`, `Project` and
       `ProjectLine` schemas list the fields the app writes; all of them,
       including each line's `code`, read back unchanged.
@@ -3195,7 +3199,7 @@ components:
         createdByName: { type: string, description: "Who prepared the project, when `createdBy` is `null`." }
         createdAt: { type: string, format: date-time }
         status: { type: string, enum: [open, closed], description: "Closing is refused (409 `equipment_out`) while company equipment is still out. Reopening a General Use project is refused (409 `adhoc_open`) while another General Use project is open." }
-        closedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time, description: "When the project was last finished. Set by the server, from its own clock, on the write that changes `status` to `closed` (or creates a finished project); every other write keeps the stored value, so a reopened project keeps it. A `closedAt` in a body is ignored (supply-checkout-1dg.16)." }
         kind: { const: adhoc, description: "The team's General Use project (ADR 0017), `adhoc-<n>`, made only by the quick take; a document write can't add, change or remove it, or create a project whose ID starts `adhoc-`. Absent for a client project." }
         items:
           type: object
