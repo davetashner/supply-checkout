@@ -86,14 +86,74 @@ test("the JSON export leaves out the marks of recent saves", { tag: ["@J6"] }, a
 });
 
 test("a single project's CSV guards formula-like text too", { tag: ["@J6.2"] }, async ({ page }) => {
-  await openOwner(page, { seed: { "projects/f": { client: "@Risky", date: "2026-09-01", status: "open", items: { a: { code: "-1", name: "+Plus", price: 1, out: 1, returned: 0 } } } } });
+  await openOwner(page, { seed: { "projects/f": { client: "@Risky", date: "2026-09-01", status: "open", items: {
+    a: { code: "-1", name: "+Plus", price: 1, out: 1, returned: 0 },
+    b: { code: "\uff0d1", name: " =HYPERLINK(\"x\")", price: 2, out: 1, returned: 0 },
+  } } } });
   await openProject(page, "Risky");
   await page.getByRole("button", { name: "Download CSV" }).click();
   await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
   const { data, filename } = await saved(page, 0);
   expect(filename).toBe("@Risky 2026-09-01.csv");
   expect(data).toContain("Client,'@Risky");
-  expect(data).toContain("'+Plus,'-1,1.00,1,0,1,1.00");
+  // A plain number like the barcode -1 can't be a formula, so it's written as it is
+  expect(data).toContain("'+Plus,-1,1.00,1,0,1,1.00");
+  expect(data).toContain("\"' =HYPERLINK(\"\"x\"\")\",'\uff0d1,2.00,1,0,1,2.00");
+});
+
+// OWASP CSV injection (supply-checkout-005.3): a formula behind leading spaces, control or
+// invisible characters, or written with fullwidth or other lookalike characters, is text
+// too, while plain text and numbers that only look a bit like one are left alone
+test("every CSV guards formulas behind spaces and lookalike characters", { tag: ["@J6"] }, async ({ page }) => {
+  const guarded = [
+    [" =HYPERLINK(\"http://x\")", "\"' =HYPERLINK(\"\"http://x\"\")\""],
+    ["   +1+1", "'   +1+1"],
+    ["\u00a0=1+1", "'\u00a0=1+1"],
+    ["\u200b@SUM(1)", "'\u200b@SUM(1)"],
+    ["\ufeff=1", "'\ufeff=1"],
+    ["\u3000-2+3", "'\u3000-2+3"],
+    ["\u0001=1", "'\u0001=1"],
+    ["\t=1", "'\t=1"],
+    ["\tplain", "'\tplain"],
+    ["\rplain", "\"'\rplain\""],
+    ["\n =1", "\"'\n =1\""],
+    ["\uff1d1+1", "'\uff1d1+1"],
+    ["\uff0b1", "'\uff0b1"],
+    ["\uff0d1", "'\uff0d1"],
+    ["\uff20SUM(1)", "'\uff20SUM(1)"],
+    ["\ufe661", "'\ufe661"],
+    ["\ufe621", "'\ufe621"],
+    ["\ufe631", "'\ufe631"],
+    ["\ufe6bSUM(1)", "'\ufe6bSUM(1)"],
+    ["\u22121+1", "'\u22121+1"],
+    ["=cmd|' /C calc'!A0", "'=cmd|' /C calc'!A0"],
+    ["@SUM(1+1)*cmd|' /C calc'!A0", "'@SUM(1+1)*cmd|' /C calc'!A0"],
+    ["+1 (555) 123-4567", "'+1 (555) 123-4567"],
+    [" -5", "' -5"],
+    ["-1e5", "'-1e5"],
+    ["-5+5", "'-5+5"],
+  ];
+  // Left as they are: text with a formula character later on, a phone number without a
+  // leading +, and plain decimals, which a spreadsheet can only read as that number
+  const plain = ["555-123-4567", "Paint - white", "a=b", "x@example.test", "-12.50", "-3"];
+  const seed = {};
+  [...guarded.map(([name]) => name), ...plain].forEach((name, i) => { seed[`products/p${i}`] = { code: `C${i}`, name, price: 1 }; });
+  seed["products/neg"] = { code: "NEG", name: "Credit", price: -2 };
+  seed["projects/f"] = { client: " =Client()", date: "2026-09-01", status: "open", items: { a: { code: "\uff20x", name: "\u3000+Item", price: 1, out: 1, returned: 0 } } };
+  await openOwner(page, { seed });
+  await page.getByRole("button", { name: "Export data" }).click();
+
+  await modal(page).getByRole("button", { name: "Inventory (CSV)" }).click();
+  await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
+  const inventory = (await saved(page, 0)).data;
+  guarded.forEach(([name, csv]) => expect(inventory).toContain(`${csv},,C${guarded.findIndex(([n]) => n === name)},,1.00,,Supply,,`));
+  plain.forEach((name, i) => expect(inventory).toContain(`\n${name},,C${guarded.length + i},,1.00,,Supply,,`));
+  // A negative amount stays a number
+  expect(inventory).toContain("\nCredit,,NEG,,-2.00,,Supply,,");
+
+  await modal(page).getByRole("button", { name: "Projects (CSV)" }).click();
+  await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(2);
+  expect((await saved(page, 1)).data).toContain("\n' =Client(),2026-09-01,Unknown,Checked out,'\u3000+Item,'\uff20x,1.00,1,0,1,1.00,f,Supply");
 });
 
 test("view-only owners can still export (a cancelled team's read-only period)", { tag: ["@J6", "@J10.2"] }, async ({ page }) => {
