@@ -60,6 +60,8 @@ export function createApi({ token, fetch = globalThis.fetch, base = PROD.api, ti
     listProducts: (teamId) => listAll(`/teams/${enc(teamId)}/products`, "/teams/{teamId}/products"),
     deleteProject: (teamId, id, version) => call("DELETE", `/teams/${enc(teamId)}/projects/${enc(id)}?expectedVersion=${version}`, "/teams/{teamId}/projects/{projectId}"),
     deleteProduct: (teamId, key, version) => call("DELETE", `/teams/${enc(teamId)}/products/${enc(key)}?expectedVersion=${version}`, "/teams/{teamId}/products/{key}"),
+    getSettings: (teamId) => call("GET", `/teams/${enc(teamId)}/settings`, "/teams/{teamId}/settings"),
+    putSettings: (teamId, equipmentMarkup, expectedVersion) => call("PUT", `/teams/${enc(teamId)}/settings`, "/teams/{teamId}/settings", { equipmentMarkup, expectedVersion }),
     closeTeam: (teamId, name) => call("POST", `/teams/${enc(teamId)}/close`, "/teams/{teamId}/close", { name }),
     deleteMe: () => call("DELETE", "/me", "/me", { confirm: "DELETE" }),
   };

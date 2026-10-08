@@ -6,6 +6,7 @@ import { runBarcode, runName, throwawayAddress } from "../lib/addresses.mjs";
 import { readConfig } from "../lib/config.mjs";
 import { createMasker } from "../lib/mask.mjs";
 import { recordKey } from "../lib/runs.mjs";
+import { BASELINE_MARKUP, MARKUP_SENTINEL, resetMarkup } from "../lib/settings.mjs";
 import { cleanTeam, cleanup, main, parseArgs } from "../cleanup.mjs";
 import { at, fakeEnv, fakeS3 } from "./helpers.mjs";
 
@@ -34,7 +35,7 @@ const teamDocs = () => ({
 });
 
 /** A fake world: Cognito, the API per signed-in account, the mail bucket and its log of calls. */
-function world({ failList = false, failSignIn = [], records = [], codeFor = () => "12345678", meFor } = {}) {
+function world({ failList = false, failSignIn = [], records = [], codeFor = () => "12345678", meFor, settings = {}, failSettings = false } = {}) {
   const log = [];
   const tokens = new Map();
   let n = 0;
@@ -71,6 +72,8 @@ function world({ failList = false, failSignIn = [], records = [], codeFor = () =
       async listProducts(teamId) { return docs[teamId].products; },
       async deleteProject(teamId, id, version) { log.push(["deleteProject", teamId, id, version]); },
       async deleteProduct(teamId, id, version) { log.push(["deleteProduct", teamId, id, version]); },
+      async getSettings(teamId) { if (failSettings) throw new Error("GET /teams/{teamId}/settings answered 503"); return settings[teamId] ?? { version: 1, settings: { equipmentMarkup: 0 } }; },
+      async putSettings(teamId, markup, version) { log.push(["putSettings", who, teamId, markup, version]); },
       async closeTeam(teamId, name) { log.push(["closeTeam", who, teamId, name]); },
       async deleteMe() { log.push(["deleteMe", who]); },
     };
@@ -202,4 +205,32 @@ test("cleanup's CLI refuses outside Actions without the opt-in, and its argument
   }
   assert.match(errors[0], /runs only in GitHub Actions/);
   void at;
+});
+
+test("cleanup puts back a journey team's equipment markup left on J2.5's sentinel, and no other", async () => {
+  const w = world({ settings: { "team-desktop-1": { version: 7, settings: { equipmentMarkup: MARKUP_SENTINEL } }, "team-phone-2": { version: 3, settings: { equipmentMarkup: 25 } } } });
+  const r = await run(w);
+  assert.deepEqual(w.log.filter(([op]) => op === "putSettings"), [["putSettings", config.accounts.owner.email, "team-desktop-1", BASELINE_MARKUP, 7]]);
+  assert.ok(r.done.includes("Journeys desktop: put the equipment markup back"));
+  assert.deepEqual(r.left, []);
+});
+
+test("cleanup reports a markup it couldn't check, and carries on", async () => {
+  const w = world({ failSettings: true });
+  const r = await run(w);
+  assert.deepEqual(r.left, [
+    "Journeys desktop: couldn't check or put back the equipment markup: GET /teams/{teamId}/settings answered 503",
+    "Journeys phone: couldn't check or put back the equipment markup: GET /teams/{teamId}/settings answered 503",
+  ]);
+  assert.ok(w.log.some(([op]) => op === "deleteProject"), "the teams were still cleaned");
+});
+
+test("resetMarkup changes only the sentinel, at the version it read", async () => {
+  const calls = [];
+  const api = (res) => ({ getSettings: async () => res, putSettings: async (...a) => calls.push(a) });
+  assert.equal(await resetMarkup(api({ version: 0, settings: {} }), "t"), false);
+  assert.equal(await resetMarkup(api({ version: 2, settings: { equipmentMarkup: 0 } }), "t"), false);
+  assert.equal(await resetMarkup(api({ version: 2, settings: { equipmentMarkup: 12.35 } }), "t"), false);
+  assert.equal(await resetMarkup(api({ version: 4, settings: { equipmentMarkup: MARKUP_SENTINEL } }), "t"), true);
+  assert.deepEqual(calls, [["t", BASELINE_MARKUP, 4]]);
 });
