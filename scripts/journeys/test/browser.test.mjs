@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { PROD } from "../lib/config.mjs";
 import { consoleFailure, isExpectedConsoleError, isExpectedPageError } from "../lib/console.mjs";
 import { createMasker } from "../lib/mask.mjs";
-import { formatScreen } from "../lib/screen.mjs";
+import { formatScreen, isPasswordChoice } from "../lib/screen.mjs";
 
 const NOT_FOUND = "Failed to load resource: the server responded with a status of 404 ()";
 
@@ -76,6 +76,8 @@ test("only the RUM client's failure to get its credentials is an expected page e
   for (const m of [
     "TypeError: Load failed",
     "Error: CWR: something else",
+    "Error: CWR: Failed to retrieve Cognito identity: TypeError: Load failed; and then something else",
+    "Error: CWR: Failed to retrieve Cognito identity: TypeError: x is undefined",
     `Fetch API cannot load ${PROD.api}/me due to access control checks.`,
     "Fetch API cannot load https://cognito-identity.us-east-1.amazonaws.com.evil.test/ due to access control checks.",
     "",
@@ -88,4 +90,13 @@ test("a console failure names the resource's path without its query", () => {
   assert.equal(consoleFailure("TypeError: boom", ""), "console: TypeError: boom");
   assert.equal(consoleFailure("TypeError: boom", undefined), "console: TypeError: boom");
   assert.equal(consoleFailure("x", "data:text/plain,secret"), "console: x");
+});
+
+test("only a control named for the password itself is the password choice", () => {
+  for (const name of ["Password", " password ", "PASSWORD", "Use password", "Use a password", "Use your password", "Sign in with password", "Sign in with your  password"]) {
+    assert.equal(isPasswordChoice(name), true, name);
+  }
+  for (const name of ["Email one-time password", "One-time password", "Email password", "Show password", "Forgot your password?", "Forgot password?", "Reset password", "Change password", "Passwordless", "Password reset", "Sign in with a passkey", "Email message", "", undefined]) {
+    assert.equal(isPasswordChoice(name), false, String(name));
+  }
 });

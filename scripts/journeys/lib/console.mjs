@@ -34,7 +34,7 @@ export function isExpectedConsoleError(text, url) {
 // When that request fails (WebKit reports a request cut off by the team switch's reload as
 // failing "due to access control checks"), the client rejects without a handler.
 const RUM_CREDENTIALS = [
-  /^Error: CWR: Failed to retrieve Cognito identity\b/,
+  /^Error: CWR: Failed to retrieve Cognito identity: TypeError: (Load failed|Failed to fetch|NetworkError when attempting to fetch resource\.)$/,
   /^(Fetch API cannot load )?(https:\/)?\/cognito-identity\.[a-z0-9-]+\.amazonaws\.com\/ due to access control checks\.$/,
 ];
 
