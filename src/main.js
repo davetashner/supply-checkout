@@ -16,6 +16,10 @@ let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected
 // Keyed by product key, which can be any barcode's: no prototype, so a key like
 // "constructor" finds nothing until there's a product with that key
 let products = Object.create(null), projects = [], people = {};
+// The web build loads open and recent projects at start (supply-checkout-1dg.11): olderSince is
+// the day finished projects from before it aren't loaded yet ("" once they are, or with a runtime
+// that loads every project). A search, a year before it, an export or Show older projects loads them.
+let olderSince = "", olderLoading = false;
 // kind: the Inventory's Supplies / Equipment filter ("all" shows both); equip: with Equipment
 // picked, what's in storage ("in") or still out on open projects ("out")
 // q: the project list's search; year: its year filter ("" for all years); years: the year groups
@@ -239,7 +243,8 @@ $("#main").addEventListener("click", e => {
   if (t.id === "newProject") newProjectModal();
   else if (t.id === "quickTake") quickTakeModal();
   else if (t.id === "returnAny") returnAnyModal();
-  else if (t.id === "exportAll") exportAllModal();
+  else if (t.id === "exportAll") exportAll();
+  else if (t.id === "loadOlder") loadOlder();
   else if (t.id === "resume") { ui.receipt = true; draw(); refreshMarkup().then(renderReceipt); window.scrollTo(0, 0); }
   else if (t.id === "addProduct") productModal(null);
   else if (t.id === "copyReorder") copyReorder();
@@ -349,7 +354,7 @@ function drawList() {
           <button type="button" class="chip" data-filter="closed" aria-pressed="${ui.filter==="closed"}">Returned</button>
           <button type="button" class="chip" data-filter="all" aria-pressed="${ui.filter==="all"}">All</button>
         </div>
-        ${years.length ? `<select id="yearFilter" class="year-filter" aria-label="Year"><option value="">All years</option>${years.map(y => `<option value="${y}"${y === year ? " selected" : ""}>${y}</option>`).join("")}</select>` : ""}
+        ${years.length || olderSince ? `<select id="yearFilter" class="year-filter" aria-label="Year"><option value="">All years</option>${years.map(y => `<option value="${y}"${y === year ? " selected" : ""}>${y}</option>`).join("")}${olderSince ? `<option value="older">Before ${olderSince.slice(0, 4)}</option>` : ""}</select>` : ""}
       </div>
       <div class="chips">
         ${canWrite && receiptOK ? `<label class="btn" for="receiptFile">Scan receipt</label>` : ""}
@@ -365,14 +370,31 @@ function drawList() {
       ${flat.map(cardHTML).join("")}
       ${shown.length || adhoc ? "" : `<div class="empty">${!connected ? "Loading projects…" : q ? `No projects match “${esc(ui.q.trim())}”.` : ui.filter === "open" ? "Nothing is checked out right now." : "No projects here yet."}</div>`}
     </div>
-    ${groupedHTML(grouped)}`);
+    ${groupedHTML(grouped)}
+    ${olderSince && ui.filter !== "open" ? `<div class="older-row"><span class="muted">${olderLoading ? "Loading older projects…" : `Projects returned before ${olderSince.slice(0, 4)} aren't shown yet.`}</span>${olderLoading ? "" : `<button type="button" class="btn" id="loadOlder">Show older projects</button>`}</div>` : ""}`);
   // Not in the HTML, so a redraw while someone types leaves the field (and its caret) alone;
   // set here when the list is drawn afresh (back from the Inventory)
   const box = $("#projectSearch");
   if (box.value !== ui.q) box.value = ui.q;
 }
-$("#main").addEventListener("input", e => { if (e.target.id === "projectSearch") { ui.q = e.target.value; draw(); } });
-$("#main").addEventListener("change", e => { if (e.target.id === "yearFilter") { ui.year = e.target.value; draw(); } });
+$("#main").addEventListener("input", e => { if (e.target.id === "projectSearch") { ui.q = e.target.value; if (ui.q.trim()) loadOlder(); draw(); } });
+// "older" is Before <year>: it loads the older projects, which adds their years to pick from
+$("#main").addEventListener("change", e => {
+  if (e.target.id !== "yearFilter") return;
+  const v = e.target.value, older = v === "older";
+  ui.year = older ? "" : v;
+  if (older || (v && v < olderSince.slice(0, 4))) loadOlder();
+  draw();
+});
+// Fetches the finished projects not loaded at start (olderSince), once; the snapshot that
+// follows has them. Resolves when they're here, or it couldn't (and said so).
+async function loadOlder() {
+  if (!olderSince || olderLoading) return;
+  olderLoading = true; draw();
+  try { await db.loadOlder(); }
+  catch { toast("Couldn't load older projects. Check the connection and try again."); }
+  olderLoading = false; draw();
+}
 
 // A line's row: tapping it opens the line editor (lineModal)
 const rowAttrs = l => `class="${canWrite ? "click" : ""}" data-line="${esc(l.key)}" ${canWrite ? 'tabindex="0"' : ""}`;
@@ -1162,7 +1184,12 @@ function exportCsv(s) {
 }
 
 // Owners download every project and the inventory, whatever their write access (a team
-// that's read-only after cancelling can still take its data)
+// that's read-only after cancelling can still take its data). Every project: the older ones are
+// loaded first (loadOlder), and if they can't be, there's no export to be had yet.
+async function exportAll() {
+  await loadOlder();
+  if (!olderSince) exportAllModal();
+}
 // The projects CSV has the projects of the year picked in the project list's year filter, if one
 // is; the inventory and the JSON (a backup) are always whole
 function exportAllModal() {
@@ -1668,6 +1695,7 @@ draw();
   }, onErr);
   db.collection("projects").orderBy("date", "desc").onSnapshot(snap => {
     projects = snap.docs.map(liveProject);
+    olderSince = snap.since || "";
     if (sFirst) { sFirst = false; ready(); } else render();
   }, onErr);
 })();

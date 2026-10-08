@@ -347,7 +347,11 @@ export class FakeBackend {
     if (!member) return err(403, "permission_denied");
     const prefix = `${team}/${coll}/`;
     if (!id) {
-      const all = [...this.docs].filter(([k]) => k.startsWith(prefix)).map(([k, d]) => ({ id: k.slice(prefix.length), version: d.version, data: d.data })).sort((a, b) => (a.id < b.id ? -1 : 1));
+      // since: open projects, and finished ones dated or finished since the day, or undated (recentFilter in backend/src/data/documents.ts)
+      const since = call.query.since;
+      if (since !== undefined && (coll !== "projects" || !/^\d{4}-\d{2}-\d{2}$/.test(since))) return err(400, "bad_request");
+      const recent = (d) => d.status !== "closed" || typeof d.date !== "string" || d.date < "0" || d.date >= since || (typeof d.closedAt === "string" && d.closedAt >= since);
+      const all = [...this.docs].filter(([k, d]) => k.startsWith(prefix) && (since === undefined || recent(d.data))).map(([k, d]) => ({ id: k.slice(prefix.length), version: d.version, data: d.data })).sort((a, b) => (a.id < b.id ? -1 : 1));
       const from = Number(call.query.cursor || 0), page = all.slice(from, from + this.pageSize);
       return [200, from + this.pageSize < all.length ? { documents: page, cursor: String(from + this.pageSize) } : { documents: page }];
     }

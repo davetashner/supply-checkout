@@ -350,7 +350,12 @@ async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ct
       if (!/^\d{1,4}$/.test(q.limit)) throw new ApiError(400, "bad_request", "limit is a number from 1 to 1000");
       limit = Number(q.limit);
     }
-    const page = await listDocuments(db, ctx, collection, { orderBy, descending: q.direction === "desc", limit, cursor: q.cursor });
+    // The projects the app loads at start: open, or dated or finished since the day (recentFilter)
+    if (q.since !== undefined) {
+      if (collection !== "projects" || orderBy || limit !== undefined) throw new ApiError(400, "bad_request", "since lists projects, without orderBy or limit");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(q.since)) throw new ApiError(400, "bad_request", "since is a date, YYYY-MM-DD");
+    }
+    const page = await listDocuments(db, ctx, collection, { orderBy, descending: q.direction === "desc", limit, cursor: q.cursor, since: q.since });
     return json(200, { documents: page.items.map(toBody), ...(page.cursor ? { cursor: page.cursor } : {}) });
   }
 

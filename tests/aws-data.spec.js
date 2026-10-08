@@ -11,6 +11,8 @@ const seeded = () => Object.fromEntries(Object.entries(usedState.seed).map(([k, 
 // How many times each collection has been listed (first pages only)
 const lists = (backend) => Object.fromEntries(["products", "projects"].map((c) => [c, backend.requests("GET", `/teams/t1/${c}`).filter((r) => !r.query.cursor).length]));
 const card = (page, name) => page.getByRole("button", { name: new RegExp(name) });
+// The day the page lists projects from at start (recentSince in src/aws/db.js)
+const SINCE = (() => { const now = new Date(); return `${new Date(now.getFullYear(), now.getMonth() - 6, 1).getFullYear()}-01-01`; })();
 
 // Opens the app and waits for both lists: the first load, and the re-list after subscribing
 async function open(page, backend = new FakeBackend({ docs: seeded() }), opts) {
@@ -182,21 +184,18 @@ test.describe("data", () => {
 
   test("an owner exports 1,000 projects, listed page by page, as a JSON download", { tag: ["@J6", "@J10.2"] }, async ({ page }) => {
     const docs = seeded();
+    // Finished long ago, so the page doesn't list them at start (supply-checkout-1dg.11): the export does
     for (let i = 0; i < 1000; i++) {
       const items = {};
       for (let j = 0; j < 20; j++) items[`k${j}`] = { code: `C${j}`, name: `Item ${j}`, price: j, out: 3, returned: 1 };
-      docs[`t1/projects/b${i}`] = { client: `Client ${i}`, date: "2026-09-01", status: "open", items };
+      docs[`t1/projects/b${i}`] = { client: `Client ${i}`, date: "2023-09-01", status: "closed", items };
     }
     const backend = new FakeBackend({ docs });
     backend.pageSize = 100;
-    // The re-list after subscribing redraws the list, replacing the Export data button; in
-    // WebKit a redraw of 1,000 cards mid-tap can swallow the click. Holding each re-list's
-    // first page keeps the list still until the export is done.
-    const relist = (c) => backend.hold("GET", (path) => path === `/teams/t1/${c}` && lists(backend)[c] === 2);
-    const release = [relist("products"), relist("projects")];
     const start = Date.now();
     await open(page, backend);
-    await expect(card(page, "Client 999")).toBeVisible();
+    // Both lists at start were the recent projects only: one page each
+    expect(backend.requests("GET", "/teams/t1/projects").map((r) => r.query)).toEqual([{ since: SINCE }, { since: SINCE }]);
     await page.getByRole("button", { name: "Export data" }).click();
     await expect(modal(page)).toContainText("1001 projects and 2 inventory items");
     const download = page.waitForEvent("download");
@@ -207,10 +206,8 @@ test.describe("data", () => {
     const json = JSON.parse(await (await import("node:fs/promises")).readFile(await file.path(), "utf8"));
     expect(json.projects).toHaveLength(1001);
     expect(json.projects.find((s) => s.id === "b7").totals).toEqual({ taken: 60, returned: 20, used: 40, charge: 380 });
-    // The re-lists waited at their first page, then run page by page as before
-    expect(backend.requests("GET", "/teams/t1/projects")).toHaveLength(12);
-    release.forEach((r) => r());
-    await expect.poll(() => backend.requests("GET", "/teams/t1/projects").length).toBe(22);
+    // Every project, page by page, once
+    expect(backend.requests("GET", "/teams/t1/projects").slice(2).map((r) => r.query.since)).toEqual(Array(11).fill(undefined));
   });
 
   test("a tap survives the redraw when a re-list's pages arrive", { tag: ["@J4"] }, async ({ page }) => {
@@ -608,6 +605,113 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
     expect(body).toEqual({ operationId: expect.any(String), productKey: expect.stringMatching(/^nb-/), quantity: 1, name: "Ladder rental", price: 12.35, code: "" });
     expect(backend.requests("PUT", /^\/teams\/t1\/products\//)).toEqual([]);
     expect(backend.doc("t1", "projects", "s1").data.items[body.productKey]).toEqual({ code: "", name: "Ladder rental", price: 12.35, out: 1, returned: 0 });
+  });
+});
+
+// Recent projects first (supply-checkout-1dg.11): the page lists open projects and the finished
+// ones from SINCE on, and the older ones when someone asks for them
+test.describe("older projects", { tag: ["@J6"] }, () => {
+  const Y = SINCE.slice(0, 4), OLD = String(Number(Y) - 2);
+  const older = () => {
+    const docs = seeded();
+    docs["t1/projects/old"] = { client: "Oldfield Co", date: `${OLD}-05-01`, status: "closed", closedAt: `${OLD}-05-03T10:00:00Z`, items: {} };
+    docs["t1/projects/long"] = { client: "Long Job", date: `${Number(Y) - 3}-03-01`, status: "open", items: {} };
+    docs["t1/projects/late"] = { client: "Late Return", date: `${OLD}-07-01`, status: "closed", closedAt: `${Y}-02-01T10:00:00Z`, items: {} };
+    docs["t1/projects/new"] = { client: "Newton Inc", date: `${Y}-02-10`, status: "closed", items: {} };
+    return new FakeBackend({ docs });
+  };
+  const returned = (page) => page.getByRole("button", { name: "Returned", exact: true }).click();
+  // An older year's group starts closed: its heading shows
+  const yearGroup = (page, y) => page.locator(`.year-toggle[data-year="${y}"]`);
+  const fullLists = (backend) => backend.requests("GET", "/teams/t1/projects").filter((r) => !r.query.since).length;
+
+  test("starts with open and recent projects; Show older projects lists the rest", async ({ page }) => {
+    const backend = await open(page, older());
+    expect(backend.requests("GET", "/teams/t1/projects").every((r) => r.query.since === SINCE)).toBe(true);
+    // Out now has every open project, however old, and no note about older ones
+    await expect(card(page, "Long Job")).toBeVisible();
+    await expect(page.locator(".older-row")).toHaveCount(0);
+    await returned(page);
+    await expect(card(page, "Newton Inc")).toBeVisible();
+    // Finished since the day, though dated before it: the only one in its year, for now
+    await expect(yearGroup(page, OLD)).toContainText("1 project");
+    await yearGroup(page, OLD).click();
+    await expect(card(page, "Late Return")).toBeVisible();
+    await expect(card(page, "Oldfield Co")).toHaveCount(0);
+    await expect(page.locator(".older-row")).toContainText(`Projects returned before ${Y} aren't shown yet.`);
+    // While they're listed it says so, and the button goes
+    const release = backend.hold("GET", (path, call) => path === "/teams/t1/projects" && !call.query.since);
+    await page.getByRole("button", { name: "Show older projects" }).click();
+    await expect(page.locator(".older-row")).toHaveText("Loading older projects…");
+    release();
+    await expect(yearGroup(page, OLD)).toContainText("2 projects");
+    await expect(page.locator(".older-row")).toHaveCount(0);
+    expect(fullLists(backend)).toBe(1);
+    // From now on a re-list is of every project
+    await setVisible(page, true);
+    await expect.poll(() => fullLists(backend)).toBe(2);
+    await expect(card(page, "Oldfield Co")).toBeVisible();
+  });
+
+  test("a search lists the older projects, once", async ({ page }) => {
+    const backend = await open(page, older());
+    const box = page.getByRole("searchbox", { name: "Search projects" });
+    // A space isn't a search
+    await box.fill(" ");
+    await returned(page);
+    expect(fullLists(backend)).toBe(0);
+    await box.fill("oldf");
+    await expect(card(page, "Oldfield Co")).toBeVisible();
+    await box.fill("oldfi");
+    await box.fill("");
+    await expect(card(page, "Newton Inc")).toBeVisible();
+    expect(fullLists(backend)).toBe(1);
+  });
+
+  test("the year filter offers the years before, which lists them", async ({ page }) => {
+    const backend = await open(page, older());
+    const year = page.getByRole("combobox", { name: "Year" });
+    await returned(page);
+    // This year's projects need nothing more; Before <year> lists the older ones and shows all years
+    await year.selectOption(Y);
+    await year.selectOption("");
+    expect(fullLists(backend)).toBe(0);
+    await year.selectOption({ label: `Before ${Y}` });
+    await expect(yearGroup(page, OLD)).toContainText("2 projects");
+    await expect(year).toHaveValue("");
+    await expect(year.locator("option")).toHaveText(["All years", Y, OLD, String(Number(Y) - 3)]);
+    expect(fullLists(backend)).toBe(1);
+  });
+
+  test("picking a year before the day, which an open project has, lists the older projects", async ({ page }) => {
+    const backend = await open(page, older());
+    await returned(page);
+    await page.getByRole("combobox", { name: "Year" }).selectOption(String(Number(Y) - 3));
+    await expect.poll(() => fullLists(backend)).toBe(1);
+  });
+
+  test("Export data lists the older projects first, and says so if it can't", async ({ page }) => {
+    const backend = await open(page, older());
+    backend.on("GET", (path, call) => path === "/teams/t1/projects" && !call.query.since, { status: 500, body: { error: { code: "internal", message: "boom" } } });
+    await page.getByRole("button", { name: "Export data" }).click();
+    await expect(page.locator("#toast")).toHaveText("Couldn't load older projects. Check the connection and try again.");
+    await expect(modal(page)).toBeHidden();
+    // A second tap while the first is still listing does nothing more
+    const release = backend.hold("GET", (path, call) => path === "/teams/t1/projects" && !call.query.since);
+    await page.getByRole("button", { name: "Export data" }).click();
+    await expect.poll(() => fullLists(backend)).toBe(2);
+    await page.getByRole("button", { name: "Export data" }).click();
+    release();
+    await expect(modal(page)).toContainText("5 projects and 2 inventory items");
+    expect(fullLists(backend)).toBe(2);
+  });
+
+  test("a live update to an older project not listed yet shows it, as someone reopens it", async ({ page }) => {
+    const backend = await open(page, older());
+    const v = backend.write("t1", "projects", "old", { ...backend.doc("t1", "projects", "old").data, status: "open" });
+    await emit(page, { v: 1, eventId: "r1", collection: "projects", id: "old", op: "put", version: v });
+    await expect(card(page, "Oldfield Co")).toBeVisible();
+    expect(fullLists(backend)).toBe(0);
   });
 });
 

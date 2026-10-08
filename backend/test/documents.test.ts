@@ -1,7 +1,7 @@
 // The document functions behind the data API, against DynamoDB Local (CI).
 // data-api.test.ts covers the same behaviour through the handler in memory.
 
-import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchWriteCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { connection } from "../src/data/client.js";
 import { keys } from "../src/data/keys.js";
@@ -20,6 +20,7 @@ import {
   listDocuments,
   listMovements,
   NotFoundError,
+  projectItem,
   setDocument,
   TooLargeError,
   updateDocument,
@@ -223,6 +224,43 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     await expect(setDocument(db, owner, "products", "p1", { teamId: "other" })).rejects.toThrow(InvalidInputError);
     await expect(setDocument(db, owner, "projects", "s1", { big: "x".repeat(MAX_DOCUMENT_BYTES) })).rejects.toThrow(TooLargeError);
   });
+  // supply-checkout-1dg.11: the app's first load reads open and recent projects, not every project the team ever had
+  it("lists only the open and recent projects of 2,000, since a day, a page at a time", async () => {
+    const ctx = await team();
+    const other = await team();
+    // About 2 KB of lines each, so the team's 4 MB of projects take several 1 MB reads
+    const items = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`k${i}`, { code: `c${i}`, name: `Item ${i} `.padEnd(120, "x"), price: 1, out: 1, returned: 1 }]));
+    const kinds = (n: number) => (n % 40 === 0 ? "open" : n % 40 === 1 ? "recent" : "old");
+    const data = (kind: string) => ({ client: "Echo", date: kind === "recent" ? "2026-08-01" : "2023-05-01", status: kind === "open" ? "open" : "closed", items });
+    const ids = Array.from({ length: 2000 }, (_, n) => `p${String(n).padStart(4, "0")}`);
+    for (let i = 0; i < ids.length; i += 25) {
+      const chunk = ids.slice(i, i + 25).map((id, j) => projectItem(ctx.teamId, id, data(kinds(i + j)), 1));
+      await connection(db).doc.send(new BatchWriteCommand({ RequestItems: { [db.tableName]: chunk.map((Item) => ({ PutRequest: { Item } })) } }));
+    }
+    // Another team's open project never shows
+    await setDocument(db, other, "projects", "p0000x", { client: "Other", date: "2026-09-01", status: "open", items: {} });
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const page = await listDocuments(db, ctx, "projects", { since: "2026-01-01", cursor });
+      seen.push(...page.items.map((d) => d.id));
+      cursor = page.cursor;
+      pages++;
+    } while (cursor && pages < 50);
+    // Unfiltered, the same projects take several 1 MB pages. DynamoDB Local applies a filtered
+    // read's 1 MB to what matches, not to what it read as DynamoDB does, so here the filtered
+    // list may be one page; data-api.test.ts pages it as DynamoDB would.
+    const plain = await listDocuments(db, ctx, "projects", {});
+    expect(plain.cursor).toEqual(expect.any(String));
+    expect(plain.items.length).toBeLessThan(1000);
+    expect(seen.sort()).toEqual(ids.filter((_, n) => kinds(n) !== "old"));
+    expect(seen).toHaveLength(100);
+    await expect(listDocuments(db, ctx, "projects", { since: "2026-01-01", limit: 5 })).rejects.toThrow(InvalidInputError);
+    await expect(listDocuments(db, ctx, "products", { since: "2026-01-01" })).rejects.toThrow(InvalidInputError);
+  }, 120_000);
+
   it("lists projects under PROJECT# and SHEET# once each, by ID and by date, in pages of any size (supply-checkout-005.6)", async () => {
     const ctx = await team();
     const other = await team();

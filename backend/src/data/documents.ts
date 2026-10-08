@@ -27,11 +27,11 @@ import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
 import { brandOf } from "./brand.js";
 import { hiddenCharacterProblem, withoutHiddenCharacters } from "../text/hidden-characters.js";
 import { AdhocOpenError, ConflictError, EquipmentOutError, InvalidInputError, NotFoundError, TooLargeError, isCancelledAsTooLarge, isItemTooLarge } from "./errors.js";
-import { BOUGHT_SUFFIX, adhocNumber, barcode, id as checkId, isAdhocId, keys, prefixes, productKey, teamPartition } from "./keys.js";
+import { BOUGHT_SUFFIX, adhocNumber, barcode, dateFormat, id as checkId, isAdhocId, keys, prefixes, productKey, teamPartition } from "./keys.js";
 import { legacy } from "./legacy-sheets.js";
 import { money, storedMoney } from "./money.js";
 import type { Movement } from "./commands.js";
-import { type ProjectLayout, layoutOf, projectAttributes, projectItemsByDatePage, projectItemsPage, projectKeyFor, readProjectItem } from "./project-items.js";
+import { type ProjectFilter, type ProjectLayout, layoutOf, projectAttributes, projectItemsByDatePage, projectItemsPage, projectKeyFor, readProjectItem } from "./project-items.js";
 import { type Page, queryPage } from "./query.js";
 import { checkReorderFields } from "./reorder.js";
 import { PK } from "./schema.js";
@@ -81,6 +81,29 @@ export interface ListOptions {
   /** At most this many documents (1–1000). A page also stops at 1 MB. */
   readonly limit?: number;
   readonly cursor?: string;
+  /**
+   * Projects only, in ID order, without a limit: only the projects the app
+   * loads at start (supply-checkout-1dg.11), those that are open, dated or
+   * finished on or after this day (YYYY-MM-DD), or have no date. See
+   * recentFilter.
+   */
+  readonly since?: string;
+}
+
+/**
+ * The projects a list `since` a day keeps: open ones (any status but
+ * `closed`, or none), and finished ones dated on or after the day, finished
+ * (`closedAt`, an ISO time) on or after it, or with no date to go by (none,
+ * or one that sorts before "0", such as ""). What it leaves out are the
+ * finished projects from before the day, which the app fetches when someone
+ * asks for them.
+ */
+export function recentFilter(since: string): ProjectFilter {
+  return {
+    expression: "attribute_not_exists(#status) OR #status <> :closed OR attribute_not_exists(#date) OR #date < :zero OR #date >= :since OR #closedAt >= :since",
+    names: { "#status": "status", "#date": "date", "#closedAt": "closedAt" },
+    values: { ":closed": "closed", ":zero": "0", ":since": dateFormat(since) },
+  };
 }
 
 /**
@@ -529,12 +552,16 @@ export async function listDocuments(db: Db, ctx: TeamContext, name: CollectionNa
   const { limit, cursor } = options;
   if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 1000)) throw new InvalidInputError("Invalid limit");
   if (options.orderBy !== undefined && (options.orderBy !== "date" || collection !== "projects")) throw new InvalidInputError("Only projects can be ordered, and only by date");
+  if (options.since !== undefined && (collection !== "projects" || options.orderBy !== undefined || limit !== undefined)) {
+    throw new InvalidInputError("since lists projects by ID, without a limit");
+  }
+  const filter = options.since === undefined ? undefined : recentFilter(options.since);
   let page: Page<Record<string, unknown>>;
   try {
     if (collection === "projects") {
       page = options.orderBy === "date"
         ? await projectItemsByDatePage(db, ctx.teamId, { forward: !options.descending, limit, cursor })
-        : await projectItemsPage(db, ctx.teamId, { limit, cursor });
+        : await projectItemsPage(db, ctx.teamId, { limit, cursor, filter });
     } else {
       if (cursor !== undefined && !cursorInCollection(cursor, prefixes.product)) throw new InvalidInputError("Invalid cursor");
       const pk = teamPartition(ctx.teamId);

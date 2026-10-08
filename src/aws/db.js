@@ -10,6 +10,13 @@
 //
 // Projects are listed by ID and sorted here, not with ?orderBy=date: that route reads an
 // index that can lag a write, and a full re-list must not drop a project just created.
+//
+// Not every project, at first (supply-checkout-1dg.11): a team's finished projects pile up over
+// the years, so the page lists `?since=<day>` (recentSince), the open projects and the finished
+// ones from then on, and the snapshot says so (`since`). loadOlder() lists every project, and
+// from then on every re-list does. Live events for a project not held are fetched, as any other,
+// so one someone reopens shows; a finished one from before the day leaves again at the next
+// re-list.
 import { createLive } from "./live.js";
 import { COUNT_NOT_SAVED } from "../moves.js";
 
@@ -20,6 +27,13 @@ import { COUNT_NOT_SAVED } from "../moves.js";
 // that goes on is re-listed every MAX_WAIT_MS rather than fetched again.
 const BURST_FETCHES = 10, BURST_MS = 1000, QUIET_MS = 300, MAX_WAIT_MS = 2000;
 const META = { fromCache: false, hasPendingWrites: false };
+
+// The day the projects listed at start go back to: 1 January of the year it was six months ago,
+// so the year groups the page shows are whole (this year's, and last year's until July)
+function recentSince() {
+  const now = new Date();
+  return `${new Date(now.getFullYear(), now.getMonth() - 6, 1).getFullYear()}-01-01`;
+}
 const cmp = (a, b) => (a > b) - (a < b);
 // A document's own fields, to compare two copies: not an item's stock (the stock commands own
 // it) or when it was last saved. Keys are sorted at every level, since the server needn't keep
@@ -28,7 +42,7 @@ const sorted = (v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.
 const fields = (data) => JSON.stringify(sorted(Object.fromEntries(Object.entries(data).filter(([k]) => k !== "stock" && k !== "updatedAt"))));
 const snap = (id, doc) => ({ id, exists: !!doc, data: () => (doc ? structuredClone(doc.data) : undefined), metadata: META });
 
-function querySnap(docs, order) {
+function querySnap(docs, order, since) {
   const list = [...docs.values()].sort((a, b) => cmp(a.id, b.id));
   if (order) {
     // Missing or non-text values sort as "", so undated projects come last when newest-first
@@ -37,7 +51,7 @@ function querySnap(docs, order) {
     list.sort((a, b) => cmp(val(a), val(b)) * dir || cmp(a.id, b.id));
   }
   const out = list.map((d) => snap(d.id, d));
-  return { docs: out, size: out.length, empty: !out.length, docChanges: () => [], metadata: META };
+  return { docs: out, size: out.length, empty: !out.length, docChanges: () => [], metadata: META, ...(since ? { since } : {}) };
 }
 
 // onClosed: a write was refused because an owner closed the team meanwhile; onEnded: because
@@ -52,7 +66,8 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   // Each document's writes, one at a time (queued below)
   const queues = new Map();
   let removed = false;
-  const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false, fetched: [], held: null });
+  // all: list every project, not only the recent ones (loadOlder); since: the day the held list goes back to ("" for all)
+  const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false, fetched: [], held: null, all: name !== "projects", since: "" });
   const docPath = (name, id) => `${base}/${name}/${encodeURIComponent(id)}`;
 
   // Runs fn once every write to the same document sent before it has answered, so a write names
@@ -107,11 +122,12 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     notify(name);
   }
 
-  async function list(name) {
+  async function list(name, since = "") {
     const docs = new Map();
     let cursor = "";
     do {
-      const page = await api("GET", `${base}/${name}` + (cursor && `?cursor=${encodeURIComponent(cursor)}`));
+      const query = [since && `since=${since}`, cursor && `cursor=${encodeURIComponent(cursor)}`].filter(Boolean).join("&");
+      const page = await api("GET", `${base}/${name}` + (query && `?${query}`));
       for (const d of page.documents) docs.set(d.id, d);
       cursor = page.cursor;
     } while (cursor);
@@ -127,13 +143,15 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
       do {
         c.again = false;
         c.touched = new Set();
-        const docs = await list(name);
+        const since = c.all ? "" : recentSince();
+        const docs = await list(name, since);
         for (const id of c.touched) {
           const doc = c.docs.get(id);
           if (doc) docs.set(id, doc);
           else docs.delete(id);
         }
         c.docs = docs;
+        c.since = since;
         c.loaded = true;
         c.touched = null;
         notify(name);
@@ -404,7 +422,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     return {
       orderBy: (field, dir = "asc") => query(name, { field, dir }),
       get: async () => querySnap(await list(name), order),
-      onSnapshot: (next, error) => listen(name, (c) => next(querySnap(c.docs, order)), error),
+      onSnapshot: (next, error) => listen(name, (c) => next(querySnap(c.docs, order, c.since)), error),
     };
   }
 
@@ -425,6 +443,15 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     moveLine,
     addLines,
     saveItem,
+    // Every project from now on, not only the recent ones (above). Resolves once listeners
+    // have them; rejects if they couldn't be listed (a later re-list tries again).
+    loadOlder: async () => {
+      const c = coll("projects");
+      c.all = true;
+      await relist("projects");
+      await new Promise((r) => setTimeout(r, 0));
+      if (c.since) throw { code: "unavailable", message: "Couldn't list the older projects" };
+    },
     // A new access token: reconnect live updates with it
     reconnect: () => live.reconnect(),
     // The session ended (signed out, it expired, or another tab changed who's signed in) or

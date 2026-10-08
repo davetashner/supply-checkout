@@ -15,7 +15,7 @@ info:
     | App call (src/main.js) | Request |
     | --- | --- |
     | `db.collection("products").onSnapshot(cb)` | `GET /teams/{teamId}/products`, following `cursor` until absent; `snap.docs[i].id` = `id`, `.data()` = `data` |
-    | `db.collection("projects").orderBy("date", "desc").onSnapshot(cb)` | `GET /teams/{teamId}/projects?orderBy=date&direction=desc`, following `cursor` |
+    | `db.collection("projects").orderBy("date", "desc").onSnapshot(cb)` | `GET /teams/{teamId}/projects?since=<day>`, following `cursor`, sorted by the adapter: open and recent projects only. Once someone asks for older ones (`db.loadOlder()`: a search, the year filter, an export), `GET /teams/{teamId}/projects`, every project |
     | `db.doc("<coll>/<id>").get()` | `GET /teams/{teamId}/<coll>/<id>`; 404 `not_found` means `exists: false` |
     | `db.doc("<coll>/<id>").set(data)` | `PUT /teams/{teamId}/<coll>/<id>` with `{"data": data}` |
     | `db.doc("<coll>/<id>").update(patch)` | `PATCH /teams/{teamId}/<coll>/<id>` with `{"data": patch}` (deep merge) |
@@ -452,6 +452,19 @@ paths:
           in: query
           description: With `orderBy`. Default `asc`.
           schema: { type: string, enum: [asc, desc] }
+        - name: since
+          in: query
+          description: |
+            A day, `YYYY-MM-DD`: list only the projects the app loads at
+            start (supply-checkout-1dg.11). That's every open project (a
+            `status` other than `closed`, or none), and each finished one
+            dated on or after the day, finished (`closedAt`) on or after it,
+            or without a date. Strongly consistent, in ID order, filtered in
+            DynamoDB on the team's partition. Not with `orderBy` or `limit`:
+            a page is one 1 MB read (or, while nothing it has read matches,
+            up to ten), so a page can be empty and still have a `cursor`.
+            Follow it as usual.
+          schema: { type: string, format: date }
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/cursor"
       responses:
@@ -475,6 +488,19 @@ paths:
           in: query
           description: With `orderBy`. Default `asc`.
           schema: { type: string, enum: [asc, desc] }
+        - name: since
+          in: query
+          description: |
+            A day, `YYYY-MM-DD`: list only the projects the app loads at
+            start (supply-checkout-1dg.11). That's every open project (a
+            `status` other than `closed`, or none), and each finished one
+            dated on or after the day, finished (`closedAt`) on or after it,
+            or without a date. Strongly consistent, in ID order, filtered in
+            DynamoDB on the team's partition. Not with `orderBy` or `limit`:
+            a page is one 1 MB read (or, while nothing it has read matches,
+            up to ten), so a page can be empty and still have a `cursor`.
+            Follow it as usual.
+          schema: { type: string, format: date }
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/cursor"
       responses:
