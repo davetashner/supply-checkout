@@ -276,9 +276,10 @@ describe("documents (the app's db contract)", () => {
     // A new line leaves the others alone
     ({ body } = await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { items: { b: { name: "Rags", out: 1, returned: 0 } } } } }));
     expect(Object.keys(body.data.items)).toEqual(["a", "b"]);
-    // Top-level fields merge too, and a non-map value replaces (closedAt is the server's, not the device's)
+    // Top-level fields merge too, and a null line removes it (closedAt is the server's, not the device's)
     ({ body } = await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { status: "closed", closedAt: "2026-09-02T00:00:00Z", items: { b: null } } } }));
-    expect(body).toMatchObject({ version: 4, data: { client: "Echo", status: "closed", closedAt: new Date(NOW).toISOString(), items: { b: null } } });
+    expect(body).toMatchObject({ version: 4, data: { client: "Echo", status: "closed", closedAt: new Date(NOW).toISOString() } });
+    expect(Object.keys(body.data.items)).toEqual(["a"]);
     expect(body.data.items.a.returned).toBe(2);
     await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { tags: ["x"] } } });
     ({ body } = await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { tags: ["y"] } } }));

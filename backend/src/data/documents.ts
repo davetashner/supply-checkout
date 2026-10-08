@@ -236,8 +236,15 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
     // Each line keeps its barcode (`code`), its price each and its cost each (`price`, `cost`,
     // ADR 0014), which the typed functions bound the same way
     const storedLines = isMap(before?.data.items) ? before.data.items : {};
+    // A line is an object. null removes it (the app's removeLine; a PATCH can't otherwise drop a
+    // key), so it's never stored. Anything else is refused, unless the write carries a legacy
+    // value over unchanged (supply-checkout-1dg.10)
+    if (isMap(data.items)) data.items = Object.fromEntries(Object.entries(data.items).filter(([, line]) => line !== null));
     for (const [key, line] of Object.entries((data.items ?? {}) as Record<string, unknown>)) {
-      if (!isMap(line)) continue;
+      if (!isMap(line)) {
+        if (Object.hasOwn(storedLines, key) && sameValue(line, storedLines[key])) continue;
+        throw new InvalidInputError("A line is a JSON object, or null to remove it");
+      }
       const stored = Object.hasOwn(storedLines, key) && isMap(storedLines[key]) ? storedLines[key] : undefined;
       if ("code" in line) barcode(line.code);
       // A line's name is a copy of the item's: one the write changes loses its control and invisible
@@ -292,7 +299,7 @@ const stillOut = (line: Record<string, unknown> | undefined) => (line ? counted(
  *   server's: a changed price is "manual", stamped with who changed it and
  *   when (`priceSetBy`, `priceSetAt`), so a typed price can be traced.
  * - A project isn't closed (`status: "closed"`) while an equipment line has
- *   something still out: EquipmentOutError (409).
+ *   something still out, and no such line is removed: EquipmentOutError (409).
  * - A project's `closedAt` is the server's: stampClosedAt.
  */
 function checkKinds(collection: Collection, data: DocumentData, actor: Actor, before?: StoredDocument): DocumentData {
@@ -341,6 +348,13 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
     // Counts the write changes: what came back and what was lost can't be more than went out
     if (!sameValue(line, old) && typeof line.out === "number" && counted(line.returned) + counted(line.lost) > line.out) {
       throw new InvalidInputError("A line's returned and lost can't add up to more than its out");
+    }
+  }
+  // Removing an equipment line (left out of a PUT, or null in a PATCH) with something still out is
+  // refused as closing the project is: it would lose track of what's out (supply-checkout-1dg.10)
+  for (const [key, old] of Object.entries(storedLines)) {
+    if (isMap(old) && old.kind === "equipment" && stillOut(old) > 0 && !Object.hasOwn(lines, key)) {
+      throw new EquipmentOutError("Equipment is still out on this line: return it or mark it lost before removing it");
     }
   }
   if (data.status === "closed") {

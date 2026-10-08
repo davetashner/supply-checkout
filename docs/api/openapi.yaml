@@ -3208,7 +3208,7 @@ components:
         kind: { const: adhoc, description: "The team's General Use project (ADR 0017), `adhoc-<n>`, made only by the quick take; a document write can't add, change or remove it, or create a project whose ID starts `adhoc-`. Absent for a client project." }
         items:
           type: object
-          description: The project's lines, keyed by product key.
+          description: "The project's lines, keyed by product key. In a PATCH, a line set to `null` is removed (it isn't stored); any other value that isn't an object is refused (400) unless the write carries a legacy value over unchanged. Removing an equipment line with something still out (`out − returned − lost > 0`), by `null` or by leaving it out of a PUT, is refused (409 `equipment_out`)."
           additionalProperties: { $ref: "#/components/schemas/ProjectLine" }
         source:
           type: object
@@ -3353,9 +3353,9 @@ components:
                 can't be reopened.
                 `stock_changed`: a stock count sent with `expectedStock` found
                 the stock already changed from it (the message says what it is now).
-                `equipment_out`: Finished Return (closing a project) while company
-                equipment is still out on it; each piece must be back, lost or
-                broken first (ADR 0017).
+                `equipment_out`: Finished Return (closing a project), or removing
+                an equipment line, while company equipment is still out on it;
+                each piece must be back, lost or broken first (ADR 0017).
                 `adhoc_open`: reopening a finished General Use project while another
                 General Use project is open; a team has at most one open (ADR 0017).
                 Verifying an email address: `code_mismatch` (the code isn't
