@@ -25,6 +25,7 @@ Use **one DynamoDB table** (`app`), on-demand capacity, point-in-time recovery o
 | User's teams | `USER#<userId>` | `TEAM#<teamId>` | reverse lookup for the team switcher |
 | Invite | `TEAM#<teamId>` | `INVITE#<inviteId>` | email, role, expiry (TTL); GSI on hashed token, second GSI on hashed email (pending invites at first sign-in) |
 | Teams created today | `USER#<userId>` | `LIMIT#TEAMS#<yyyy-mm-dd>` | per-user rate limit on team creation; TTL |
+| User's preferences | `USER#<userId>` | `PREFERENCES` | the What's New banner on or off, and the local day it was last shown (supply-checkout-005.17) |
 | Product | `TEAM#<teamId>` | `PRODUCT#<key>` | same fields as today; `stock` changed only with atomic `ADD` |
 | Sheet | `TEAM#<teamId>` | `SHEET#<date>#<id>` | same fields as today; sorting by SK gives the existing date order |
 | Receipt usage | `TEAM#<teamId>` | `USAGE#<yyyy-mm>` | atomic counter for the monthly limit |

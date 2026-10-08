@@ -1054,7 +1054,7 @@ paths:
                 properties:
                   user:
                     type: object
-                    required: [id, email, emailVerified, mfa]
+                    required: [id, email, emailVerified, mfa, preferences]
                     properties:
                       id: { type: string, description: "The user's `sub`." }
                       email: { type: [string, "null"] }
@@ -1063,6 +1063,7 @@ paths:
                         type: string
                         enum: [totp, provider, "off"]
                         description: "Two-step sign-in, which owners need for the billing routes: `totp` (an authenticator app is on), `provider` (a Google or Apple user, whose provider's sign-in counts for it), or `off`."
+                      preferences: { $ref: "#/components/schemas/Preferences" }
                   teams:
                     type: array
                     items: { $ref: "#/components/schemas/Team" }
@@ -1418,6 +1419,52 @@ paths:
         "503":
           description: "`internal` with `reason: \"signout_failed\"`: Cognito couldn't do it, or throttled it, after three tries. Try again."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /me/preferences:
+    patch:
+      tags: [account]
+      operationId: setPreferences
+      summary: Change the caller's own app preferences.
+      description: |
+        The caller's own preferences, kept on the server so they follow them
+        to every device (GET /me returns them as `user.preferences`). Send
+        either field or both; anything else is refused. `whatsNew` turns the
+        What's New banner on or off. `whatsNewLastShown` is the caller's local
+        date the banner was last shown, which the app sends when it shows it,
+        so it's shown at most once a day: it must be a real date within two
+        days of the server's UTC date (local dates run from a day behind to a
+        day ahead). `GET /me` returns the defaults if they can't be read, so
+        reading them never fails it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                whatsNew: { type: boolean }
+                whatsNewLastShown: { type: string, format: date }
+      responses:
+        "200":
+          description: The caller's preferences after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [preferences]
+                properties:
+                  preferences: { $ref: "#/components/schemas/Preferences" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`aborted`: the account is being deleted (its access token can outlive it), so nothing is saved."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "413":
+          description: "`quota_exceeded`: the body is over 1 MB."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: "Too many requests: API Gateway's throttle for this route (10 a second across all callers). Try again shortly."
   /teams/{teamId}/members:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     get:
@@ -3110,6 +3157,13 @@ components:
         paymentGraceEndsAt: { type: [string, "null"], format: date-time, description: "A `past_due` team still in its 7-day grace period: when it becomes read-only unless the payment goes through. `null` otherwise." }
         billingAccount: { type: boolean, description: "The team has a Stripe customer (made by its first checkout), so its owners can open the Customer Portal (`createPortalSession`)." }
         cancelsAt: { type: [string, "null"], format: date-time, description: "When a subscription that was canceled (in the Customer Portal) ends: the end of its current period. It keeps working until then. `null` when it renews, or has already ended." }
+    Preferences:
+      type: object
+      description: The caller's own app preferences, the defaults until they change one.
+      required: [whatsNew, whatsNewLastShown]
+      properties:
+        whatsNew: { type: boolean, description: "Show the What's New banner. On by default." }
+        whatsNewLastShown: { type: [string, "null"], format: date, description: "The caller's local date (YYYY-MM-DD) the banner was last shown, or null if never." }
     Invite:
       type: object
       description: A pending invite, to show. Accepting it needs the token from the invite email.
