@@ -24,8 +24,10 @@
 //    and so is `brand` (brand.ts; the web app's export has it, the artifact's
 //    never did). Company equipment (ADR 0017) is copied as it was, by the
 //    document routes' rules (documents.ts, checkKinds): an item's `kind`, and a
-//    line's `kind`, `lost`, `lostCharge`, `takenBy`, `takenAt`, `purchased` and
-//    `priceSet` (line() has the rules).
+//    line's `kind`, `lost`, `lostCharge`, `takenAt`, `purchased` and `priceSet`
+//    (line() has the rules). Like `createdBy`, a line's `takenBy` and
+//    `priceSetBy` are claude.ai user IDs: dropped, and counted in the report. A
+//    finished project with equipment still out is imported, with a warning.
 //    Marks of recent saves (`ops`) and the claude.ai user IDs in `createdBy`
 //    are dropped: the name the artifact showed (`preparedBy`) becomes the
 //    project's `createdByName`, as for a project made without a signed-in user.
@@ -110,10 +112,12 @@ export interface ArtifactProduct {
 /**
  * A project's line. Company equipment on loan (`kind: "equipment"`, ADR 0017)
  * may have no price, and carries what was lost or broken (`lost`, and on a
- * client's project `lostCharge`) and who took it last and when (`takenBy`,
- * `takenAt`). A line bought for the client (`purchased: true`, keyed
- * `<productKey>:bought`, section 2a) has no kind, nothing returned, and how
- * its price was set (`priceSet`, with who typed it and when for "manual").
+ * client's project `lostCharge`) and when it was last taken (`takenAt`). A
+ * line bought for the client (`purchased: true`, keyed `<productKey>:bought`,
+ * section 2a) has no kind, nothing returned, and how its price was set
+ * (`priceSet`, with when it was typed for "manual"). Who took it or typed the
+ * price (`takenBy`, `priceSetBy`) is dropped: in an artifact it's a claude.ai
+ * user ID, which names no one on AWS, as `createdBy` is dropped.
  */
 export interface ArtifactLine {
   readonly kind?: "equipment";
@@ -125,11 +129,9 @@ export interface ArtifactLine {
   readonly returned: number;
   readonly lost?: number;
   readonly lostCharge?: number;
-  readonly takenBy?: string;
   readonly takenAt?: string;
   readonly purchased?: true;
   readonly priceSet?: "markup" | "manual";
-  readonly priceSetBy?: string;
   readonly priceSetAt?: string;
 }
 
@@ -168,10 +170,21 @@ export interface ParsedExport {
   /** Each project's totals, from its lines: equal to the exported totals where the file has them. */
   readonly totals: Map<string, ProjectTotals>;
   readonly errors: ImportIssue[];
+  /**
+   * What's imported as it is but looks wrong: a closed project with company
+   * equipment still out, which the artifact can't always stop (ADR 0017,
+   * section 6: another page can close a project that this one doesn't know has
+   * equipment out).
+   */
+  readonly warnings: ImportIssue[];
   /** Field names left out, with how many documents had each. */
   readonly ignoredFields: Record<string, number>;
   /** Projects whose claude.ai user ID was dropped (the name the artifact showed is kept). */
   readonly droppedCreatedBy: number;
+  /** Equipment lines whose `takenBy` (a claude.ai user ID, or a typed name) was dropped; `takenAt` is kept. */
+  readonly droppedTakenBy: number;
+  /** Lines bought for the client whose `priceSetBy` (a user ID) was dropped; `priceSet` and `priceSetAt` are kept. */
+  readonly droppedPriceSetBy: number;
   /** Projects the file had no totals for, so only their lines could be checked. */
   readonly projectsWithoutTotals: number;
 }
@@ -315,7 +328,7 @@ function productBrand(value: unknown): string | undefined {
  * checkKinds; ADR 0017, section 7), as a FieldError. `key` is the line's key
  * in the project, and `adhoc` says the project is a General Use one.
  */
-function line(raw: unknown, ignored: (field: string) => void, key: string, adhoc: boolean): ArtifactLine {
+function line(raw: unknown, ignored: (field: string) => void, key: string, adhoc: boolean, dropped: (field: "takenBy" | "priceSetBy") => void): ArtifactLine {
   if (!isMap(raw)) throw new FieldError("isn't an object");
   for (const field of Object.keys(raw)) if (!LINE_FIELDS.has(field)) ignored(`items.${field}`);
   if (!absent(raw.kind) && raw.kind !== "equipment") throw new FieldError('kind is "equipment" or left out');
@@ -337,7 +350,6 @@ function line(raw: unknown, ignored: (field: string) => void, key: string, adhoc
   if (returned + (lost ?? 0) > out) throw new FieldError("returned and lost add up to more than out");
   if (!absent(raw.lostCharge) && adhoc) throw new FieldError("lostCharge is only on a client's project");
   const lostCharge = absent(raw.lostCharge) ? undefined : amount(raw.lostCharge, "lostCharge");
-  const takenBy = absent(raw.takenBy) ? undefined : visibleText(raw.takenBy, "takenBy");
   const takenAt = timestamp(raw.takenAt, "takenAt");
   if (!purchased) {
     for (const field of ["priceSet", "priceSetBy", "priceSetAt"]) if (!absent(raw[field])) throw new FieldError(`${field} is only on lines bought for the client`);
@@ -345,11 +357,13 @@ function line(raw: unknown, ignored: (field: string) => void, key: string, adhoc
   if (!absent(raw.priceSet) && !PRICE_SET.has(raw.priceSet as string)) throw new FieldError('priceSet is "markup" or "manual"');
   const priceSet = absent(raw.priceSet) ? undefined : (raw.priceSet as "markup" | "manual");
   if (priceSet !== "manual" && (!absent(raw.priceSetBy) || !absent(raw.priceSetAt))) throw new FieldError('priceSetBy and priceSetAt are only on a price someone typed (priceSet "manual")');
-  const priceSetBy = absent(raw.priceSetBy) ? undefined : visibleText(raw.priceSetBy, "priceSetBy");
   const priceSetAt = timestamp(raw.priceSetAt, "priceSetAt");
   const cost = absent(raw.cost) ? undefined : amount(raw.cost, "cost");
   // Equipment on loan isn't charged, so its line may have no price (commands.ts snapshots none)
   const price = equipment && absent(raw.price) ? undefined : amount(raw.price, "price");
+  // Who took it and who typed the price: user IDs from claude.ai, never stored (see ArtifactLine)
+  if (!absent(raw.takenBy)) dropped("takenBy");
+  if (!absent(raw.priceSetBy)) dropped("priceSetBy");
   return {
     ...(equipment ? { kind: "equipment" as const } : {}),
     ...(absent(raw.code) ? {} : { code: text(raw.code, "code", MAX_CODE_LENGTH) }),
@@ -360,11 +374,9 @@ function line(raw: unknown, ignored: (field: string) => void, key: string, adhoc
     returned,
     ...(lost === undefined ? {} : { lost }),
     ...(lostCharge === undefined ? {} : { lostCharge }),
-    ...(takenBy === undefined ? {} : { takenBy }),
     ...(takenAt === undefined ? {} : { takenAt }),
     ...(purchased ? { purchased: true as const } : {}),
     ...(priceSet === undefined ? {} : { priceSet }),
-    ...(priceSetBy === undefined ? {} : { priceSetBy }),
     ...(priceSetAt === undefined ? {} : { priceSetAt }),
   };
 }
@@ -406,7 +418,7 @@ function exportedTotals(raw: unknown): ProjectTotals | undefined {
 const sameTotals = (a: ProjectTotals, b: ProjectTotals) => a.taken === b.taken && a.returned === b.returned && a.used === b.used && a.chargeCents === b.chargeCents;
 const totalsText = (t: ProjectTotals) => `taken ${t.taken}, returned ${t.returned}, used ${t.used}, charge ${(t.chargeCents / 100).toFixed(2)}`;
 
-function project(raw: unknown, ignored: (field: string) => void, lineErrors: ImportIssue[], at: string): { project: ArtifactProject; exported?: ProjectTotals; droppedCreatedBy: boolean } {
+function project(raw: unknown, ignored: (field: string) => void, lineErrors: ImportIssue[], at: string, dropped: (field: "takenBy" | "priceSetBy") => void): { project: ArtifactProject; exported?: ProjectTotals; droppedCreatedBy: boolean } {
   if (!isMap(raw)) throw new FieldError("isn't an object");
   for (const field of Object.keys(raw)) if (!PROJECT_FIELDS.has(field)) ignored(field);
   if (typeof raw.id !== "string" || !ID.test(raw.id)) throw new FieldError("id isn't a valid project ID");
@@ -437,7 +449,7 @@ function project(raw: unknown, ignored: (field: string) => void, lineErrors: Imp
   let bad = false;
   for (const [k, v] of Object.entries((raw.items ?? {}) as Item)) {
     try {
-      items[docKey(k, "item key")] = line(v, ignored, k, adhoc);
+      items[docKey(k, "item key")] = line(v, ignored, k, adhoc, dropped);
     } catch (error) {
       if (!(error instanceof FieldError)) throw error;
       bad = true;
@@ -527,12 +539,17 @@ export function parseArtifactExport(json: unknown): ParsedExport {
   const totals = new Map<string, ProjectTotals>();
   const projectIds = new Map<string, number>();
   let droppedCreatedBy = 0;
+  let droppedTakenBy = 0;
+  let droppedPriceSetBy = 0;
   let projectsWithoutTotals = 0;
+  const warnings: ImportIssue[] = [];
   const ignoredOnProject = (field: string) => ignored(`${listKey}.${field}`);
   list.forEach((raw, i) => {
     const at = `${listKey}[${i}]${isMap(raw) && typeof raw.id === "string" ? ` id ${shown(raw.id)}` : ""}`;
     try {
-      const read = project(raw, ignoredOnProject, errors, at);
+      // Counted only for a project that's imported
+      const drops = { takenBy: 0, priceSetBy: 0 };
+      const read = project(raw, ignoredOnProject, errors, at, (field) => drops[field]++);
       const s = read.project;
       const earlier = projectIds.get(s.id);
       if (earlier !== undefined) throw new FieldError(`has the same id as ${listKey}[${earlier}]`);
@@ -544,6 +561,12 @@ export function parseArtifactExport(json: unknown): ParsedExport {
       }
       if (!read.exported) projectsWithoutTotals++;
       if (read.droppedCreatedBy) droppedCreatedBy++;
+      droppedTakenBy += drops.takenBy;
+      droppedPriceSetBy += drops.priceSetBy;
+      // The document routes refuse to close a project with equipment out, but the artifact can't
+      // always stop it (ADR 0017, section 6), so the file can have one: imported as it is, and named
+      const stillOut = s.status === "closed" ? Object.values(s.items).reduce((n, l) => n + (l.kind === "equipment" ? l.out - l.returned - (l.lost ?? 0) : 0), 0) : 0;
+      if (stillOut > 0) warnings.push({ at, message: `is finished with ${stillOut} of company equipment still out; it's imported as it is, so reopen it in the app and Finished Return asks about each piece` });
       projectIds.set(s.id, i);
       totals.set(s.id, computed);
       projects.push(s);
@@ -555,7 +578,7 @@ export function parseArtifactExport(json: unknown): ParsedExport {
   // A team has at most one open General Use project (ADR 0017, section 4)
   const openAdhoc = projects.filter((s) => s.kind === "adhoc" && s.status !== "closed");
   for (const s of openAdhoc.slice(1)) errors.push({ at: `project id ${shown(s.id)}`, message: `is a second open General Use project (${shown(openAdhoc[0]?.id ?? "")} is open too); finish all but one first` });
-  return { ...(exportedAt === undefined ? {} : { exportedAt }), products, projects, totals, errors, ignoredFields, droppedCreatedBy, projectsWithoutTotals };
+  return { ...(exportedAt === undefined ? {} : { exportedAt }), products, projects, totals, errors, warnings, ignoredFields, droppedCreatedBy, droppedTakenBy, droppedPriceSetBy, projectsWithoutTotals };
 }
 
 /** JSON with object keys sorted, so two documents compare by content. */
@@ -569,6 +592,8 @@ function productContent(p: Item): Item {
   for (const field of ["kind", "code", "name", "brand", "price", "cost", "packSize"]) if (p[field] !== undefined) pick[field] = p[field];
   if (typeof p.stock === "number") pick.stock = p.stock;
   if (pick.code === undefined) pick.code = "";
+  // A missing kind is a supply (ADR 0017, section 8)
+  if (pick.kind === undefined) pick.kind = "supply";
   return pick;
 }
 
