@@ -165,6 +165,7 @@ const ALARM_IDS = [
   "team-reopened-notices-failing",
   "lapse-job-failing",
   "lapse-closures-held",
+  "lapse-checkout-held",
   "lapse-closures-high",
   "lapse-job-out-of-time",
 ];
@@ -193,6 +194,7 @@ const PRIMARY_ONLY_ALARM_IDS = [
   "stripe-customer-deletion-stuck",
   "lapse-job-failing",
   "lapse-closures-held",
+  "lapse-checkout-held",
   "lapse-closures-high",
   "lapse-job-out-of-time",
 ];
@@ -1407,6 +1409,7 @@ describe("scheduled checks", () => {
         AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
       });
     alarm("supply-checkout-prod-p2-lapse-closures-held", BusinessMetric.LapseClosuresHeld, "Sum", 2 * LAPSE_EVERY_HOURS * 3600, 0);
+    alarm("supply-checkout-prod-p2-lapse-checkout-held", BusinessMetric.LapseCheckoutOverdue, "Sum", 2 * LAPSE_EVERY_HOURS * 3600, 0);
     alarm("supply-checkout-prod-p2-lapse-closures-high", BusinessMetric.LapsedTeamsClosed, "Sum", LAPSE_CLOSURES_ALARM_HOURS * 3600, LAPSE_CLOSURES_ALARM_COUNT);
     alarm("supply-checkout-prod-p2-lapse-job-out-of-time", BusinessMetric.LapseTeamsUnstarted, "Maximum", LAPSE_EVERY_HOURS * 3600, 0, LAPSE_UNSTARTED_ALARM_HOURS / LAPSE_EVERY_HOURS);
     // It sees a runaway well before the cap would let one through its period's runs, and well within the purge's day

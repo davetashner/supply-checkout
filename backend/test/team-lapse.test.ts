@@ -295,20 +295,24 @@ describe("an ended subscription", () => {
     const cap = closes + LAPSE_CHECKOUT_MAX_DELAY_DAYS * DAY;
     const failures = () => counts.filter(([m]) => m === BusinessMetric.LapseFailures).map(([, , metadata]) => metadata);
 
-    it("an owner who starts Checkout every day keeps it read-only, but past the cap it's counted for a person, never closed", async () => {
+    const overdue = () => counts.filter(([m]) => m === BusinessMetric.LapseCheckoutOverdue).map(([, , metadata]) => metadata);
+
+    it("an owner who starts Checkout every day keeps it read-only, but past the cap it's counted on its own for a person, never closed", async () => {
       await run();
       for (let at = closes; at < cap; at += DAY) {
         table.put({ ...meta("gone"), stripeCheckoutAt: iso(at - 3_600_000) });
         counts = [];
         expect(await run(at)).toMatchObject({ closed: 0, failed: 0 });
         expect(counted(BusinessMetric.LapseCheckoutHeld)).toBe(1);
-        expect(failures()).toEqual([]);
+        expect(overdue()).toEqual([]);
       }
       table.put({ ...meta("gone"), stripeCheckoutAt: iso(cap - 3_600_000) });
       counts = [];
-      expect(await run(cap)).toMatchObject({ closed: 0, failed: 1 });
+      expect(await run(cap)).toMatchObject({ closed: 0, failed: 0 });
       expect(counted(BusinessMetric.LapseCheckoutHeld)).toBe(1);
-      expect(failures()).toEqual([{ teamId: "gone", step: "checkoutHeld" }]);
+      expect(overdue()).toEqual([{ teamId: "gone", why: "recent" }]);
+      // Not a failure: "Lapsed-team job failing" stays free for other teams' faults
+      expect(failures()).toEqual([]);
       expect(logs.find(([, message]) => message === "Lapsed team held by Checkout too long past its date")?.[2]).toEqual({
         teamId: "gone",
         why: "recent",
@@ -328,26 +332,29 @@ describe("an ended subscription", () => {
       openCheckouts.add("cus_1");
       expect(await run(cap - 1)).toMatchObject({ closed: 0, failed: 0 });
       expect(counts.find(([m]) => m === BusinessMetric.LapseCheckoutHeld)?.[2]).toEqual({ teamId: "gone", why: "open" });
-      expect(await run(cap)).toMatchObject({ closed: 0, failed: 1 });
-      expect(failures()).toEqual([{ teamId: "gone", step: "checkoutHeld" }]);
+      expect(await run(cap)).toMatchObject({ closed: 0, failed: 0 });
+      expect(overdue()).toEqual([{ teamId: "gone", why: "open" }]);
+      expect(failures()).toEqual([]);
       const held = () => logs.filter(([, message]) => message === "Lapsed team held by Checkout too long past its date").map(([, , data]) => data);
       expect(held()).toEqual([{ teamId: "gone", why: "open", deletesAt: iso(closes), customerId: "cus_1" }]);
       // An older Checkout the app recorded is logged with it
       table.put({ ...meta("gone"), stripeCheckoutAt: iso(NOW) });
-      expect(await run(cap)).toMatchObject({ closed: 0, failed: 1 });
+      expect(await run(cap)).toMatchObject({ closed: 0, failed: 0 });
       expect(held()[1]).toEqual({ teamId: "gone", why: "open", deletesAt: iso(closes), customerId: "cus_1", stripeCheckoutAt: iso(NOW) });
       expect(meta("gone").closedAt).toBeUndefined();
     });
 
     it("counts a last Checkout time that isn't a past date, which would hold it for good, without asking Stripe", async () => {
       await run();
-      for (const bad of ["not a date", iso(closes + 6 * 60_000), 1_700_000_000]) {
+      // Dates that parse but aren't the exact ISO 8601 linkStripeCustomer writes, which the closure's condition compares as strings
+      const loose = ["2026-10-02", "2026-10-02T12:00:00Z", new Date(NOW).toUTCString()];
+      for (const bad of ["not a date", iso(closes + 6 * 60_000), 1_700_000_000, ...loose]) {
         table.put({ ...meta("gone"), stripeCheckoutAt: bad });
         counts = [];
         expect(await run(closes)).toMatchObject({ closed: 0, failed: 1 });
         expect(failures()).toEqual([{ teamId: "gone", step: "badCheckoutAt" }]);
       }
-      expect(logs.filter(([, message]) => message === "Lapsed team's last Checkout time isn't a past date, so it can't be closed").map(([, , data]) => data.stripeCheckoutAt)).toEqual(["not a date", iso(closes + 6 * 60_000), ""]);
+      expect(logs.filter(([, message]) => message === "Lapsed team's last Checkout time isn't a past date, so it can't be closed").map(([, , data]) => data.stripeCheckoutAt)).toEqual(["not a date", iso(closes + 6 * 60_000), "", ...loose]);
       // A few minutes ahead is the billing function's clock: held as a Checkout just started
       table.put({ ...meta("gone"), stripeCheckoutAt: iso(closes + 4 * 60_000) });
       counts = [];

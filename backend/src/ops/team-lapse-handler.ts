@@ -27,8 +27,8 @@
 //    states deletionLastDay of it, a date that has ended everywhere by then.
 // 5. Once that time has passed: a team an owner started Checkout for within
 //    LAPSE_CHECKOUT_GUARD_HOURS (`stripeCheckoutAt`) is held, before any
-//    Stripe call (a time that doesn't parse, or is ahead of this clock, is
-//    counted in LapseFailures). Then at most LAPSE_MAX_CLOSURES_PER_RUN teams a
+//    Stripe call (a time that isn't exactly ISO 8601, or is ahead of this
+//    clock, is counted in LapseFailures). Then at most LAPSE_MAX_CLOSURES_PER_RUN teams a
 //    run go on (the rest are held for the next run and counted in
 //    LapseClosuresHeld, which alarms), and Stripe is asked again (never only
 //    our record of it). The team's recorded subscription must be `canceled`
@@ -37,8 +37,8 @@
 //    paused one, one being paid), and the customer may have no open Checkout
 //    Session (an owner subscribing now). A team held by a Checkout either way
 //    is left for the next run and counted in LapseCheckoutHeld; held
-//    LAPSE_CHECKOUT_MAX_DELAY_DAYS past its time, in LapseFailures too, so a
-//    person looks (checkoutHeld): the job never closes it under a Checkout.
+//    LAPSE_CHECKOUT_MAX_DELAY_DAYS past its time, in LapseCheckoutOverdue too,
+//    which alarms, so a person looks: the job never closes it under a Checkout.
 //    Then closeLapsedTeam closes it, on the condition its version is the one
 //    read, with `purgeAfter` LAPSE_PURGE_DELAY_HOURS on (reopenable until
 //    then), and the hourly
@@ -227,16 +227,18 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
    * A lapsed team due to close that an owner's Checkout holds (`recent`: one started within LAPSE_CHECKOUT_GUARD_HOURS;
    * `open`: one Stripe has open). Counted in LapseCheckoutHeld, and left for the next run. Held LAPSE_CHECKOUT_MAX_DELAY_DAYS
    * past its closing time (an owner starting Checkout every day and never paying, or a session made in the Stripe
-   * Dashboard), it's counted in LapseFailures too, so a person looks: never closed under a Checkout by the job itself.
+   * Dashboard), it's counted in LapseCheckoutOverdue too ("Lapsed team held by Checkout"), so a person looks: never
+   * closed under a Checkout by the job itself.
    */
   function checkoutHeld(team: LapseTeam, deletesAt: number, at: number, why: "recent" | "open"): LapseOutcome {
     const { teamId } = team;
     obs.count(BusinessMetric.LapseCheckoutHeld, 1, { teamId, why, ...testMark(team.test) });
     const fields = { teamId, why, deletesAt: iso(deletesAt), customerId: team.stripeCustomerId ?? "", ...(team.stripeCheckoutAt ? { stripeCheckoutAt: team.stripeCheckoutAt } : {}) };
     if (at - deletesAt >= LAPSE_CHECKOUT_MAX_DELAY_DAYS * DAY_MS) {
-      obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "checkoutHeld", ...testMark(team.test) });
+      // Its own metric and alarm, not LapseFailures: one team held for days mustn't keep "Lapsed-team job failing" in alarm
+      obs.count(BusinessMetric.LapseCheckoutOverdue, 1, { teamId, why, ...testMark(team.test) });
       obs.logger.warn("Lapsed team held by Checkout too long past its date", fields);
-      return "failed";
+      return "waiting";
     }
     obs.logger.info("Lapsed team not closed: an owner has Checkout open", fields);
     return "waiting";
@@ -315,10 +317,12 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
     }
     if (at < deletesAt) return "waiting";
     // An owner who started Checkout within LAPSE_CHECKOUT_GUARD_HOURS: the closure's condition would refuse it anyway, so
-    // skip the Stripe calls. A time that doesn't parse, or is ahead of this clock, would hold it for good: a person looks
+    // skip the Stripe calls. A time that isn't exactly ISO 8601, or is ahead of this clock, could hold it for good: a person looks
     if (team.stripeCheckoutAt !== undefined) {
       const started = Date.parse(team.stripeCheckoutAt);
-      if (!Number.isFinite(started) || started > at + CHECKOUT_CLOCK_SKEW_MS) {
+      // Exactly the ISO 8601 linkStripeCustomer writes: anything else is compared as a string by the closure's condition
+      const exact = Number.isFinite(started) && new Date(started).toISOString() === team.stripeCheckoutAt;
+      if (!exact || started > at + CHECKOUT_CLOCK_SKEW_MS) {
         obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "badCheckoutAt", ...testMark(team.test) });
         obs.logger.warn("Lapsed team's last Checkout time isn't a past date, so it can't be closed", { teamId, stripeCheckoutAt: team.stripeCheckoutAt });
         return "failed";

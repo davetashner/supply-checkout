@@ -145,9 +145,9 @@ export const LAPSE_MAX_CLOSURES_PER_RUN = 10;
  * from closing (supply-checkout-8jc.45). A Checkout started within
  * LAPSE_CHECKOUT_GUARD_HOURS, or one Stripe still has open, holds the team
  * (LapseCheckoutHeld) rather than risk an owner paying for a team being
- * deleted. Past this long, each run that holds it counts it in LapseFailures
- * (step checkoutHeld, "Lapsed-team job failing") so a person looks: the job
- * never closes a team under a Checkout by itself.
+ * deleted. Past this long, each run that holds it counts it in
+ * LapseCheckoutOverdue ("Lapsed team held by Checkout") so a person looks: the
+ * job never closes a team under a Checkout by itself.
  */
 export const LAPSE_CHECKOUT_MAX_DELAY_DAYS = 3;
 
