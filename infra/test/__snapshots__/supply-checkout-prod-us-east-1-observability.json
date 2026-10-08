@@ -8120,10 +8120,43 @@
               "Sid": "CloseLapsedTeam"
             },
             {
-              "Action": [
-                "dynamodb:GetItem",
-                "dynamodb:PutItem"
-              ],
+              "Action": "dynamodb:GetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "LAPSE#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "type",
+                    "sentAt",
+                    "expiresAt"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "ReadLapseRecords"
+            },
+            {
+              "Action": "dynamodb:PutItem",
               "Condition": {
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [

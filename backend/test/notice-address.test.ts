@@ -49,7 +49,8 @@ function policy(command: string, input: Record<string, unknown>): boolean {
       key.PK.startsWith("USER#") &&
       names.every((n) => allowed.has(n)) &&
       (kind !== "ConditionCheck" || (names.length === 0 && /^attribute_not_exists\(PK\)$/.test(String(body.ConditionExpression)))) &&
-      (kind !== "GetCommand" || typeof body.ProjectionExpression === "string") &&
+      // ReadNoticeAddressRecorded requires dynamodb:Select SPECIFIC_ATTRIBUTES (supply-checkout-3sv.23): projected reads only
+      (kind !== "GetCommand" || (typeof body.ProjectionExpression === "string" && (body.Select === undefined || body.Select === "SPECIFIC_ATTRIBUTES"))) &&
       (body.ReturnValues === undefined || body.ReturnValues === "NONE")
     );
   };
@@ -93,6 +94,20 @@ describe("schema", () => {
     expect([...NOTICE_ADDRESS_CHECK_ATTRIBUTES]).toEqual(["PK", "SK", "noticeAddressAt"]);
     expect([...NOTICE_ADDRESS_RECORD_ATTRIBUTES]).toEqual(["PK", "SK", "noticeAddress", "noticeAddressAt", "noticeSeenHash"]);
     for (const name of [...NOTICE_ADDRESS_CHECK_ATTRIBUTES, ...NOTICE_ADDRESS_RECORD_ATTRIBUTES]) expect(SECURITY_NOTICE_ATTRIBUTES).toContain(name);
+  });
+
+  // The role requires a projection on its GetItem (supply-checkout-3sv.23), so the stand-in refuses one without:
+  // every test here then shows hasNoticeAddress, the triggers' only read, projects
+  it("has the stand-in policy refuse a read of the record without a projection, or with Select other than SPECIFIC_ATTRIBUTES", () => {
+    const Key = { PK: `USER#${SUB}`, SK: "NOTICE_ADDRESS" };
+    const at = { ProjectionExpression: "#at", ExpressionAttributeNames: { "#at": "noticeAddressAt" } };
+    expect(policy("GetCommand", { Key })).toBe(false);
+    expect(policy("GetCommand", { Key, Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(policy("GetCommand", { Key, ...at, Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(policy("GetCommand", { Key, ...at })).toBe(true);
+    expect(policy("GetCommand", { Key, ...at, Select: "SPECIFIC_ATTRIBUTES" })).toBe(true);
+    expect(denied).toHaveLength(3);
+    denied.length = 0;
   });
 });
 

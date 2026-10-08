@@ -681,8 +681,8 @@ export class IdentityStack extends SupplyCheckoutStack {
   /**
    * Lets a trigger record a user's notice address (identity/notice-address.ts,
    * data/security-notices.ts): GetItem of whether one is recorded, reading
-   * only the keys and when (NOTICE_ADDRESS_CHECK_ATTRIBUTES), never the
-   * address; and recordNoticeAddress's write, UpdateItem naming only the
+   * only the keys and when (NOTICE_ADDRESS_CHECK_ATTRIBUTES), projected
+   * (Select SPECIFIC_ATTRIBUTES, required), never the address; and recordNoticeAddress's write, UpdateItem naming only the
    * address record's attributes (NOTICE_ADDRESS_RECORD_ATTRIBUTES) and
    * returning nothing, with its ConditionCheckItem on the DELETING mark, which
    * names only the keys. No other item has these attributes, so it can't
@@ -712,7 +712,10 @@ export class IdentityStack extends SupplyCheckoutStack {
           conditions: {
             "ForAllValues:StringLike": userPartitions,
             "ForAllValues:StringEquals": { "dynamodb:Attributes": [...NOTICE_ADDRESS_CHECK_ATTRIBUTES] },
-            StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+            // Projected: required, not IfExists, so a GetItem without a projection (which may carry
+            // neither Select nor Attributes) is denied (supply-checkout-3sv.23). hasNoticeAddress
+            // (data/security-notices.ts), its only caller, always projects
+            StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
           },
         }),
         new PolicyStatement({
