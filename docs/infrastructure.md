@@ -487,6 +487,7 @@ The `api` stack (`lib/stacks/api-stack.ts`, [ADR 0006](adr/0006-api-and-realtime
 | `POST /teams/{teamId}/receipts/read` (read a receipt photo for the review screen; contributors and owners; see [Receipt reading](#receipt-reading)) | Cognito access token | `receipts` |
 | `GET /teams/{teamId}/receipts/usage` (the team's receipt reads against its allowance; contributors and owners) | Cognito access token | `receipts` |
 | `GET /me`, `POST /teams`, `POST /invites/{inviteId}/accept` | Cognito access token | `account` |
+| `PATCH /me/preferences` (the caller's own app preferences: the What's New banner on or off, and the local day it was last shown; [openapi.yaml](api/openapi.yaml)) | Cognito access token | `account` |
 | `GET /teams/{teamId}/members`, `PATCH` and `DELETE` `/teams/{teamId}/members/{userId}` (members and roles: owners only, except leaving) | Cognito access token | `account` |
 | `GET` and `POST /teams/{teamId}/invites`, `DELETE /teams/{teamId}/invites/{inviteId}`, `POST /teams/{teamId}/invites/{inviteId}/resend` (invites: owners only) | Cognito access token | `account` |
 | `POST /teams/{teamId}/billing/checkout` (start Stripe Checkout) and `POST /teams/{teamId}/billing/portal` (open the Stripe Customer Portal); owners only; see [Billing](#billing) | Cognito access token | `billing` |

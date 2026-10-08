@@ -59,6 +59,10 @@
 //                                   verified address ("Security notices").
 //   POST /me/sign-out-everywhere    Signs the caller out everywhere: what the
 //                                   app sends when turning TOTP on couldn't.
+//   PATCH /me/preferences           The caller's own app preferences: the What's
+//                                   New banner on or off, and the local date it
+//                                   was last shown (data/preferences.ts). GET /me
+//                                   returns them as `user.preferences`.
 //
 // The team's last owner can't be removed, demoted or leave: the team item's
 // owner count moves in the same transaction as the membership, conditioned
@@ -175,6 +179,7 @@ import {
   ForbiddenError,
   getInvite,
   getMember,
+  getPreferences,
   getTeam,
   inviteLimitKey,
   hashEmail,
@@ -205,6 +210,9 @@ import {
   REOPEN_CUTOFF_MINUTES,
   markInviteNotSent,
   normalizeEmail,
+  PREFERENCE_FIELDS,
+  preferencesChange,
+  setPreferences,
   clearCodeSent,
   codeSentHash,
   recordCodeSent,
@@ -449,9 +457,10 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const user = await cognitoUser(event, userId);
     const email = verifiedEmail(user);
     const own = dbFor({ userId, invitee: email && hashEmail(email) });
-    const [rows, invites] = await Promise.all([
+    const [rows, invites, preferences] = await Promise.all([
       listTeamsForUser(own, userId),
       email ? listInvitesForEmail(own, email, new Date(now())) : [],
+      getPreferences(own, userId),
       email ? rememberNoticeAddress(own, userId, email, user.email ?? email) : undefined,
     ]);
     // Each team's details on a session for that team, after the membership
@@ -475,7 +484,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     const joined = new Set(teams.map((t) => t.id));
     return json(200, {
-      user: { id: userId, email: user.email ?? null, emailVerified: email !== undefined, mfa: mfaState(user) },
+      user: { id: userId, email: user.email ?? null, emailVerified: email !== undefined, mfa: mfaState(user), preferences },
       teams,
       invites: invites.filter((i) => !joined.has(i.teamId)).map(inviteBody),
     });
@@ -1096,6 +1105,19 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     return noContent();
   }
 
+  /**
+   * Changes the caller's own preferences (data/preferences.ts), in their own
+   * partition only: the session is tagged with nothing but their user ID.
+   * Every field is checked before anything is written; the answer is the
+   * preferences after the change.
+   */
+  async function setPreferencesRoute(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const at = new Date(now());
+    const change = preferencesChange(jsonBody(event, PREFERENCE_FIELDS), at);
+    const preferences = await setPreferences(dbFor({ userId }), userId, change, at);
+    return json(200, { preferences });
+  }
+
   const actions: Record<AccountRoute["action"], (event: DataEvent, userId: string) => Promise<APIGatewayProxyStructuredResultV2>> = {
     me,
     createTeam: newTeam,
@@ -1116,6 +1138,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     startTotp,
     verifyTotp,
     signOutEverywhere,
+    setPreferences: setPreferencesRoute,
   };
 
   return async (event: DataEvent, context?: Context): Promise<APIGatewayProxyStructuredResultV2> => {

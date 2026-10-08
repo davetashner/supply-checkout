@@ -278,7 +278,7 @@ describe("GET /me", () => {
     const created = (await create(PAT, "Bravo Co", "pat-team-1")).body.team;
     const { status, body } = await call("GET", "/me", { user: PAT });
     expect(status).toBe(200);
-    expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true, mfa: "off" });
+    expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null } });
     expect(body.teams).toEqual([
       created,
       { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, reopenBy: null, comp: null, subscriptionEnded: false, readOnlyReason: null, readOnlyDeletesAt: null, readOnlyLastDay: null, paymentGraceEndsAt: null, billingAccount: false, cancelsAt: null, members: 2, memberCap: MEMBERS_PER_TRIAL_TEAM },
@@ -297,7 +297,7 @@ describe("GET /me", () => {
   it("shows a new user no teams and no invites", async () => {
     expect(await call("GET", "/me", { user: MALLORY })).toEqual({
       status: 200,
-      body: { user: { id: MALLORY, email: "mallory@example.com", emailVerified: true, mfa: "off" }, teams: [], invites: [] },
+      body: { user: { id: MALLORY, email: "mallory@example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null } }, teams: [], invites: [] },
     });
   });
 
@@ -444,7 +444,7 @@ describe("verifying the caller's email address", () => {
       verifiedAt: new Date(now).toISOString(),
     });
     const me = (await call("GET", "/me", { user: UNVERIFIED })).body;
-    expect(me.user).toEqual({ id: UNVERIFIED, email: "pat@example.com", emailVerified: true, mfa: "off" });
+    expect(me.user).toEqual({ id: UNVERIFIED, email: "pat@example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null } });
     expect(me.invites).toHaveLength(1);
     // Neither the code nor the token is logged
     expect(JSON.stringify(logs)).not.toMatch(/123456|654321|token-|pat@/);
@@ -949,6 +949,69 @@ describe("keeping members' email current", () => {
     expect(table.get(`USER#${UNVERIFIED}`, "VERIFIED_EMAIL")).toBeDefined();
     expect(memberEmail("team-a", UNVERIFIED)).toBe("old@example.com");
     expect(logs).toContainEqual(["Member emails not updated", { code: "InternalServerError" }]);
+  });
+});
+
+describe("PATCH /me/preferences", () => {
+  const today = () => new Date(now).toISOString().slice(0, 10);
+  const dayFromToday = (days: number) => new Date(Date.parse(`${today()}T00:00:00.000Z`) + days * DAY).toISOString().slice(0, 10);
+  const patch = (body: unknown, user = PAT) => call("PATCH", "/me/preferences", { user, body });
+
+  it("turns the What's New banner off and on again, and GET /me follows on any device", async () => {
+    expect(await patch({ whatsNew: false })).toEqual({ status: 200, body: { preferences: { whatsNew: false, whatsNewLastShown: null } } });
+    expect((await call("GET", "/me", { user: PAT })).body.user.preferences).toEqual({ whatsNew: false, whatsNewLastShown: null });
+    expect(table.get(`USER#${PAT}`, "PREFERENCES")).toMatchObject({ type: "preferences", whatsNew: false, updatedAt: new Date(now).toISOString() });
+    expect(await patch({ whatsNew: true })).toEqual({ status: 200, body: { preferences: { whatsNew: true, whatsNewLastShown: null } } });
+    // Someone else's are untouched
+    expect((await call("GET", "/me", { user: OWNER })).body.user.preferences).toEqual({ whatsNew: true, whatsNewLastShown: null });
+  });
+
+  it("records the local day the banner was last shown, keeping the setting", async () => {
+    await patch({ whatsNew: false });
+    expect((await patch({ whatsNewLastShown: today() })).body).toEqual({ preferences: { whatsNew: false, whatsNewLastShown: today() } });
+    // Local dates run a day either side of UTC's, and a little more for a clock that's off
+    for (const days of [-2, -1, 1, 2]) expect((await patch({ whatsNewLastShown: dayFromToday(days) })).body.preferences.whatsNewLastShown).toBe(dayFromToday(days));
+    expect((await patch({ whatsNew: true, whatsNewLastShown: today() })).body).toEqual({ preferences: { whatsNew: true, whatsNewLastShown: today() } });
+  });
+
+  it("writes only in the caller's own partition, with a session tagged with nothing else", async () => {
+    scopes = [];
+    await patch({ whatsNew: false });
+    expect(scopes).toEqual([{ userId: PAT }]);
+  });
+
+  it("refuses anything but a boolean and a real, current date, and writes nothing", async () => {
+    for (const body of [
+      {},
+      { whatsNew: "false" },
+      { whatsNew: 0 },
+      { whatsNew: null },
+      { whatsNewLastShown: null },
+      { whatsNewLastShown: 20261008 },
+      { whatsNewLastShown: "2026-10-08T00:00:00Z" },
+      { whatsNewLastShown: "2026-02-30" },
+      { whatsNewLastShown: "2026-13-01" },
+      { whatsNewLastShown: dayFromToday(3) },
+      { whatsNewLastShown: dayFromToday(-3) },
+      { whatsNew: true, theme: "dark" },
+      { PK: "USER#user-owner" },
+      [],
+      "on",
+    ]) {
+      expect(await patch(body), JSON.stringify(body)).toMatchObject({ status: 400, body: { error: { code: "bad_request" } } });
+    }
+    expect(await call("PATCH", "/me/preferences", { user: PAT, headers: {}, body: undefined })).toMatchObject({ status: 400 });
+    expect(table.get(`USER#${PAT}`, "PREFERENCES")).toBeUndefined();
+  });
+
+  it("reads a damaged record as the defaults", async () => {
+    table.put({ PK: `USER#${PAT}`, SK: "PREFERENCES", type: "preferences", whatsNew: "no", whatsNewLastShown: "yesterday" });
+    expect((await call("GET", "/me", { user: PAT })).body.user.preferences).toEqual({ whatsNew: true, whatsNewLastShown: null });
+  });
+
+  it("needs a signed-in caller from our issuer", async () => {
+    expect((await call("PATCH", "/me/preferences", { user: PAT, body: { whatsNew: false }, claims: { sub: PAT, token_use: "access", exp: String(Math.floor(now / 1000) + 600), iss: "https://elsewhere.example", client_id: "web" } })).status).toBe(401);
+    expect(table.get(`USER#${PAT}`, "PREFERENCES")).toBeUndefined();
   });
 });
 

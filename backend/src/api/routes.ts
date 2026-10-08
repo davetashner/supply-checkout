@@ -183,7 +183,8 @@ export interface AccountRoute {
     | "setPassword"
     | "startTotp"
     | "verifyTotp"
-    | "signOutEverywhere";
+    | "signOutEverywhere"
+    | "setPreferences";
   /**
    * API Gateway's throttle for this route across all callers (requests a
    * second, and burst), below the stage's. /me assumes a role per team, so it
@@ -202,7 +203,8 @@ export interface AccountRoute {
  * account handler's "Closing a team" and "Deleting an account"). And
  * verifying the user's email address with a code Cognito emails them. And
  * two-step sign-in, which owners need for billing: setting a password and an
- * authenticator app (TOTP) up (supply-checkout-8jc.12).
+ * authenticator app (TOTP) up (supply-checkout-8jc.12). And the caller's
+ * own app preferences, such as the What's New banner (supply-checkout-005.17).
  * Each needs a Cognito access token (the JWT
  * authorizer). They write the user's own `USER#` rows (or, for a member
  * change, that member's), which the team-scoped data function can't reach,
@@ -236,6 +238,9 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   { method: "POST", path: "/me/mfa/totp/verify", action: "verifyTotp", throttle: { rate: 5, burst: 10 } },
   // Finishing two-step sign-in when its sign-out everywhere failed: rare
   { method: "POST", path: "/me/sign-out-everywhere", action: "signOutEverywhere", throttle: { rate: 2, burst: 5 } },
+  // The caller's own app preferences (supply-checkout-005.17): a toggle in Account, and the
+  // What's New banner recording the day it was shown, at most once a day per person
+  { method: "PATCH", path: "/me/preferences", action: "setPreferences", throttle: { rate: 10, burst: 20 } },
 ];
 
 export interface BillingRoute {

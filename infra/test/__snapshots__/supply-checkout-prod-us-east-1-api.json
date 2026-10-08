@@ -6167,6 +6167,56 @@
         }
       }
     },
+    "HttpApiPATCHmepreferencesAccountIntegrationPermission3918B86B": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/me/preferences"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPATCHmepreferences176919F2": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "PATCH /me/preferences",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegration84D4E72C": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -7169,6 +7219,10 @@
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
           },
+          "PATCH /me/preferences": {
+            "ThrottlingRateLimit": 10,
+            "ThrottlingBurstLimit": 20
+          },
           "POST /teams/{teamId}/billing/checkout": {
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
@@ -7262,6 +7316,8 @@
         "HttpApiGETteamsteamIdmembersC3ACF5A2",
         "HttpApiGETteamsteamIdreceiptsusageReceiptsIntegrationPermissionEC7391CE",
         "HttpApiGETteamsteamIdreceiptsusage11D88952",
+        "HttpApiPATCHmepreferencesAccountIntegrationPermission3918B86B",
+        "HttpApiPATCHmepreferences176919F2",
         "HttpApiPATCHteamsteamIdmembersuserIdAccountIntegrationPermission15C68DE8",
         "HttpApiPATCHteamsteamIdmembersuserIdEF500EC2",
         "HttpApiPOSTbillingwebhookCCC3C5D6",

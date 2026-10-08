@@ -160,6 +160,7 @@ describe("HTTP API routes", () => {
       "POST /me/mfa/totp": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /me/mfa/totp/verify": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /me/sign-out-everywhere": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "PATCH /me/preferences": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "POST /teams/{teamId}/billing/checkout": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /teams/{teamId}/billing/portal": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "GET /teams/{teamId}/billing/invoices": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },

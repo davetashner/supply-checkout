@@ -532,6 +532,14 @@ export const WELCOME_INVITE_ATTRIBUTES = [PK, SK, GSI2PK, GSI2SK, "type", "email
 export const TOTP_ON_SK = "TOTP_ON";
 
 /**
+ * The sort key of the item in a user's own `USER#<sub>` partition that holds
+ * their app preferences (supply-checkout-005.17, preferences.ts): whether the
+ * What's New banner is on, and the local date it was last shown. Not a
+ * `LIMIT#` key, so deleting an account removes it.
+ */
+export const PREFERENCES_SK = "PREFERENCES";
+
+/**
  * The only attributes the billing-access role may name in the caller's own
  * `USER#<sub>` partition (GetItem and UpdateItem, dynamodb:Attributes): the
  * keys and `totpOnAt`, which no other item has. So the billing function can't
