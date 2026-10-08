@@ -10,7 +10,8 @@
 // invoices, cancelling) and Invoices (the latest ones, invoices.js), and a canceled
 // subscription says when it ends. Billing needs
 // two-step sign-in (an authenticator app, mfa.js), which Account sets up; when the server
-// refuses billing for want of it, the setup opens.
+// refuses billing for want of it, the setup opens. Account also changes the password
+// (password.js).
 import { esc, visibleText } from "../format.js";
 import { armButton, closeModal, openModal, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
@@ -22,6 +23,7 @@ import { openMembers, openReopen } from "./members.js";
 import { openDeleteAccount } from "./delete-account.js";
 import { openVerifyEmail } from "./verify-email.js";
 import { openTwoStep } from "./mfa.js";
+import { openChangePassword } from "./password.js";
 import { openInvoices } from "./invoices.js";
 
 const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
@@ -163,16 +165,23 @@ export async function start(config) {
   // Two-step sign-in is on, and the API signed the user out everywhere: this tab's session is
   // over, so stop, and offer to sign in again (with the password and the app's code). The
   // owner mark stays, so the same person keeps their team and drafts.
-  async function twoStepOn() {
+  // The same after a password change that signed out everywhere (password.js).
+  async function signedOutEverywhere(title, text) {
     owner = null;
     if (db) db.stop();
     const out = await session.endEverywhere();
-    show(`<h2>Two-step sign-in is on</h2>
-      <p>You've been signed out everywhere, here too. Sign in again with your email, your password and a code from your authenticator app.</p>
+    show(`<h2>${title}</h2>
+      <p>${text}</p>
       <div class="actions"><a class="btn primary big" href="${esc(out)}" id="signInAgain" data-autofocus>Sign in again</a></div>`);
   }
+  const twoStepOn = () => signedOutEverywhere("Two-step sign-in is on", "You've been signed out everywhere, here too. Sign in again with your email, your password and a code from your authenticator app.");
+  const passwordChanged = () => signedOutEverywhere("Your password is changed", "You've been signed out everywhere, here too. Sign in again with your new password.");
   const twoStep = (me, options) => openTwoStep(session, me.user.email, twoStepOn, options);
-  const account = (me) => openDeleteAccount(session.api, me.user.email, deleted, { mfa: me.user.mfa, setUp: (moving) => twoStep(me, { moving }) });
+  const account = (me) => openDeleteAccount(session.api, me.user.email, deleted, {
+    mfa: me.user.mfa,
+    setUp: (moving) => twoStep(me, { moving }),
+    changePassword: () => openChangePassword(session, me.user.email, passwordChanged, { required: me.user.mfa === "totp" }),
+  });
 
   // Who's signed in, with a way out, on the screens before a team is open
   const whoami = (me) => `<p class="whoami">Signed in as ${esc(me.user.email || "you")}. <button type="button" class="btn ghost" id="accountSignOut">Sign out</button> <button type="button" class="btn ghost" id="accountDelete">Delete account</button></p>`;

@@ -1,5 +1,6 @@
 // Your account, from the team bar's Account button or the screens before a team is open:
-// two-step sign-in (set up in mfa.js), and deleting the account (DELETE /me in
+// the password (changed in password.js), two-step sign-in (set up in mfa.js), and deleting
+// the account (DELETE /me in
 // docs/api/openapi.yaml). The user types DELETE to confirm, and
 // the button stays off until they have. The server refuses while they're the only owner of
 // a team others are still in (409 `last_owner`, with a message naming the teams), and
@@ -31,11 +32,21 @@ function twoStepSection(mfa) {
     ${button ? `<div class="actions"><button type="button" class="btn" id="twoStepOpen">${button}</button></div>` : ""}`;
 }
 
+// The password: Change password, or a note for a Google or Apple user, who has no password
+// here (the API refuses them, federated_sign_in)
+const passwordSection = (mfa) => `<h3>Password</h3>
+    ${mfa === "provider"
+      ? `<p class="hint" id="passwordState">You sign in with Google or Apple, so there's no Supply Checkout password to change. Change your password with Google or Apple.</p>`
+      : `<p class="hint" id="passwordState">Change the password you sign in with${mfa === "totp" ? "" : ", or set one if you've only signed in with an email code or a passkey"}.</p>
+    <div class="actions"><button type="button" class="btn" id="passwordOpen">Change password</button></div>`}`;
+
 // `onDeleted` runs once the account is gone. `twoStep.setUp(moving)` opens the setup
-// (`moving`: it's on already, and they're moving to a new phone).
+// (`moving`: it's on already, and they're moving to a new phone); `twoStep.changePassword()`
+// opens Change password.
 export function openDeleteAccount(api, email, onDeleted, twoStep) {
   openModal(`<h2>Your account</h2>
     <p>Signed in as <strong>${esc(email || "you")}</strong>.</p>
+    ${passwordSection(twoStep.mfa)}
     ${twoStepSection(twoStep.mfa)}
     <h3>Delete your account</h3>
     <p class="hint">This removes you from every team and deletes your sign-in, so you can't sign in again. A team you're the only member of is closed, and everything in it is deleted after 30 days. Teams other people are in keep their projects and inventory. It can't be undone.</p>
@@ -50,6 +61,8 @@ export function openDeleteAccount(api, email, onDeleted, twoStep) {
     m.querySelector("#deleteCancel").addEventListener("click", closeModal);
     const setUp = m.querySelector("#twoStepOpen");
     if (setUp) setUp.addEventListener("click", () => twoStep.setUp(twoStep.mfa === "totp"));
+    const change = m.querySelector("#passwordOpen");
+    if (change) change.addEventListener("click", twoStep.changePassword);
     input.addEventListener("input", () => { button.disabled = !ready(); });
     m.querySelector("#deleteForm").addEventListener("submit", async (e) => {
       e.preventDefault();
