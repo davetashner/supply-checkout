@@ -997,7 +997,7 @@ function lineModal(s, key) {
   const l = own(s.items || {}, key); if (!l) return;
   // Company equipment on loan has no price on the project (ADR 0017), and nor does the General Use project
   const equip = isEquipmentLine(l), bought = l.purchased === true, adhoc = isAdhoc(s);
-  // Company equipment's counts change only through checkout, return and lost (ADR 0017), which
+  // Company equipment's counts change only through checkout, return, lost and move (ADR 0017), which
   // move stock and record why, so the editor shows them and doesn't change them. Nor is a line
   // removed while some of it is still out: the server refuses that too (supply-checkout-1dg.17).
   const eq = equip ? equipmentCounts(l) : null;

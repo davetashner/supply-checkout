@@ -442,9 +442,17 @@ before answering `409`, so `409` from contention is rare.
   `out`, `returned` and `lost` (0 for one stored as missing); anything else is
   refused with `400`. They change through checkout, return, lost and move,
   which move stock and record movements, so two document writes (`out: 0`,
-  then a removal or `status: "closed"`) can't get past the rule above. A line
-  the write adds is checked as below. A supply line's counts can still be
-  corrected by a line edit.
+  then a removal or `status: "closed"`) can't get past the rule above. An
+  equipment line the write adds has nothing out: a whole-number `out` equal
+  to its `returned` plus `lost` (usually all 0), or it's refused with `400`.
+  Equipment goes out only through checkout, quick take and move, so a later
+  return can't bring back stock that never left storage. A supply line's
+  counts can still be corrected by a line edit.
+- **Deleting a project drops what's out on it.** Deleting a project isn't
+  refused while equipment is still out on it (ADR 0017, section 4): its lines
+  go with it, so nothing tracks that equipment any more, and stock doesn't
+  change. Return it or mark it lost first, or count it back into storage
+  afterwards with a `count` stock adjustment.
 - **A line is an object.** In a `PATCH`, `"items": {"<key>": null}` removes
   the line (it isn't stored as `null`); any other value that isn't an object
   is refused with `400`, unless it's a legacy value the write carries over
