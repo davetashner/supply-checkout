@@ -4,7 +4,7 @@
 import { test, expect } from "./helpers.js";
 import { modal, goToInventory, goToProjects, createProject, enterBarcode, addToProject, startReturn, saveReturn, finishReturn, lineRow, startAddItem, inventoryRow, continueReview, addItem } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
-import { FakeBackend, TEAM, USER, openAws, connected, sockets, emit, receive, dropSocket, setVisible } from "./fake-aws.js";
+import { FakeBackend, TEAM, USER, openAws, connected, sockets, emit, receive, dropSocket, setVisible, trackAnswers, unanswered } from "./fake-aws.js";
 
 
 const seeded = () => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`t1/${k}`, v]));
@@ -969,6 +969,84 @@ test.describe("live updates", { tag: ["@J4"] }, () => {
     await expect.poll(() => lists(backend).projects).toBe(before.projects + 3);
     await setVisible(page, false);
     expect(lists(backend).projects).toBe(before.projects + 3);
+  });
+
+  test("a re-list asked for while one fails is tried again, waiting longer after each failure", async ({ page }) => {
+    await page.clock.install();
+    await trackAnswers(page);
+    const backend = await open(page);
+    // Every answer read, then time moves only when the test moves it
+    const answered = () => expect.poll(() => unanswered(page)).toBe(0);
+    await answered();
+    await page.clock.pauseAt(new Date(Date.now() + 60e3));
+    const products = () => lists(backend).products, before = products();
+    const failure = { status: 500, body: { error: { code: "internal", message: "boom" } } };
+    let release;
+    backend.on("GET", "/teams/t1/products", { wait: new Promise((r) => { release = r; }), ...failure });
+    // Shown again while the re-list that starts is still being read: one more is due
+    await setVisible(page, true);
+    await expect.poll(products).toBe(before + 1);
+    await setVisible(page, true);
+    // The re-list fails, and so does the first retry, 2 seconds later
+    backend.on("GET", "/teams/t1/products", failure);
+    release();
+    await answered();
+    await page.clock.runFor(1999);
+    expect(products()).toBe(before + 1);
+    await page.clock.runFor(1);
+    await expect.poll(products).toBe(before + 2);
+    await answered();
+    // The next retry waits 4 seconds, and gets through
+    await page.clock.runFor(3999);
+    expect(products()).toBe(before + 2);
+    await page.clock.runFor(1);
+    await expect.poll(products).toBe(before + 3);
+    await answered();
+    // A re-list that fails with none asked for meanwhile isn't retried: the next one asked for
+    // lists again
+    backend.on("GET", "/teams/t1/products", failure);
+    await setVisible(page, true);
+    await expect.poll(products).toBe(before + 4);
+    await answered();
+    await page.clock.runFor(30e3);
+    expect(products()).toBe(before + 4);
+    // A re-list asked for runs at once, in place of a retry waiting
+    backend.on("GET", "/teams/t1/products", { wait: new Promise((r) => { release = r; }), ...failure });
+    await setVisible(page, true);
+    await expect.poll(products).toBe(before + 5);
+    await setVisible(page, true);
+    release();
+    await answered();
+    await page.clock.runFor(1000);
+    await setVisible(page, true);
+    await expect.poll(products).toBe(before + 6);
+    await answered();
+    await page.clock.runFor(30e3);
+    expect(products()).toBe(before + 6);
+  });
+
+  test("a failed re-list isn't retried once the user is no longer in the team", async ({ page }) => {
+    await page.clock.install();
+    await trackAnswers(page);
+    const backend = await open(page);
+    const answered = () => expect.poll(() => unanswered(page)).toBe(0);
+    await answered();
+    await page.clock.pauseAt(new Date(Date.now() + 60e3));
+    const before = lists(backend);
+    let products, projects;
+    backend.on("GET", "/teams/t1/products", { wait: new Promise((r) => { products = r; }), status: 500, body: { error: { code: "internal", message: "boom" } } });
+    backend.on("GET", "/teams/t1/projects", { wait: new Promise((r) => { projects = r; }), status: 403, body: { error: { code: "permission_denied", message: "x" } } });
+    // Both re-lists are being read when another is asked for
+    await setVisible(page, true);
+    await expect.poll(() => lists(backend)).toEqual({ products: before.products + 1, projects: before.projects + 1 });
+    await setVisible(page, true);
+    // The projects say the user was removed; then the products fail
+    projects();
+    await expect(page.getByRole("heading", { name: `You're no longer in ${TEAM.name}` })).toBeVisible();
+    products();
+    await answered();
+    await page.clock.runFor(30e3);
+    expect(lists(backend)).toEqual({ products: before.products + 1, projects: before.projects + 1 });
   });
 
   test("reconnects with backoff, and re-lists after every subscribe", async ({ page }) => {
