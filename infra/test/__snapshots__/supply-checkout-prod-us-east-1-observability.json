@@ -6602,10 +6602,7 @@
               "Sid": "ListClosedTeamKeys"
             },
             {
-              "Action": [
-                "dynamodb:DeleteItem",
-                "dynamodb:GetItem"
-              ],
+              "Action": "dynamodb:DeleteItem",
               "Condition": {
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [
@@ -6676,7 +6673,7 @@
                     "test"
                   ]
                 },
-                "StringEqualsIfExists": {
+                "StringEquals": {
                   "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
                 }
               },
@@ -6693,7 +6690,7 @@
                   ]
                 ]
               },
-              "Sid": "ReadClosedTeamTestMark"
+              "Sid": "ReadClosedTeamFields"
             },
             {
               "Action": "dynamodb:UpdateItem",
@@ -7733,7 +7730,7 @@
                     "test"
                   ]
                 },
-                "StringEqualsIfExists": {
+                "StringEquals": {
                   "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
                 }
               },
