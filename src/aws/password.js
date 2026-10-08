@@ -21,7 +21,8 @@ const MANAGER_RULES = "minlength: 12; required: lower; required: upper; required
 // What went wrong setting the password, in words, or null for anything else. `required`: the
 // user has a password for sure (two-step sign-in is on), so leaving it empty isn't an option.
 export const passwordFailure = (e, required = false) =>
-  e.reason === "password_invalid" ? "Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol."
+  // password_invalid is also a password used before (Cognito's password history)
+  e.reason === "password_invalid" ? "Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol, that you haven't used before."
     : e.reason === "password_mismatch" ? (required ? "That current password isn't right." : "That current password isn't right. If you've only signed in with an email code or a passkey, leave it empty.")
     : e.reason === "federated_sign_in" ? "You sign in with Google or Apple, so there's no Supply Checkout password to change."
     : e.code === "quota_exceeded" ? "Too many tries for now. Wait a few minutes, then try again."
@@ -49,17 +50,25 @@ export function readPassword(m, say) {
   return current.value ? { password: next.value, currentPassword: current.value } : { password: next.value };
 }
 
+// Empties the fields once the password is set, so nothing keeps it in the page
+export function clearPassword(m) {
+  for (const id of ["#currentPassword", "#newPassword", "#confirmPassword"]) m.querySelector(id).value = "";
+}
+
 // Account's Change password. `required`: as for passwordFailure. Signing out everywhere (on
-// by default) ends every session, this one too (GlobalSignOut has no "but this one"), so
-// `onSignedOut` then shows a way to sign in again, with the new password.
+// by default) ends every session the API can end, this one too (GlobalSignOut has no "but
+// this one"), so `onSignedOut` then shows a way to sign in again, with the new password. It
+// doesn't end Managed Login's own session cookie in another browser (up to an hour), so the
+// hint doesn't promise every session ends. A sign-out refused because the session has ended
+// already (signed out elsewhere meanwhile) counts as done.
 export function openChangePassword(session, email, onSignedOut, { required }) {
   openModal(`<h2>Change password</h2>
     <div class="two-step" id="passwordBox">
-      <form id="passwordForm" class="two-step-form" novalidate>
+      <form id="passwordForm" class="two-step-form" method="post" novalidate>
         <p class="hint">${required ? "Change the password you sign in with." : "Change the password you sign in with, or set one if you've only signed in with an email code or a passkey."}</p>
         ${passwordFields(email, required)}
         <label class="check"><input type="checkbox" id="signOutAll" checked aria-describedby="signOutHint"> Sign out everywhere</label>
-        <p class="hint" id="signOutHint">Ends every session on every device, this one too, so anyone who knew the old password is signed out. You'll sign in again here with the new one.</p>
+        <p class="hint" id="signOutHint">Signs you out of the app on your devices, this one too, so anyone who knew the old password has to sign in again. You'll sign in again here with the new one. A browser that signed in within the last hour may still get back in without a password until that hour is up.</p>
       </form>
       <p class="error" role="alert" id="passwordFail" hidden></p>
       <div class="modal-actions"><button type="button" class="btn" id="passwordCancel">Cancel</button><button type="submit" form="passwordForm" class="btn primary" id="passwordSave">Change password</button></div>
@@ -81,8 +90,9 @@ export function openChangePassword(session, email, onSignedOut, { required }) {
       busy(true);
       try {
         await session.api("POST", "/me/sign-out-everywhere");
-      } catch {
+      } catch (err) {
         busy(false);
+        if (err.code === "unauthenticated") { closeModal(); onSignedOut(); return; }
         if (!changed) changedOnly();
         say("Your password is changed, but you weren't signed out everywhere yet. Try again, or close this to stay signed in.");
         return;
@@ -95,6 +105,7 @@ export function openChangePassword(session, email, onSignedOut, { required }) {
     // The password is changed; what's left is signing out everywhere, or not
     function changedOnly() {
       changed = true;
+      clearPassword(m);
       $("#passwordForm").hidden = true;
       save.removeAttribute("form");
       save.type = "button";

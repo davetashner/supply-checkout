@@ -46,6 +46,7 @@ test("a signed-in user changes their password from Account, and is signed out ev
   ]);
   await expect(dialog(page).getByText("At least 12 characters, with upper and lower case letters, a number and a symbol.")).toBeVisible();
   await expect(dialog(page).getByLabel("Sign out everywhere")).toBeChecked();
+  await expect(dialog(page).locator("#passwordForm")).toHaveAttribute("method", "post");
   expect(await modalViolations(page)).toEqual([]);
 
   // How to get in without the current password
@@ -89,7 +90,7 @@ test("what's wrong with a password change is said, and nothing is changed", { ta
   await expect(dialog(page).getByLabel("Confirm new password")).toBeFocused();
   await fill(page, "Old-Password-1", "short");
   await save(page);
-  await expect(fail(page)).toHaveText("Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol.");
+  await expect(fail(page)).toHaveText("Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol, that you haven't used before.");
   await fill(page, "wrong");
   await save(page);
   await expect(fail(page)).toHaveText("That current password isn't right. If you've only signed in with an email code or a passkey, leave it empty.");
@@ -135,6 +136,8 @@ test("when the other sessions couldn't be signed out, the dialog says the passwo
   await expect(finish).toBeFocused();
   await expect(dialog(page).getByLabel("Current password")).toBeHidden();
   await expect(dialog(page).getByRole("button", { name: "Close" })).toBeVisible();
+  // The password is changed: nothing of it stays in the page
+  expect(await dialog(page).locator("#passwordForm input[type=password]").evaluateAll((els) => els.map((e) => e.value))).toEqual(["", "", ""]);
   backend.on("POST", "/me/sign-out-everywhere", { abort: true });
   await finish.click();
   await expect(finish).toBeEnabled();
@@ -143,6 +146,19 @@ test("when the other sessions couldn't be signed out, the dialog says the passwo
   await expect(page.getByRole("heading", { name: "Your password is changed" })).toBeVisible();
   expect(backend.requests("POST", "/me/password")).toHaveLength(1);
   await expect.poll(() => backend.requests("POST", "/me/sign-out-everywhere").length).toBe(3);
+});
+
+test("a sign-out refused because the session already ended counts as done", { tag: ["@J0"] }, async ({ page }) => {
+  const backend = await openChange(page);
+  // Signed out elsewhere meanwhile: the API refuses the token, and so does the refresh
+  backend.on("POST", "/me/sign-out-everywhere", error(401, "unauthenticated"));
+  backend.on("POST", "/auth/refresh", error(401, "unauthenticated"));
+  await fill(page, "Old-Password-1");
+  await save(page);
+  await expect(page.getByRole("heading", { name: "Your password is changed" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Sign in again" })).toBeVisible();
+  await expect(page.locator("#overlay")).toBeHidden();
+  expect(backend.requests("POST", "/me/sign-out-everywhere")).toHaveLength(1);
 });
 
 test("a Google or Apple user sees a note instead of the form", { tag: ["@J0"] }, async ({ page }) => {

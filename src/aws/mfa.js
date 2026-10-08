@@ -13,7 +13,7 @@
 // rest of src/aws/.
 import { esc } from "../format.js";
 import { openModal, closeModal } from "../dom.js";
-import { passwordFailure, passwordFields, readPassword } from "./password.js";
+import { clearPassword, passwordFailure, passwordFields, readPassword } from "./password.js";
 
 const ISSUER = "Supply Checkout";
 
@@ -40,7 +40,7 @@ export function openTwoStep(session, email, onOn, { why = "", moving = false } =
       <p class="hint">${moving
         ? "Set up the authenticator app on your new phone. Your old phone's codes keep working until this is done."
         : "You'll sign in with your email, a password and a 6-digit code from an authenticator app on your phone, such as Google Authenticator, Microsoft Authenticator or 1Password. Email codes and passkeys stop working for signing in."}</p>
-      <form id="passwordStep" class="two-step-form" novalidate${moving ? " hidden" : ""}>
+      <form id="passwordStep" class="two-step-form" method="post" novalidate${moving ? " hidden" : ""}>
         <h3>1. Your password</h3>
         ${passwordFields(email)}
         <div class="actions"><button type="submit" class="btn primary" id="savePassword">Continue</button><button type="button" class="btn ghost" id="keepPassword">Keep my current password</button></div>
@@ -106,6 +106,7 @@ export function openTwoStep(session, email, onOn, { why = "", moving = false } =
         say(failure(err, "set the password"));
         return;
       }
+      clearPassword(m);
       busy(false);
       await showApp();
     });

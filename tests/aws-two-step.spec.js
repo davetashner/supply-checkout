@@ -55,7 +55,7 @@ test("an owner sets a password and an authenticator app up from Account, and sig
   await expect(dialog(page).getByLabel("Confirm new password")).toBeFocused();
   await setNew("short");
   await next.click();
-  await expect(fail(page)).toHaveText("Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol.");
+  await expect(fail(page)).toHaveText("Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol, that you haven't used before.");
   await setNew("Correct-Horse-9");
   await dialog(page).getByLabel("Current password").fill("wrong");
   await next.click();
@@ -73,8 +73,13 @@ test("an owner sets a password and an authenticator app up from Account, and sig
     { password: "Correct-Horse-9" },
   ]);
 
-  // The app's secret, as a QR code, a key and a link
+  // The password is set: nothing of it stays in the page
   const code = dialog(page).getByLabel("Code from the app");
+  await expect(code).toBeFocused();
+  expect(await dialog(page).locator("#passwordStep input[type=password]").evaluateAll((els) => els.map((e) => e.value))).toEqual(["", "", ""]);
+  await expect(dialog(page).locator("#passwordStep")).toHaveAttribute("method", "post");
+
+  // The app's secret, as a QR code, a key and a link
   await expect(code).toBeFocused();
   await expect(fail(page)).toBeHidden();
   await expect(dialog(page).locator("#totpKey")).toHaveText("JBSW Y3DP EHPK 3PXP");
