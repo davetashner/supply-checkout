@@ -18,7 +18,8 @@ import { DeletionRecordsWatch } from "../observability/deletion-records-watch.js
 import { OperatorAuditWatch } from "../observability/operator-audit-watch.js";
 import { OperatorGroupWatch } from "../observability/operator-group-watch.js";
 import { OpsChecks } from "../observability/ops-checks.js";
-import { CostAlerts, costAlertsFromContext } from "../observability/cost-alerts.js";
+import { BY_CLOUDFORMATION, NOT_CLOUDFORMATION } from "../observability/cloudtrail.js";
+import { COST_ALERT_RULE_SUFFIX, CostAlerts, costAlertsFromContext } from "../observability/cost-alerts.js";
 import { WebAlarms } from "../observability/web-alarms.js";
 import { SupportSmtpWatch } from "../observability/support-smtp-watch.js";
 import { supportMailFromContext } from "../email.js";
@@ -380,15 +381,6 @@ export const TRAIL_BUCKET_EVENTS = {
  */
 export const TRAIL_KEY_EVENTS = { always: ["CreateGrant", "DisableKeyRotation"] } as const;
 
-/**
- * A deploy's own calls carry this in userIdentity.invokedBy; a person's or a
- * script's have none. It exempts a call made through any CloudFormation
- * stack, not only this app's: someone who can create a stack can make an
- * `outsideDeploys` call unseen (docs/infrastructure.md, "What the rules don't list").
- */
-const NOT_CLOUDFORMATION = { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] };
-/** CloudFormation's own calls during a deploy: the other side of NOT_CLOUDFORMATION. */
-const BY_CLOUDFORMATION = { invokedBy: ["cloudformation.amazonaws.com"] };
 
 /** What an operator's own access token can change (the aws.cognito.signin.user.admin scope); each alerts P1. */
 export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySoftwareToken", "SetUserMFAPreference", "UpdateUserAttributes", "DeleteUser"] as const;
@@ -410,7 +402,8 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  * - `costs`: GLOBAL_SERVICES_REGION only, the account's monthly cost budget
  *   and its Cost Anomaly Detection monitor and subscription, to the P2 topic
  *   (cost-alerts.ts, supply-checkout-jxq). Both services are account-wide,
- *   so they're in one stack, in the region Cost Explorer's API is in.
+ *   so they're in one stack, in the region Cost Explorer's API is in. P2
+ *   when they're deleted or changed outside a deploy (supply-checkout-3sv.19).
  * - `dashboard`: primary region only, drawing every region's metrics.
  * - `checks`: primary region only, the scheduled checks that send the
  *   StuckImports and EmailQuotaUsedPercent gauges, and the closed-team purge
@@ -473,7 +466,12 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     if (webIds) this.web = new WebAlarms(this, "WebAlarms", { envName: config.envName, ...webIds, topics: this.topics });
     // Budgets and Cost Anomaly Detection are account-wide: one stack, in the region of Cost Explorer's API
     if (region === GLOBAL_SERVICES_REGION) {
-      this.costs = new CostAlerts(this, "CostAlerts", { envName: config.envName, topics: this.topics, ...costAlertsFromContext(this.node) });
+      this.costs = new CostAlerts(this, "CostAlerts", {
+        envName: config.envName,
+        topics: this.topics,
+        ruleName: operatorRuleName(config.envName, COST_ALERT_RULE_SUFFIX),
+        ...costAlertsFromContext(this.node),
+      });
     }
 
     // The support SMTP user's alerts: IAM's events arrive in GLOBAL_SERVICES_REGION, SES's sends in the primary region
