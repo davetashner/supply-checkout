@@ -4,8 +4,9 @@
 // ChangePassword call with the user's own access token, and emails the account's verified
 // address that the password changed. Web build only, like the rest of src/aws/.
 //
-// Password managers: the form says whose password it is (a hidden username field with the
-// email), then asks for the current password first (autocomplete=current-password), and
+// Password managers: the form says whose password it is (a username field with the email,
+// visually hidden rather than display:none, which some managers skip, and kept out of the tab
+// order and the accessibility tree), then asks for the current password first (autocomplete=current-password), and
 // only then the new one, twice (autocomplete=new-password, with the pool's rules in
 // passwordrules). That reads as a password change, not a sign-up, so a manager fills the
 // current one from what it has saved and offers to update it, rather than saving the new one
@@ -30,7 +31,7 @@ export const passwordFailure = (e, required = false) =>
 
 // The fields, current password first. `required`: as for passwordFailure.
 export const passwordFields = (email, required = false) => `
-  <input type="text" name="username" autocomplete="username" value="${esc(email)}" hidden readonly tabindex="-1" aria-hidden="true">
+  <input type="text" class="vh" name="username" autocomplete="username" value="${esc(email)}" readonly tabindex="-1" aria-hidden="true">
   <div class="field"><label for="currentPassword">Current password</label><input type="password" id="currentPassword" name="current-password" autocomplete="current-password"${required ? " required" : ""} aria-describedby="currentHint" data-autofocus>
   <p class="hint" id="currentHint">${required ? "The password you sign in with now." : "Leave it empty if you've only signed in with an email code or a passkey."}</p></div>
   <details class="password-forgot"><summary>Forgot your current password?</summary>

@@ -71,7 +71,7 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
       <p>If there's an account for this address (<strong>${esc(email)}</strong>), we've sent a code. It works for an hour.</p>
       <p class="hint" id="resetNothing">Nothing in a few minutes? You may have signed up with a different email or with Google, or you may not have an account yet. <a href="${esc(managed(url, "signup"))}" id="resetSignUp">Create an account</a></p>
       <form id="resetConfirm" method="post" novalidate>
-        <input type="text" name="username" autocomplete="username" value="${esc(email)}" hidden readonly tabindex="-1" aria-hidden="true">
+        <input type="text" class="vh" name="username" autocomplete="username" value="${esc(email)}" readonly tabindex="-1" aria-hidden="true">
         <div class="field"><label for="resetCode">Code from the email</label><input type="text" id="resetCode" name="code" class="reset-code" inputmode="numeric" autocomplete="one-time-code" required data-autofocus></div>
         <div class="field"><label for="newPassword">New password</label><input type="password" id="newPassword" name="new-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}" aria-describedby="newHint" required>
         <p class="hint" id="newHint">${RULES}</p></div>

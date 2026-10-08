@@ -41,9 +41,12 @@ test("a signed-in user changes their password from Account, and is signed out ev
   // The current password first, then the new one twice, so a password manager reads it as a
   // change; the rules up front; signing out everywhere on by default
   await expect(dialog(page).getByLabel("Current password")).toBeFocused();
-  expect(await dialog(page).locator("input[autocomplete]").evaluateAll((els) => els.map((e) => [e.name, e.autocomplete, e.required]))).toEqual([
+  expect(await dialog(page).locator("input[autocomplete]").evaluateAll((els) => els.map((e) => [e.name, e.getAttribute("autocomplete"), e.required]))).toEqual([
     ["username", "username", false], ["current-password", "current-password", false], ["new-password", "new-password", false], ["confirm-password", "new-password", false],
   ]);
+  // The username is rendered (visually hidden, not display:none, which some managers skip),
+  // but out of the tab order and the accessibility tree
+  expect(await dialog(page).locator("input[name=username]").evaluate((e) => [e.getClientRects().length > 0, e.tabIndex, e.getAttribute("aria-hidden"), e.readOnly])).toEqual([true, -1, "true", true]);
   await expect(dialog(page).getByText("At least 12 characters, with upper and lower case letters, a number and a symbol.")).toBeVisible();
   await expect(dialog(page).getByLabel("Sign out everywhere")).toBeChecked();
   await expect(dialog(page).locator("#passwordForm")).toHaveAttribute("method", "post");
