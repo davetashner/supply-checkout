@@ -779,6 +779,8 @@ jobs:
       && needs.apply.result == 'success'
     permissions:
       contents: read
+      # journeys.yml's check job lists runs, so two journey runs never test prod at once
+      actions: read
       id-token: write
     uses: ./.github/workflows/journeys.yml
     with:

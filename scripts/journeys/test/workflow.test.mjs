@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { main, outputLines, secretProblems } from "../workflow.mjs";
+import { activeRuns, main, outputLines, parseWaitArgs, secretProblems, waitForProd } from "../workflow.mjs";
 import { fakeEnv } from "./helpers.mjs";
 
 test("check-secrets: names the missing or malformed variables, never their values", () => {
@@ -50,4 +50,47 @@ test("outputs: only well-formed step entries reach the deploy", () => {
 
 test("usage", () => {
   for (const argv of [[], ["frob"], ["check-secrets", "x"], ["outputs"], ["outputs", "a", "b"]]) assert.throws(() => main(argv, {}), /Usage/);
+});
+
+const runs = (list) => ({ workflow_runs: list });
+
+test("wait-for-prod: arguments", () => {
+  assert.deepEqual(parseWaitArgs(["--repo", "o/r", "--run", "9", "--manual"]), { repo: "o/r", run: "9", mode: "manual", wait: 1800 });
+  assert.equal(parseWaitArgs(["--deploy", "--repo", "o/r", "--run", "9", "--wait-seconds", "60"]).wait, 60);
+  assert.throws(() => parseWaitArgs(["--repo", "o/r", "--run", "9"]), /Pick one/);
+  assert.throws(() => parseWaitArgs(["--repo", "o/r", "--run", "9", "--manual", "--deploy"]), /Pick one/);
+  assert.throws(() => parseWaitArgs(["--repo", "o/r/x", "--run", "9", "--manual"]), /--repo/);
+  assert.throws(() => parseWaitArgs(["--repo", "o/r", "--run", "x", "--manual"]), /--run/);
+  assert.throws(() => parseWaitArgs(["--repo", "o/r", "--run", "9", "--manual", "--wait-seconds", "soon"]), /Unknown or incomplete argument --wait-seconds/);
+  assert.throws(() => parseWaitArgs(["--frob"]), /Unknown or incomplete/);
+});
+
+test("wait-for-prod: active runs leave out completed ones and this run", () => {
+  const api = (p) => { assert.equal(p, "repos/o/r/actions/workflows/deploy.yml/runs?per_page=100"); return runs([{ id: 1, status: "completed" }, { id: 2, status: "waiting" }, { id: 9, status: "in_progress" }, { id: 3, status: "queued" }]); };
+  assert.deepEqual(activeRuns(api, "o/r", "deploy.yml", "9"), ["2 (waiting)", "3 (queued)"]);
+  assert.deepEqual(activeRuns(() => null, "o/r", "deploy.yml", "9"), []);
+});
+
+test("wait-for-prod --manual: refuses while a deploy is going", async () => {
+  const lines = [];
+  const busy = () => runs([{ id: 5, status: "waiting" }]);
+  assert.equal(await waitForProd(["--repo", "o/r", "--run", "9", "--manual"], { api: busy, log: (l) => lines.push(l) }), 1);
+  assert.match(lines[0], /^::error::A deploy is running or waiting \(runs 5 \(waiting\)\)/);
+  assert.equal(await waitForProd(["--repo", "o/r", "--run", "9", "--manual"], { api: () => runs([{ id: 5, status: "completed" }]) }), 0);
+});
+
+test("wait-for-prod --deploy: waits for a run by hand, then gives up", async () => {
+  let t = 0;
+  let calls = 0;
+  const lines = [];
+  const api = (p) => { assert.match(p, /workflows\/journeys\.yml\/runs/); calls++; return runs(calls < 3 ? [{ id: 7, status: "in_progress" }] : []); };
+  const deps = { api, log: (l) => lines.push(l), sleep: async (ms) => { t += ms; }, now: () => t };
+  assert.equal(await waitForProd(["--repo", "o/r", "--run", "9", "--deploy"], deps), 0);
+  assert.equal(calls, 3);
+  assert.equal(lines.filter((l) => l.startsWith("Waiting")).length, 2);
+  t = 0;
+  lines.length = 0;
+  const stuck = { ...deps, api: () => runs([{ id: 7, status: "in_progress" }]) };
+  assert.equal(await waitForProd(["--repo", "o/r", "--run", "9", "--deploy", "--wait-seconds", "60"], stuck), 1);
+  assert.match(lines.at(-1), /^::error::A run of the journey tests by hand is still going after 60 seconds/);
 });

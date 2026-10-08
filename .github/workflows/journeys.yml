@@ -45,11 +45,15 @@ on:
 
 permissions: {}
 
-# By hand, it joins the deploy's group, so it never runs during a deploy (and a deploy never starts
-# during it). Called from a deploy, that run already holds the group, and a called workflow in the
-# same group would deadlock, so it takes a group of its own.
+# By hand, one run at a time in a group of its own (not the deploy's: a run waiting in a group
+# replaces an older waiting one, so a manual run there could cancel a deploy waiting to start, or
+# the reverse). Called from a deploy, the deploy's run already holds its group, and a called
+# workflow in the same group would deadlock, so it takes one of its own per run. Two runs against
+# prod at once would break each other (each signs the test accounts out everywhere when it ends),
+# so the check job keeps them apart: by hand refuses while a deploy is queued, waiting or running;
+# from a deploy waits for a run by hand to finish (scripts/journeys/workflow.mjs wait-for-prod).
 concurrency:
-  group: ${{ inputs.tag && format('journeys-in-deploy-{0}', github.run_id) || 'deploy-production' }}
+  group: ${{ inputs.tag && format('journeys-in-deploy-{0}', github.run_id) || 'journeys-manual' }}
   cancel-in-progress: false
 
 defaults:
@@ -62,9 +66,12 @@ jobs:
     name: Check the journey tests are set up
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Up to 30 minutes waiting for a run by hand to finish, from a deploy
+    timeout-minutes: 40
     permissions:
       contents: read
+      # To list the deploy's and this workflow's runs
+      actions: read
     outputs:
       ready: ${{ steps.check.outputs.ready }}
     steps:
@@ -87,6 +94,15 @@ jobs:
           fi
           node scripts/check-environments.mjs --repo "$GITHUB_REPOSITORY" --environment production-journeys
           echo "ready=true" >> "$GITHUB_OUTPUT"
+      - name: Check nothing else is testing prod
+        if: steps.check.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          mode=--manual
+          if [[ -n "$TAG" ]]; then mode=--deploy; fi
+          node scripts/journeys/workflow.mjs wait-for-prod --repo "$GITHUB_REPOSITORY" --run "$GITHUB_RUN_ID" "$mode"
 
   suite:
     name: Journey tests against prod
@@ -118,43 +134,15 @@ jobs:
       # Before any credentials exist, and no secret is in any step's environment until the suite
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
-      # The browsers and their OS packages as ci.yml installs them, from main's caches (restored
-      # only: this job never saves a cache). Only runs on main save into main's scope, never a
-      # pull request's. apt checks every .deb against the signed package lists before using it.
-      - name: Playwright version
-        id: pw
-        run: |
-          echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
-          echo "image-os=$ImageOS" >> "$GITHUB_OUTPUT"
-      - name: Restore Chromium
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-browsers-${{ runner.os }}-${{ runner.arch }}-chromium-${{ steps.pw.outputs.version }}
-      - name: Restore WebKit
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-browsers-${{ runner.os }}-${{ runner.arch }}-webkit-${{ steps.pw.outputs.version }}
-      - name: Restore Chromium's OS packages
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/playwright-debs
-          key: playwright-debs-${{ runner.os }}-${{ runner.arch }}-chromium-${{ steps.pw.outputs.image-os }}-run-${{ github.run_id }}
-          restore-keys: playwright-debs-${{ runner.os }}-${{ runner.arch }}-chromium-${{ steps.pw.outputs.image-os }}-
-      - name: Restore WebKit's OS packages
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/playwright-debs
-          key: playwright-debs-${{ runner.os }}-${{ runner.arch }}-webkit-${{ steps.pw.outputs.image-os }}-run-${{ github.run_id }}
-          restore-keys: playwright-debs-${{ runner.os }}-${{ runner.arch }}-webkit-${{ steps.pw.outputs.image-os }}-
-      # Bounded like ci.yml's: 90 seconds, then two tries of 3 minutes without the slow mirror
+      # Installed cold, never from a cache: main's caches are written by ordinary CI runs, whose
+      # npm ci runs every dev dependency's install scripts before the save, and a browser binary
+      # runs here with every journeys secret and the AWS role (the #588 security review). Bounded
+      # like ci.yml's: three tries of 3 minutes, the second and third without the slow mirror.
+      # (`install-deps` as root, then `install`: `install --with-deps` in two parts, so the
+      # timeout stops apt-get too.)
       - name: Install the browsers and their OS packages
-        timeout-minutes: 10
+        timeout-minutes: 12
         run: |
-          debs="$HOME/.cache/playwright-debs"
-          mkdir -p "$debs"
-          if compgen -G "$debs/*.deb" > /dev/null; then sudo cp "$debs"/*.deb /var/cache/apt/archives/; fi
           printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries > /dev/null
           mirrors=/etc/apt/apt-mirrors.txt
           cli="node_modules/playwright-core/cli.js"
@@ -166,7 +154,6 @@ jobs:
             fi
             sudo dpkg --configure -a
             limit=3m
-            if [[ "$try" -eq 1 ]]; then limit=90s; fi
             if sudo timeout -k 15s "$limit" "$node" "$cli" install-deps chromium webkit &&
               timeout -k 15s 3m "$node" "$cli" install chromium webkit; then
               echo "Installed Chromium and WebKit on try $try"
@@ -227,6 +214,10 @@ jobs:
         run: ./node_modules/.bin/playwright test --config playwright.prod.config.mjs
       # Then, whatever happened, in this order, in this job: cleanup (which signs every test
       # account out everywhere, so no token in a trace still works), the summary, the upload
+      # Each of the three gets every secret on purpose: cleanup signs in as each account; the
+      # summary masks every one of them (prod-summary.mjs envMasker); the upload needs the whole
+      # configuration (readConfig) and refuses any file holding a password or the TOTP secret, so
+      # fewer values would mean less redaction, not less exposure.
       - name: Clean up
         if: always()
         env: *secrets

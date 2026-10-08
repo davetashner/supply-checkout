@@ -11,6 +11,15 @@
 //     the deploy's verdict job, which puts them in the release notes (public): only entries shaped
 //     like "J4.2 (desktop-chrome)" (scripts/release-verdict.mjs checks again). A missing file
 //     writes nothing.
+//
+//   node scripts/journeys/workflow.mjs wait-for-prod --repo owner/name --run <this run's id>
+//        (--manual | --deploy) [--wait-seconds N]
+//     The suite signs the long-lived test accounts out everywhere when it ends, so two runs at
+//     once would break each other. --manual (a run by hand): refuses while any deploy run is
+//     queued, waiting or in progress. --deploy (called from a deploy): waits up to N seconds
+//     (default 1800) for any run of the journeys workflow by hand to finish, then refuses. Uses
+//     `gh api` (GH_TOKEN, actions: read).
+import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +43,54 @@ export function outputLines(verdict) {
   return `failed=${ok(verdict?.failed)}\ncritical=${ok(verdict?.critical)}\n`;
 }
 
+/** The runs of `workflow` (a file name) that haven't completed, other than `self`, as "<id> (<status>)". */
+export function activeRuns(api, repo, workflow, self) {
+  const runs = api(`repos/${repo}/actions/workflows/${workflow}/runs?per_page=100`)?.workflow_runs ?? [];
+  return runs.filter((r) => r.status !== "completed" && String(r.id) !== String(self)).map((r) => `${r.id} (${r.status})`);
+}
+
+export function parseWaitArgs(argv) {
+  const out = { wait: 1800 };
+  for (let i = 0; i < argv.length; i++) {
+    const [flag, value] = [argv[i], argv[i + 1]];
+    if (flag === "--manual" || flag === "--deploy") { if (out.mode) throw new Error("Pick one of --manual and --deploy"); out.mode = flag.slice(2); continue; }
+    if (flag === "--repo" && value) out.repo = value;
+    else if (flag === "--run" && value) out.run = value;
+    else if (flag === "--wait-seconds" && /^\d+$/.test(value ?? "")) out.wait = Number(value);
+    else throw new Error(`Unknown or incomplete argument ${flag}`);
+    i++;
+  }
+  if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(out.repo ?? "")) throw new Error("--repo must be owner/name");
+  if (!/^\d+$/.test(out.run ?? "")) throw new Error("--run must be a run ID");
+  if (!out.mode) throw new Error("Pick one of --manual and --deploy");
+  return out;
+}
+
+/** 0 when prod is free for this run; 1 (with ::error:: lines logged) when it isn't. */
+export async function waitForProd(argv, { api, log = console.log, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now } = {}) {
+  const { repo, run, mode, wait } = parseWaitArgs(argv);
+  if (mode === "manual") {
+    const busy = activeRuns(api, repo, "deploy.yml", run);
+    if (!busy.length) return 0;
+    log(`::error::A deploy is running or waiting (runs ${busy.join(", ")}): run the journey tests by hand after it, since the deploy runs them too`);
+    return 1;
+  }
+  const until = now() + wait * 1000;
+  for (;;) {
+    const busy = activeRuns(api, repo, "journeys.yml", run);
+    if (!busy.length) return 0;
+    if (now() >= until) {
+      log(`::error::A run of the journey tests by hand is still going after ${wait} seconds (runs ${busy.join(", ")}): cancel it, then re-run this job`);
+      return 1;
+    }
+    log(`Waiting for a run of the journey tests by hand to finish: ${busy.join(", ")}`);
+    await sleep(30_000);
+  }
+}
+
+/** `gh api`, parsed. */
+export const ghApi = (apiPath) => JSON.parse(execFileSync("gh", ["api", apiPath], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }));
+
 export function main(argv, env = process.env, log = console.log) {
   const [command, file] = argv;
   if (command === "check-secrets" && argv.length === 1) {
@@ -48,12 +105,13 @@ export function main(argv, env = process.env, log = console.log) {
     appendFileSync(env.GITHUB_OUTPUT, outputLines(JSON.parse(readFileSync(file, "utf8"))));
     return 0;
   }
-  throw new Error("Usage: workflow.mjs check-secrets | outputs <verdict.json>");
+  if (command === "wait-for-prod") return waitForProd(argv.slice(1), { api: ghApi, log });
+  throw new Error("Usage: workflow.mjs check-secrets | outputs <verdict.json> | wait-for-prod …");
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   try {
-    process.exitCode = main(process.argv.slice(2));
+    process.exitCode = await main(process.argv.slice(2));
   } catch (e) {
     console.error(`journeys workflow: ${e.message}`);
     process.exitCode = 2;
