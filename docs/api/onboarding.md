@@ -60,6 +60,13 @@ Then:
      `POST /me/email/verify` with `{"code": "…"}` checks it. Then refresh the
      tokens (`POST /auth/refresh`) and load `/me` again.
    - `409 aborted`: they're already in the team. Open it.
+   - `400 bad_request`: the invite ID in the link is malformed. The app checks
+     the link before asking: an ID or token that's missing or isn't letters,
+     digits, `-` or `_` (cut short or broken when copied) says "This invite
+     link is incomplete" at once, with no **Join**. It also reads a token from
+     `&amp;token=`, a link copied from the email's HTML source.
+   - Once joined, the team is added to the switcher's list from `/me`, so it
+     shows with the others without loading `/me` again.
 
    **Invites in `/me` without a link** (the user signed in some other way):
    show them ("Bravo Co invited you as a contributor"), with "Open the link in
