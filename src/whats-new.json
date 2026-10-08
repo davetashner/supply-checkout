@@ -4,7 +4,7 @@
       "version": "1.10.0",
       "date": "2026-10-08",
       "notes": [
-        { "title": "What's new, right here", "text": "When there's something new, a short summary like this one shows once a day. You can turn it off in Account.", "prs": [619] },
+        { "title": "What's new, right here", "text": "When there's something new, a short summary like this one shows once a day. You can turn it off in Account.", "prs": [619, 622] },
         { "title": "See who's signed in", "text": "The bar under the header shows your name and your role in the team. Tap it to open your account.", "prs": [605] },
         { "title": "Why a team is read-only", "text": "When a trial ends or a payment is overdue, the team says why it's read-only and what to do next. Nothing is deleted while it's read-only.", "prs": [608] },
         { "title": "Sheets are now projects", "text": "Job sheets are called projects now. Everything on them is the same.", "prs": [511, 519, 513] },
