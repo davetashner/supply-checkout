@@ -256,7 +256,8 @@ test("upload-results scrubs the report and text files, then puts the run's direc
   const s3 = fakeS3();
   const message = await upload({ env: uploadEnv(temp), s3For: (b) => { assert.equal(b, env.JOURNEYS_RESULTS_BUCKET); return s3; } });
   assert.deepEqual(s3.calls, [["upload", dir, "runs/77-1/"]]);
-  assert.match(message, /\(4 files\)/);
+  // The fake trace.zip can't be unpacked, so it's deleted, not uploaded (traces.test.mjs)
+  assert.match(message, /\(3 files\).*couldn't be unpacked \(test-results\/x\/trace\.zip\)/);
   assert.ok(!message.includes(env.JOURNEYS_RESULTS_BUCKET));
   const scrubbed = readFileSync(path.join(dir, "report.json"), "utf8");
   for (const v of ["::add-mask::", "stdout", "stderr", env.JOURNEYS_CREW_EMAIL, env.JOURNEYS_DESKTOP_TEAM_ID, "run-throwaway-address-value"]) assert.ok(!scrubbed.includes(v), v);
@@ -265,7 +266,7 @@ test("upload-results scrubs the report and text files, then puts the run's direc
   assert.match(md, /Signed in as \*\*\*/);
   // Binary files are uploaded as they are
   assert.equal(readFileSync(path.join(dir, "test-results/x/test-failed-1.png"), "utf8"), `PNG ${env.JOURNEYS_CREW_EMAIL}`);
-  assert.deepEqual(filesToUpload(dir), ["report.json", "test-results/x/error-context.md", "test-results/x/test-failed-1.png", "test-results/x/trace.zip"]);
+  assert.deepEqual(filesToUpload(dir), ["report.json", "test-results/x/error-context.md", "test-results/x/test-failed-1.png"]);
   assert.deepEqual(NOT_UPLOADED, ["masked-values", "totp-step*", "sessions/*"]);
   // An unreadable report is replaced, not uploaded as is
   const bad = runDirWith({ "report.json": `{ broken ${env.JOURNEYS_CREW_EMAIL}` });
@@ -283,6 +284,7 @@ test("upload-results refuses on a password or the TOTP secret in any form, anywh
     ["report.json", JSON.stringify({ steps: [{ title: `Fill "${pw}"` }] })],
     ["test-results/a/note.txt", JSON.stringify(`said "${pw}"`)],
     ["test-results/a/url.bin", `https://x.example/?p=${encodeURIComponent(pw)}`],
+    ["test-results/a/form.bin", `user=x&${new URLSearchParams({ password: pw })}`],
   ];
   for (const [file, body] of cases) {
     const { temp } = runDirWith({ "report.json": "{}", [file]: body, "test-results/a/ok.txt": "fine" });
@@ -290,7 +292,7 @@ test("upload-results refuses on a password or the TOTP secret in any form, anywh
     await assert.rejects(upload({ env: uploadEnv(temp), s3For: () => s3 }), (e) => e instanceof UploadRefused && e.message.endsWith(` is in ${file}`) && !e.message.includes(pw), file);
     assert.deepEqual(s3.calls, [], file);
   }
-  assert.deepEqual(leakForms('a"b c/d'), ['a"b c/d', 'a\\"b c/d', "a%22b%20c%2Fd"]);
+  assert.deepEqual(leakForms('a"b c/d!'), ['a"b c/d!', 'a\\"b c/d!', "a%22b%20c%2Fd!", "a%22b+c%2Fd%21"]);
   assert.deepEqual(scrubReport({ a: ["x\n::add-mask::y", 1, null], stdout: [] }, (s) => s), { a: ["x", 1, null] });
   const { dir } = runDirWith({ "ok.txt": "fine" });
   assert.deepEqual(findLeaks(dir, ["ok.txt"], [pw]), []);

@@ -351,16 +351,16 @@ jobs:
           (cd backend && npm ci --ignore-scripts --no-audit --no-fund)
           (cd infra && npm ci --ignore-scripts --no-audit --no-fund)
       - name: Sign in to AWS with the deploy role
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
+        # Our own step, not aws-actions/configure-aws-credentials, which always logs the role's
+        # unique ID (AROA…), which can be mapped to the account, in this public log
+        # (scripts/assume-aws-role.sh, supply-checkout-o60.13). It masks the account ID first.
+        env:
           # A secret, so the ARN (and the account ID in it) is masked in the log
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: plan-deploy-${{ github.run_id }}-${{ github.run_attempt }}
-          aws-region: ${{ needs.release.outputs.region }}
+          ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          SESSION_NAME: plan-deploy-${{ github.run_id }}-${{ github.run_attempt }}
           # Only long enough to drop to the lookup role, which has its own session
-          role-duration-seconds: 900
-          # The account ID is masked in every later log line
-          mask-aws-account-id: true
+          DURATION: "900"
+        run: bash .deploy-tools/scripts/assume-aws-role.sh web-identity
       # The positive half of the trust check (docs/infrastructure.md step 3)
       - &prove
         name: Prove who this job is
@@ -380,14 +380,11 @@ jobs:
           qualifier="$(jq -r '.context["@aws-cdk/core:bootstrapQualifier"] // "hnb659fds"' infra/cdk.json)"
           echo "arn=arn:aws:iam::$account:role/cdk-$qualifier-lookup-role-$account-$AWS_REGION" >> "$GITHUB_OUTPUT"
       - name: Drop to the read-only lookup role
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ steps.lookup.outputs.arn }}
-          role-chaining: true
-          role-skip-session-tagging: true
-          role-session-name: plan-${{ github.run_id }}-${{ github.run_attempt }}
-          aws-region: ${{ needs.release.outputs.region }}
-          mask-aws-account-id: true
+        # With the deploy role's credentials (role chaining), no session tags, and as quiet
+        env:
+          ROLE_ARN: ${{ steps.lookup.outputs.arn }}
+          SESSION_NAME: plan-${{ github.run_id }}-${{ github.run_attempt }}
+        run: bash .deploy-tools/scripts/assume-aws-role.sh chain
       - name: Prove it's the lookup role
         run: |
           arn="$(aws sts get-caller-identity --query Arn --output text)"
@@ -506,16 +503,16 @@ jobs:
       - *install
       - &sign-in
         name: Sign in to AWS with the deploy role
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
+        # Our own step, not aws-actions/configure-aws-credentials, which always logs the role's
+        # unique ID (AROA…), which can be mapped to the account, in this public log
+        # (scripts/assume-aws-role.sh, supply-checkout-o60.13). It masks the account ID first.
+        env:
           # A secret, so the ARN (and the account ID in it) is masked in the log
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: deploy-${{ github.run_id }}-${{ github.run_attempt }}
-          aws-region: ${{ needs.release.outputs.region }}
+          ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          SESSION_NAME: deploy-${{ github.run_id }}-${{ github.run_attempt }}
           # A deploy can take a while; CDK renews its bootstrap role sessions from this one
-          role-duration-seconds: 3600
-          # The account ID is masked in every later log line
-          mask-aws-account-id: true
+          DURATION: "3600"
+        run: bash .deploy-tools/scripts/assume-aws-role.sh web-identity
       - *prove
       - *synth
       - name: Check it's what the plan showed

@@ -1178,7 +1178,7 @@ describe("scheduled checks", () => {
       ["logs:CreateLogStream", "logs:PutLogEvents"],
       "dynamodb:Query",
       "dynamodb:Query",
-      ["dynamodb:DeleteItem", "dynamodb:GetItem"],
+      "dynamodb:DeleteItem",
       "dynamodb:GetItem",
       "dynamodb:UpdateItem",
       ["dynamodb:DeleteItem", "dynamodb:PutItem"],
@@ -1225,26 +1225,30 @@ describe("scheduled checks", () => {
       "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
       StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
     });
-    expect(items?.Resource).toEqual(table);
+    // DeleteItem only: a GetItem here, with no Select condition, could read whole items when it names no attributes
+    // (supply-checkout-3sv.22)
+    expect(items).toMatchObject({ Sid: "DeleteClosedTeamItems", Action: "dynamodb:DeleteItem", Resource: table });
     expect(items?.Condition).toEqual({
       "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*"] },
       "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
       StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });
-    // A META item's test mark (supply-checkout-o60.12), for the metrics only: GetItem in team partitions, projected, naming
-    // the closure fields and `test` alone. The only statement that names it
+    // The purge's only GetItem: a META item's closure fields and test mark (supply-checkout-o60.12, for the metrics only),
+    // in team partitions only, and projected: Select is required, not IfExists, so a GetItem without a projection is
+    // denied (supply-checkout-3sv.22). The only statement that names `test`
+    expect(found.filter((s) => JSON.stringify(s.Action).includes("dynamodb:GetItem")).map((s) => s.Sid)).toEqual(["ReadClosedTeamFields"]);
     expect(testMark).toEqual({
-      Sid: "ReadClosedTeamTestMark",
+      Sid: "ReadClosedTeamFields",
       Effect: "Allow",
       Action: "dynamodb:GetItem",
       Resource: table,
       Condition: {
         "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
         "ForAllValues:StringEquals": { "dynamodb:Attributes": [...attributes, "test"] },
-        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     });
-    expect(found.filter((s) => JSON.stringify(s).includes('"test"')).map((s) => s.Sid)).toEqual(["ReadClosedTeamTestMark"]);
+    expect(found.filter((s) => JSON.stringify(s).includes('"test"')).map((s) => s.Sid)).toEqual(["ReadClosedTeamFields"]);
     // The purging mark and the subscription-ended record: team partitions only, naming only the META item's key, purgeAfter
     // and the two marks: never closedAt, so it can't close or reopen a team
     expect(mark?.Resource).toEqual(table);
@@ -1367,7 +1371,14 @@ describe("scheduled checks", () => {
     // It reads a team's test mark, for its metrics only (supply-checkout-o60.12): never lists, closes or writes by it
     expect(LAPSE_READ_ATTRIBUTES).toContain("test");
     for (const s of found.filter((s) => s.Sid !== "ReadTeamBilling")) expect(JSON.stringify(s), String(s.Sid)).not.toContain('"test"');
-    expect(by("ReadTeamBilling")).toMatchObject({ Action: "dynamodb:GetItem", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_READ_ATTRIBUTES] } } });
+    // Projected: Select required, not IfExists, so a GetItem without a projection is denied (supply-checkout-3sv.22)
+    expect(by("ReadTeamBilling")).toEqual({
+      Sid: "ReadTeamBilling",
+      Effect: "Allow",
+      Action: "dynamodb:GetItem",
+      Resource: expect.anything(),
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_READ_ATTRIBUTES] }, StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } },
+    });
     // The closure, never status, plan, comps or Stripe IDs
     expect(by("CloseLapsedTeam")).toMatchObject({ Action: "dynamodb:UpdateItem", Condition: { "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "closedBy", "purgeAfter", "purging", "version", "stripeCheckoutAt"] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } } });
     expect(by("LapseRecords")).toMatchObject({ Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["LAPSE#*"] } } });

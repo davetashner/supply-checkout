@@ -80,10 +80,127 @@ test("a write refused because the subscription ended meanwhile switches the app 
   await page.getByRole("button", { name: "+ New project" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Delta");
   await page.getByRole("button", { name: "Create project" }).click();
-  const ended = "This team's subscription ended, so nothing in it can be changed now. An owner can subscribe again from the team bar.";
+  // /me doesn't say the team is read-only yet: the page says so, and to reload to see why
+  const ended = "This team is read-only now, so nothing in it can be changed. Reload the page to see why.";
   await expect(page.locator("#toast")).toHaveText(ended);
   await expect(page.locator("#notice")).toHaveText(ended);
   await expect(page.getByRole("heading", { name: /no longer in/ })).toHaveCount(0);
+  await expect(bar(page).locator("#endedNote")).toHaveCount(0);
+});
+
+// Why a team is read-only for billing (/me's readOnlyReason, supply-checkout-qdx), what
+// happens next and what to do: per reason, for owners and for everyone else
+const TRIAL_ENDED = { status: "trialing", plan: "trial", subscriptionEnded: true, readOnlyReason: "trial_ended", readOnlyDeletesAt: "2026-11-08T12:00:00.000Z", readOnlyLastDay: "2026-11-07", billingAccount: false };
+const OVERDUE = { status: "past_due", plan: "starter", subscriptionEnded: true, readOnlyReason: "payment_overdue", readOnlyDeletesAt: null, readOnlyLastDay: null, billingAccount: true };
+const note = (page) => bar(page).locator("#endedNote");
+
+test.describe("in Pacific time", () => {
+  // The last day is a calendar date, shown as that date wherever the reader is
+  test.use({ timezoneId: "America/Los_Angeles" });
+
+  test("an owner whose trial ended sees when it will be deleted, can still export, and subscribes", { tag: ["@J7.2"] }, async ({ page }) => {
+    const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...TRIAL_ENDED }] }));
+    await expect(note(page)).toHaveText("This team's free trial has ended, so it's read-only. Nothing has been deleted: everyone can still see it, and you can export it. Unless it's subscribed, everything in it will be deleted after November 7, 2026. Subscribe to make changes again.");
+    await expect(note(page)).toHaveAttribute("role", "status");
+    await expect(page.locator("#notice")).toHaveText("This team's free trial ended, so nothing in it can be changed until an owner subscribes.");
+    await expect(page.getByRole("button", { name: "Export data" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "+ New project" })).toHaveCount(0);
+    await expect(bar(page).getByRole("button", { name: "Billing" })).toHaveCount(0);
+    backend.on("POST", CHECKOUT, { status: 201, body: { checkout: { url: STRIPE, expiresAt: "2026-09-28T12:00:00.000Z", trialEndsAt: null } } });
+    await bar(page).getByRole("button", { name: "Subscribe" }).click();
+    await expect(bar(page).getByRole("link", { name: "Continue to checkout" })).toHaveAttribute("href", STRIPE);
+  });
+});
+
+test("a contributor whose team's trial ended is told to ask an owner, with no way to subscribe", { tag: ["@J7"] }, async ({ page }) => {
+  await open(page, new FakeBackend({ teams: [{ ...TEAM, ...TRIAL_ENDED, role: "contributor" }] }));
+  await expect(note(page)).toHaveText("This team's free trial has ended, so it's read-only. Nothing has been deleted: everyone can still see it. Unless it's subscribed, everything in it will be deleted after November 7, 2026. Ask an owner to subscribe to make changes again.");
+  await expect(bar(page).getByRole("button", { name: "Subscribe" })).toHaveCount(0);
+  await expect(page.locator("#notice")).toHaveText("This team's free trial ended, so nothing in it can be changed until an owner subscribes.");
+});
+
+test("an owner whose subscription ended sees when it will be deleted", { tag: ["@J7.2"] }, async ({ page }) => {
+  await open(page, new FakeBackend({ teams: [{ ...TEAM, ...ENDED, readOnlyReason: "subscription_ended", readOnlyDeletesAt: "2026-10-28T12:00:00.000Z", readOnlyLastDay: "2026-10-27" }] }));
+  await expect(note(page)).toHaveText("This team's subscription has ended, so it's read-only. Nothing has been deleted: everyone can still see it, and you can export it. Unless it's subscribed, everything in it will be deleted after October 27, 2026. Subscribe to make changes again.");
+  await expect(bar(page).getByRole("button", { name: "Subscribe" })).toBeVisible();
+});
+
+test("a reason this page doesn't know reads as an ended subscription", { tag: ["@J7"] }, async ({ page }) => {
+  await open(page, new FakeBackend({ teams: [{ ...TEAM, ...ENDED, readOnlyReason: "something_new" }] }));
+  await expect(note(page)).toContainText("This team's subscription has ended, so it's read-only.");
+  await expect(page.locator("#notice")).toHaveText("This team's subscription ended, so nothing in it can be changed until an owner subscribes.");
+});
+
+test("an owner whose payment is overdue pays in Billing, with no deletion date, on a phone in dark mode", { tag: ["@J8.3"] }, async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...OVERDUE }] }));
+  await expect(note(page)).toHaveText("This team's payment is overdue, so it's read-only until it's paid. Nothing has been deleted: everyone can still see it, and you can export it. Update the payment method in Billing to make changes again.");
+  await expect(page.locator("#notice")).toHaveText("This team's payment is overdue, so nothing in it can be changed until an owner pays it in Billing.");
+  // Paying, not subscribing again: the team still has its subscription
+  await expect(bar(page).getByRole("button", { name: "Subscribe" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Export data" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+  const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(violations.map((v) => v.id)).toEqual([]);
+  backend.on("POST", PORTAL, { status: 201, body: { portal: { url: PORTAL_URL } } });
+  await bar(page).getByRole("button", { name: "Update payment" }).click();
+  await expect(bar(page).getByRole("link", { name: "Continue to billing" })).toHaveAttribute("href", PORTAL_URL);
+});
+
+test("an owner whose overdue team has no billing account has no payment button", { tag: ["@J7"] }, async ({ page }) => {
+  await open(page, new FakeBackend({ teams: [{ ...TEAM, ...OVERDUE, billingAccount: false }] }));
+  await expect(note(page)).toContainText("Update the payment method in Billing to make changes again.");
+  await expect(bar(page).getByRole("button", { name: "Update payment" })).toHaveCount(0);
+  await expect(bar(page).getByRole("button", { name: "Subscribe" })).toHaveCount(0);
+});
+
+test("a contributor whose team's payment is overdue is told to ask an owner", { tag: ["@J8"] }, async ({ page }) => {
+  await open(page, new FakeBackend({ teams: [{ ...TEAM, ...OVERDUE, role: "contributor" }] }));
+  await expect(note(page)).toHaveText("This team's payment is overdue, so it's read-only until it's paid. Nothing has been deleted: everyone can still see it. Ask an owner to update the payment method to make changes again.");
+  await expect(bar(page).getByRole("button", { name: "Update payment" })).toHaveCount(0);
+});
+
+test.describe("in Eastern time", () => {
+  test.use({ timezoneId: "America/New_York" });
+  const GRACE = { status: "past_due", plan: "starter", billingAccount: true, subscriptionEnded: false, readOnlyReason: null, paymentGraceEndsAt: "2026-10-15T16:00:00.000Z" };
+
+  test("an owner in the payment grace period sees when the team becomes read-only, and everything still works", { tag: ["@J8.2"] }, async ({ page }) => {
+    await open(page, new FakeBackend({ teams: [{ ...TEAM, ...GRACE }] }));
+    await expect(bar(page).locator("#graceNote")).toHaveText(/^A payment for this team didn't go through\. Everything works until October 15, 2026,? (at )?12:00\sPM EDT; then the team becomes read-only until it's paid\. Update the payment method in Billing to keep it working\.$/);
+    await expect(bar(page).locator("#graceNote")).toHaveAttribute("role", "status");
+    await expect(bar(page).getByRole("button", { name: "Billing" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "+ New project" })).toBeVisible();
+    await expect(note(page)).toHaveCount(0);
+  });
+
+  test("a contributor in the payment grace period is told to ask an owner", { tag: ["@J8.2"] }, async ({ page }) => {
+    await open(page, new FakeBackend({ teams: [{ ...TEAM, ...GRACE, role: "contributor" }] }));
+    await expect(bar(page).locator("#graceNote")).toContainText("Ask an owner to update the payment method.");
+    await expect(page.getByRole("button", { name: "+ New project" })).toBeVisible();
+  });
+
+  test("a closed team in the grace period shows only the closure", { tag: ["@J7"] }, async ({ page }) => {
+    await open(page, new FakeBackend({ teams: [{ ...TEAM, ...GRACE, closedAt: "2026-09-26T12:00:00.000Z", deletesAt: "2026-10-26T12:00:00.000Z" }] }));
+    await expect(bar(page).locator("#graceNote")).toHaveCount(0);
+    await expect(bar(page).locator(".closed-note")).toHaveCount(1);
+  });
+});
+
+test("a write refused when the trial ended meanwhile shows why, and the owner can subscribe without reloading", { tag: ["@J7.2"] }, async ({ page }) => {
+  const backend = await open(page, new FakeBackend());
+  backend.on("PUT", /^\/teams\/t1\/projects\//, error(403, "permission_denied", { reason: "subscription_ended" }));
+  // /me now says why
+  backend.teams[0] = { ...TEAM, ...TRIAL_ENDED };
+  await page.getByRole("button", { name: "+ New project" }).click();
+  await page.getByLabel("Client", { exact: true }).fill("Delta");
+  await page.getByRole("button", { name: "Create project" }).click();
+  const why = "This team's free trial ended, so nothing in it can be changed until an owner subscribes.";
+  await expect(page.locator("#toast")).toHaveText(why);
+  await expect(page.locator("#notice")).toHaveText(why);
+  await expect(note(page)).toContainText("This team's free trial has ended");
+  await expect(bar(page).getByRole("button", { name: "Subscribe" })).toBeVisible();
+  await expect(bar(page).getByRole("button", { name: "Import CSV" })).toHaveCount(0);
 });
 
 // The Stripe Customer Portal (supply-checkout-121): owners of a team with a Stripe customer

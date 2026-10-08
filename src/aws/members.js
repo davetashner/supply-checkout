@@ -53,15 +53,18 @@ const SUPPORT = {
 };
 const SUPPORT_PAGE = 20;
 
-// What went wrong, in words: the server's own for the last owner, which says what to do
+// What went wrong, in words: the server's own for the last owner, and for a team that became
+// read-only for billing meanwhile (its trial or subscription ended, or a payment is overdue),
+// which say what to do
 const failure = (e, what) =>
-  e.reason === "last_owner" ? e.message
+  e.reason === "last_owner" || e.reason === "subscription_ended" ? e.message
     : e.code === "not_found" ? "That person isn't in the team any more."
     : e.code === "aborted" ? "Someone else changed the team's members just now. Try again."
     : e.code === "permission_denied" ? "Only the team's owners can manage members."
     : `Couldn't ${what}. Check your connection and try again.`;
 
-function rowHTML(m, me, owners, closed) {
+// `fixed`: roles can't change (a closed team, or one read-only for billing)
+function rowHTML(m, me, owners, closed, fixed) {
   const you = m.userId === me;
   const name = esc(m.email || "A member without an email address") + (you ? ` <span class="muted">(you)</span>` : "");
   // The only owner can't step down or leave: a team always keeps an owner, until it's closed
@@ -69,14 +72,15 @@ function rowHTML(m, me, owners, closed) {
   const options = ROLES.map(([id, label]) => `<option value="${id}"${id === m.role ? " selected" : ""}>${label}</option>`).join("");
   return `<li class="member" data-user="${esc(m.userId)}">
     <span class="member-name">${name}</span>
-    <select aria-label="Role for ${esc(m.email || "this member")}"${last || closed ? " disabled" : ""}>${options}</select>
+    <select aria-label="Role for ${esc(m.email || "this member")}"${last || fixed ? " disabled" : ""}>${options}</select>
     <button type="button" class="btn danger" data-remove${last ? " disabled" : ""}>${you ? "Leave" : "Remove"}</button>
   </li>`;
 }
 
-// What went wrong with an invite, in words: the server's own where it says what to do (a full team says how many)
+// What went wrong with an invite, in words: the server's own where it says what to do (a full
+// team says how many; one read-only for billing says who can make changes again)
 const inviteFailure = (e, what) =>
-  e.reason === "team_full" ? e.message
+  e.reason === "team_full" || e.reason === "subscription_ended" ? e.message
     : e.code === "quota_exceeded" ? "You've sent as many invites as you can for now. Try again tomorrow."
     : e.code === "aborted" ? e.message
     : e.code === "bad_request" ? "Enter an email address, like name@example.com."
@@ -84,13 +88,14 @@ const inviteFailure = (e, what) =>
     : e.code === "permission_denied" ? "Only the team's owners can manage invites."
     : `Couldn't ${what}. Check your connection and try again.`;
 
-function inviteHTML(i) {
+// `ended`: the team is read-only for billing, so an invite can be revoked but not re-sent
+function inviteHTML(i, ended) {
   const status = i.inviteStatus === "failed" ? `<span class="invite-failed">Couldn't deliver. ${WHY[i.failureReason] || "Try Resend, or revoke it."}</span>`
     : i.inviteStatus === "expired" ? `Expired ${day(i.expiresAt)}. Resend it for a new link.`
     : `Pending, expires ${day(i.expiresAt)}`;
   return `<li class="member invite-row" data-invite="${esc(i.id)}">
     <span class="member-name">${esc(i.email)} <span class="muted">as ${AS[i.role]}</span><br><span class="invite-status">${status}</span></span>
-    <button type="button" class="btn" data-resend>Resend</button>
+    ${ended ? "" : `<button type="button" class="btn" data-resend>Resend</button>`}
     <button type="button" class="btn danger" data-revoke>Revoke</button>
   </li>`;
 }
@@ -105,15 +110,17 @@ const closeFailure = (e) =>
     : e.code === "permission_denied" ? "Only the team's owners can close it."
     : "Couldn't close the team. Check your connection and try again.";
 
-// The team's invites and closing it, while it's open
-function openParts(team) {
-  return `<h3>Invite someone</h3>
-    <form id="inviteForm" class="invite-form" novalidate>
+// The team's invites and closing it, while it's open. A team that's read-only for billing
+// (`ended`) can't invite anyone: the form is hidden, and the screen says why.
+function openParts(team, ended) {
+  return `<h3>${ended ? "Invites" : "Invite someone"}</h3>
+    ${ended ? `<p class="hint" id="endedMembers">This team is read-only until an owner subscribes or pays: you can remove people, leave, revoke invites or close the team, but not invite anyone or change roles.</p>` : ""}
+    <form id="inviteForm" class="invite-form" novalidate${ended ? " hidden" : ""}>
       <div class="field"><label for="inviteEmail">Email</label><input type="email" id="inviteEmail" required maxlength="254" autocomplete="off" spellcheck="false"></div>
       <div class="field"><label for="inviteRole">Role</label><select id="inviteRole">${ROLES.map(([id, label]) => `<option value="${id}"${id === "contributor" ? " selected" : ""}>${label}</option>`).join("")}</select></div>
       <button type="submit" class="btn primary" id="inviteSend">Send invite</button>
     </form>
-    <p class="hint">They get an email with a link that works once and expires in 7 days. They sign in or sign up with that address to join.</p>
+    <p class="hint"${ended ? " hidden" : ""}>They get an email with a link that works once and expires in 7 days. They sign in or sign up with that address to join.</p>
     <p class="hint" id="teamFull" hidden>The team is full, counting invites waiting. Remove someone or revoke an invite to invite someone else.</p>
     <p class="error" role="alert" id="invitesFail" hidden></p>
     <div id="invitesList" aria-live="polite"><p class="muted" role="status">Loading invites…</p></div>
@@ -140,11 +147,11 @@ function wireInvites(api, team, m, invited, changed) {
 
   function drawInvites() {
     changed(invites);
-    inviteList.innerHTML = invites.length ? `<ul class="members invites">${invites.map(inviteHTML).join("")}</ul>` : `<p class="muted">No invites waiting.</p>`;
+    inviteList.innerHTML = invites.length ? `<ul class="members invites">${invites.map((i) => inviteHTML(i, team.subscriptionEnded)).join("")}</ul>` : `<p class="muted">No invites waiting.</p>`;
     inviteList.querySelectorAll(".invite-row").forEach((row) => {
       const invite = invites.find((x) => x.id === row.dataset.invite);
       const resend = row.querySelector("[data-resend]"), revoke = row.querySelector("[data-revoke]");
-      resend.addEventListener("click", () => resendInvite(invite, resend));
+      if (resend) resend.addEventListener("click", () => resendInvite(invite, resend));
       armButton(revoke, "Tap again to revoke", () => revokeInvite(invite, revoke));
     });
   }
@@ -322,6 +329,8 @@ function wireSupport(api, team, m) {
 export function openMembers(api, team, me, leave, invited) {
   const path = `/teams/${encodeURIComponent(team.id)}/members`;
   const closed = !!team.closedAt;
+  // Read-only for billing (/me's subscriptionEnded): members can be removed, but not invited or given another role
+  const ended = !closed && !!team.subscriptionEnded;
   // From /me, asked again as the screen opens, since the plan (and so the cap) can change
   // while the page is open; until it answers, or if it doesn't, the one from page load. An
   // API from before it has none, and the screen then shows no count.
@@ -332,7 +341,7 @@ export function openMembers(api, team, me, leave, invited) {
     <p class="seats" id="seats" hidden></p>
     <p class="error" role="alert" id="membersFail" hidden></p>
     <div id="membersList" aria-live="polite"><p class="muted" role="status">Loading members…</p></div>
-    ${closed ? `<p class="hint">This team is closed: you can remove people or leave it, but not invite anyone or change roles.</p>` : openParts(team)}
+    ${closed ? `<p class="hint">This team is closed: you can remove people or leave it, but not invite anyone or change roles.</p>` : openParts(team, ended)}
     <h3>Support activity</h3>
     <p class="hint">What Supply Checkout support did to this team, newest first.</p>
     <p class="error" role="alert" id="supportFail" hidden></p>
@@ -373,7 +382,7 @@ export function openMembers(api, team, me, leave, invited) {
     function draw() {
       seats();
       const owners = members.filter((x) => x.role === "owner").length;
-      list.innerHTML = `<ul class="members">${members.map((x) => rowHTML(x, me, owners, closed)).join("")}</ul>`
+      list.innerHTML = `<ul class="members">${members.map((x) => rowHTML(x, me, owners, closed, closed || ended)).join("")}</ul>`
         + (owners === 1 && !closed ? `<p class="hint">A team needs at least one owner. To step down, make someone else an owner first.</p>` : "");
       list.querySelectorAll(".member").forEach((row) => {
         const member = members.find((x) => x.userId === row.dataset.user);

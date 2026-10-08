@@ -247,9 +247,14 @@ async function reachPassword(page, { timeout, redact, submit }) {
   const alert = page.getByRole("alert").filter({ hasText: /\S/ });
   const done = new Set();
   const deadline = Date.now() + timeout;
-  let lastAction = 0;
+  // The email's Next counts as the first action: the next page can draw its alert ("Enter the
+  // code that we sent…") before its buttons, so an alert alone mustn't end the wait at once
+  let lastAction = Date.now();
   while (Date.now() < deadline) {
     if (await field.isVisible()) return;
+    // Read the alert before looking for choices: if the page moves on between the two, the
+    // choices it now shows are still taken before the alert can end the wait
+    const alerted = await alert.first().isVisible();
     let acted = false;
     for (const { kind, locator } of choices) {
       if (done.has(kind) || !(await locator.first().isVisible())) continue;
@@ -276,7 +281,7 @@ async function reachPassword(page, { timeout, redact, submit }) {
     // An alert ends the wait only when there's nothing left to try and the page has had time to
     // move on from the last click (a notice can be an alert too)
     if (acted) lastAction = Date.now();
-    else if (Date.now() - lastAction > 2_000 && (await alert.first().isVisible())) break;
+    else if (alerted && Date.now() - lastAction > 2_000) break;
     await page.waitForTimeout(250);
   }
   if (await field.isVisible()) return;

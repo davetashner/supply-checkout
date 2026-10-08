@@ -40,6 +40,11 @@ const shapes = {
   // first, then behind "Try another way" a choice with the email code already selected (choosing
   // it goes back to the code), then the password page
   "Managed Login's \"Check your email\", then Try another way and the Password radio": "window.verifyCode",
+  // The same page drawn in two steps, its alert before its buttons: an alert seen before the
+  // buttons turn up mustn't end the wait (the race that failed this suite in CI)
+  "\"Check your email\" with its alert drawn before Try another way": `<h1>Check your email</h1>
+    <p role="alert">Enter the code that we sent to the email address c***@e***.</p><div id="later"></div>
+    <img src="data:," onerror="setTimeout(() => { document.getElementById('later').innerHTML = window.verifyCode; }, 400)">`,
   "a code by email first, other options behind a link": `<h1>Enter the code we emailed you</h1><label>Code <input id="code"></label>
     <a href="#" onclick="show('<h1>Other ways</h1><a href=&quot;#&quot; onclick=&quot;show(window.passwordPage)&quot;>Password</a>'); return false">Other sign-in options</a>`,
 };

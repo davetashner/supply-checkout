@@ -175,7 +175,14 @@
           "simulated": "Stripe's webhooks are fakes in the tests",
           "tests": ["backend/test/billing-webhook.test.ts", "backend/test/billing-worker.test.ts"]
         },
-        { "id": "J8.2", "text": "The owner sees a banner and gets an email. The team keeps full access for 7 days.", "status": "planned", "beads": ["supply-checkout-qdx"] },
+        {
+          "id": "J8.2",
+          "text": "The owner sees a banner and gets an email. The team keeps full access for 7 days.",
+          "status": "built",
+          "beads": ["supply-checkout-qdx"],
+          "simulated": "Stripe's webhooks and SES are fakes in the tests",
+          "tests": ["backend/test/billing-worker.test.ts", "backend/test/account-api.test.ts"]
+        },
         {
           "id": "J8.3",
           "text": "The owner updates their card in the Customer Portal.",

@@ -1,5 +1,5 @@
 // The two journey buckets, through the AWS CLI (preinstalled on GitHub's runners) with the
-// journeys role's credentials from the environment (aws-actions/configure-aws-credentials). The
+// journeys role's credentials from the environment (scripts/assume-aws-role.sh). The
 // role may only list and read the mail bucket's inbox/ and runs/, delete under inbox/, write
 // under runs/, and write under the results bucket's runs/ (docs/infrastructure.md, "Journey
 // tests").

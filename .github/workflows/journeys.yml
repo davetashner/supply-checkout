@@ -121,6 +121,9 @@ jobs:
       critical: ${{ steps.verdict.outputs.critical }}
     env:
       TAG: ${{ inputs.tag }}
+      # A failed test's trace keeps no WebSocket frames: the live-updates subscribe frame carries
+      # the access token (upload-results.mjs drops them anyway, and refuses a token it finds)
+      PLAYWRIGHT_TRACING_NO_WEBSOCKET_FRAMES: "1"
     steps:
       # main's commit: this run's own (the deploy's, when it calls this), never a pull request's
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -188,16 +191,17 @@ jobs:
             exit 1
           fi
       - name: Sign in to AWS with the journeys role
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
+        # Our own step, not aws-actions/configure-aws-credentials, which always logs the role's
+        # unique ID (AROA…), which can be mapped to the account, in this public log
+        # (scripts/assume-aws-role.sh, supply-checkout-o60.13). It masks the account ID first.
+        env:
           # A secret, so the ARN (and the account ID in it) is masked in the log
-          role-to-assume: ${{ secrets.JOURNEYS_AWS_ROLE_ARN }}
-          role-session-name: journeys-${{ github.run_id }}-${{ github.run_attempt }}
+          ROLE_ARN: ${{ secrets.JOURNEYS_AWS_ROLE_ARN }}
+          SESSION_NAME: journeys-${{ github.run_id }}-${{ github.run_attempt }}
           # The mail and results buckets, and SES inbound, are in the primary region (ADR 0010)
-          aws-region: us-east-1
-          role-duration-seconds: 3600
-          # The account ID is masked in every later log line
-          mask-aws-account-id: true
+          AWS_REGION: us-east-1
+          DURATION: "3600"
+        run: bash scripts/assume-aws-role.sh web-identity
       - name: Prove who this job is
         run: |
           arn="$(aws sts get-caller-identity --query Arn --output text)"
