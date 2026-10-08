@@ -57,7 +57,7 @@ test("someone who forgot their password asks for a code, sets a new one and sign
   expect(signUp.searchParams.get("client_id")).toBe("test-client");
   await expect(account(page).getByLabel("Code from the email")).toBeFocused();
   // A password manager sees whose password it is, and that it's a new one
-  expect(await account(page).locator("input[autocomplete]").evaluateAll((els) => els.map((e) => [e.name, e.autocomplete]))).toEqual([
+  expect(await account(page).locator("input[autocomplete]").evaluateAll((els) => els.map((e) => [e.name, e.getAttribute("autocomplete")]))).toEqual([
     ["username", "username"], ["code", "one-time-code"], ["new-password", "new-password"], ["confirm-password", "new-password"],
   ]);
   await expect(account(page).getByText("At least 12 characters, with upper and lower case letters, a number and a symbol.")).toBeVisible();

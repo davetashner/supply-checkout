@@ -34,7 +34,7 @@ test("an owner sets a password and an authenticator app up from Account, and sig
   await expect(dialog(page).getByRole("heading", { name: "Two-step sign-in" })).toBeVisible();
   // The current password first, so a password manager reads it as a change, not a sign-up
   await expect(dialog(page).getByLabel("Current password")).toBeFocused();
-  expect(await dialog(page).locator("#passwordStep input[autocomplete]").evaluateAll((els) => els.map((e) => [e.name, e.autocomplete, e.value]))).toEqual([
+  expect(await dialog(page).locator("#passwordStep input[autocomplete]").evaluateAll((els) => els.map((e) => [e.name, e.getAttribute("autocomplete"), e.value]))).toEqual([
     ["username", "username", USER.email], ["current-password", "current-password", ""], ["new-password", "new-password", ""], ["confirm-password", "new-password", ""],
   ]);
   await expectAccessible(page);
