@@ -256,7 +256,8 @@ test("upload-results scrubs the report and text files, then puts the run's direc
   const s3 = fakeS3();
   const message = await upload({ env: uploadEnv(temp), s3For: (b) => { assert.equal(b, env.JOURNEYS_RESULTS_BUCKET); return s3; } });
   assert.deepEqual(s3.calls, [["upload", dir, "runs/77-1/"]]);
-  assert.match(message, /\(4 files\)/);
+  // The fake trace.zip can't be unpacked, so it's deleted, not uploaded (traces.test.mjs)
+  assert.match(message, /\(3 files\).*couldn't be unpacked \(test-results\/x\/trace\.zip\)/);
   assert.ok(!message.includes(env.JOURNEYS_RESULTS_BUCKET));
   const scrubbed = readFileSync(path.join(dir, "report.json"), "utf8");
   for (const v of ["::add-mask::", "stdout", "stderr", env.JOURNEYS_CREW_EMAIL, env.JOURNEYS_DESKTOP_TEAM_ID, "run-throwaway-address-value"]) assert.ok(!scrubbed.includes(v), v);
@@ -265,7 +266,7 @@ test("upload-results scrubs the report and text files, then puts the run's direc
   assert.match(md, /Signed in as \*\*\*/);
   // Binary files are uploaded as they are
   assert.equal(readFileSync(path.join(dir, "test-results/x/test-failed-1.png"), "utf8"), `PNG ${env.JOURNEYS_CREW_EMAIL}`);
-  assert.deepEqual(filesToUpload(dir), ["report.json", "test-results/x/error-context.md", "test-results/x/test-failed-1.png", "test-results/x/trace.zip"]);
+  assert.deepEqual(filesToUpload(dir), ["report.json", "test-results/x/error-context.md", "test-results/x/test-failed-1.png"]);
   assert.deepEqual(NOT_UPLOADED, ["masked-values", "totp-step*", "sessions/*"]);
   // An unreadable report is replaced, not uploaded as is
   const bad = runDirWith({ "report.json": `{ broken ${env.JOURNEYS_CREW_EMAIL}` });

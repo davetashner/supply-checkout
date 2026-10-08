@@ -1,6 +1,7 @@
 // Keeping sign-in secrets out of Playwright traces. A trace records every action with its
-// arguments, an evaluate's included, and trace.zip is compressed, so upload-results.mjs's leak
-// check can't look inside it. So the fixtures start tracing only after sign-in, mark the
+// arguments, an evaluate's included. upload-results.mjs scrubs headers and auth bodies from a
+// trace and checks it for secrets (lib/traces.mjs), but a refused upload loses the run's results,
+// so the fixtures start tracing only after sign-in, mark the
 // context here when they do, and every secret entry (secretFill, and signIn before it starts)
 // refuses to run in a context that's being traced.
 
