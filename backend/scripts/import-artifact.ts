@@ -173,8 +173,11 @@ export async function main(
   out(`Export${p.exportedAt ? ` of ${p.exportedAt}` : ""}: ${p.products.length} items (${p.products.filter((x) => x.stock !== undefined).length} counted, ${stock} eaches in storage), ${p.projects.length} projects (charges ${dollars(charge)})`);
   if (p.projectsWithoutTotals) out(`  projects without exported totals (only their lines were checked): ${p.projectsWithoutTotals}`);
   if (p.droppedCreatedBy) out(`  projects whose claude.ai user ID is replaced by the name the artifact showed: ${p.droppedCreatedBy}`);
+  if (p.droppedTakenBy) out(`  equipment lines whose taker (a claude.ai user ID) is left out, keeping when it was taken: ${p.droppedTakenBy}`);
+  if (p.droppedPriceSetBy) out(`  lines bought for the client whose price typer (a claude.ai user ID) is left out, keeping when it was typed: ${p.droppedPriceSetBy}`);
   const ignored = Object.entries(p.ignoredFields);
   if (ignored.length) out(`  fields left out: ${ignored.map(([f, n]) => `${f} (${n})`).join(", ")}`);
+  if (p.warnings.length) issues("Warnings (imported as they are)", p.warnings, out);
   if (p.errors.length) {
     issues("Problems in the export", p.errors, err);
     err("Nothing was written. Fix these in the artifact, export again, and run the import again.");
