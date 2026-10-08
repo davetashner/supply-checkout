@@ -47,7 +47,7 @@ test("crew takes supplies without a job, returns some, moves the rest to a clien
   await test.step("J14.2 Return from the project list: it goes back to General Use", async () => {
     await startReturn(page);
     await typeCode(page, gloves.code);
-    await expect(modal(page).locator("h2")).toHaveText(new RegExp(`^Return to ${GENERAL_USE.replace(/[()]/g, "\\$&")}`));
+    await expect(modal(page).locator("h2")).toHaveText(new RegExp(`^Return to ${GENERAL_USE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     await saveReturn(page);
     await expect(page.locator("#toast")).toHaveText("1 returned · 1 of 3 back");
     await goToInventory(page);
