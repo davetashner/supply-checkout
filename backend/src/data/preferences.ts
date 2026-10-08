@@ -16,10 +16,15 @@
 // IAM can't limit the sort key, so as defence in depth the key is checked to
 // be PREFERENCES before any call, and each update's condition names it: it
 // never creates or touches any other item.
+//
+// An access token outlives the account it was issued for (until it expires),
+// so a write checks the account's DELETING mark in the same transaction, as
+// recordNoticeAddress and claimWelcome do: an account being deleted, or
+// deleted, never gets this row back (ConflictError, 409 `aborted`).
 
-import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { InvalidInputError } from "./errors.js";
+import { ConflictError, InvalidInputError } from "./errors.js";
 import { id, keys } from "./keys.js";
 import { PK, PREFERENCES_SK, SK } from "./schema.js";
 
@@ -124,16 +129,31 @@ export async function setPreferences(db: Db, userId: string, change: Preferences
     values[":shown"] = localDate(change.whatsNewLastShown, now);
     sets.push("#shown = :shown");
   }
-  const { Attributes } = await connection(db).doc.send(
-    new UpdateCommand({
-      TableName: db.tableName,
-      Key: recordKey(userId),
-      UpdateExpression: `SET ${sets.join(", ")}`,
-      ConditionExpression: "attribute_not_exists(#pk) OR #sk = :sk",
-      ExpressionAttributeNames: names,
-      ExpressionAttributeValues: values,
-      ReturnValues: "ALL_NEW",
-    }),
-  );
-  return fromItem(Attributes);
+  const user = id(userId, "user ID");
+  try {
+    await connection(db).doc.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: db.tableName,
+              Key: recordKey(user),
+              UpdateExpression: `SET ${sets.join(", ")}`,
+              ConditionExpression: "attribute_not_exists(#pk) OR #sk = :sk",
+              ExpressionAttributeNames: names,
+              ExpressionAttributeValues: values,
+            },
+          },
+          // Not for an account being deleted: its rows are going, and its token may still work
+          { ConditionCheck: { TableName: db.tableName, Key: keys.accountDeletion(user), ConditionExpression: "attribute_not_exists(PK)" } },
+        ],
+      }),
+    );
+  } catch (error) {
+    const cancelled = error as { name?: string; CancellationReasons?: { Code?: string }[] } | null;
+    const deleting = cancelled?.name === "TransactionCanceledException" && (cancelled.CancellationReasons ?? [])[1]?.Code === "ConditionalCheckFailed";
+    if (deleting) throw new ConflictError("Your account is being deleted");
+    throw error;
+  }
+  return getPreferences(db, user);
 }

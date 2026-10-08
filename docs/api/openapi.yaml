@@ -1431,7 +1431,8 @@ paths:
         date the banner was last shown, which the app sends when it shows it,
         so it's shown at most once a day: it must be a real date within two
         days of the server's UTC date (local dates run from a day behind to a
-        day ahead).
+        day ahead). `GET /me` returns the defaults if they can't be read, so
+        reading them never fails it.
       requestBody:
         required: true
         content:
@@ -1455,6 +1456,14 @@ paths:
                   preferences: { $ref: "#/components/schemas/Preferences" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`aborted`: the account is being deleted (its access token can outlive it), so nothing is saved."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "413":
+          description: "`quota_exceeded`: the body is over 1 MB."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: "Too many requests: API Gateway's throttle for this route (10 a second across all callers). Try again shortly."
   /teams/{teamId}/members:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     get:

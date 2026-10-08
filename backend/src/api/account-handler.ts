@@ -62,7 +62,9 @@
 //   PATCH /me/preferences           The caller's own app preferences: the What's
 //                                   New banner on or off, and the local date it
 //                                   was last shown (data/preferences.ts). GET /me
-//                                   returns them as `user.preferences`.
+//                                   returns them as `user.preferences` (the
+//                                   defaults if they can't be read). Refused
+//                                   (409) for an account being deleted.
 //
 // The team's last owner can't be removed, demoted or leave: the team item's
 // owner count moves in the same transaction as the membership, conditioned
@@ -179,6 +181,7 @@ import {
   ForbiddenError,
   getInvite,
   getMember,
+  DEFAULT_PREFERENCES,
   getPreferences,
   getTeam,
   inviteLimitKey,
@@ -211,6 +214,7 @@ import {
   markInviteNotSent,
   normalizeEmail,
   PREFERENCE_FIELDS,
+  type Preferences,
   preferencesChange,
   setPreferences,
   clearCodeSent,
@@ -460,7 +464,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const [rows, invites, preferences] = await Promise.all([
       listTeamsForUser(own, userId),
       email ? listInvitesForEmail(own, email, new Date(now())) : [],
-      getPreferences(own, userId),
+      ownPreferences(own, userId),
       email ? rememberNoticeAddress(own, userId, email, user.email ?? email) : undefined,
     ]);
     // Each team's details on a session for that team, after the membership
@@ -1103,6 +1107,19 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     await cognitoUser(event, userId);
     await endEverySession(accessToken(event), userId);
     return noContent();
+  }
+
+  /**
+   * The caller's preferences for /me. Cosmetic, so a failed read never fails
+   * /me: it's logged (the error's name only) and the defaults are returned.
+   */
+  async function ownPreferences(db: ReturnType<DbForAccount>, userId: string): Promise<Preferences> {
+    try {
+      return await getPreferences(db, userId);
+    } catch (error) {
+      obs.logger.warn("Preferences not read", { code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      return DEFAULT_PREFERENCES;
+    }
   }
 
   /**

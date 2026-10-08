@@ -1009,6 +1009,32 @@ describe("PATCH /me/preferences", () => {
     expect((await call("GET", "/me", { user: PAT })).body.user.preferences).toEqual({ whatsNew: true, whatsNewLastShown: null });
   });
 
+  it("refuses an account being deleted (its token may still work), and writes nothing", async () => {
+    table.put({ PK: `USER#${PAT}`, SK: "DELETING", type: "accountDeletion", userId: PAT });
+    expect(await patch({ whatsNew: false })).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
+    expect(table.get(`USER#${PAT}`, "PREFERENCES")).toBeUndefined();
+  });
+
+  it("doesn't fail /me when they can't be read: the defaults, logging only the error's name", async () => {
+    await patch({ whatsNew: false });
+    const original = table.scoped.bind(table);
+    table.scoped = (partitions) => {
+      const db = original(partitions);
+      return fakeDb(async (command) => {
+        const name = (command as { constructor: { name: string } }).constructor.name;
+        if (name === "GetCommand" && String((command.input.Key as { SK?: string }).SK) === "PREFERENCES") {
+          throw Object.assign(new Error("Throughput exceeded"), { name: "ProvisionedThroughputExceededException" });
+        }
+        return connection(db).doc.send(command as never);
+      });
+    };
+    const me = await call("GET", "/me", { user: PAT });
+    expect(me.status).toBe(200);
+    expect(me.body.user.preferences).toEqual({ whatsNew: true, whatsNewLastShown: null });
+    expect(logs).toContainEqual(["Preferences not read", { code: "ProvisionedThroughputExceededException" }]);
+    expect(JSON.stringify(logs)).not.toMatch(/pat@/i);
+  });
+
   it("needs a signed-in caller from our issuer", async () => {
     expect((await call("PATCH", "/me/preferences", { user: PAT, body: { whatsNew: false }, claims: { sub: PAT, token_use: "access", exp: String(Math.floor(now / 1000) + 600), iss: "https://elsewhere.example", client_id: "web" } })).status).toBe(401);
     expect(table.get(`USER#${PAT}`, "PREFERENCES")).toBeUndefined();

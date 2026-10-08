@@ -247,6 +247,11 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(await getPreferences(db, userId)).toEqual({ whatsNew: false, whatsNewLastShown: "2026-10-09" });
       expect(await rawItem(db, `USER#${userId}`, "PREFERENCES")).toEqual({ PK: `USER#${userId}`, SK: "PREFERENCES", type: "preferences", whatsNew: false, whatsNewLastShown: "2026-10-09", updatedAt: at.toISOString() });
       await expect(setPreferences(db, userId, { whatsNewLastShown: "2026-10-20" }, at)).rejects.toThrow(/today's date/);
+      // Never for an account being deleted, in the same transaction
+      const leaving = newUser();
+      await startAccountDeletion(db, leaving, at);
+      await expect(setPreferences(db, leaving, { whatsNew: false }, at)).rejects.toThrow(ConflictError);
+      expect(await rawItem(db, `USER#${leaving}`, "PREFERENCES")).toBeUndefined();
     });
 
     it("starts a trial, and makes one team per request key however often it's sent", async () => {
