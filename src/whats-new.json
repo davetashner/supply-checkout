@@ -1,0 +1,64 @@
+{
+  "releases": [
+    {
+      "version": "1.10.0",
+      "date": "2026-10-08",
+      "notes": [
+        { "title": "What's new, right here", "text": "When there's something new, a short summary like this one shows once a day. You can turn it off in Account.", "prs": [619] },
+        { "title": "See who's signed in", "text": "The bar under the header shows your name and your role in the team. Tap it to open your account.", "prs": [605] },
+        { "title": "Why a team is read-only", "text": "When a trial ends or a payment is overdue, the team says why it's read-only and what to do next. Nothing is deleted while it's read-only.", "prs": [608] },
+        { "title": "Sheets are now projects", "text": "Job sheets are called projects now. Everything on them is the same.", "prs": [511, 519, 513] },
+        { "title": "Scan barcodes live", "text": "Point your camera at a barcode and it reads it on the spot. No photo needed.", "prs": [538] },
+        { "title": "Low-stock alerts", "text": "Items at or under their reorder level are flagged for the whole team. Mark one seen, or mark it ordered with how many and when.", "prs": [526, 539] },
+        { "title": "Reorder levels in CSV files", "text": "The inventory CSV import and export now include each item's reorder level.", "prs": [541] },
+        { "title": "A brand for each item", "text": "Items can have a brand. It's optional.", "prs": [525] },
+        { "title": "Warning before a lapsed team is deleted", "text": "If a trial or subscription ends and nobody subscribes, owners get emails with the date before the team is closed and deleted.", "prs": [465] }
+      ],
+      "skip": {
+        "471": "Support tool: comps are applied by Supply Checkout support",
+        "477": "Support tool: the operator admin page",
+        "480": "Sent once to new accounts, so there's nothing to tell existing users",
+        "483": "Marketing site",
+        "488": "Marketing site",
+        "491": "Marketing site",
+        "492": "Marketing site",
+        "510": "Behind the scenes: a data migration for the projects rename",
+        "553": "Behind the scenes: cost limits on receipt reading for trials",
+        "564": "Behind the scenes: test infrastructure",
+        "567": "Behind the scenes: test accounts",
+        "576": "Behind the scenes: metrics",
+        "580": "Marketing site"
+      }
+    },
+    {
+      "version": "1.9.0",
+      "date": "2026-10-02",
+      "notes": [
+        { "title": "Read receipts with a photo", "text": "Take a photo of a receipt and the app reads its lines for you to check before they're added.", "prs": [417, 411] },
+        { "title": "Receipt scans left", "text": "Each plan includes a number of receipt scans a month. The app shows how many are left before you scan.", "prs": [437, 433] },
+        { "title": "Find returned projects", "text": "Search returned projects, grouped by year and month.", "prs": [425] },
+        { "title": "Read-only after a trial or missed payment", "text": "A team whose trial ended or whose payment is overdue can still be seen and exported, but not changed, until it's paid.", "prs": [460] }
+      ],
+      "skip": {
+        "428": "Behind the scenes: backup restore drills",
+        "431": "Behind the scenes: support email routing",
+        "442": "Support tool: receipt usage for operators"
+      }
+    },
+    {
+      "version": "1.8.0",
+      "date": "2026-10-01",
+      "notes": [
+        { "title": "Company equipment", "text": "Track tools and equipment in inventory. They go out on a project and come back.", "prs": [395, 385] },
+        { "title": "Bill equipment bought for a client", "text": "Equipment bought for a job can be billed to the client with a markup that owners set in Team settings.", "prs": [401] },
+        { "title": "Equipment still out", "text": "Finished Return asks about any equipment that hasn't come back yet.", "prs": [399] },
+        { "title": "Take supplies without a project", "text": "Quick take puts supplies on a General Use project, and you can return them from anywhere.", "prs": [408, 405] }
+      ],
+      "skip": {
+        "383": "Wording in the close-team screen for annual plans",
+        "384": "Behind the scenes: cost alerts",
+        "388": "Behind the scenes: price tracing"
+      }
+    }
+  ]
+}

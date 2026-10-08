@@ -2,7 +2,8 @@
 // sign-in, "name your team", joining from an invite link, and errors. They take the app's
 // place until a team is open; then a bar under the header shows the team (a switcher when
 // there are several), Members and Import CSV for owners, Leave team for everyone else,
-// Account (who is signed in, with their role; deleting the account) and Sign out. A team an owner closed is read-only, with a notice
+// Account (who is signed in, with their role; What's New on or off; deleting the account) and
+// Sign out. Under the bar, the What's New banner, at most once a day (whats-new.js). A team an owner closed is read-only, with a notice
 // saying when its data will be deleted, and for its owners a way to reopen it. So is a team
 // whose subscription ended (its trial ended without a card, or payments stopped), with a
 // notice, and for its owners a way to subscribe again on Stripe Checkout. Owners of a team
@@ -25,6 +26,7 @@ import { openVerifyEmail } from "./verify-email.js";
 import { openTwoStep } from "./mfa.js";
 import { openChangePassword } from "./password.js";
 import { openInvoices } from "./invoices.js";
+import { showWhatsNew } from "./whats-new.js";
 
 const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
 // A screen's promise resolves with this key after the user verifies their email: start the
@@ -190,11 +192,13 @@ export async function start(config) {
   const twoStepOn = () => signedOutEverywhere("Two-step sign-in is on", "You've been signed out everywhere, here too. Sign in again with your email, your password and a code from your authenticator app.");
   const passwordChanged = () => signedOutEverywhere("Your password is changed", "You've been signed out everywhere, here too. Sign in again with your new password.");
   const twoStep = (me, options) => openTwoStep(session, me.user.email, twoStepOn, options);
+  // Takes the What's New banner away once Account turns it off; nothing until it's shown
+  let hideWhatsNew = () => {};
   const account = (me) => openDeleteAccount(session.api, me.user.email, deleted, {
     mfa: me.user.mfa,
     setUp: (moving) => twoStep(me, { moving }),
     changePassword: () => openChangePassword(session, me.user.email, passwordChanged, { required: me.user.mfa === "totp" }),
-  });
+  }, { prefs: me.user.preferences, off: () => hideWhatsNew() });
 
   // Who's signed in, with a way out, on the screens before a team is open
   const whoami = (me) => `<p class="whoami">Signed in as ${esc(me.user.email || "you")}. <button type="button" class="btn ghost" id="accountSignOut">Sign out</button> <button type="button" class="btn ghost" id="accountDelete">Delete account</button></p>`;
@@ -571,6 +575,8 @@ export async function start(config) {
     // Who is signed in: their name, else their email (shown on the team bar, and as their profile)
     const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
     let bar = teamBar(me, team, fr, name);
+    // Drawn now, as the team opens, so it never moves anything under a finger later
+    hideWhatsNew = showWhatsNew(session.api, me.user.preferences, bar);
     // /me was just loaded
     meAt = Date.now();
     let viewOnly = viewOnlyFor(team);
