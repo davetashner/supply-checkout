@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 export const ARTIFACT_TYPES = ["aws:cloudformation:stack", "cdk:asset-manifest", "cdk:tree", "cdk:feature-flag-report"];
 export const MANIFEST_KEYS = ["version", "artifacts", "minimumCliVersion", "runtime"];
 const PLAIN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/;
+// eslint-disable-next-line no-control-regex -- control characters are what it looks for
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 const isMap = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
