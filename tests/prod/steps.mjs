@@ -103,6 +103,29 @@ export async function download(page, button) {
   return { filename: file.suggestedFilename(), text: await readFile(await file.path(), "utf8") };
 }
 
+/**
+ * Collects the app's uncaught errors and console errors on `page` (from `origins`, less the
+ * expected ones in lib/console.mjs) until `stop()`, which returns them.
+ *
+ * Stop before closing a context the test made itself: Playwright's runner screenshots the pages
+ * of such a context as it closes (screenshot: "only-on-failure" can't know yet whether the test
+ * will fail), and to hide the caret it adds a <style> element to the page. WebKit applies the
+ * page's CSP to it and logs "Refused to apply a stylesheet because its hash, its nonce, or
+ * 'unsafe-inline' does not appear in the style-src directive" as the page's own console error
+ * (prod run 37724792313, J4 and J9 on iPhone). tests/prod-second-page.spec.js shows it.
+ */
+export function watchAppErrors(page, origins) {
+  const errors = [];
+  let on = true;
+  const fromApp = (url) => { try { return origins.includes(new URL(url).origin); } catch { return false; } };
+  page.on("pageerror", (e) => { if (on && fromApp(page.url()) && !isExpectedPageError(e.message)) errors.push(`pageerror: ${e.message}`); });
+  page.on("console", (m) => {
+    const url = m.location()?.url ?? "";
+    if (on && m.type() === "error" && fromApp(url || page.url()) && !isExpectedConsoleError(m.text(), url)) errors.push(consoleFailure(m.text(), url));
+  });
+  return { errors, stop: () => { on = false; return [...errors]; } };
+}
+
 // The second context's device: the browser project's own, without the test-runner options
 const DEVICE_OPTIONS = ["viewport", "screen", "userAgent", "deviceScaleFactor", "isMobile", "hasTouch", "locale", "timezoneId", "colorScheme"];
 
@@ -125,13 +148,7 @@ export async function secondPage({ browser, harness, signIn, testInfo }, role) {
     return route.fallback();
   });
   const page = await context.newPage();
-  const errors = [];
-  const appOrigin = (url) => { try { return [PROD.app, PROD.api].includes(new URL(url).origin); } catch { return false; } };
-  page.on("pageerror", (e) => { if (appOrigin(page.url()) && !isExpectedPageError(e.message)) errors.push(`pageerror: ${e.message}`); });
-  page.on("console", (m) => {
-    const url = m.location()?.url ?? "";
-    if (m.type() === "error" && appOrigin(url || page.url()) && !isExpectedConsoleError(m.text(), url)) errors.push(consoleFailure(m.text(), url));
-  });
+  const watch = watchAppErrors(page, [PROD.app, PROD.api]);
   // signIn starts a trace when it's done; this context is never traced
   page.startTrace = async () => {};
   await signIn(page, role);
@@ -140,6 +157,8 @@ export async function secondPage({ browser, harness, signIn, testInfo }, role) {
     async close() {
       // The session goes back to the pool before the context (and its cookie) is gone
       await signIn.release?.(context);
+      // What the page did is over; closing it isn't the app's doing (watchAppErrors)
+      const errors = watch.stop();
       await context.close();
       expect(errors.map(harness.masker.redact), `page errors in the ${role}'s context`).toEqual([]);
     },
