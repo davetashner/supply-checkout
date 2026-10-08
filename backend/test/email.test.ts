@@ -16,6 +16,8 @@ import { contextFor, fakeDb } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const APP = "https://app.supplycheckout.com";
+const SUPPORT = "support@supplycheckout.com";
+const OPTS = { appUrl: APP, supportAddress: SUPPORT };
 const TEAM = "7d3b8a52-5a61-4c3e-9d1f-0b6f2f7c1a11";
 const INVITE = "0b6f2f7c-5a61-4c3e-9d1f-7d3b8a521a11";
 const INVITEE = "pat@example.com";
@@ -52,7 +54,7 @@ describe("templates", () => {
 
   for (const input of samples) {
     describe(input.kind, () => {
-      const email = renderEmail(input, { appUrl: APP });
+      const email = renderEmail(input, OPTS);
 
       it("has a short one-line subject naming the team, or for the account's own notices, the change", () => {
         expect(email.kind).toBe(input.kind);
@@ -107,17 +109,17 @@ describe("templates", () => {
 
   // supply-checkout-6uw.32
   it("says a reset password signed the account out only when it did, and what to do if it wasn't them", () => {
-    const signedOut = renderEmail({ kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: true }, { appUrl: APP });
+    const signedOut = renderEmail({ kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: true }, OPTS);
     expect(signedOut.subject).toBe("Your Supply Checkout password was reset");
     expect(signedOut.text).toContain("was reset on September 30, 2026 at 14:05 UTC, with a code sent to this address. Devices that were signed in were signed out, though a session may keep working for up to an hour.");
-    expect(signedOut.text).toContain("Secure this email account first");
-    const not = renderEmail({ kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: false }, { appUrl: APP });
+    expect(signedOut.text).toContain("someone who can read this mailbox may have reset it");
+    const not = renderEmail({ kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: false }, OPTS);
     expect(not.text).not.toContain("signed out");
-    expect(() => renderEmail({ kind: "passwordReset", at: "soon", signedOut: true }, { appUrl: APP })).toThrow("Invalid date");
+    expect(() => renderEmail({ kind: "passwordReset", at: "soon", signedOut: true }, OPTS)).toThrow("Invalid date");
   });
 
   it("puts the invite's ID and token in the link the app reads (?invite=&token=)", () => {
-    const email = renderEmail(samples[0] as EmailInput, { appUrl: APP });
+    const email = renderEmail(samples[0] as EmailInput, OPTS);
     const link = new URL(email.text.match(/https:\/\/\S+/)?.[0] as string);
     expect(link.searchParams.get("invite")).toBe(INVITE);
     expect(link.searchParams.get("token")).toBe("tok_abcdefghijklmnopqrstuvwxyz");
@@ -127,13 +129,13 @@ describe("templates", () => {
 
   it("describes each role", () => {
     for (const role of ["owner", "contributor", "viewer"] as const) {
-      const email = renderEmail({ ...(samples[0] as Extract<EmailInput, { kind: "invite" }>), role }, { appUrl: APP });
+      const email = renderEmail({ ...(samples[0] as Extract<EmailInput, { kind: "invite" }>), role }, OPTS);
       expect(email.text).toContain(`as ${role === "owner" ? "an owner" : `a ${role}`}`);
     }
   });
 
   it("says why a team is read-only, and when it's deleted unless an owner subscribes (supply-checkout-qdx)", () => {
-    const text = (input: EmailInput) => renderEmail(input, { appUrl: APP }).text;
+    const text = (input: EmailInput) => renderEmail(input, OPTS).text;
     const ended = text({ kind: "readOnly", teamName: "Echo", reason: "subscription_ended", deletesAt: "2026-11-02T12:00:00.000Z" });
     expect(ended).toContain("no longer has an active subscription");
     // The last day it's kept: deleted at noon UTC the next day, once November 1 has ended everywhere
@@ -153,7 +155,7 @@ describe("templates", () => {
   });
 
   it("warns owners of a lapsed team's deletion, with the date, what to do, and that it can't be undone (supply-checkout-qdx)", () => {
-    const email = renderEmail({ kind: "deletionWarning", teamName: "Echo", deletesAt: "2026-11-02T12:00:00.000Z" }, { appUrl: APP });
+    const email = renderEmail({ kind: "deletionWarning", teamName: "Echo", deletesAt: "2026-11-02T12:00:00.000Z" }, OPTS);
     // deletesAt is the deletion time (noon UTC the next day); the email states the last day it's kept
     expect(email.subject).toBe("Echo will be deleted after November 1, 2026");
     expect(email.text).toContain("After November 1, 2026, the team, its projects and its inventory will be deleted for good");
@@ -162,13 +164,13 @@ describe("templates", () => {
   });
 
   it("leaves out the retry date when Stripe gave none", () => {
-    const email = renderEmail({ kind: "paymentFailed", teamName: "Echo" }, { appUrl: APP });
+    const email = renderEmail({ kind: "paymentFailed", teamName: "Echo" }, OPTS);
     expect(email.text).not.toContain("try again on");
-    expect(renderEmail(samples[2] as EmailInput, { appUrl: APP }).text).toContain("try again on October 12, 2026");
+    expect(renderEmail(samples[2] as EmailInput, OPTS).text).toContain("try again on October 12, 2026");
   });
 
   it("escapes a team name with markup, and keeps it on one line in the subject", () => {
-    const email = renderEmail({ kind: "readOnly", teamName: '<a href="https://evil.example.com">Win</a>\r\nBcc: x' }, { appUrl: APP });
+    const email = renderEmail({ kind: "readOnly", teamName: '<a href="https://evil.example.com">Win</a>\r\nBcc: x' }, OPTS);
     expect(email.html).not.toContain('<a href="https://evil');
     // Escaped, and the link-like part defanged so no mail client links it
     expect(email.html).toContain("&lt;a href=&quot;https[:]//evil[.]example[.]com&quot;&gt;");
@@ -179,7 +181,7 @@ describe("templates", () => {
 
   it("quotes the team name in an invite, and defangs anything in it a mail client could link", () => {
     const teamName = "Payroll: verify at https://evil.example/login or www.evil.example, or mail help@example.com";
-    const email = renderEmail({ ...(samples[0] as Extract<EmailInput, { kind: "invite" }>), teamName }, { appUrl: APP });
+    const email = renderEmail({ ...(samples[0] as Extract<EmailInput, { kind: "invite" }>), teamName }, OPTS);
     for (const part of [email.subject, email.html, email.text]) expect(part).not.toMatch(/evil\.example|example\.com|https:\/\/evil|help@/);
     expect(email.subject).toMatch(/^You're invited to join the team \u201cPayroll: verify at https\[:\]\/\/evil\[\.\]example/);
     expect(email.text).toContain("\u201d as a contributor");
@@ -192,20 +194,20 @@ describe("templates", () => {
   });
 
   it("tells an owner their team closed and the day it'll be deleted, with its name defanged", () => {
-    const email = renderEmail(samples[5] as EmailInput, { appUrl: APP });
+    const email = renderEmail(samples[5] as EmailInput, OPTS);
     expect(email.subject).toBe("Echo Cleaning was closed on Supply Checkout");
     expect(email.text).toContain("On October 26, 2026, the team, its projects and its inventory will be deleted for good.");
     expect(email.html).toContain("It will be deleted for good on October 26, 2026.");
-    const hostile = renderEmail({ kind: "teamClosed", teamName: "<b>Reopen</b> at https://evil.example/restore", purgeAfter: "2026-10-26T12:00:00.000Z" }, { appUrl: APP });
+    const hostile = renderEmail({ kind: "teamClosed", teamName: "<b>Reopen</b> at https://evil.example/restore", purgeAfter: "2026-10-26T12:00:00.000Z" }, OPTS);
     for (const part of [hostile.subject, hostile.html, hostile.text]) expect(part).not.toMatch(/evil\.example|https:\/\/evil/);
     expect(hostile.html).not.toContain("<b>");
     expect(hostile.html).toContain("&lt;b&gt;Reopen&lt;/b&gt; at https[:]//evil[.]example/restore");
     expect([...hostile.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL((m[1] as string).replaceAll("&amp;", "&")).origin === APP)).toBe(true);
-    expect(() => renderEmail({ kind: "teamClosed", teamName: "Echo", purgeAfter: "" }, { appUrl: APP })).toThrow("Invalid date");
+    expect(() => renderEmail({ kind: "teamClosed", teamName: "Echo", purgeAfter: "" }, OPTS)).toThrow("Invalid date");
   });
 
   it("tells an owner their team was reopened and what didn't come back, with its name defanged", () => {
-    const email = renderEmail(samples[6] as EmailInput, { appUrl: APP });
+    const email = renderEmail(samples[6] as EmailInput, OPTS);
     expect(email.subject).toBe("Echo Cleaning was reopened on Supply Checkout");
     expect(email.text).toContain("An owner of Echo Cleaning reopened the team, so it won't be deleted.");
     expect(email.text).toContain("Invites that were cancelled when it closed stay cancelled");
@@ -216,7 +218,7 @@ describe("templates", () => {
     );
     expect(email.text).not.toMatch(/resuming it|renews as before/);
     expect(email.html).toContain("an owner can renew it from Billing.");
-    const hostile = renderEmail({ kind: "teamReopened", teamName: "<b>Pay</b> at https://evil.example/pay" }, { appUrl: APP });
+    const hostile = renderEmail({ kind: "teamReopened", teamName: "<b>Pay</b> at https://evil.example/pay" }, OPTS);
     for (const part of [hostile.subject, hostile.html, hostile.text]) expect(part).not.toMatch(/evil\.example|https:\/\/evil/);
     expect(hostile.html).not.toContain("<b>");
     expect([...hostile.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL((m[1] as string).replaceAll("&amp;", "&")).origin === APP)).toBe(true);
@@ -224,9 +226,9 @@ describe("templates", () => {
 
   // supply-checkout-8jc.15
   it("tells the account's owner a password was set or two-step sign-in turned on, when, and what to do if it wasn't them", () => {
-    const password = renderEmail(samples[7] as EmailInput, { appUrl: APP });
+    const password = renderEmail(samples[7] as EmailInput, OPTS);
     expect(password.subject).toBe("A password was set on your Supply Checkout account");
-    const twoStep = renderEmail(samples[8] as EmailInput, { appUrl: APP });
+    const twoStep = renderEmail(samples[8] as EmailInput, OPTS);
     expect(twoStep.subject).toBe("Two-step sign-in was turned on for your Supply Checkout account");
     expect(twoStep.text).toContain("signed out everywhere");
     for (const email of [password, twoStep]) {
@@ -236,26 +238,70 @@ describe("templates", () => {
       expect(email.text).toContain("check that the email address on your account is still yours");
       expect(email.html).toContain("If it wasn&#39;t you");
     }
-    expect(() => renderEmail({ kind: "passwordSet", at: "soon" }, { appUrl: APP })).toThrow("Invalid date");
+    // An attacker who turned two-step sign-in on keeps the owner out even after a reset: support can get them back in
+    expect(twoStep.text).toContain("may have turned this on to keep you out");
+    expect(password.text).toContain("an authenticator app that isn't yours, support can get you back in");
+    expect(() => renderEmail({ kind: "passwordSet", at: "soon" }, OPTS)).toThrow("Invalid date");
   });
 
   // supply-checkout-8jc.29
   it("tells the previous address the account's email changed, when, and what to do if it wasn't them", () => {
-    const changed = renderEmail(samples[9] as EmailInput, { appUrl: APP });
+    const changed = renderEmail(samples[9] as EmailInput, OPTS);
     expect(changed.subject).toBe("The email address on your Supply Checkout account was changed");
     expect(changed.text).toContain("on September 30, 2026 at 14:05 UTC");
     expect(changed.text).toContain("the address the account had before");
     expect(changed.text).toContain("If this was you, you don't need to do anything.");
     // Codes now go to the new address, so the usual advice (reset with a code sent here) can't work
     expect(changed.text).not.toContain("code sent to this address");
-    expect(changed.text).toContain("Contact Supply Checkout support");
+    expect(changed.text).toContain("Write to Supply Checkout support");
     expect(changed.html).toContain("If it wasn&#39;t you");
-    expect(() => renderEmail({ kind: "emailChanged", at: "soon" }, { appUrl: APP })).toThrow("Invalid date");
+    expect(() => renderEmail({ kind: "emailChanged", at: "soon" }, OPTS)).toThrow("Invalid date");
+  });
+
+  // supply-checkout-3sv.12
+  describe("the recovery path in every security notice", () => {
+    const notices: EmailInput[] = [
+      { kind: "passwordSet", at: "2026-09-30T14:05:09.000Z" },
+      { kind: "twoStepOn", at: "2026-09-30T14:05:09.000Z" },
+      { kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: true },
+      { kind: "emailChanged", at: "2026-09-30T14:05:09.000Z" },
+    ];
+    for (const input of notices) {
+      it(`${input.kind}: secure the mailbox, then reset or tell the owners, then write to support, who check it's yours first`, () => {
+        const email = renderEmail(input, OPTS);
+        const steps = email.text.split("\n").filter((line) => /^\d\. /.test(line));
+        expect(steps.map((line) => line.slice(0, 2))).toEqual(["1.", "2.", "3."]);
+        expect(steps[0]).toContain("Secure this email account");
+        expect(steps[1]).toContain(input.kind === "emailChanged" ? "Tell the other owners of your teams." : "Reset your Supply Checkout password");
+        expect(steps[2]).toContain(`Write to Supply Checkout support at ${SUPPORT} from this address`);
+        expect(email.text).toContain("We'll confirm that the account is yours before we change anything, then sign it out everywhere");
+        expect(email.text).toContain("We'll never ask you for your password or a sign-in code.");
+        // In the HTML part too, as text: escaped, and never a link of its own
+        expect(email.html).toContain(`support at ${SUPPORT} from this address`);
+        expect(email.html).not.toContain("mailto:");
+        expect([...email.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL(m[1] as string).origin === APP)).toBe(true);
+      });
+    }
+
+    it("tells an account whose email changed that it can't reset the password itself", () => {
+      const text = renderEmail({ kind: "emailChanged", at: "2026-09-30T14:05:09.000Z" }, OPTS).text;
+      expect(text).toContain("so you can't reset your password yourself");
+      expect(text).not.toContain("Reset your Supply Checkout password");
+      expect(text).not.toContain("authenticator app");
+    });
+
+    it("won't render without a plain support address", () => {
+      for (const supportAddress of [undefined, "", "Support <support@supplycheckout.com>", "support@supplycheckout.com\r\nBcc: x", "https://evil.example"]) {
+        expect(() => renderEmail({ kind: "passwordSet", at: "2026-09-30T14:05:09.000Z" }, { appUrl: APP, ...(supportAddress === undefined ? {} : { supportAddress }) })).toThrow("Invalid support address");
+      }
+      // The other kinds don't need it
+      expect(renderEmail(samples[3] as EmailInput, { appUrl: APP }).subject).toContain("Echo Cleaning");
+    });
   });
 
   // supply-checkout-6uw.25
   it("welcomes a new account by its given name, with the next step, the trial, and the support address", () => {
-    const owner = renderEmail(samples[10] as EmailInput, { appUrl: APP });
+    const owner = renderEmail(samples[10] as EmailInput, OPTS);
     expect(owner.subject).toBe("Welcome to Supply Checkout");
     expect(owner.text).toContain("Hi Sam,");
     expect(owner.text).toContain("Sign in any time with this email address.");
@@ -271,7 +317,7 @@ describe("templates", () => {
   });
 
   it("points someone who was invited at their team, without a name to greet them by", () => {
-    const invited = renderEmail(samples[samples.length - 1] as EmailInput, { appUrl: APP });
+    const invited = renderEmail(samples[samples.length - 1] as EmailInput, OPTS);
     expect(invited.subject).toBe("Welcome to Supply Checkout");
     expect(invited.text).toContain("Hi there,");
     expect(invited.text).toContain("You've been invited to a team. Open Supply Checkout and accept the invite, if you haven't already");
@@ -293,15 +339,15 @@ describe("templates", () => {
     expect(plainName(`\u{1f469}\u200d\u{1f527} ${"x".repeat(100)}`, 10)).toBe("\u{1f469}\u200d\u{1f527} xxx…");
     expect(plainName("\u2066\u200b")).toBe("your team");
     expect(greetingName("Sam at evil.example or https://x.example")).toBe("Sam at evil[.]example or https[:]//x[.]example");
-    const hostile = renderEmail({ kind: "welcome", givenName: '<a href="https://evil.example">Sam</a>', invited: false, supportAddress: "support@supplycheckout.com" }, { appUrl: APP });
+    const hostile = renderEmail({ kind: "welcome", givenName: '<a href="https://evil.example">Sam</a>', invited: false, supportAddress: "support@supplycheckout.com" }, OPTS);
     expect(hostile.html).not.toContain("<a href=\"https://evil");
     expect([...hostile.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL((m[1] as string).replaceAll("&amp;", "&")).origin === APP)).toBe(true);
-    expect(renderEmail({ kind: "welcome", givenName: " ", invited: false, supportAddress: "support@supplycheckout.com" }, { appUrl: APP }).text).toContain("Hi there,");
+    expect(renderEmail({ kind: "welcome", givenName: " ", invited: false, supportAddress: "support@supplycheckout.com" }, OPTS).text).toContain("Hi there,");
   });
 
   it("refuses a support address that isn't a plain address", () => {
     for (const supportAddress of ["", "Support <support@supplycheckout.com>", "support@supplycheckout.com, x@example.com", "support"]) {
-      expect(() => renderEmail({ kind: "welcome", invited: false, supportAddress }, { appUrl: APP })).toThrow("Invalid support address");
+      expect(() => renderEmail({ kind: "welcome", invited: false, supportAddress }, OPTS)).toThrow("Invalid support address");
     }
   });
 
@@ -351,7 +397,7 @@ const invite: Invite = {
 
 describe("mailer", () => {
   let ses: FakeSes;
-  const mailer = () => createMailer({ fromAddress: "noreply@supplycheckout.com", configurationSet: configurationSetName("prod"), appUrl: APP, ses });
+  const mailer = () => createMailer({ fromAddress: "noreply@supplycheckout.com", configurationSet: configurationSetName("prod"), appUrl: APP, supportAddress: SUPPORT, ses });
   beforeEach(() => {
     ses = new FakeSes();
   });
@@ -416,11 +462,19 @@ describe("mailer", () => {
     expect(ses.sent.length).toBe(asked);
   });
 
+  // supply-checkout-3sv.12
+  it("names its support address in a security notice", async () => {
+    await mailer().send(INVITEE, { kind: "twoStepOn", at: "2026-09-30T14:05:09.000Z" });
+    expect(ses.sent[0]?.input.Content?.Simple?.Body?.Text?.Data).toContain(`Write to Supply Checkout support at ${SUPPORT}`);
+  });
+
   it("needs its settings", () => {
-    expect(() => createMailer({ fromAddress: "", configurationSet: "c", appUrl: APP, ses })).toThrow("From address");
+    expect(() => createMailer({ fromAddress: "", configurationSet: "c", appUrl: APP, supportAddress: SUPPORT, ses })).toThrow("From address");
+    expect(() => createMailer({ fromAddress: "noreply@supplycheckout.com", configurationSet: "c", appUrl: APP, supportAddress: "", ses })).toThrow("support address");
     expect(() => mailerFromEnv({})).toThrow(`${EMAIL_ENV.fromAddress} is not set`);
-    const env = { [EMAIL_ENV.fromAddress]: "noreply@supplycheckout.com", [EMAIL_ENV.configurationSet]: "c", [EMAIL_ENV.appUrl]: APP, [EMAIL_ENV.region]: "test-local-1" };
+    const env = { [EMAIL_ENV.fromAddress]: "noreply@supplycheckout.com", [EMAIL_ENV.configurationSet]: "c", [EMAIL_ENV.appUrl]: APP, [EMAIL_ENV.supportAddress]: SUPPORT, [EMAIL_ENV.region]: "test-local-1" };
     expect(typeof mailerFromEnv(env).send).toBe("function");
+    expect(() => mailerFromEnv({ ...env, [EMAIL_ENV.supportAddress]: "" })).toThrow(`${EMAIL_ENV.supportAddress} is not set`);
   });
 
   // supply-checkout-8jc.28 review: a hung SES call mustn't run a function into its timeout

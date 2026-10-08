@@ -100,6 +100,8 @@ export const EMAIL_ENV = {
   region: "EMAIL_REGION",
   /** `https://app.<env domain>`: the base of every link in a message. */
   appUrl: "EMAIL_APP_URL",
+  /** `support@<env domain>`: the security notices tell the reader to write to it (supply-checkout-3sv.12). */
+  supportAddress: "EMAIL_SUPPORT_ADDRESS",
 } as const;
 
 /**

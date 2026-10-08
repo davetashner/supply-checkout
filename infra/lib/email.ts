@@ -23,6 +23,8 @@ export interface EmailSettings {
   readonly region: string;
   /** `https://app.<env domain>`, the base of every link in a message. */
   readonly appUrl: string;
+  /** `support@<env domain>`, which the security notices name. */
+  readonly supportAddress: string;
 }
 
 export function emailSettings(config: DeploymentConfig): EmailSettings {
@@ -33,6 +35,7 @@ export function emailSettings(config: DeploymentConfig): EmailSettings {
     configurationSet: configurationSetName(config.envName),
     region: config.primaryRegion,
     appUrl: `https://${names.app}`,
+    supportAddress: `${SUPPORT_LOCAL_PART}@${names.apex}`,
   };
 }
 
@@ -58,6 +61,7 @@ export function grantSendEmail(fn: LambdaFunction, config: DeploymentConfig): vo
   fn.addEnvironment(EMAIL_ENV.configurationSet, email.configurationSet);
   fn.addEnvironment(EMAIL_ENV.region, email.region);
   fn.addEnvironment(EMAIL_ENV.appUrl, email.appUrl);
+  fn.addEnvironment(EMAIL_ENV.supportAddress, email.supportAddress);
 }
 
 /** The support mailbox's local part: `support@<env domain>` (supply-checkout-6qd). */

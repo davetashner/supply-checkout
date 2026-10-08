@@ -8276,6 +8276,7 @@
             "EMAIL_CONFIGURATION_SET": "supply-checkout-prod-transactional",
             "EMAIL_REGION": "us-east-1",
             "EMAIL_APP_URL": "https://app.supplycheckout.com",
+            "EMAIL_SUPPORT_ADDRESS": "support@supplycheckout.com",
             "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
             "SUPPLY_CHECKOUT_ENV": "prod"
           }

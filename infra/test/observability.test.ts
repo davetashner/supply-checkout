@@ -352,8 +352,8 @@ describe("alarm topics", () => {
     }
   });
 
-  it("never puts an address or phone number in the template, but the app's own From address (the lapsed-team job sends as it)", () => {
-    const json = JSON.stringify(observability().toJSON()).replace(/"noreply@[a-z0-9.-]+"/g, '"FROM"');
+  it("never puts an address or phone number in the template, but the app's own From and support addresses (the lapsed-team job sends as it, and names support)", () => {
+    const json = JSON.stringify(observability().toJSON()).replace(/"(noreply|support)@[a-z0-9.-]+"/g, '"APP_ADDRESS"');
     expect(json).not.toMatch(/@[a-z0-9-]+\.[a-z]/i);
     expect(json).not.toMatch(/\+\d{10,}/);
   });
