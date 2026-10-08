@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PROD } from "../lib/config.mjs";
-import { isExpectedConsoleError } from "../lib/console.mjs";
+import { isExpectedConsoleError, isExpectedPageError } from "../lib/console.mjs";
 import { createMasker } from "../lib/mask.mjs";
 import { formatScreen } from "../lib/screen.mjs";
 
@@ -65,4 +65,20 @@ test("a screen description stays short", () => {
   assert.match(line, /and 8 more$/);
   assert.ok(line.length < 1500);
   assert.equal(formatScreen(undefined), "page (no URL); headings none; alerts none; fields none; controls none");
+});
+
+test("only the RUM client's failure to get its credentials is an expected page error", () => {
+  for (const m of [
+    "Error: CWR: Failed to retrieve Cognito identity: TypeError: Load failed",
+    "/cognito-identity.us-east-1.amazonaws.com/ due to access control checks.",
+    "Fetch API cannot load https://cognito-identity.us-west-2.amazonaws.com/ due to access control checks.",
+  ]) assert.equal(isExpectedPageError(m), true, m);
+  for (const m of [
+    "TypeError: Load failed",
+    "Error: CWR: something else",
+    `Fetch API cannot load ${PROD.api}/me due to access control checks.`,
+    "Fetch API cannot load https://cognito-identity.us-east-1.amazonaws.com.evil.test/ due to access control checks.",
+    "",
+    undefined,
+  ]) assert.equal(isExpectedPageError(m), false, String(m));
 });

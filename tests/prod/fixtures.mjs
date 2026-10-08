@@ -17,7 +17,7 @@ import { createCognito } from "../../scripts/journeys/lib/cognito.mjs";
 import { PROD, TEAM_FOR_PROJECT, readConfig, runDir, runId, secretValues } from "../../scripts/journeys/lib/config.mjs";
 import { GuardError, assertDestructiveAllowed, checkMe } from "../../scripts/journeys/lib/guards.mjs";
 import { waitForMail } from "../../scripts/journeys/lib/mailbox.mjs";
-import { isExpectedConsoleError } from "../../scripts/journeys/lib/console.mjs";
+import { isExpectedConsoleError, isExpectedPageError } from "../../scripts/journeys/lib/console.mjs";
 import { MASKED_VALUES_FILE, createMasker } from "../../scripts/journeys/lib/mask.mjs";
 import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
@@ -69,7 +69,7 @@ export const test = base.extend({
 
   page: async ({ page, harness, identity }, use, testInfo) => {
     const errors = [];
-    page.on("pageerror", (e) => { if (appOrigins.has(originOf(page.url()))) errors.push(`pageerror: ${e.message}`); });
+    page.on("pageerror", (e) => { if (appOrigins.has(originOf(page.url())) && !isExpectedPageError(e.message)) errors.push(`pageerror: ${e.message}`); });
     page.on("console", (m) => {
       const url = m.location()?.url ?? "";
       if (m.type() === "error" && appOrigins.has(originOf(url || page.url())) && !isExpectedConsoleError(m.text(), url)) errors.push(`console: ${m.text()}`);
@@ -221,5 +221,5 @@ export function readScreen(page) {
   });
 }
 
-export { isExpectedConsoleError };
+export { isExpectedConsoleError, isExpectedPageError };
 export { expect, secretFill };

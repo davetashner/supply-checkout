@@ -29,3 +29,19 @@ export function isExpectedConsoleError(text, url) {
   if (/^Failed to load resource: the server responded with a status of 404\b/.test(text) && DOCUMENT.test(pathOf(url, PROD.api) ?? "")) return true;
   return false;
 }
+
+// The RUM web client gets guest credentials from Cognito Identity before it sends anything.
+// When that request fails (WebKit reports a request cut off by the team switch's reload as
+// failing "due to access control checks"), the client rejects without a handler.
+const RUM_CREDENTIALS = [
+  /^Error: CWR: Failed to retrieve Cognito identity\b/,
+  /^(Fetch API cannot load )?(https:\/)?\/cognito-identity\.[a-z0-9-]+\.amazonaws\.com\/ due to access control checks\.$/,
+];
+
+/**
+ * Whether an uncaught page error isn't a failure: only the RUM client failing to get its guest
+ * credentials (the fixtures abort its data plane anyway, so a test session sends no RUM events).
+ */
+export function isExpectedPageError(message) {
+  return RUM_CREDENTIALS.some((re) => re.test(String(message ?? "")));
+}
