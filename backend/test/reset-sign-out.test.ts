@@ -121,7 +121,8 @@ describe("the post confirmation trigger after a password reset", () => {
       const confirmed = event();
       expect(await handler(confirmed)).toBe(confirmed);
       const code = failure ? "UserNotFoundException" : "Unknown";
-      expect(logs).toContainEqual({ level: "error", message: "Not signed out after a password reset", data: { code } });
+      // With the sub, so an operator can find the user to sign out by hand
+      expect(logs).toContainEqual({ level: "error", message: "Not signed out after a password reset", data: { userId: SUB, code } });
       expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordReset", reason: "sign_out", via: "reset" } }]);
       expect(queued).toEqual([{ type: "passwordReset", userId: SUB, at: new Date(NOW).toISOString(), signedOut: false }]);
       expect(summary()).toMatchObject({ signOut: "failed", resetNotice: "queued" });
@@ -133,10 +134,18 @@ describe("the post confirmation trigger after a password reset", () => {
     for (const over of [{ userName: "" }, { userName: undefined }, { userPoolId: 7 }, { userPoolId: "" }]) {
       metrics = [];
       const { handler, signedOut } = setup();
+      logs = [];
       await handler(event(undefined, over));
       expect(signedOut).toEqual([]);
+      expect(logs).toContainEqual({ level: "error", message: "Not signed out after a password reset", data: { userId: SUB, code: "NoUser" } });
       expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordReset", reason: "sign_out", via: "reset" } }]);
     }
+  });
+
+  it("logs a failed sign-out without a user ID when the event has no valid sub", async () => {
+    const { handler } = setup({ signOutFails: new Error("x") });
+    await handler(event(undefined, { request: { userAttributes: { sub: "not-a-sub" } } }));
+    expect(logs).toContainEqual({ level: "error", message: "Not signed out after a password reset", data: { code: "Error" } });
   });
 
   it("needs a sub to hand the notice over, and counts one without", async () => {

@@ -76,8 +76,10 @@ export type EmailInput =
   /**
    * The password was reset with a code sent to the account's address
    * (Cognito's ConfirmForgotPassword, from the app or Managed Login,
-   * supply-checkout-6uw.32). `signedOut`: every session the account had was
-   * signed out (AdminUserGlobalSignOut), which the message says only if so.
+   * supply-checkout-6uw.32). `signedOut`: the account was signed out
+   * everywhere (AdminUserGlobalSignOut), which the message says only if so.
+   * That revokes refresh tokens only: an access token stays valid for up to
+   * an hour, and so may a Managed Login session, so the message says so.
    */
   | { readonly kind: "passwordReset"; readonly at: string; readonly signedOut: boolean }
   /**
@@ -425,7 +427,7 @@ function securityContent(input: SecurityNotice, appUrl: string): Content {
       preheader: `Your password was reset on ${when}.`,
       heading: "Your password was reset",
       paragraphs: [
-        `The password on your Supply Checkout account was reset on ${when}, with a code sent to this address.${input.signedOut ? " Every device that was signed in to the account was signed out." : ""}`,
+        `The password on your Supply Checkout account was reset on ${when}, with a code sent to this address.${input.signedOut ? " Devices that were signed in were signed out, though a session may keep working for up to an hour." : ""}`,
         "If this was you, you don't need to do anything.",
         RESET_NOT_YOU,
       ],

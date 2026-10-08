@@ -294,6 +294,8 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
     seen.sub = sub;
     const time = Date.parse(String(request.at));
     const at = (Number.isFinite(time) ? new Date(time) : now()).toISOString();
+    // The trigger's sign-out failed: logged here too, with the sub, so an operator can sign the user out by hand
+    if (request.signedOut !== true) obs.logger.warn("Reset without sign-out", { userId: sub, signedOut: false, via: "reset" });
     const account = await findUser(sub, seen);
     // Since deleted
     if (!account) return;

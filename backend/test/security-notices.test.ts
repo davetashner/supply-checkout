@@ -605,6 +605,7 @@ describe("password reset notices from the post confirmation trigger", () => {
     expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNotices, metadata: { kind: "passwordReset", via: "reset" } }]);
     expect(logs).toContainEqual(["Security notice sent", { userId: SUB, kind: "passwordReset", via: "reset" }]);
     expect(table.get(`USER#${SUB}`, "NOTICE#passwordReset")).toEqual({ PK: `USER#${SUB}`, SK: "NOTICE#passwordReset", noticeSentAt: new Date(NOW).toISOString() });
+    expect(logs.some((l) => l[0] === "Reset without sign-out")).toBe(false);
     // A retried invoke sends nothing more
     await handle(reset());
     expect(mails.sent).toHaveLength(1);
@@ -617,6 +618,8 @@ describe("password reset notices from the post confirmation trigger", () => {
     await handle(reset({ signedOut: false, at: "soon" }));
     now += NOTICE_DEDUPE_MS + 1000;
     await handle(reset({ signedOut: "yes", at: undefined }));
+    // A failed sign-out is logged with the sub, for an operator to finish by hand
+    expect(logs.filter((l) => l[0] === "Reset without sign-out")).toEqual(Array(2).fill(["Reset without sign-out", { userId: SUB, signedOut: false, via: "reset" }]));
     expect(mails.sent.map((m) => m.input)).toEqual([
       { kind: "passwordReset", at: new Date(NOW).toISOString(), signedOut: false },
       { kind: "passwordReset", at: new Date(now).toISOString(), signedOut: false },

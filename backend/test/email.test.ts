@@ -109,7 +109,7 @@ describe("templates", () => {
   it("says a reset password signed the account out only when it did, and what to do if it wasn't them", () => {
     const signedOut = renderEmail({ kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: true }, { appUrl: APP });
     expect(signedOut.subject).toBe("Your Supply Checkout password was reset");
-    expect(signedOut.text).toContain("was reset on September 30, 2026 at 14:05 UTC, with a code sent to this address. Every device that was signed in to the account was signed out.");
+    expect(signedOut.text).toContain("was reset on September 30, 2026 at 14:05 UTC, with a code sent to this address. Devices that were signed in were signed out, though a session may keep working for up to an hour.");
     expect(signedOut.text).toContain("Secure this email account first");
     const not = renderEmail({ kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: false }, { appUrl: APP });
     expect(not.text).not.toContain("signed out");

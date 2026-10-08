@@ -46,8 +46,11 @@
 // - signs the account out everywhere (AdminUserGlobalSignOut, on the app pool
 //   only: the role may call nothing else of Cognito's), before Cognito answers
 //   the reset, so the new password's first sign-in isn't signed out with
-//   them. Bounded (SIGN_OUT_TIMEOUT_MS); a failure is logged with the error's
-//   name only and counted (SecurityNoticeFailures, kind `passwordReset`,
+//   them. It revokes refresh tokens only: access tokens (and a Managed Login
+//   session) can keep working for up to an hour. Bounded (SIGN_OUT_TIMEOUT_MS):
+//   a sign-out the timeout aborts may still complete at Cognito, which shows up
+//   as a false alarm and a notice without the sign-out sentence. A failure is
+//   logged with the user's sub and the error's name only, and counted (SecurityNoticeFailures, kind `passwordReset`,
 //   reason `sign_out`), which alarms, and never fails the reset;
 // - then hands the security notices function (security-notices-handler.ts) the
 //   user's sub, the time and whether the sign-out worked, with an
@@ -106,15 +109,17 @@ export type WelcomeOutcome = "not-new" | "no-sub" | "queued" | "failed";
 export function createPostConfirmationHandler(deps: PostConfirmationDeps) {
   const now = deps.now ?? Date.now;
   const errorName = (error: unknown) => (error as { name?: string } | null)?.name ?? "Unknown";
-  const resetFailed = (message: string, code: string, reason: string) => {
-    deps.obs.logger.error(message, { code });
+  /** Logged with the sub when the event has a valid one, so an operator can find the user; never the username or email. */
+  const resetFailed = (message: string, code: string, reason: string, event?: PostConfirmationTriggerEvent) => {
+    const sub = event?.request?.userAttributes?.sub;
+    deps.obs.logger.error(message, { ...(typeof sub === "string" && SUB.test(sub) ? { userId: sub } : {}), code });
     deps.obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind: "passwordReset", reason, via: "reset" });
   };
 
   const signOut = async (signOutEverywhere: SignOutEverywhere, event: PostConfirmationTriggerEvent): Promise<SignOutOutcome> => {
     // Cognito's own event names the pool and the user; the role may sign out only the app pool's users
     if (typeof event.userPoolId !== "string" || !event.userPoolId || typeof event.userName !== "string" || !event.userName) {
-      resetFailed("Not signed out after a password reset", "NoUser", "sign_out");
+      resetFailed("Not signed out after a password reset", "NoUser", "sign_out", event);
       return "failed";
     }
     try {
@@ -122,7 +127,7 @@ export function createPostConfirmationHandler(deps: PostConfirmationDeps) {
       return "done";
     } catch (error) {
       // cognitoRequest's error names only the action, status and type; its name is all that's logged
-      resetFailed("Not signed out after a password reset", errorName(error), "sign_out");
+      resetFailed("Not signed out after a password reset", errorName(error), "sign_out", event);
       return "failed";
     }
   };
