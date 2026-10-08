@@ -74,7 +74,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   const queues = new Map();
   let removed = false;
   // all: list every project, not only the recent ones (loadOlder); since: the day the held list goes back to ("" for all)
-  const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false, fetched: [], held: null, retry: null, retries: 0, all: name !== "projects", since: "", kept: new Set(), older: false });
+  const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false, fetched: [], held: null, retry: null, retries: 0, all: name !== "projects", since: "", kept: new Set(), older: false, gone: new Map() });
   const docPath = (name, id) => `${base}/${name}/${encodeURIComponent(id)}`;
 
   // Runs fn once every write to the same document sent before it has answered, so a write names
@@ -125,7 +125,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     const c = coll(name), held = c.docs.get(id);
     if (doc && held && doc.version < held.version) return;
     if (c.touched) c.touched.add(id);
-    if (doc) { c.docs.set(id, doc); c.kept.add(id); }
+    if (doc) { c.docs.set(id, doc); c.kept.add(id); c.gone.delete(id); }
     else { c.docs.delete(id); c.kept.delete(id); }
     notify(name);
   }
@@ -172,6 +172,8 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
         c.loaded = true;
         c.touched = null;
         c.retries = 0;
+        // The list is the latest word on what's gone (a delete's own event may have been missed)
+        c.gone.clear();
         notify(name);
       } while (c.again);
     })()
@@ -245,7 +247,20 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
       relist(ev.collection);
       return;
     }
-    if (ev.op === "delete") { put(ev.collection, ev.id, null); return; }
+    if (ev.op === "delete") {
+      put(ev.collection, ev.id, null);
+      // Changes seen before it (by the stream's clock) are for the document it deleted
+      if (typeof ev.at === "number") c.gone.set(ev.id, { at: ev.at });
+      else c.gone.delete(ev.id);
+      return;
+    }
+    // A late event for a save from before the document was deleted: fetching it would only get
+    // a 404 (which the browser logs). Deleted here, until the delete's own event arrives (a
+    // document's events arrive in order): one for a version up to the one deleted. Deleted by
+    // an event: one the stream saw in an earlier second. Anything else is fetched, such as the
+    // document made again.
+    const gone = c.gone.get(ev.id);
+    if (gone && (gone.at === undefined ? ev.version <= gone.version : ev.at < gone.at)) return;
     const held = c.docs.get(ev.id);
     // Skip what's already here: an older version, or (for projects) the same one, such as
     // the echo of this user's own write. A product's is fetched again on the same version,
@@ -280,6 +295,9 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
       try {
         const path = docPath(name, id);
         put(name, id, await (body ? api(method, path, { ...body, expectedVersion }) : api(method, `${path}?expectedVersion=${expectedVersion}`)));
+        // Deleted here: late events for its earlier saves aren't fetched (onEvent), unless its
+        // delete event came first and says which those are
+        if (method === "DELETE" && !coll(name).gone.has(id)) coll(name).gone.set(id, { version: expectedVersion });
       } catch (e) {
         if (e.code !== "aborted") throw denied(e);
         await fetchDoc(name, id);

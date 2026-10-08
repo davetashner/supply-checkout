@@ -806,6 +806,81 @@ test.describe("live updates", { tag: ["@J4"] }, () => {
     await expect(card(page, "Echo Studio")).toBeVisible();
   });
 
+  // A late event for a save from before the delete would only fetch a 404 (which the browser
+  // logs), so it isn't fetched; the document made again under the same ID still is
+  test("late events for a document deleted here or by someone else aren't fetched", async ({ page }) => {
+    await trackAnswers(page);
+    const backend = await open(page);
+    const gets = () => backend.requests("GET", "/teams/t1/projects/s1").length;
+    const before = Date.now();
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Delete project" }).click();
+    await page.getByRole("button", { name: "Tap again to delete" }).click();
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
+    await expect.poll(() => unanswered(page)).toBe(0);
+    // Deleted here, its own event not in yet: an event for the version deleted, or an older one
+    await emit(page, { v: 1, eventId: "l1", collection: "projects", id: "s1", op: "put", version: 1, at: before });
+    await emit(page, { v: 1, eventId: "l0", collection: "projects", id: "s1", op: "put", version: 0 });
+    // The delete's own event, then a retried event from before it (the stream's clock)
+    const at = Date.now() + 2000;
+    await emit(page, { v: 1, eventId: "l2", collection: "projects", id: "s1", op: "delete", version: 1, at });
+    await emit(page, { v: 1, eventId: "l1-retry", collection: "projects", id: "s1", op: "put", version: 1, at: at - 1000 });
+    // Another document's event is still fetched, so the ones above have been handled by now
+    await emit(page, { v: 1, eventId: "o1", collection: "projects", id: "s9", op: "put", version: 1 });
+    await expect.poll(() => backend.requests("GET", "/teams/t1/projects/s9").length).toBe(1);
+    expect(gets()).toBe(0);
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
+
+    // Made again by someone else, after the delete: fetched and shown
+    const v = backend.write("t1", "projects", "s1", { ...usedState.seed["projects/s1"], client: "Echo Again" });
+    await emit(page, { v: 1, eventId: "l3", collection: "projects", id: "s1", op: "put", version: v, at: at + 1000 });
+    await expect(card(page, "Echo Again")).toBeVisible();
+    expect(gets()).toBe(1);
+
+    // Deleted by someone else with no time on the event: a later event is fetched as before
+    backend.docs.delete("t1/projects/s1");
+    await emit(page, { v: 1, eventId: "l4", collection: "projects", id: "s1", op: "delete", version: v });
+    await expect(card(page, "Echo Again")).toHaveCount(0);
+    backend.write("t1", "projects", "s1", { ...usedState.seed["projects/s1"], client: "Echo Third" });
+    await emit(page, { v: 1, eventId: "l5", collection: "projects", id: "s1", op: "put", version: 1 });
+    await expect(card(page, "Echo Third")).toBeVisible();
+  });
+
+  test("a delete here whose own event arrives before its answer goes by the event", async ({ page }) => {
+    await trackAnswers(page);
+    const backend = await open(page);
+    const answer = backend.delay("DELETE", "/teams/t1/projects/s1");
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Delete project" }).click();
+    await page.getByRole("button", { name: "Tap again to delete" }).click();
+    await expect.poll(() => backend.requests("DELETE", "/teams/t1/projects/s1").length).toBe(1);
+    const at = Date.now();
+    await emit(page, { v: 1, eventId: "d1", collection: "projects", id: "s1", op: "delete", version: 1, at });
+    answer();
+    await expect.poll(() => unanswered(page)).toBe(0);
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
+    // Made again by someone else after the delete, at version 1: fetched and shown
+    backend.write("t1", "projects", "s1", { ...usedState.seed["projects/s1"], client: "Echo Again" });
+    await emit(page, { v: 1, eventId: "d2", collection: "projects", id: "s1", op: "put", version: 1, at: at + 1000 });
+    await expect(card(page, "Echo Again")).toBeVisible();
+  });
+
+  test("a re-list forgets a delete here whose own event never came", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Delete project" }).click();
+    await page.getByRole("button", { name: "Tap again to delete" }).click();
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
+    await setVisible(page, true);
+    await expect.poll(() => lists(backend).projects).toBe(3);
+    // Until the re-list has been read, the delete is still remembered
+    await page.waitForTimeout(200);
+    // Made again by someone else: its version 1 is fetched
+    backend.write("t1", "projects", "s1", { ...usedState.seed["projects/s1"], client: "Echo Again" });
+    await emit(page, { v: 1, eventId: "m1", collection: "projects", id: "s1", op: "put", version: 1 });
+    await expect(card(page, "Echo Again")).toBeVisible();
+  });
+
   test("events for one document are fetched one at a time, and never go backwards", async ({ page }) => {
     const backend = await open(page);
     const release = backend.hold("GET", "/teams/t1/projects/s1");

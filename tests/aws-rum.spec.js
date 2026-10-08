@@ -149,3 +149,18 @@ test("the app still runs when the RUM client can't load", async ({ page }) => {
   expect(tried).toBe(true);
   expect(rum.cognito).toEqual([]);
 });
+
+// The client asks for its credentials once without waiting (src/aws/rum.js handledProvider):
+// when Cognito fails, that's no uncaught error (the page fixture fails on one), and the app runs
+test("the app still runs, with no uncaught error, when the RUM client can't get its credentials", async ({ page }) => {
+  const rum = new FakeRum({ cognitoFails: true });
+  await rum.install(page);
+  await openAws(page, withRum());
+  await connected(page);
+  await expect(page.locator(".teambar")).toContainText(TEAM.name);
+  // Tried, and tried again (the client retries once), and every try failed
+  await expect.poll(() => rum.cognito.length).toBeGreaterThanOrEqual(2);
+  await page.waitForTimeout(500);
+  expect(rum.cognito.every((c) => c.target === "AWSCognitoIdentityService.GetId")).toBe(true);
+  expect(rum.batches).toEqual([]);
+});

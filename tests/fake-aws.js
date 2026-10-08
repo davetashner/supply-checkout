@@ -24,7 +24,9 @@ const AWS = /^https:\/\/[^/]+\.amazonaws\.com\//;
 
 // Cognito's GetId and GetCredentialsForIdentity, and the data plane's PutRumEvents
 export class FakeRum {
-  constructor() {
+  // cognitoFails: Cognito Identity's requests fail, as WebKit fails one a reload cuts off
+  constructor({ cognitoFails = false } = {}) {
+    this.cognitoFails = cognitoFails;
     this.cognito = [];
     this.batches = [];
     this.other = [];
@@ -50,6 +52,7 @@ export class FakeRum {
   answerCognito(route, req) {
     const target = req.headers()["x-amz-target"], body = req.postDataJSON();
     this.cognito.push({ target, body });
+    if (this.cognitoFails) return route.abort();
     const reply = (json) => route.fulfill({ status: 200, headers: CORS, contentType: "application/x-amz-json-1.1", body: JSON.stringify(json) });
     if (target === "AWSCognitoIdentityService.GetId") return reply({ IdentityId: `${RUM_REGION}:identity-1` });
     return reply({
