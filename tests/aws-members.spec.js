@@ -342,3 +342,44 @@ test.describe("support activity", () => {
     await expect.poll(() => backend.requests("GET", SUPPORT).map((c) => c.query.cursor)).toEqual([undefined, undefined, "20"]);
   });
 });
+
+// A team that's read-only for billing (its trial or subscription ended, or a payment is
+// overdue, supply-checkout-qdx): owners can remove members, revoke invites and close it, but
+// not invite anyone or change roles, and the screen says so rather than failing generically
+test.describe("read-only for billing", { tag: ["@J3", "@J7"] }, () => {
+  const ENDED = { status: "trialing", plan: "trial", subscriptionEnded: true, readOnlyReason: "trial_ended" };
+  const pending = { id: "inv-1", email: "new@example.com", role: "contributor", createdAt: "2026-09-26T12:00:00.000Z", expiresAt: "2099-10-03T12:00:00.000Z", inviteStatus: "pending", failureReason: null, failedAt: null };
+  const refused = (message) => error(403, "permission_denied", { reason: "subscription_ended", message });
+
+  test("an owner can remove members and revoke invites, but not invite or change roles", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [{ ...TEAM, ...ENDED }], members: { t1: [ME, SAM] }, teamInvites: { t1: [pending] } });
+    await openMembers(page, backend);
+    await expect(dialog(page).locator("#endedMembers")).toHaveText("This team is read-only until an owner subscribes or pays: you can remove people, leave, revoke invites or close the team, but not invite anyone or change roles.");
+    await expect(dialog(page).getByRole("button", { name: "Send invite" })).toBeHidden();
+    await expect(row(page, "sam@example.com").getByRole("combobox")).toBeDisabled();
+    const invite = dialog(page).locator(".invite-row");
+    await expect(invite.getByRole("button", { name: "Resend" })).toHaveCount(0);
+    await expect(dialog(page).getByRole("button", { name: "Close team" })).toBeVisible();
+    expect(await modalViolations(page)).toEqual([]);
+    await invite.getByRole("button", { name: "Revoke" }).click();
+    await invite.getByRole("button", { name: "Tap again to revoke" }).click();
+    await expect(page.locator("#toast")).toHaveText("Revoked the invite to new@example.com");
+    await row(page, "sam@example.com").getByRole("button", { name: "Remove" }).click();
+    await row(page, "sam@example.com").getByRole("button", { name: "Tap again to remove" }).click();
+    await expect(page.locator("#toast")).toHaveText("Removed sam@example.com from the team");
+  });
+
+  test("an invite or role change refused because the team became read-only meanwhile says why", async ({ page }) => {
+    const backend = new FakeBackend({ members: { t1: [ME, SAM] }, teamInvites: { t1: [] } });
+    await openMembers(page, backend);
+    const why = "This team's free trial ended, so it's read-only. An owner can subscribe to make changes.";
+    backend.on("POST", "/teams/t1/invites", refused(why));
+    await dialog(page).getByLabel("Email").fill("new@example.com");
+    await dialog(page).getByRole("button", { name: "Send invite" }).click();
+    await expect(dialog(page).locator("#invitesFail")).toHaveText(why);
+    backend.on("PATCH", `${PATH}/u-sam`, refused(why));
+    await row(page, "sam@example.com").getByRole("combobox").selectOption("viewer");
+    await expect(fail(page)).toHaveText(why);
+    await expect(row(page, "sam@example.com").getByRole("combobox")).toHaveValue("contributor");
+  });
+});
