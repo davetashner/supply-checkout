@@ -26,6 +26,7 @@ import {
 import { DOWNGRADE_PENDING_ATTRIBUTE, FEDERATED_PROVIDERS, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { REGION, accountPartitions, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
+import { VERIFIED_EMAIL_ATTRIBUTES } from "../src/data/schema.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -86,6 +87,26 @@ function triggerEvent(options: {
     request: { userAttributes, groupConfiguration: { groupsToOverride: [], iamRolesToOverride: [] } },
     response: { claimsOverrideDetails: {} },
   } as unknown as PreTokenGenerationTriggerEvent;
+}
+
+/**
+ * The pre token generation trigger's ReadProvenEmailHash (infra identity-stack.ts), for the user `sub`:
+ * GetItem only, in their USER# partition, naming only VERIFIED_EMAIL_ATTRIBUTES, projected (dynamodb:Select
+ * SPECIFIC_ATTRIBUTES is required, supply-checkout-3sv.23). Every test that reads through it then shows
+ * provenEmailHash projects.
+ */
+function provenEmailPolicy(sub: string) {
+  return (command: string, input: Record<string, unknown>): boolean => {
+    const key = input.Key as { PK?: unknown } | undefined;
+    const names = Object.values((input.ExpressionAttributeNames ?? {}) as Record<string, string>);
+    return (
+      command === "GetCommand" &&
+      key?.PK === `USER#${sub}` &&
+      typeof input.ProjectionExpression === "string" &&
+      (input.Select === undefined || input.Select === "SPECIFIC_ATTRIBUTES") &&
+      names.every((n) => (VERIFIED_EMAIL_ATTRIBUTES as readonly string[]).includes(n))
+    );
+  };
 }
 
 function trigger(update?: UpdateUserAttributes, options: { correlate?: (sub: string) => string; now?: () => number; provenEmailHash?: (sub: string) => Promise<string | undefined> } = {}) {
@@ -805,7 +826,7 @@ describe("invites for Google and Apple users", () => {
         Object.assign((users.get(username) as { attributes: Record<string, string> }).attributes, update);
       },
       // The trigger's read: its own partition's VERIFIED_EMAIL item, as its role allows
-      { provenEmailHash: (sub) => provenEmailHash(table.scoped([`USER#${sub}`]), sub) },
+      { provenEmailHash: (sub) => provenEmailHash(table.guarded(provenEmailPolicy(sub)), sub) },
     );
     const refresh = async () => {
       const event = triggerEvent({ userName: linked, status: "CONFIRMED", claim: "true", identities: attributes.identities, triggerSource: "TokenGeneration_RefreshTokens" });
@@ -880,7 +901,7 @@ describe("invites for Google and Apple users", () => {
     const sentFor = () => table.get(`USER#${linked}`, "EMAIL_CODE_SENT");
     const refresh = async () => {
       const { handler: onToken, logs } = trigger(async (_pool, _user, update) => void Object.assign(attributes, update), {
-        provenEmailHash: (sub) => provenEmailHash(table.scoped([`USER#${sub}`]), sub, { now: () => now }),
+        provenEmailHash: (sub) => provenEmailHash(table.guarded(provenEmailPolicy(sub)), sub, { now: () => now }),
       });
       const event = triggerEvent({ userName: linked, status: "CONFIRMED", claim: "true", identities: attributes.identities, triggerSource: "TokenGeneration_RefreshTokens" });
       event.request.userAttributes = { ...attributes, "cognito:user_status": "CONFIRMED" };
@@ -974,5 +995,18 @@ describe("invites for Google and Apple users", () => {
     delete users.get(linked)?.attributes[DOWNGRADE_PENDING_ATTRIBUTE];
     expect(await call("POST", "/me/email/code", linked, linked)).toMatchObject({ status: 409, body: { error: { reason: "already_verified" } } });
     expect(codesSent).toHaveLength(1);
+  });
+});
+
+describe("the trigger's read of a proven address (supply-checkout-3sv.23)", () => {
+  it("has the stand-in policy refuse a read without a projection, with Select other than SPECIFIC_ATTRIBUTES, or of another user", () => {
+    const allow = provenEmailPolicy("u1");
+    const Key = { PK: "USER#u1", SK: "VERIFIED_EMAIL" };
+    const projected = { ProjectionExpression: "#hash, #at", ExpressionAttributeNames: { "#hash": "verifiedEmailHash", "#at": "verifiedAt" } };
+    expect(allow("GetCommand", { Key })).toBe(false);
+    expect(allow("GetCommand", { Key, ...projected, Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(allow("GetCommand", { Key: { PK: "USER#u2", SK: "VERIFIED_EMAIL" }, ...projected })).toBe(false);
+    expect(allow("GetCommand", { Key, ProjectionExpression: "#e", ExpressionAttributeNames: { "#e": "email" } })).toBe(false);
+    expect(allow("GetCommand", { Key, ...projected })).toBe(true);
   });
 });

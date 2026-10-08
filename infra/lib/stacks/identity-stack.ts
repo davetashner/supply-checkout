@@ -536,7 +536,10 @@ export class IdentityStack extends SupplyCheckoutStack {
           conditions: {
             "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
             "ForAllValues:StringEquals": { "dynamodb:Attributes": [...VERIFIED_EMAIL_ATTRIBUTES] },
-            StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+            // Projected: required, not IfExists, so a GetItem without a projection (which may carry
+            // neither Select nor Attributes) is denied (supply-checkout-3sv.23). provenEmailHash
+            // (data/verified-email.ts), its only caller, always projects
+            StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
           },
         }),
       ],
