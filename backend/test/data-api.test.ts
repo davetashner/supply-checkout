@@ -551,6 +551,83 @@ describe("documents (the app's db contract)", () => {
     expect(second.body.cursor).toBeUndefined();
   });
 
+  // The app's first load (supply-checkout-1dg.11): open projects and recent finished ones, not every project ever
+  it("lists only open projects and finished ones from since a day, with since", async () => {
+    const closed = (date: string | undefined, extra: Record<string, unknown> = {}) => ({ client: "Echo", ...(date === undefined ? {} : { date }), status: "closed", items: {}, ...extra });
+    const docs: Record<string, unknown> = {
+      openOld: project("2023-02-01"),
+      openNoStatus: { client: "Legacy", date: "2022-01-01", items: {} },
+      closedOld: closed("2025-12-31"),
+      closedOn: closed("2026-01-01"),
+      closedNew: closed("2026-09-01"),
+      closedLate: closed("2024-05-01", { closedAt: "2026-03-04T10:00:00.000Z" }),
+      closedEarly: closed("2024-05-01", { closedAt: "2025-03-04T10:00:00.000Z" }),
+      closedUndated: closed(undefined),
+      closedBlank: closed(""),
+    };
+    for (const [id, data] of Object.entries(docs)) expect((await call("PUT", `/teams/team-a/projects/${id}`, { body: { data } })).status).toBe(200);
+    // A legacy item the rename's backfill hasn't moved yet: filtered the same way
+    for (const [id, status] of [["sheetOld", "closed"], ["sheetOpen", "open"]]) {
+      table.put({ PK: "TEAM#team-a", SK: `SHEET#${id}`, GSI1PK: "TEAM#team-a#SHEETS", GSI1SK: `2020-01-01#${id}`, type: "sheet", id, version: 1, client: "Old", date: "2020-01-01", status, items: {} });
+    }
+    // Another team's projects never show, whatever they are
+    table.put({ PK: "TEAM#team-b", SK: "PROJECT#theirs", GSI1PK: "TEAM#team-b#PROJECTS", GSI1SK: "2026-09-01#theirs", type: "project", id: "theirs", version: 1, date: "2026-09-01", status: "open", items: {} });
+    const ids = async (query: Record<string, string>) => {
+      const res = await call("GET", "/teams/team-a/projects", { query });
+      expect(res.status).toBe(200);
+      return res.body.documents.map((d: { id: string }) => d.id).sort();
+    };
+    expect(await ids({ since: "2026-01-01" })).toEqual(["closedBlank", "closedLate", "closedNew", "closedOn", "closedUndated", "openNoStatus", "openOld", "sheetOpen"]);
+    // Without since: every project, as before
+    expect(await ids({})).toEqual([...Object.keys(docs), "sheetOld", "sheetOpen"].sort());
+    // The old name of the route, through the rename's window, filters the same
+    const legacyRoute = await call("GET", "/teams/team-a/sheets", { query: { since: "2026-01-01" } });
+    expect(legacyRoute.status).toBe(200);
+    expect(legacyRoute.body.documents.map((d: { id: string }) => d.id).sort()).toEqual(await ids({ since: "2026-01-01" }));
+    expect((await call("GET", "/teams/team-a/sheets", { query: { since: "2026-01-01", limit: "5" } })).body.error.code).toBe("bad_request");
+    // The filter runs in DynamoDB, on the team's partition only
+    const query = table.requests.filter((r) => r.command === "QueryCommand" && r.input.FilterExpression).at(-1)?.input as Record<string, unknown>;
+    expect(query.KeyConditionExpression).toBe("PK = :pk AND begins_with(SK, :prefix)");
+    expect(query.FilterExpression).toEqual(expect.any(String));
+    expect((query.ExpressionAttributeValues as Record<string, unknown>)[":pk"]).toBe("TEAM#team-a");
+  });
+
+  it("reads on through pages that match nothing, so a filtered page is rarely empty", async () => {
+    // 25 finished projects from long ago, then an open one, by ID; two items a read
+    for (let i = 10; i < 35; i++) await call("PUT", `/teams/team-a/projects/a${i}`, { body: { data: { ...project("2020-01-01"), status: "closed" } } });
+    await call("PUT", "/teams/team-a/projects/b-open", { body: { data: project("2020-01-01") } });
+    table.pageItems = 2;
+    const reads = () => table.requests.filter((r) => r.command === "QueryCommand" && r.input.FilterExpression).length;
+    const before = reads();
+    const first = await call("GET", "/teams/team-a/projects", { query: { since: "2026-01-01" } });
+    // Ten reads (FILTERED_READS_PER_PAGE) and still no match: an empty page, with a cursor to go on
+    expect(reads() - before).toBe(10);
+    expect(first.body.documents).toEqual([]);
+    expect(first.body.cursor).toEqual(expect.any(String));
+    const second = await call("GET", "/teams/team-a/projects", { query: { since: "2026-01-01", cursor: first.body.cursor } });
+    expect(second.body.documents.map((d: { id: string }) => d.id)).toEqual(["b-open"]);
+    // Its cursor goes on to the legacy items, which there are none of
+    let cursor = second.body.cursor;
+    while (cursor) {
+      const next = await call("GET", "/teams/team-a/projects", { query: { since: "2026-01-01", cursor } });
+      expect(next.body.documents).toEqual([]);
+      cursor = next.body.cursor;
+    }
+    // Another team's cursor isn't taken
+    const theirs = Buffer.from(JSON.stringify({ PK: "TEAM#team-b", SK: "PROJECT#x" })).toString("base64url");
+    expect((await call("GET", "/teams/team-a/projects", { query: { since: "2026-01-01", cursor: theirs } })).body.error.code).toBe("bad_request");
+  });
+
+  it("refuses since anywhere but a plain list of projects", async () => {
+    const code = async (path: string, query: Record<string, string>) => (await call("GET", path, { query })).body.error?.code;
+    expect(await code("/teams/team-a/products", { since: "2026-01-01" })).toBe("bad_request");
+    expect(await code("/teams/team-a/projects", { since: "2026-01-01", orderBy: "date" })).toBe("bad_request");
+    expect(await code("/teams/team-a/projects", { since: "2026-01-01", limit: "10" })).toBe("bad_request");
+    for (const since of ["2026-1-1", "", "yesterday", "2026-01-01T00:00:00Z"]) expect(await code("/teams/team-a/projects", { since })).toBe("bad_request");
+    // A member of another team can't list this one's, with since or without
+    expect((await call("GET", "/teams/team-a/projects", { user: OUTSIDER, query: { since: "2026-01-01" } })).status).toBe(403);
+  });
+
   it("round-trips product keys with any characters the app's keyOf makes, and more", async () => {
     for (const key of ["a.b~c:d@e+f", "50%off", "x..", "with space"]) {
       const path = `/teams/team-a/products/${encodeURIComponent(key)}`;

@@ -33,6 +33,8 @@ export class MemoryTable {
   readonly calls: Call[] = [];
   /** Each request as DynamoDB would get it, in the same order as `calls`. */
   readonly requests: { readonly command: string; readonly input: Record<string, unknown> }[] = [];
+  /** Items per page of a query without a Limit (undefined: one page), standing in for DynamoDB's 1 MB pages. */
+  pageItems?: number;
   /** Runs after each GetCommand, before its result returns: a concurrent writer. */
   afterGet?: (item: Item | undefined) => void;
   /** Keys the next BatchGetCommand leaves unprocessed (from its start), as DynamoDB may under load. */
@@ -239,6 +241,12 @@ export class MemoryTable {
 
   private check(input: Input, item: Item | undefined): void {
     if (!input.ConditionExpression) return;
+    const ok = MemoryTable.matches(input.ConditionExpression, input, item);
+    if (!ok) throw Object.assign(new Error("The conditional request failed"), { name: "ConditionalCheckFailedException" });
+  }
+
+  /** Whether `item` (undefined: none) meets a condition or filter expression, with the input's names and values. */
+  private static matches(expression: string, input: Input, item: Item | undefined): boolean {
     const values = input.ExpressionAttributeValues ?? {};
     const at = (path: string) => (item ? MemoryTable.resolve(item, MemoryTable.path(path, input.ExpressionAttributeNames)) : undefined);
     const clause = (c: string): boolean => {
@@ -250,17 +258,17 @@ export class MemoryTable {
       if (compare) {
         const [, name, op, value] = compare as unknown as [string, string, string, string];
         const [a, b] = [at(name), values[value]];
-        // DynamoDB: a comparison with a missing attribute is false
+        // DynamoDB: a comparison with a missing attribute is false, and so is an ordering of two types
         if (a === undefined) return false;
         if (op === "=") return JSON.stringify(a) === JSON.stringify(b);
         if (op === "<>") return JSON.stringify(a) !== JSON.stringify(b);
+        if (typeof a !== typeof b) return false;
         const [x, y] = [a as number, b as number];
         return op === "<" ? x < y : op === ">" ? x > y : op === "<=" ? x <= y : x >= y;
       }
       throw new Error(`MemoryTable can't evaluate ${c}`);
     };
-    const ok = MemoryTable.evaluate(input.ConditionExpression, clause);
-    if (!ok) throw Object.assign(new Error("The conditional request failed"), { name: "ConditionalCheckFailedException" });
+    return MemoryTable.evaluate(expression, clause);
   }
 
   /** Splits `text` at `separator` where it isn't inside parentheses. */
@@ -424,13 +432,17 @@ export class MemoryTable {
     }
     // Select COUNT returns how many match and no items (one page here: nothing in memory is near 1 MB)
     if (input.Select === "COUNT") return { Count: rows.length };
-    const limit = input.Limit as number | undefined;
+    // Without a Limit, a page ends at `pageItems` (set by a test): DynamoDB's 1 MB, in items
+    const limit = (input.Limit as number | undefined) ?? this.pageItems;
     const page = limit ? rows.slice(0, limit) : rows;
     const last = limit && rows.length > limit ? page[page.length - 1] : undefined;
     const lastKey = last && (index ? { PK: last.PK, SK: last.SK, [pkAttr]: last[pkAttr], [skAttr]: last[skAttr] } : { PK: last.PK, SK: last.SK });
     const projected = index ? PROJECTIONS[index] : undefined;
     const project = (i: Item): Item =>
       projected ? Object.fromEntries(Object.entries(i).filter(([k]) => ["PK", "SK", pkAttr, skAttr, ...projected].includes(k))) : i;
-    return { Items: page.map((i) => structuredClone(project(i))), LastEvaluatedKey: lastKey };
+    // A filter applies after the read: Limit counts the items read, and the last key is the last one read
+    const filter = input.FilterExpression as string | undefined;
+    const kept = filter ? page.filter((i) => MemoryTable.matches(filter, input, i)) : page;
+    return { Items: kept.map((i) => structuredClone(project(i))), Count: kept.length, ScannedCount: page.length, LastEvaluatedKey: lastKey };
   }
 }

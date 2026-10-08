@@ -183,14 +183,37 @@ function startKey(raw: unknown, teamId: string, prefix: string, index?: string):
 const keyOf = (item: Item, index: boolean): Item =>
   index ? { PK: item.PK, SK: item.SK, GSI1PK: item.GSI1PK, GSI1SK: item.GSI1SK } : { PK: item.PK, SK: item.SK };
 
+/** A filter on a project listing, applied after the read (DynamoDB's FilterExpression). */
+export interface ProjectFilter {
+  readonly expression: string;
+  readonly names: Record<string, string>;
+  readonly values: Record<string, unknown>;
+}
+
+/**
+ * How many reads (up to 1 MB each) a filtered page makes while nothing it has
+ * read matches, so a client isn't sent page after empty page. A page with any
+ * match stops at its read, so it's never bigger than an unfiltered one.
+ */
+export const FILTERED_READS_PER_PAGE = 10;
+
 /**
  * A page of the team's projects in ID order, strongly consistent, keys
  * included: every `PROJECT#` item, then every `SHEET#` one. The cursor is the
  * last item's key, so it says which of the two a next page continues.
+ * With a filter (and no limit: `limit` would count the items read, not the
+ * ones that match), only the items that match come back. A page reads on
+ * while none has matched, up to FILTERED_READS_PER_PAGE reads, so it may still
+ * be empty with a cursor.
  */
-export async function projectItemsPage(db: Db, teamId: string, options: { readonly limit?: number; readonly cursor?: string }): Promise<Page<Item>> {
+export async function projectItemsPage(
+  db: Db,
+  teamId: string,
+  options: { readonly limit?: number; readonly cursor?: string; readonly filter?: ProjectFilter },
+): Promise<Page<Item>> {
   const pk = teamPartition(teamId);
-  const { limit } = options;
+  const { limit, filter } = options;
+  if (filter && limit !== undefined) throw new InvalidInputError("A filtered list takes no limit");
   let start: Item | undefined;
   let phase = 0;
   if (options.cursor !== undefined) {
@@ -200,22 +223,28 @@ export async function projectItemsPage(db: Db, teamId: string, options: { readon
   }
   const items: Item[] = [];
   let cursor: string | undefined;
+  let reads = 0;
   for (; phase < 2; phase++) {
-    const left = limit === undefined ? undefined : limit - items.length;
-    const page: QueryCommandOutput = await connection(db).doc.send(
-      new QueryCommand({
-        TableName: db.tableName,
-        KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
-        ExpressionAttributeValues: { ":pk": pk, ":prefix": phase ? legacy.sheetPrefix : prefixes.project },
-        ConsistentRead: true,
-        Limit: left,
-        ExclusiveStartKey: start,
-      }),
-    );
-    items.push(...(page.Items ?? []));
-    start = undefined;
-    if (page.LastEvaluatedKey) {
-      cursor = encode(page.LastEvaluatedKey);
+    do {
+      const left = limit === undefined ? undefined : limit - items.length;
+      const page: QueryCommandOutput = await connection(db).doc.send(
+        new QueryCommand({
+          TableName: db.tableName,
+          KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+          ExpressionAttributeValues: { ...filter?.values, ":pk": pk, ":prefix": phase ? legacy.sheetPrefix : prefixes.project },
+          ...(filter ? { FilterExpression: filter.expression, ExpressionAttributeNames: filter.names } : {}),
+          ConsistentRead: true,
+          Limit: left,
+          ExclusiveStartKey: start,
+        }),
+      );
+      reads++;
+      items.push(...(page.Items ?? []));
+      start = page.LastEvaluatedKey;
+      // A filter that has matched nothing yet reads on, so a client isn't sent page after empty page
+    } while (start && filter && items.length === 0 && reads < FILTERED_READS_PER_PAGE);
+    if (start) {
+      cursor = encode(start);
       break;
     }
     // A full page that ended the `PROJECT#` items: the next page starts after its last one, and finds the `SHEET#` ones

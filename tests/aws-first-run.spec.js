@@ -106,6 +106,16 @@ test("the checklist offers the CSV import with its template, and fits a phone in
   await expect(list).toContainText("0 of 3 done");
 });
 
+test("a team with only older projects, not loaded at start, has its first project", { tag: ["@J1"] }, async ({ page }) => {
+  // The page lists recent projects only (supply-checkout-1dg.11); one more request says there are older ones
+  const backend = new FakeBackend({ docs: { "t1/projects/old": { client: "Oldfield Co", date: "2019-05-01", status: "closed", items: {} } } });
+  await openAws(page, backend, { storage: { local: { [KEY]: "{}" } } });
+  await connected(page);
+  await expect(checklist(page)).toContainText("1 of 3 done");
+  await expect(checklist(page).getByRole("heading", { name: "Done: Create your first project" })).toBeVisible();
+  expect(backend.requests("GET", "/teams/t1/projects").some((r) => r.query.limit === "1")).toBe(true);
+});
+
 test("dismissing it is remembered for the team", { tag: ["@J1"] }, async ({ page }) => {
   const backend = new FakeBackend();
   await openAws(page, backend, { storage: { local: { [KEY]: "{}" } } });
