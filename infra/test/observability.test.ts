@@ -127,6 +127,7 @@ const ALARM_IDS = [
   "email-verification-not-saved",
   "email-codes-failing",
   "near-sending-limit",
+  "password-reset-hints-capped",
   "invite-surge",
   "email-bouncing",
   "email-complaints",
@@ -180,6 +181,7 @@ const PRIMARY_ONLY_ALARM_IDS = [
   "welcome-emails-dropped",
   "imports-stuck",
   "near-sending-limit",
+  "password-reset-hints-capped",
   "seat-counts-drifting",
   "entitlements-drifting",
   "deletion-overdue",
@@ -967,6 +969,15 @@ describe("alarms added with the email code routes, the live update budget, team 
       Threshold: WELCOME_REFUSALS_ALARM_PER_HOUR - 1,
       ComparisonOperator: "GreaterThanThreshold",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+    });
+    // Password reset provider hints reached their daily cap (supply-checkout-6uw.26)
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-password-reset-hints-capped",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.PasswordResetHintsCapped }), Stat: "Sum", Period: 3600 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Password reset hints capped \\(J0"),
     });
     // A try that died (a timeout) after claiming counts nothing else
     t.hasResourceProperties("AWS::CloudWatch::Alarm", {

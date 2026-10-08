@@ -25,6 +25,7 @@ import { openDeleteAccount } from "./delete-account.js";
 import { openVerifyEmail } from "./verify-email.js";
 import { openTwoStep } from "./mfa.js";
 import { openChangePassword } from "./password.js";
+import { openReset } from "./reset-password.js";
 import { openInvoices } from "./invoices.js";
 import { showWhatsNew } from "./whats-new.js";
 
@@ -149,7 +150,14 @@ export async function start(config) {
     show(`<h2>Sign in</h2>
       <p>${invited ? "Sign in with the email address your invite was sent to, and then you can join the team." : "Sign in to see your team's projects and inventory."}</p>
       ${errorText(session.notice)}
-      <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn">Sign in</a></div>`);
+      <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn">Sign in</a></div>
+      <p><button type="button" class="btn ghost" id="forgotPassword">Forgot your password?</button></p>`, (el) => {
+      // Our own reset (reset-password.js), which helps when the address has no account
+      el.querySelector("#forgotPassword").addEventListener("click", () => {
+        session.notice = "";
+        openReset({ show, setError, apiUrl: config.apiUrl, signInUrl: () => session.signInUrl(), back: signIn });
+      });
+    });
     return until(() => {});
   }
 

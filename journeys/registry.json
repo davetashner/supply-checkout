@@ -395,6 +395,7 @@
     { "name": "Welcome emails refused", "journeys": ["J1"], "infra": "welcome-emails-refused" },
     { "name": "Welcome email function failing", "journeys": ["J1"], "infra": "welcome-email-function-failing" },
     { "name": "Welcome emails dropped", "journeys": ["J1"], "infra": "welcome-emails-dropped" },
+    { "name": "Password reset hints capped", "journeys": ["J0"], "infra": "password-reset-hints-capped" },
 
     { "name": "Imports stuck", "journeys": ["J2"], "infra": "imports-stuck" },
 

@@ -1,7 +1,7 @@
 import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, RECEIPT_ROUTES, routeKey, WEBHOOK_ROUTES } from "../../backend/src/api/routes.js";
+import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, PASSWORD_RESET_ROUTES, RECEIPT_ROUTES, routeKey, WEBHOOK_ROUTES } from "../../backend/src/api/routes.js";
 import {
   BILLING_READ_ATTRIBUTES,
   COMP_DISCOUNT_AUDIT_ATTRIBUTES,
@@ -46,12 +46,12 @@ type Resource = { Properties: Record<string, unknown>; [k: string]: unknown };
 const resources = (t: Template, type: string) => Object.entries(t.findResources(type)) as [string, Resource][];
 
 describe("HTTP API routes", () => {
-  it("serves every data, receipt, account, billing, auth and ops route in the primary region, the ops routes nowhere else, and no others", () => {
+  it("serves every data, receipt, account, billing, auth, password reset and ops route in the primary region, the ops routes nowhere else, and no others", () => {
     const { template } = api();
     const keys = resources(template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(keys).toEqual([...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map(routeKey).sort());
+    expect(keys).toEqual([...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...PASSWORD_RESET_ROUTES, ...OPS_ROUTES].map(routeKey).sort());
     const west = resources(api(WEST).template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(west).toEqual([...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
+    expect(west).toEqual([...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...PASSWORD_RESET_ROUTES].map(routeKey).sort());
     expect(keys).toContain("POST /teams/{teamId}/receipts/read");
     // The inventory commands and the stock history, next to the document routes
     expect(keys).toEqual(
@@ -93,9 +93,9 @@ describe("HTTP API routes", () => {
   it("routes data, account, billing, auth and ops requests to their functions' live aliases", () => {
     const { template } = api();
     const integrations = resources(template, "AWS::ApiGatewayV2::Integration").map(([, r]) => JSON.stringify(r.Properties.IntegrationUri));
-    expect(integrations).toHaveLength(7);
-    for (const fn of ["DataFunctionLive", "ReceiptsFunctionLive", "AccountFunctionLive", "BillingFunctionLive", "BillingWebhookFunctionLive", "AuthFunctionLive", "OpsFunctionLive"]) expect(integrations.some((i) => i.includes(fn)), fn).toBe(true);
-    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 7);
+    expect(integrations).toHaveLength(8);
+    for (const fn of ["DataFunctionLive", "ReceiptsFunctionLive", "AccountFunctionLive", "BillingFunctionLive", "BillingWebhookFunctionLive", "AuthFunctionLive", "PasswordResetFunctionLive", "OpsFunctionLive"]) expect(integrations.some((i) => i.includes(fn)), fn).toBe(true);
+    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 8);
   });
 
   it("allows only the app's and the operator page's origins (and localhost outside prod), with credentials for the cookie", () => {
@@ -165,6 +165,8 @@ describe("HTTP API routes", () => {
       "POST /teams/{teamId}/billing/portal": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "GET /teams/{teamId}/billing/invoices": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /billing/webhook": { ThrottlingRateLimit: 20, ThrottlingBurstLimit: 50 },
+      "POST /auth/password-reset": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "POST /auth/password-reset/confirm": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /ops/teams": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /ops/teams/{teamId}": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "PUT /ops/teams/{teamId}/comp": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
@@ -205,7 +207,7 @@ describe("functions", () => {
   it("run Node.js 24 on arm64, with the data function at 1 GB, and the ops and reopen functions in the primary region only", () => {
     const { template } = api();
     const fns = resources(template, "AWS::Lambda::Function").map(([id, r]) => [id, r.Properties] as const);
-    expect(fns).toHaveLength(9);
+    expect(fns).toHaveLength(10);
     expect(fns.some(([id]) => id.startsWith("OpsFunction"))).toBe(true);
     expect(fns.some(([id]) => id.startsWith("OpsReopenFunction"))).toBe(true);
     expect(resources(api(WEST).template, "AWS::Lambda::Function").some(([id]) => id.startsWith("Ops"))).toBe(false);
@@ -237,9 +239,53 @@ describe("functions", () => {
     expect(env("AuthFunction")).toMatchObject({ AUTH_URL: "https://auth.supplycheckout.com", CLIENT_ID: { Ref: expect.stringMatching(/webclientid/i) }, ALLOWED_ORIGINS: "https://app.supplycheckout.com" });
   });
 
-  it("don't give any function's own role DynamoDB access", () => {
+  it("let the password reset function count only its request limits and invoke only the password reset function, in the primary region (supply-checkout-6uw.26)", () => {
+    for (const region of [EAST, WEST]) {
+      const { template } = api(region);
+      const [[id, fn]] = resources(template, "AWS::Lambda::Function").filter(([fid]) => fid.startsWith("PasswordResetFunction")) as [[string, Resource]];
+      expect(fn.Properties.Environment).toMatchObject({
+        Variables: {
+          TABLE_NAME: "supply-checkout-prod-app",
+          CLIENT_ID: { Ref: expect.stringMatching(/webclientid/i) },
+          ISSUER_URL: { Ref: expect.stringMatching(/issuerurl/i) },
+          ALLOWED_ORIGINS: "https://app.supplycheckout.com",
+          PASSWORD_RESET_FUNCTION: "supply-checkout-prod-password-reset",
+          PASSWORD_RESET_REGION: EAST,
+        },
+      });
+      const role = (fn.Properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
+      const statements = resources(template, "AWS::IAM::Policy")
+        .filter(([, p]) => (p.Properties.Roles as { Ref: string }[]).some((r) => r.Ref === role))
+        .flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+      expect(statements, id).toEqual([
+        expect.objectContaining({ Action: ["logs:CreateLogStream", "logs:PutLogEvents"] }),
+        {
+          Sid: "QueuePasswordResets",
+          Effect: "Allow",
+          Action: "lambda:InvokeFunction",
+          Resource: { "Fn::Join": ["", [`arn:aws:lambda:${EAST}:`, { Ref: "AWS::AccountId" }, ":function:supply-checkout-prod-password-reset"]] },
+        },
+        {
+          Sid: "CountPasswordResets",
+          Effect: "Allow",
+          Action: "dynamodb:UpdateItem",
+          Resource: { "Fn::Join": ["", [`arn:aws:dynamodb:${region}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] },
+          Condition: {
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["RESETLIMIT#ADDRESS#*", "RESETLIMIT#IP#*"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "count", "expiresAt"] },
+            StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+          },
+        },
+        expect.objectContaining({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } }),
+        { Effect: "Allow", Action: ["xray:PutTelemetryRecords", "xray:PutTraceSegments"], Resource: "*" },
+      ]);
+    }
+  });
+
+  it("don't give any function's own role DynamoDB access, but the password reset function's its limits' counters", () => {
     const { template } = api();
     for (const [id, policy] of resources(template, "AWS::IAM::Policy")) {
+      if (id.startsWith("PasswordResetFunctionRole")) continue;
       expect(JSON.stringify(policy.Properties.PolicyDocument), id).not.toContain("dynamodb:");
     }
   });

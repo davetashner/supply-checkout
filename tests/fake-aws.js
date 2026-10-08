@@ -228,6 +228,14 @@ export class FakeBackend {
     }
     if (path === "/auth/refresh") return this.signedIn ? [200, this.issue()] : err(401, "unauthenticated");
     if (path === "/auth/sign-out") { this.signedIn = false; return [204]; }
+    // Resetting a password (supply-checkout-6uw.26): any address is taken alike; 123456 is the
+    // code, and a password the pool's policy refuses ("short") is refused
+    if (path === "/auth/password-reset") return /^[^\s@]+@[^\s@]+$/.test(call.body.email) ? [204] : err(400, "bad_request");
+    if (path === "/auth/password-reset/confirm") {
+      if (call.body.code !== "123456") return err(400, "bad_request", "code_mismatch");
+      if (call.body.password === "short") return err(400, "bad_request", "password_invalid");
+      return [204];
+    }
     const bearer = call.headers.authorization || "";
     if (!this.token || (bearer !== "Bearer " + this.token && !(this.shareTokens && this.issued.has(bearer.slice(7))))) return [401, { message: "Unauthorized" }];
 

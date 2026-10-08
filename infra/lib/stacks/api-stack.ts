@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { Aws, Duration, Stack, Validations } from "aws-cdk-lib";
+import { ArnFormat, Aws, Duration, Stack, Validations } from "aws-cdk-lib";
 import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import {
   ApiMapping,
@@ -35,12 +35,14 @@ import {
   IDEMPOTENCY_HEADER,
   OPS_ROUTES,
   OPS_SESSION_TAG,
+  PASSWORD_RESET_ROUTES,
   RECEIPT_ROUTES,
   routeKey,
   RECEIPT_SESSION_TAGS,
   TEAM_SESSION_TAG,
   WEBHOOK_ROUTES,
 } from "../../../backend/src/api/routes.js";
+import { emailResourceNames } from "../../../backend/src/email/names.js";
 import {
   COMMITTING_IMPORTS_PARTITION,
   BILLING_READ_ATTRIBUTES,
@@ -54,6 +56,8 @@ import {
   IMPORT_INDEX_ATTRIBUTES,
   INVITE_LIMIT_ATTRIBUTES,
   INVITE_LIMIT_PREFIX,
+  PASSWORD_RESET_LIMIT_ATTRIBUTES,
+  PASSWORD_RESET_REQUEST_PARTITIONS,
   MEMBER_ROW_ATTRIBUTES,
   MEMBER_SEAT_ATTRIBUTES,
   OPERATOR_AUDIT_PREFIX,
@@ -171,6 +175,8 @@ export class ApiStack extends SupplyCheckoutStack {
   readonly api: HttpApi;
   readonly dataFunction: NodejsFunction;
   readonly authFunction: NodejsFunction;
+  /** The password reset routes (supply-checkout-6uw.26): queues requests for the email stack's password reset function, and confirms resets with Cognito. */
+  readonly passwordResetFunction: NodejsFunction;
   readonly accountFunction: NodejsFunction;
   readonly dataAccessRole: Role;
   readonly accountAccessRole: Role;
@@ -228,6 +234,43 @@ export class ApiStack extends SupplyCheckoutStack {
       },
     });
 
+    // Resetting a forgotten password from the app (supply-checkout-6uw.26). Its role may count the
+    // requests' limits (UpdateItem in the RESETLIMIT#ADDRESS# and RESETLIMIT#IP# partitions only, below),
+    // invoke the password reset function by its fixed name in the primary region, and nothing else: no
+    // Cognito admin call (ConfirmForgotPassword is a public call with the web client's ID)
+    const passwordResetTarget = emailResourceNames(config.envName).passwordResetFunction;
+    this.passwordResetFunction = this.handler("PasswordResetFunction", "password-reset", {
+      memorySize: 256,
+      description: "Password resets from the app's sign-in screen: queues a request, and confirms a code",
+      environment: {
+        [API_ENV.tableName]: table,
+        [API_ENV.clientId]: ssm(identity.webClientId),
+        [API_ENV.issuerUrl]: ssm(identity.issuerUrl),
+        [API_ENV.allowedOrigins]: origins.join(","),
+        [API_ENV.passwordResetFunction]: passwordResetTarget,
+        [API_ENV.passwordResetRegion]: config.primaryRegion,
+      },
+    });
+    this.passwordResetFunction.addToRolePolicy(
+      new PolicyStatement({
+        sid: "QueuePasswordResets",
+        actions: ["lambda:InvokeFunction"],
+        resources: [Stack.of(this).formatArn({ service: "lambda", region: config.primaryRegion, resource: "function", resourceName: passwordResetTarget, arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
+      }),
+    );
+    this.passwordResetFunction.addToRolePolicy(
+      new PolicyStatement({
+        sid: "CountPasswordResets",
+        actions: ["dynamodb:UpdateItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...PASSWORD_RESET_REQUEST_PARTITIONS] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...PASSWORD_RESET_LIMIT_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+
     this.accountFunction = this.handler("AccountFunction", "account", {
       memorySize: 512,
       description: "The signed-in user's teams and invites; creates teams, manages members and invites, and accepts invites",
@@ -242,6 +285,8 @@ export class ApiStack extends SupplyCheckoutStack {
         resources: [ssm(`/supply-checkout/${config.envName}/data/table-key-arn`)],
         conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
       });
+    // The password reset function counts its limits in the table, encrypted with this key
+    this.passwordResetFunction.addToRolePolicy(tableKeyStatement());
 
     // The data-access role: DynamoDB on one team's partitions, chosen by the session tag
     const dataRole = this.dataFunction.role;
@@ -523,6 +568,18 @@ export class ApiStack extends SupplyCheckoutStack {
         reason: "Stripe calls the webhook without a Cognito token; the function verifies the Stripe-Signature header against the endpoint's signing secret before it does anything.",
       });
     }
+    // Password resets (supply-checkout-6uw.26): no authorizer, an Origin check in the function, and their own throttles
+    const resetIntegration = new HttpLambdaIntegration("PasswordResetIntegration", this.live(this.passwordResetFunction));
+    for (const route of PASSWORD_RESET_ROUTES) {
+      const added = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: resetIntegration });
+      stage.node.addDependency(...added);
+      routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
+      Validations.of(added[0] as Construct).acknowledge({
+        id: "AwsSolutions-APIG4",
+        reason: "Resetting a forgotten password happens before the person can sign in, so there's no token: the function checks the Origin header, and the address's and IP address's limits are applied before anything is sent.",
+      });
+    }
+
     (stage.node.defaultChild as CfnStage).routeSettings = routeSettings;
     const authIntegration = new HttpLambdaIntegration("AuthIntegration", this.live(this.authFunction));
     for (const route of AUTH_ROUTES) {

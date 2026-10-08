@@ -78,3 +78,4 @@ export { audienceChangeFromStream, documentChangeFromStream, type DocumentChange
 export { liveUpdateRecipients } from "./live-audience.js";
 export * from "./operator.js";
 export { OPERATOR_AUDIT_HEARTBEAT, OPERATOR_AUDIT_PREFIX } from "./schema.js";
+export * from "./password-resets.js";

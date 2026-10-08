@@ -10,6 +10,7 @@ import {
 import { Construct } from "constructs";
 import { billingResourceNames } from "../../../backend/src/billing/names.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
+import { PASSWORD_RESET_HINTS_PER_DAY } from "../../../backend/src/data/schema.js";
 import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import {
@@ -303,6 +304,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: `WelcomeEmailsRefused at least ${WELCOME_REFUSALS_ALARM_PER_HOUR} in an hour: SES refused a welcome email (sending paused, or a suppressed address). Counted apart from WelcomeEmailFailures; SES is out of the sandbox, so it no longer refuses unverified addresses and any refusal is worth a look (supply-checkout-6uw.25, supply-checkout-3sv.21).`,
       metric: business(BusinessMetric.WelcomeEmailsRefused, region, Duration.hours(1)),
       threshold: WELCOME_REFUSALS_ALARM_PER_HOUR - 1,
+      primaryOnly: true,
+    },
+    {
+      id: "password-reset-hints-capped",
+      title: "Password reset hints capped",
+      journeys: "J0",
+      severity: "P2",
+      rule: `Any PasswordResetHintsCapped in an hour: the "sign in with Google" (or Apple) hints for password resets asked for in the app reached their cap for the UTC day (PASSWORD_RESET_HINTS_PER_DAY, ${PASSWORD_RESET_HINTS_PER_DAY}), so no more go out until midnight UTC. They go only to Google or Apple accounts' verified addresses, so this is either real demand or someone pushing many of those addresses through the route (supply-checkout-6uw.26).`,
+      metric: business(BusinessMetric.PasswordResetHintsCapped, region, Duration.hours(1)),
+      threshold: 0,
       primaryOnly: true,
     },
     {

@@ -2498,6 +2498,79 @@ paths:
           headers:
             Set-Cookie: { $ref: "#/components/headers/ClearCookie" }
         "403": { $ref: "#/components/responses/OriginRefused" }
+  /auth/password-reset:
+    post:
+      tags: [auth]
+      operationId: requestPasswordReset
+      summary: Ask for a password reset code for an address.
+      description: |
+        For someone who can't sign in (supply-checkout-6uw.26). Answers 204
+        whatever the address, without looking it up, so the answer can't say
+        whether it has an account. Afterwards, out of the request's sight: if
+        the address has an account that can have a password, Cognito emails it
+        a reset code (enter it with `/auth/password-reset/confirm`); if only a
+        Google or Apple account has it, it gets a short "sign in with Google"
+        (or Apple) hint; any other address gets nothing, and the app says on
+        screen what to try. Limited per address and per IP address by the hour
+        and the day (requests, not accounts): past a limit, 429
+        `rate_limited` and nothing is sent. Hints are limited to one an
+        address a day, and a daily cap for everyone; past those the answer is
+        still 204.
+      security: []
+      parameters: [{ $ref: "#/components/parameters/origin" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        "204":
+          description: Taken. A code (or a provider hint) goes to the address if it has an account, unless a limit was reached.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/OriginRefused" }
+        "429":
+          description: "`quota_exceeded` / `rate_limited`: too many requests for this address or from this network; try later, or use Managed Login's reset."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /auth/password-reset/confirm:
+    post:
+      tags: [auth]
+      operationId: confirmPasswordReset
+      summary: Set a new password with the emailed reset code.
+      description: |
+        Cognito's ConfirmForgotPassword with the web client. Then sign in with
+        the new password. Every way the code can fail (wrong, expired, never
+        sent) is `code_mismatch`.
+      security: []
+      parameters: [{ $ref: "#/components/parameters/origin" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, code, password]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                code: { type: string, pattern: "^[0-9]{6}$" }
+                password: { type: string, minLength: 12, maxLength: 256, description: The pool's policy, with upper and lower case letters, a digit and a symbol. }
+      responses:
+        "204":
+          description: The password is set.
+        "400":
+          description: "`bad_request`: a malformed body, `code_mismatch` (the code is wrong or expired) or `password_invalid` (the policy, or a password used before)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403": { $ref: "#/components/responses/OriginRefused" }
+        "429":
+          description: "`quota_exceeded`: too many tries; wait a few minutes."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
 components:
   securitySchemes:
     cognito:

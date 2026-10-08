@@ -349,6 +349,50 @@ describe("email stack", () => {
       expect(JSON.stringify(all)).not.toMatch(/dynamodb:(GetItem|PutItem|DeleteItem|Scan|BatchWriteItem|BatchGetItem)|cognito-idp:Admin(?!GetUser)|"cognito-idp:\*"|lambda:/);
     });
   });
+
+  // supply-checkout-6uw.26
+  describe("password reset", () => {
+    const resetFn = (t: Template) => resources(t, "AWS::Lambda::Function").find(([, r]) => r.Properties.FunctionName === "supply-checkout-prod-password-reset") as [string, Resource];
+
+    it("runs the function by its fixed name, with the app pool, its web client and the support address, never retrying and with no dead-letter queue", () => {
+      const t = email();
+      const [fnId, fn] = resetFn(t);
+      expect(fn.Properties).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 30 });
+      const vars = (fn.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+      expect(vars).toMatchObject({ TABLE_NAME: "supply-checkout-prod-app", SUPPORT_ADDRESS: "support@supplycheckout.com", [EMAIL_ENV.fromAddress]: "noreply@supplycheckout.com" });
+      expect(JSON.stringify(vars.USER_POOL_ID)).toMatch(/SsmParameterValuesupplycheckoutprodidentityuserpoolid/);
+      expect(JSON.stringify(vars.CLIENT_ID)).toMatch(/SsmParameterValuesupplycheckoutprodidentitywebclientid/);
+      // A request holds an address: it's never kept in a queue
+      t.hasResourceProperties("AWS::Lambda::EventInvokeConfig", { FunctionName: { Ref: fnId }, MaximumRetryAttempts: 0, MaximumEventAgeInSeconds: 900 });
+      expect(fn.Properties.DeadLetterConfig).toBeUndefined();
+      expect(resources(t, "AWS::Lambda::Permission").filter(([, p]) => JSON.stringify(p.Properties.FunctionName).includes(fnId))).toEqual([]);
+    });
+
+    it("lets the function look addresses up in the app pool, send only the app's email, and count only the provider hints' limits", () => {
+      const all = statements(email(), "PasswordResetRole");
+      const byAction = (prefix: string) => all.filter((s) => JSON.stringify(s.Action).includes(prefix));
+      expect(byAction("cognito-idp:")).toEqual([
+        expect.objectContaining({ Sid: "FindAppUsers", Action: ["cognito-idp:AdminGetUser", "cognito-idp:ListUsers"], Resource: expect.objectContaining({ Ref: expect.stringMatching(/userpoolarn/i) }) }),
+      ]);
+      expect(byAction("dynamodb:")).toEqual([
+        {
+          Sid: "CountPasswordResetHints",
+          Effect: "Allow",
+          Action: "dynamodb:UpdateItem",
+          Resource: { "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] },
+          Condition: {
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["RESETLIMIT#HINT*"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "count", "expiresAt"] },
+            StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+          },
+        },
+      ]);
+      expect(byAction("ses:")).toEqual([expect.objectContaining({ Sid: "SendAppEmail", Action: "ses:SendEmail", Condition: { StringEquals: { "ses:FromAddress": "noreply@supplycheckout.com" } } })]);
+      for (const s of all) if (!JSON.stringify(s.Action).includes("xray:")) expect(JSON.stringify(s.Resource)).not.toBe('"*"');
+      expect(all.find((s) => s.Sid === "TableKeyThroughDynamoDb")?.Condition).toMatchObject({ StringEquals: { "kms:ViaService": expect.anything() } });
+      expect(JSON.stringify(all)).not.toMatch(/dynamodb:(GetItem|PutItem|DeleteItem|Query|Scan|BatchWriteItem|BatchGetItem|ConditionCheckItem)|cognito-idp:Admin(?!GetUser)|"cognito-idp:\*"|lambda:/);
+    });
+  });
 });
 
 describe("grantSendEmail", () => {
@@ -400,7 +444,7 @@ describe("grantSendEmail", () => {
     });
   });
 
-  it("is given only to the account function, which sends invites, the billing worker, which emails owners about billing, the security notices and welcome email functions, and the lapsed-team job", () => {
+  it("is given only to the account function, which sends invites, the billing worker, which emails owners about billing, the security notices, welcome email and password reset functions, and the lapsed-team job", () => {
     const { app, stacks } = build();
     void app;
     for (const stack of stacks.all) {
@@ -412,7 +456,7 @@ describe("grantSendEmail", () => {
       const expected = stack.stackName.endsWith("-api")
         ? [expect.stringMatching(/^AccountFunctionRole/), expect.stringMatching(/^BillingWorkerFunctionRole/)]
         : stack.stackName.endsWith("-email")
-          ? [expect.stringMatching(/^SecurityNoticesRole/), expect.stringMatching(/^WelcomeRole/)]
+          ? [expect.stringMatching(/^SecurityNoticesRole/), expect.stringMatching(/^WelcomeRole/), expect.stringMatching(/^PasswordResetRole/)]
           : stack.stackName === `supply-checkout-prod-${EAST}-observability`
             ? [expect.stringMatching(/^OpsChecksTeamLapseRole/)]
             : [];

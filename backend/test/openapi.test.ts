@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, RECEIPT_ROUTES, REFRESH_COOKIE, WEBHOOK_ROUTES } from "../src/api/routes.js";
+import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, PASSWORD_RESET_ROUTES, RECEIPT_ROUTES, REFRESH_COOKIE, WEBHOOK_ROUTES } from "../src/api/routes.js";
 import { BILLING_EVENTS } from "../src/billing/names.js";
 import { BILLING_INTERVALS, CATALOG } from "../src/billing/catalog.js";
 import { RESERVED_FIELDS } from "../src/data/index.js";
@@ -28,7 +28,7 @@ describe("OpenAPI description", () => {
   });
 
   it("describes every route, and nothing else", () => {
-    const served = [...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map((r) => `${r.method} ${r.path}`).sort();
+    const served = [...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...PASSWORD_RESET_ROUTES, ...OPS_ROUTES].map((r) => `${r.method} ${r.path}`).sort();
     expect(described).toEqual(served);
   });
 
@@ -36,6 +36,8 @@ describe("OpenAPI description", () => {
     expect(spec.security).toEqual([{ cognito: [] }]);
     for (const r of [...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES]) expect(spec.paths[r.path]?.[r.method.toLowerCase()]?.security, r.path).toBeUndefined();
     for (const r of AUTH_ROUTES) expect(spec.paths[r.path]?.post?.security, r.path).not.toContainEqual({ cognito: [] });
+    // Password resets: no token or cookie at all (an Origin check)
+    for (const r of PASSWORD_RESET_ROUTES) expect(spec.paths[r.path]?.post?.security, r.path).toEqual([]);
     // Stripe's webhook: the Stripe signature only
     for (const r of WEBHOOK_ROUTES) expect(spec.paths[r.path]?.post?.security, r.path).toEqual([]);
     expect(spec.components.securitySchemes.refreshCookie?.name).toBe(REFRESH_COOKIE);

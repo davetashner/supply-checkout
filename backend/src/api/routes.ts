@@ -161,6 +161,28 @@ export const AUTH_ROUTES: readonly AuthRoute[] = [
   { method: "POST", path: "/auth/sign-out", action: "signOut" },
 ];
 
+export interface PasswordResetRoute {
+  readonly method: "POST";
+  readonly path: string;
+  readonly action: "requestReset" | "confirmReset";
+  /** API Gateway's throttle for this route across all callers. */
+  readonly throttle: { readonly rate: number; readonly burst: number };
+}
+
+/**
+ * Resetting a forgotten password from the app's sign-in screen
+ * (supply-checkout-6uw.26). No JWT authorizer (the person can't sign in) and
+ * no cookie: an Origin check, API Gateway's throttles, and in the password
+ * reset function the per-address and per-IP limits. Asking for a reset
+ * answers the same whether or not the address has an account; the code goes
+ * that can have a password, a "sign in with Google" (or Apple) hint to an
+ * address only a Google or Apple account has, and nothing to any other.
+ */
+export const PASSWORD_RESET_ROUTES: readonly PasswordResetRoute[] = [
+  { method: "POST", path: "/auth/password-reset", action: "requestReset", throttle: { rate: 2, burst: 5 } },
+  { method: "POST", path: "/auth/password-reset/confirm", action: "confirmReset", throttle: { rate: 5, burst: 10 } },
+];
+
 export interface AccountRoute {
   readonly method: "GET" | "POST" | "PATCH" | "DELETE";
   readonly path: string;
@@ -409,6 +431,10 @@ export const API_ENV = {
   receiptModelId: "RECEIPT_MODEL_ID",
   /** Receipts every trial team in the account together may read each UTC day (RECEIPT_TRIAL_READS_PER_DAY in data/usage.ts; `-c receiptTrialReadsPerDay`). */
   receiptTrialReadsPerDay: "RECEIPT_TRIAL_READS_PER_DAY",
+  /** The password reset function (emailResourceNames().passwordResetFunction) the password reset routes hand requests to (supply-checkout-6uw.26). */
+  passwordResetFunction: "PASSWORD_RESET_FUNCTION",
+  /** Its region: the primary region, where the user pool and SES are. */
+  passwordResetRegion: "PASSWORD_RESET_REGION",
 } as const;
 
 /** The refresh-token cookie, scoped to the auth endpoints. */

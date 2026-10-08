@@ -1686,6 +1686,330 @@
           }
         ]
       }
+    },
+    "PasswordResetLogsC40FB08B": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "email"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "PasswordResetRole41BA8D2C": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the password reset function",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "email"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "PasswordResetRoleDefaultPolicyD22B3125": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "PasswordResetLogsC40FB08B",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "ses:SendEmail",
+              "Condition": {
+                "StringEquals": {
+                  "ses:FromAddress": "noreply@supplycheckout.com"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":configuration-set/supply-checkout-prod-transactional"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":identity/supplycheckout.com"
+                    ]
+                  ]
+                }
+              ],
+              "Sid": "SendAppEmail"
+            },
+            {
+              "Action": [
+                "cognito-idp:AdminGetUser",
+                "cognito-idp:ListUsers"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutprodidentityuserpoolarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "FindAppUsers"
+            },
+            {
+              "Action": "dynamodb:UpdateItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "RESETLIMIT#HINT*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "count",
+                    "expiresAt"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "CountPasswordResetHints"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey",
+                "kms:Encrypt",
+                "kms:GenerateDataKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "dynamodb.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "TableKeyThroughDynamoDb"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "PasswordResetRoleDefaultPolicyD22B3125",
+        "Roles": [
+          {
+            "Ref": "PasswordResetRole41BA8D2C"
+          }
+        ]
+      }
+    },
+    "PasswordResetFunctionA939B071": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Sends a password reset code, or a sign-in-with-Google hint (supply-checkout-6uw.26)",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "TABLE_NAME": "supply-checkout-prod-app",
+            "USER_POOL_ID": {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentityuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "CLIENT_ID": {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentitywebclientidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "SUPPORT_ADDRESS": "support@supplycheckout.com",
+            "EMAIL_FROM_ADDRESS": "noreply@supplycheckout.com",
+            "EMAIL_CONFIGURATION_SET": "supply-checkout-prod-transactional",
+            "EMAIL_REGION": "us-east-1",
+            "EMAIL_APP_URL": "https://app.supplycheckout.com",
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "FunctionName": "supply-checkout-prod-password-reset",
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "PasswordResetLogsC40FB08B"
+          }
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "PasswordResetRole41BA8D2C",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "email"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 30,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "PasswordResetRoleDefaultPolicyD22B3125",
+        "PasswordResetRole41BA8D2C"
+      ]
+    },
+    "PasswordResetFunctionEventInvokeConfigA457B63D": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "PasswordResetFunctionA939B071"
+        },
+        "MaximumEventAgeInSeconds": 900,
+        "MaximumRetryAttempts": 0,
+        "Qualifier": "$LATEST"
+      }
+    },
+    "PasswordResetFunctionXRayWrite7370BC4C": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "PasswordResetFunctionXRayWrite7370BC4C",
+        "Roles": [
+          {
+            "Ref": "PasswordResetRole41BA8D2C"
+          }
+        ]
+      }
     }
   },
   "Parameters": {
@@ -1700,6 +2024,10 @@
     "SsmParameterValuesupplycheckoutprodidentityuserpoolarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",
       "Default": "/supply-checkout/prod/identity/user-pool-arn"
+    },
+    "SsmParameterValuesupplycheckoutprodidentitywebclientidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/identity/web-client-id"
     },
     "BootstrapVersion": {
       "Type": "AWS::SSM::Parameter::Value<String>",

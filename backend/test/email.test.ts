@@ -33,11 +33,13 @@ const samples: EmailInput[] = [
   { kind: "twoStepOn", at: "2026-09-30T14:05:09.000Z" },
   { kind: "emailChanged", at: "2026-09-30T14:05:09.000Z" },
   { kind: "welcome", givenName: "Sam", invited: false, supportAddress: "support@supplycheckout.com" },
+  { kind: "passwordResetProvider", signInWith: "Google", supportAddress: "support@supplycheckout.com" },
   // Variants of a kind: last, since tests pick the ones above by position
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "subscription_ended", deletesAt: "2026-11-02T12:00:00.000Z" },
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "trial_ended", deletesAt: "2026-11-02T12:00:00.000Z" },
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "payment_overdue" },
   { kind: "deletionWarning", teamName: "Echo Cleaning", deletesAt: "2026-11-02T12:00:00.000Z" },
+  { kind: "passwordResetProvider", signInWith: "SignInWithApple", supportAddress: "support@supplycheckout.com" },
   { kind: "welcome", invited: true, supportAddress: "support@supplycheckout.com" },
 ];
 
@@ -94,7 +96,7 @@ describe("templates", () => {
       });
 
       it("has a readable text part", () => {
-        expect(email.text).toContain("teamName" in input ? "Echo Cleaning" : input.kind === "welcome" ? "Your Supply Checkout account is ready." : "September 30, 2026 at 14:05 UTC");
+        expect(email.text).toContain("teamName" in input ? "Echo Cleaning" : input.kind === "welcome" ? "Your Supply Checkout account is ready." : input.kind === "passwordResetProvider" ? "asked to reset the Supply Checkout password for this email address" : "September 30, 2026 at 14:05 UTC");
         expect(email.text).not.toMatch(/<[a-z/]/i);
         expect(email.text.split("\n").every((line) => line.length < 400)).toBe(true);
       });
