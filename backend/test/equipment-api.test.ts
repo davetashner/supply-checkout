@@ -453,6 +453,42 @@ describe("project documents and the new fields", () => {
     expect(stockOf("ladder")).toBe(ladder.stock - 1);
   });
 
+  it("add a line only of its item's kind, so a supply line can't return phantom equipment stock (supply-checkout-1dg.19)", async () => {
+    const supplyLine = { status: 400, body: { error: { code: "bad_request", message: "This item is company equipment, so a new line for it is too: it goes on the project through checkout (POST .../projects/{projectId}/checkout)" } } };
+    const equipmentLine = { status: 400, body: { error: { code: "bad_request", message: "This item is a supply, so a new line for it has no kind" } } };
+    const v = projectVersion();
+    // The #690 review: a supply line under the ladder's key, with 2 out, that a return would add to stock
+    expect(await patchProject({ items: { ladder: { name: "Step ladder", out: 2, returned: 0 } } })).toMatchObject(supplyLine);
+    expect(await patchProject({ items: { ladder: { name: "Step ladder", out: 0 } } })).toMatchObject(supplyLine);
+    const whole = { client: "Echo", date: "2026-10-01", status: "open", items: { ladder: { name: "Step ladder", out: 2, returned: 0 } } };
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: whole, expectedVersion: v })).toMatchObject(supplyLine);
+    expect(await call("PUT", "/teams/team-a/projects/s9", { data: whole, expectedVersion: 0 })).toMatchObject(supplyLine);
+    expect(await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 2 })).toMatchObject({ status: 400 });
+    expect(stockOf("ladder")).toBe(ladder.stock);
+    // An equipment line under a supply, even with nothing out
+    expect(await patchProject({ items: { "0123": { name: "Nitrile gloves", kind: "equipment", out: 0 } } })).toMatchObject(equipmentLine);
+    // One bad line refuses the whole write, among many lines read a few at a time
+    const many = Object.fromEntries(Array.from({ length: 30 }, (_, n) => [`one-off-${n}`, { name: `One-off ${n}`, price: 1, out: 1, returned: 0 }]));
+    expect(await patchProject({ items: { ...many, ladder: { name: "Step ladder", out: 1 } } })).toMatchObject(supplyLine);
+    expect(projectVersion()).toBe(v);
+    // A supply product with no kind, a key that's no item (a one-off, or deleted), and a key no item could have are fine
+    expect(await patchProject({ items: { ...many, "0123": { name: "Nitrile gloves", price: 12.5, out: 3, returned: 0 }, drill: { name: "Drill", kind: "equipment", out: 0 }, ["k".repeat(300)]: { name: "Long", price: 1, out: 1 } } })).toMatchObject({ status: 200 });
+    // An equipment line taken by checkout, then edited by a write, is not new
+    expect(await call("POST", CHECKOUT, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: { name: "Ladder (tall)" } } })).toMatchObject({ status: 200 });
+  });
+
+  it("keep a line as it was taken when its item's kind changes, and return it by the line (ADR 0017, decision 8)", async () => {
+    project({ items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 3, returned: 0 } } });
+    product("0123", { ...gloves, kind: "equipment" }, 2);
+    // The supply line is already there: a write may still change its counts, and a return puts them back
+    expect(await patchProject({ items: { "0123": { out: 4 } } })).toMatchObject({ status: 200 });
+    expect(await call("POST", RETURN, { operationId: op(), productKey: "0123", quantity: 2 })).toMatchObject({ status: 200 });
+    expect(items()["0123"]).toMatchObject({ out: 4, returned: 2 });
+    expect(items()["0123"]?.kind).toBeUndefined();
+    expect(stockOf("0123")).toBe(gloves.stock + 2);
+  });
+
   it("don't hold a line the write doesn't change to returned + lost <= out", async () => {
     project({ items: { odd: { name: "Odd", price: 1, out: 1, returned: 3 } } });
     expect(await patchProject({ client: "Echo 2" })).toMatchObject({ status: 200 });
