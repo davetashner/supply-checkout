@@ -305,8 +305,9 @@ describe("Finished Return with equipment out", () => {
     // Closed before the rule (an imported artifact project, say)
     project({ status: "closed", items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 1 } } });
     expect(await patchProject({ client: "Echo Ltd" })).toMatchObject({ status: 200 });
-    expect(await patchProject({ items: { ladder: { returned: 0 } } })).toMatchObject({ status: 409, body: { error: { reason: "equipment_out" } } });
-    expect(await patchProject({ items: { ladder: { returned: 2 } } })).toMatchObject({ status: 200 });
+    // Its counts stay the commands' (below); a line the write adds can't put more out
+    expect(await patchProject({ items: { drill: { name: "Drill", kind: "equipment", out: 1, returned: 0 } } })).toMatchObject({ status: 409, body: { error: { reason: "equipment_out" } } });
+    expect(await patchProject({ items: { drill: { name: "Drill", kind: "equipment", out: 1, returned: 1 } } })).toMatchObject({ status: 200 });
   });
 });
 
@@ -324,19 +325,19 @@ describe("project documents and the new fields", () => {
   });
 
   it("allow lost and a charge on equipment lines only, the charge on a client's project only, and check their types", async () => {
-    await patchProject({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0 } } });
-    expect(await patchProject({ items: { ladder: { lost: 1, lostCharge: 25.5 } } })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 1, lostCharge: 25.5 } } })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: { lostCharge: 20 } } })).toMatchObject({ status: 200 });
     const refused = [
-      [{ ladder: { lost: 1.5 } }, "lost is a whole number, on company equipment lines only"],
-      [{ ladder: { lost: -1 } }, "lost is a whole number, on company equipment lines only"],
+      [{ drill: { name: "Drill", kind: "equipment", out: 2, returned: 0, lost: 1.5 } }, "lost is a whole number, on company equipment lines only"],
+      [{ drill: { name: "Drill", kind: "equipment", out: 2, returned: 0, lost: -1 } }, "lost is a whole number, on company equipment lines only"],
       [{ gloves: { name: "Gloves", price: 1, out: 1, returned: 0, lost: 1 } }, "lost is a whole number, on company equipment lines only"],
       [{ gloves: { name: "Gloves", price: 1, out: 1, returned: 0, lostCharge: 1 } }, "lostCharge is only on company equipment lines of a client project"],
       [{ ladder: { lostCharge: 1.234 } }, "lostCharge must be an amount from 0 to 1000000 with at most two decimals"],
-      [{ ladder: { returned: 2 } }, "A line's returned and lost can't add up to more than its out"],
+      [{ drill: { name: "Drill", kind: "equipment", out: 2, returned: 2, lost: 1 } }, "A line's returned and lost can't add up to more than its out"],
     ] as const;
     for (const [lines, message] of refused) expect(await patchProject({ items: lines }), message).toMatchObject({ status: 400, body: { error: { message } } });
     project({ kind: "adhoc", items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } }, "adhoc-1");
-    expect(await call("PATCH", "/teams/team-a/projects/adhoc-1", { data: { items: { ladder: { lost: 1 } } }, expectedVersion: 1 })).toMatchObject({ status: 200 });
+    expect(await call("PATCH", "/teams/team-a/projects/adhoc-1", { data: { items: { drill: { name: "Drill", kind: "equipment", out: 1, returned: 0, lost: 1 } } }, expectedVersion: 1 })).toMatchObject({ status: 200 });
     expect(await call("PATCH", "/teams/team-a/projects/adhoc-1", { data: { items: { ladder: { lostCharge: 5 } } }, expectedVersion: 2 })).toMatchObject({ status: 400 });
   });
 
@@ -350,7 +351,7 @@ describe("project documents and the new fields", () => {
     expect(await patchProject({ items: { ladder: { takenBy: OWNER } } })).toMatchObject({ status: 400, body: { error: { message: "takenBy is set by the server" } } });
     expect(await patchProject({ items: { ladder: { takenAt: "2026-10-02T08:00:00.000Z" } } })).toMatchObject({ status: 400, body: { error: { message: "takenAt is set by the server" } } });
     // Repeating them (a PATCH of other fields, or a PUT of the project as read) is fine; dropping them isn't
-    expect(await patchProject({ items: { ladder: { out: 2, takenBy: CONTRIBUTOR } } })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: { name: "Ladder", takenBy: CONTRIBUTOR } } })).toMatchObject({ status: 200 });
     const whole = { client: "Echo", date: "2026-10-01", status: "open", items: items() };
     expect(await call("PUT", "/teams/team-a/projects/s1", { data: whole, expectedVersion: projectVersion() })).toMatchObject({ status: 200 });
     const { takenBy, ...dropped } = items().ladder as Line;
@@ -393,9 +394,35 @@ describe("project documents and the new fields", () => {
     expect(counts.ConditionalWriteConflicts).toBeUndefined();
     // A supply line goes whatever is out; the equipment line once every piece is back or lost
     expect(await patchProject({ items: { "0123": null } })).toMatchObject({ status: 200 });
-    expect(await patchProject({ items: { ladder: { returned: 2 } } })).toMatchObject({ status: 200 });
+    expect(await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 200 });
     expect(await patchProject({ items: { ladder: null } })).toMatchObject({ status: 200 });
     expect(items()).toEqual({});
+  });
+
+  it("leave an equipment line's counts to the commands: a write may only repeat them, so two writes can't remove or close past what's out", async () => {
+    project({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 3, returned: 1, lost: 1 }, drill: { name: "Drill", kind: "equipment", out: 1 }, "0123": { name: "Gloves", price: 1, out: 2, returned: 0 } } });
+    const changing = { status: 400, body: { error: { code: "bad_request", message: "An equipment line's out, returned and lost change only through checkout, return and lost (POST .../projects/{projectId}/checkout, /return, /lost)" } } };
+    const v = projectVersion();
+    for (const ladder of [{ out: 1 }, { out: 0 }, { out: 4 }, { returned: 2 }, { returned: 0 }, { lost: 2 }, { lost: 0 }, { lost: null }, { out: 2, returned: 0, lost: 0 }]) {
+      expect(await patchProject({ items: { ladder } }), JSON.stringify(ladder)).toMatchObject(changing);
+    }
+    // A PUT that changes or drops one is refused too
+    const whole = () => ({ client: "Echo", date: "2026-10-01", status: "open", items: items() });
+    const { lost, ...noLost } = items().ladder as Line;
+    void lost;
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: { ...whole(), items: { ...items(), ladder: noLost } }, expectedVersion: v })).toMatchObject(changing);
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: { ...whole(), items: { ...items(), drill: { name: "Drill", kind: "equipment", out: 0 } } }, expectedVersion: v })).toMatchObject(changing);
+    // The trick from the #673 review: out 0, then removing or closing, never gets past the first write
+    expect(await patchProject({ items: { drill: { out: 0 } } })).toMatchObject(changing);
+    expect(await patchProject({ status: "closed" })).toMatchObject({ status: 409, body: { error: { reason: "equipment_out" } } });
+    expect(projectVersion()).toBe(v);
+    expect(items().ladder).toMatchObject({ out: 3, returned: 1, lost: 1 });
+    // Repeating them is fine (the app's PUT of the project as read, or a PATCH of the line's name),
+    // and so is 0 for a count stored as missing; a supply line's counts are still edited by hand
+    expect(await call("PUT", "/teams/team-a/projects/s1", { data: whole(), expectedVersion: v })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ladder: { name: "Ladder", out: 3, returned: 1, lost: 1 }, drill: { returned: 0, lost: 0 } } })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { "0123": { out: 5, returned: 1 } } })).toMatchObject({ status: 200 });
+    expect(items()).toMatchObject({ ladder: { name: "Ladder", out: 3, returned: 1, lost: 1 }, drill: { out: 1, returned: 0, lost: 0 }, "0123": { out: 5, returned: 1 } });
   });
 
   it("don't hold a line the write doesn't change to returned + lost <= out", async () => {

@@ -427,8 +427,8 @@ before answering `409`, so `409` from contention is rare.
 - **Open projects only.** Checkout and return need the project's `status` to be
   anything but `closed`, checked inside the transaction. A closed project takes
   no checkouts and **no returns**: to record a late return, reopen the project,
-  return, and finish the return again, or correct the line's counts with a
-  line edit (which doesn't move stock). This matches the app, which hides the
+  return, and finish the return again, or correct a supply line's counts with
+  a line edit (which doesn't move stock). This matches the app, which hides the
   scan bar on a closed project ([section 4a](../architecture/README.md#4a-project-states)).
 - **Returned never exceeds out**, checked inside the transaction. With
   equipment lost or broken, `returned + lost` never exceeds `out`.
@@ -437,6 +437,14 @@ before answering `409`, so `409` from contention is rare.
   while any equipment line has `out − returned − lost > 0`. Removing such a
   line (leaving it out of a `PUT`, or `null` in a `PATCH`) is refused the
   same way, so what's out can't drop off the project.
+- **Equipment counts change only through commands.** On an equipment line
+  that's already on the project, a `PUT` or `PATCH` may only repeat the stored
+  `out`, `returned` and `lost` (0 for one stored as missing); anything else is
+  refused with `400`. They change through checkout, return, lost and move,
+  which move stock and record movements, so two document writes (`out: 0`,
+  then a removal or `status: "closed"`) can't get past the rule above. A line
+  the write adds is checked as below. A supply line's counts can still be
+  corrected by a line edit.
 - **A line is an object.** In a `PATCH`, `"items": {"<key>": null}` removes
   the line (it isn't stored as `null`); any other value that isn't an object
   is refused with `400`, unless it's a legacy value the write carries over

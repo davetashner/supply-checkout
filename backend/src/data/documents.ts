@@ -277,6 +277,10 @@ const isWhole = (v: unknown): v is number => typeof v === "number" && Number.isI
 const counted = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 /** What's still out on an equipment line (ADR 0017): neither back nor lost. */
 const stillOut = (line: Record<string, unknown> | undefined) => (line ? counted(line.out) - counted(line.returned) - counted(line.lost) : 0);
+/** An equipment line's counts, which only the checkout, return, lost and move commands change. */
+const EQUIPMENT_COUNTS = ["out", "returned", "lost"] as const;
+/** The same count: as stored, or 0 written for one stored as missing (or the other way round). */
+const sameCount = (a: unknown, b: unknown) => sameValue(a, b) || ((a === undefined || a === 0) && (b === undefined || b === 0));
 
 /**
  * Company equipment and the lines that carry it (ADR 0017, section 7):
@@ -290,6 +294,12 @@ const stillOut = (line: Record<string, unknown> | undefined) => (line ? counted(
  *   exists. `lost` (whole eaches) and `lostCharge` (money) are only on
  *   equipment lines, and a charge only on a client project. A changed line keeps
  *   `returned + lost <= out`.
+ * - An equipment line's `out`, `returned` and `lost` change only through the
+ *   checkout, return, lost and move commands, which move stock and record a
+ *   movement: a write to an existing equipment line may only repeat them
+ *   (supply-checkout-1dg.17). Otherwise two writes (`out: 0`, then null)
+ *   would remove, or close a project over, a line with equipment still out.
+ *   A line the write adds is held to the rules above.
  * - `takenBy` and `takenAt` (the checkout command's), and `priceSetBy` and
  *   `priceSetAt`, are the server's: a write may only repeat what's stored.
  * - A line bought for the client (`purchased: true`, keyed
@@ -339,6 +349,9 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
       }
       else if (old?.priceSet === undefined) delete line.priceSet;
       else line.priceSet = old.priceSet;
+    }
+    if (old && equipment && EQUIPMENT_COUNTS.some((field) => !sameCount(line[field], old[field]))) {
+      throw new InvalidInputError("An equipment line's out, returned and lost change only through checkout, return and lost (POST .../projects/{projectId}/checkout, /return, /lost)");
     }
     if (has("lost") && (!equipment || !isWhole(line.lost))) throw new InvalidInputError("lost is a whole number, on company equipment lines only");
     if (has("lostCharge")) {
