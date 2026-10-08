@@ -10,29 +10,25 @@
 //   allow, and keeps a trace only for a failed test, started after sign-in.
 // - `signIn(page, role)`: signs in as a long-lived account through Managed Login (password, and
 //   a two-step code for owner), then checks the app's own GET /me with checkMe.
+/* global document, location -- readScreen's function runs in the page */
 import { test as base, expect } from "@playwright/test";
 import path from "node:path";
 import { createCognito } from "../../scripts/journeys/lib/cognito.mjs";
 import { PROD, TEAM_FOR_PROJECT, readConfig, runDir, runId, secretValues } from "../../scripts/journeys/lib/config.mjs";
 import { GuardError, assertDestructiveAllowed, checkMe } from "../../scripts/journeys/lib/guards.mjs";
 import { waitForMail } from "../../scripts/journeys/lib/mailbox.mjs";
+import { isExpectedConsoleError } from "../../scripts/journeys/lib/console.mjs";
 import { MASKED_VALUES_FILE, createMasker } from "../../scripts/journeys/lib/mask.mjs";
 import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
 import { freshTotp } from "../../scripts/journeys/lib/totp.mjs";
+import { formatScreen } from "../../scripts/journeys/lib/screen.mjs";
 import { assertNotTracing, markTracing, secretFill } from "../../scripts/journeys/lib/tracing.mjs";
 import { waitUntilConnected } from "../ui/app.js";
 
 const RUM = /^https:\/\/dataplane\.rum\.[a-z0-9-]+\.amazonaws\.com\//;
 const appOrigins = new Set([PROD.app, PROD.api]);
 const originOf = (url) => { try { return new URL(url).origin; } catch { return ""; } };
-
-/** Console errors the app logs in prod that aren't failures: aborted RUM requests, and the refresh before sign-in. */
-export function isExpectedConsoleError(text, url) {
-  if (RUM.test(url ?? "") && /Failed to load resource|net::ERR_FAILED/.test(text)) return true;
-  if (url === `${PROD.api}/auth/refresh` && /status of 401/.test(text)) return true;
-  return false;
-}
 
 export const test = base.extend({
   // eslint-disable-next-line no-empty-pattern -- Playwright fixtures take a destructured object
@@ -122,10 +118,12 @@ export const test = base.extend({
       assertNotTracing(page.context(), "a sign-in");
       identity.account = account.email;
       const meResponse = page.waitForResponse((r) => r.url() === `${PROD.api}/me` && r.request().method() === "GET", { timeout: 60_000 });
+      // Awaited below; a sign-in that fails first ends the test, and that rejection isn't news
+      meResponse.catch(() => {});
       await page.goto("/");
       await page.locator("#signIn").click();
       await page.waitForURL((u) => u.origin === PROD.auth);
-      await managedLogin(page, account, account.totp ? harness.totpCode : null);
+      await managedLogin(page, account, account.totp ? harness.totpCode : null, { redact: harness.masker.redact });
       await page.waitForURL((u) => u.origin === PROD.app, { timeout: 30_000 });
       const res = await meResponse;
       expect(res.status(), "GET /me after sign-in").toBe(200);
@@ -140,18 +138,23 @@ export const test = base.extend({
 });
 
 /**
- * Managed Login's pages: the email, then the password (choosing it if the page offers other
- * ways first), then the two-step code when asked. Every value goes in through secretFill.
+ * Managed Login's pages: the email, then the password, then the two-step code when asked. Every
+ * value goes in through secretFill.
+ *
+ * The user pool allows a password, an email code and a passkey as the first factor (choice-based
+ * sign-in). An account that can only use a password (the owner: Cognito offers no email code to
+ * a user with MFA) goes straight to the password. Any other account is first asked how to sign
+ * in, and the password may be a button, a link or a radio there, or behind "Other sign-in
+ * options". So after the email this takes whichever leads to the password field, each at most
+ * once, and stops early on an alert. If no password field turns up it fails with what the page
+ * showed (formatScreen: headings, alerts, labels and control names, redacted, never a value).
  */
-export async function managedLogin(page, account, totpCode) {
+export async function managedLogin(page, account, totpCode, { timeout = 20_000, redact = (s) => s } = {}) {
   const submit = () => page.getByRole("button", { name: /^(next|continue|sign in)$/i }).first().click();
   await secretFill(page.getByLabel(/email/i).first(), account.email);
   await submit();
-  const password = page.getByLabel(/^password$/i).first();
-  const choosePassword = page.getByRole("button", { name: /password/i }).first();
-  await expect(password.or(choosePassword)).toBeVisible({ timeout: 20_000 });
-  if (!(await password.isVisible())) await choosePassword.click();
-  await secretFill(password, account.password);
+  await reachPassword(page, { timeout, redact, submit });
+  await secretFill(page.locator('input[type="password"]').first(), account.password);
   await submit();
   if (totpCode) {
     const code = page.getByLabel(/code/i).first();
@@ -161,4 +164,62 @@ export async function managedLogin(page, account, totpCode) {
   }
 }
 
+// A control naming the password that isn't a way to sign in with it
+const PASSWORD_CHOICE = /^(?!.*(forgot|reset|show|hide|change|new password)).*password/i;
+const OTHER_WAYS = /other (sign[- ]in )?(options|ways|methods)|another way|more (sign[- ]in )?options|choose (a|another) (sign[- ]in )?(option|method|way)/i;
+
+async function reachPassword(page, { timeout, redact, submit }) {
+  const field = page.locator('input[type="password"]').first();
+  const choices = [
+    { kind: "radio", locator: page.getByRole("radio", { name: /password/i }) },
+    { kind: "button", locator: page.getByRole("button", { name: PASSWORD_CHOICE }) },
+    { kind: "link", locator: page.getByRole("link", { name: PASSWORD_CHOICE }) },
+  ];
+  const others = [page.getByRole("button", { name: OTHER_WAYS }), page.getByRole("link", { name: OTHER_WAYS })];
+  const alert = page.getByRole("alert").filter({ hasText: /\S/ });
+  const done = new Set();
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await field.isVisible()) return;
+    if (await alert.first().isVisible()) break;
+    let acted = false;
+    for (const { kind, locator } of choices) {
+      if (done.has(kind) || !(await locator.first().isVisible())) continue;
+      done.add(kind);
+      if (kind === "radio") { await locator.first().check(); await submit(); }
+      else await locator.first().click();
+      acted = true;
+      break;
+    }
+    if (!acted && !done.has("other")) {
+      for (const other of others) {
+        if (!(await other.first().isVisible())) continue;
+        done.add("other");
+        await other.first().click();
+        break;
+      }
+    }
+    await page.waitForTimeout(250);
+  }
+  if (await field.isVisible()) return;
+  throw new Error(`Managed Login showed no password field after the email (tried: ${[...done].join(", ") || "nothing"}): ${formatScreen(await readScreen(page), redact)}`);
+}
+
+/** The page's headings, alerts, field labels and control names (never a field's value). */
+export function readScreen(page) {
+  return page.evaluate(() => {
+    const shown = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    const texts = (sel) => [...document.querySelectorAll(sel)].filter(shown).map((el) => el.innerText || el.textContent || "");
+    const name = (el) => el.getAttribute("aria-label") || (el.labels && el.labels[0] && el.labels[0].innerText) || el.innerText || el.getAttribute("title") || "";
+    return {
+      url: location.href,
+      headings: texts("h1, h2, h3, [role=heading]"),
+      alerts: texts("[role=alert], [aria-live]"),
+      fields: [...document.querySelectorAll("input:not([type=hidden]):not([type=radio]):not([type=checkbox]), textarea, select")].filter(shown).map((el) => `${name(el) || el.getAttribute("name") || "?"} (${el.type || el.tagName.toLowerCase()})`),
+      controls: [...document.querySelectorAll("button, a[href], [role=button], [role=link], input[type=radio], input[type=checkbox], [role=radio], [role=tab], [role=option]")].filter(shown).map((el) => `${el.matches("input[type=radio], [role=radio]") ? "radio" : el.matches("a, [role=link]") ? "link" : "button"} ${name(el)}`),
+    };
+  });
+}
+
+export { isExpectedConsoleError };
 export { expect, secretFill };
