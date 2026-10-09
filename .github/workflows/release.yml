@@ -119,11 +119,20 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       # One test at a time in one Chromium. A failed test still gets its video and is shown failed
-      # in the report, so the pack is attached either way (CI passed on this commit just before)
+      # in the report, so the pack is attached either way (CI passed on this commit just before):
+      # record.mjs exits 1 for that. It exits 2 when it couldn't record at all (a build, the test
+      # listing or the run failed), and then this step fails, with the reason in its log
       - name: Record the journeys
         id: record
-        continue-on-error: true
-        run: npm run journeys:video -- --headless --evidence
+        run: |
+          set +e
+          npm run journeys:video -- --headless --evidence
+          code=$?
+          if [ "$code" -eq 1 ]; then
+            echo "tests-failed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit "$code"
       - name: Build the report
         run: npm run journeys:report -- --tag "$TAG" --repo "$GITHUB_REPOSITORY"
         env:
@@ -141,7 +150,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Report failed journey tests
-        if: steps.record.outcome == 'failure'
+        if: steps.record.outputs.tests-failed == 'true'
         run: echo "::warning::Some journey tests failed while recording; the evidence report shows which"
 
   evidence-upload:

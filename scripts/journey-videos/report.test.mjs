@@ -113,6 +113,9 @@ test("the command reads the sidecars and screenshots from a folder and writes on
   writeFileSync(join(dir, "notes.txt"), "not a sidecar");
   writeFileSync(join(dir, "evidence/t1-shot-0.jpg"), Buffer.from("ABC"));
   assert.deepEqual(readSidecars(dir).map((s) => s.journey.id), ["J0"]);
+  // A recording that wrote nothing leaves no folder: that's no recordings, said plainly
+  assert.deepEqual(readSidecars(join(dir, "missing")), []);
+  assert.throws(() => writeReport({ dir: join(dir, "missing"), out: join(dir, "x.html"), registry: registry() }), /No journey recordings, so no report/);
   const out = join(dir, "journey-evidence.html");
   writeReport({ dir, out, registry: registry(), tag: "v1.2.3", repo: "owner/repo" });
   const html = readFileSync(out, "utf8");

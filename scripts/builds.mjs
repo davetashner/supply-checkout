@@ -33,6 +33,9 @@ export const DEMO = "demo";
 export const OPS = "ops";
 // And the marketing home page, for tests/site.spec.js
 export const SITE = "site";
+// Everything built alongside the web build. Listing the tests needs each one: the specs for the
+// demo, the operator page and the home page read their build when they load
+export const WITH_WEB = [DEMO, OPS, SITE];
 
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".map": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".mp4": "video/mp4", ".json": "application/json" };
 

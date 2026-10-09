@@ -128,7 +128,7 @@ function alarmsSection(registry) {
 
 // The page. `image(rel)` gives a screenshot's data: URI, or null when it isn't there.
 export function buildReport({ sidecars, registry, tag: ref = null, repo = null, generatedAt = new Date().toISOString(), image = () => null }) {
-  if (!sidecars.length) throw new Error("No journey recordings: run npm run journeys:video -- --evidence first");
+  if (!sidecars.length) throw new Error("No journey recordings, so no report: the recording (npm run journeys:video -- --evidence) wrote none; its log says why");
   for (const sc of sidecars) {
     if (sc.runtime !== "fakes") throw new Error(`${sc.video} wasn't recorded against the test suite's fakes; release assets are public, so it can't go in the report`);
   }
@@ -155,8 +155,10 @@ ${alarmsSection(registry)}
 `;
 }
 
-// The sidecars in a folder: each .json with a journey and a video
+// The sidecars in a folder: each .json with a journey and a video. No folder is no recordings
+// (buildReport says so), not a bare ENOENT
 export function readSidecars(dir) {
+  if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((f) => f.endsWith(".json")).sort()
     .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")))
     .filter((s) => s.journey?.id && s.video);
