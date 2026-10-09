@@ -1872,6 +1872,10 @@ paths:
         keeps it: Checkout asks for no card, the subscription's trial ends
         when the team's does (`trialEndsAt` in the answer), and if no card is
         added by then Stripe cancels it. Otherwise Checkout asks for a card.
+        A team that is or was unpaid never gets a trial: not when the team or
+        any of its Stripe subscriptions is `unpaid`, nor when Stripe has ever
+        invoiced its customer for money (paid, owed, written off or
+        uncollectible).
 
         Nothing about the team changes here: the Stripe webhook sets its plan,
         seats and status once the owner finishes on Stripe. Idempotent: the

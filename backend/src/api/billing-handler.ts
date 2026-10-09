@@ -20,6 +20,11 @@
 // does (`trialEndsAt`, TRIAL_DAYS after it was made) and Checkout asks for no
 // card (payment_method_collection `if_required`); if no card is added by then,
 // Stripe cancels the subscription. After the trial, Checkout asks for a card.
+// A trial is never given to a team that is or was unpaid (supply-checkout-8jc.44,
+// trialAllowed): not when the team or any of its customer's subscriptions is
+// `unpaid`, nor when Stripe has ever invoiced the customer for money (paid,
+// owed, written off or uncollectible), so a trial can't be used to have an
+// unpaid subscription's debt written off (billing/replaced.ts).
 // The seat quantity isn't the owner's to choose (supply-checkout-8jc.20): it's
 // the team's billed members as they are now (countBilledMembers, at least 1),
 // the same number the seat sync keeps the subscription at afterwards
@@ -241,6 +246,27 @@ const CLOSED_CHECKOUT = "This team was closed. Reopen it before choosing a plan.
  */
 export const MIN_TRIAL_LEFT_MS = 49 * 60 * 60_000;
 
+/** How many of the customer's invoices Checkout reads to decide on a trial (trialAllowed). */
+export const TRIAL_INVOICES_READ = 100;
+
+/**
+ * Whether Checkout may give the team a free trial (supply-checkout-8jc.44), each rule explicit rather than left
+ * to the trial's dates: its app trial has at least MIN_TRIAL_LEFT_MS left; the team isn't `unpaid`; none of its
+ * customer's subscriptions is `unpaid`; and Stripe has never invoiced the customer for money (`invoices`: any
+ * invoice but a draft with an amount due or paid, so one paid, still owed, written off or uncollectible all count).
+ * So a team that is or was unpaid pays at once.
+ */
+export function trialAllowed(
+  team: { readonly status?: string; readonly trialEndsAt?: unknown; readonly createdAt?: unknown },
+  at: number,
+  subscriptions: readonly { readonly status: string }[],
+  invoices: readonly { readonly status: string | null; readonly amount_due: number; readonly amount_paid: number }[],
+): boolean {
+  if (!(trialEnd(team) - at >= MIN_TRIAL_LEFT_MS)) return false;
+  if (team.status === "unpaid" || subscriptions.some((s) => s.status === "unpaid")) return false;
+  return !invoices.some((i) => i.status !== "draft" && (i.amount_due > 0 || i.amount_paid > 0));
+}
+
 /** The data layer's and Stripe's errors, as this route answers them. */
 export function errorFor(error: unknown): ApiError {
   if (error instanceof TeamClosedError) return new ApiError(403, "permission_denied", error.message, "team_closed");
@@ -367,14 +393,18 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     const seats = Math.max(1, await countBilledMembers(db, ctx));
     const stripe = await deps.stripe();
     // A subscription the webhook hasn't recorded yet (another checkout just finished): one per team
-    if (team.stripeCustomerId && (await stripe.subscriptions.list({ customer: team.stripeCustomerId, status: "all", limit: 10 })).data.some((s) => !hasEnded(s.status))) {
+    const subscriptions = team.stripeCustomerId ? (await stripe.subscriptions.list({ customer: team.stripeCustomerId, status: "all", limit: 10 })).data : [];
+    if (subscriptions.some((s) => !hasEnded(s.status))) {
       throw new ApiError(409, "aborted", "This team already has a subscription. Change it from Manage billing.", "already_subscribed");
     }
     const priceId = await deps.priceFor(input.plan, input.price);
     const customer = await customerFor(stripe, ctx, team);
     const at = now();
     const trialEndsMs = trialEnd(team);
-    const trial = trialEndsMs - at >= MIN_TRIAL_LEFT_MS;
+    // The customer's invoices only when nothing else has ruled a trial out (a new customer has none)
+    const mayTrial = trialAllowed(team, at, subscriptions, []);
+    const invoices = mayTrial && team.stripeCustomerId ? (await stripe.invoices.list({ customer: team.stripeCustomerId, limit: TRIAL_INVOICES_READ })).data : [];
+    const trial = mayTrial && trialAllowed(team, at, subscriptions, invoices);
     const back = (outcome: string) => `${deps.appUrl}/?billing=${outcome}&team=${encodeURIComponent(ctx.teamId)}`;
     const params: CheckoutSessionParams = {
       mode: "subscription",

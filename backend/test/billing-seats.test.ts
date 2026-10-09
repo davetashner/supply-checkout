@@ -37,6 +37,10 @@ let listed: string[];
 let customerGone: boolean;
 let listFails: boolean;
 let onRetrieve: (() => void) | undefined;
+let cancels: string[];
+/** Stripe's open invoices: ID and subscription. */
+let openInvoices: Map<string, string>;
+let voids: string[];
 let denied: { command: string; input: Record<string, unknown> }[];
 let scopes: WorkerScope[];
 let counts: [string, number, unknown][];
@@ -100,6 +104,9 @@ beforeEach(() => {
   customerGone = false;
   listFails = false;
   onRetrieve = undefined;
+  cancels = [];
+  openInvoices = new Map();
+  voids = [];
   denied = [];
   scopes = [];
   counts = [];
@@ -133,8 +140,20 @@ beforeEach(() => {
       async update() {
         throw new Error("not used");
       },
-      async cancel() {
-        throw new Error("not used");
+      async cancel(id) {
+        cancels.push(id);
+        subs.set(id, { ...(subs.get(id) as Sub), status: "canceled" });
+      },
+    },
+    invoices: {
+      async list({ subscription, status }) {
+        // Only open ones here: no subscription in these tests has a paid invoice
+        const open = status === "open" ? [...openInvoices].filter(([, sub]) => sub === subscription) : [];
+        return { data: open.map(([id]) => ({ id, customer: CUSTOMER })), has_more: false };
+      },
+      async voidInvoice(id) {
+        voids.push(id);
+        openInvoices.delete(id);
       },
     },
     subscriptionItems: {
@@ -481,6 +500,32 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     expect(await nightly()).toBe("in_sync");
     expect(logs.find(([, message]) => message === "Entitlement drift")?.[2]).toMatchObject({ fields: "subscription,status" });
     expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_2", status: "active" });
+  });
+
+  it("records a lost resubscription in place of an unpaid one, after cancelling it and voiding its open invoices (supply-checkout-8jc.44)", async () => {
+    subs.set(SUB, subscription(3, { status: "unpaid", created: OLD - 86400 }));
+    patchTeam({ status: "unpaid" });
+    openInvoices.set("in_test_overdue", SUB);
+    // A paused one (a trial that ended without a card) isn't live: the team keeps its unpaid one
+    subs.set("sub_test_2", subscription(3, { id: "sub_test_2", status: "paused", created: OLD }));
+    // Still overdue, so no seat sync
+    expect(await nightly()).toBe("subscription_ended");
+    expect(cancels).toEqual([]);
+    expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "unpaid" });
+    // Nor is a trial, or a past_due one that never took money: the old debt is written off only for a paid one
+    for (const status of ["trialing", "past_due"]) {
+      subs.set("sub_test_2", subscription(3, { id: "sub_test_2", status, created: OLD }));
+      expect(await nightly()).toBe("subscription_ended");
+      expect(cancels).toEqual([]);
+      expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "unpaid" });
+    }
+    subs.set("sub_test_2", subscription(3, { id: "sub_test_2", created: OLD }));
+    expect(await worker(seats("reconcile", "reconcile-2026-09-29-cus_test_1"))).toBe("in_sync");
+    expect(cancels).toEqual([SUB]);
+    expect(voids).toEqual(["in_test_overdue"]);
+    expect(logs).toContainEqual(["info", "Replaced unpaid subscription cleared", { teamId: TEAM, messageId: "reconcile-2026-09-29-cus_test_1", subscriptionId: SUB, status: "unpaid", canceled: true, voided: 1, refused: 0, by: "sub_test_2" }]);
+    expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_2", status: "active" });
+    expect(denied).toEqual([]);
   });
 
   it("ignores another customer's subscription in the listing, and changes nothing for an ended team with no newer one", async () => {
