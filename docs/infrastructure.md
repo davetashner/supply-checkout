@@ -825,7 +825,19 @@ Teams created before GSI3 existed have no `GSI3PK`, so the ops routes don't list
 5. Publish the page: `npm run publish:ops` (builds it, writes `ops-config.json` from SSM, uploads `ops-<time>-<commit>` and makes it live). Roll back with `npm run publish:web -- activate --channel ops --version <an earlier ops-*>`.
 6. Check it: `curl -sI https://ops.supplycheckout.com/` shows `cache-control: no-store` and the strict `content-security-policy`; `curl -sI https://ops.supplycheckout.com/x` is a 404; then sign in as an operator, open a team and read the audit.
 
-Using it, and what its messages mean: [the operator page runbook](runbooks/operator-page.md). After the first time, each release's deploy publishes the page ([Deploying a release](releases.md#deploying-a-release)). The web alarms (Site down, router failing) watch the web app's distribution only; that's a follow-up.
+Using it, and what its messages mean: [the operator page runbook](runbooks/operator-page.md). After the first time, each release's deploy publishes the page ([Deploying a release](releases.md#deploying-a-release)). **Operator page down** and **Operator page router failing** (P2) watch its distribution and router ([observability.md](observability.md#when-the-web-app-is-down)).
+
+**PKCE isn't enforced for the `ops` client (an accepted risk, `supply-checkout-8jc.47`).** The page and the CLI always send a `code_challenge` (S256), and once one is sent Cognito won't redeem the code without the matching verifier. But Cognito has no setting that *requires* PKCE for an app client (`CreateUserPoolClient` and `UpdateUserPoolClient` have no such field), and Managed Login accepts an authorize request without a `code_challenge`. Someone could craft an authorize link to `ops-auth.<env domain>/oauth2/authorize` with no `code_challenge` and get a signed-in operator to follow it. Cognito would then send a code that needs no verifier to whichever of the client's two callbacks the link names:
+- **The page, `https://ops.<env domain>/?code=…`.** The page refuses the code (it has no state the page made). But for the code's ~5 minutes it sits in the browser's history and in the ops distribution's CloudFront access log (`cloudfront/ops/` in the logs bucket, which logs the query string).
+- **The CLI's callback, `OPS_CLI_CALLBACK` (`http://localhost:8765/`).** The code goes to whatever is listening on that port on the operator's machine, which may not be `npm run ops`.
+
+Whoever gets such a code can redeem it at the token endpoint for a 15-minute access token and an 8-hour refresh token. The token has the `aws.cognito.signin.user.admin` scope, so it can also replace the operator's TOTP (`AssociateSoftwareToken`, `VerifySoftwareToken`). Signing in again still needs the operator's password, and each of those calls pages P1 (`OPERATOR_SELF_SERVICE_EVENTS`, under [Operators](#operators)).
+
+We accept this. The attacker has to get an operator to follow the link, then within minutes read that operator's browser history or local port, or the logs bucket. Those are already behind the operator's own machine or AWS access to this account. The token still needs the `operators` group on every request, and every use is audited.
+
+Hardening, if it's ever wanted, is the owner's call: it costs money and risks locking operators out.
+- A regional AWS WAF web ACL on the operator pool that blocks `/oauth2/authorize` without `code_challenge_method=S256`, tried in Count mode first. WAF inspects Managed Login's headers and query strings, but Cognito doesn't forward it the request body for Managed Login ([Associate an AWS WAF web ACL with a user pool](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-waf.html)). The parameters are in the authorize request's query string. This would close both callbacks.
+- Stop CloudFront logging query strings on the ops distribution. That covers only the logs bucket, not browser history or the localhost callback.
 
 ### Backfills
 

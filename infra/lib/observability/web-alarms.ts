@@ -20,6 +20,18 @@ export const SITE_DOWN_PERCENT = 1;
 export const ROUTER_FAILING_ABOVE = 4;
 
 /**
+ * The operator page's distribution (supply-checkout-8jc.47): a handful of
+ * operators make a few requests each, so "Operator page down" looks at the
+ * 5xx rate from 5 requests in 5 minutes (one page load is about 5), and alarms
+ * above 10% (one failed request of a page load or two). Scanners get the
+ * router's 404s, which aren't 5xx.
+ */
+export const OPS_DOWN_MIN_REQUESTS = 5;
+export const OPS_DOWN_PERCENT = 10;
+/** The operator page's router fails no request by design: any error or throttle is "Operator page router failing". */
+export const OPS_ROUTER_FAILING_ABOVE = 0;
+
+/**
  * RUM events ingested in an hour above which "RUM events surge" (P2) alarms.
  * At $1 per 100,000 events that's $1 an hour. Honest traffic is far below it:
  * at most 200 events a session, and MVP traffic is a few hundred sessions a day.
@@ -61,21 +73,21 @@ export function cloudFront(metricName: string, dimensions: Record<string, string
   });
 }
 
-/** The distribution's 5xx rate (%), or 0 while it has fewer than SITE_DOWN_MIN_REQUESTS requests. */
-export function siteErrorRate(distributionId: string): MathExpression {
+/** The distribution's 5xx rate (%), or 0 while it has fewer than `minRequests` requests. */
+export function siteErrorRate(distributionId: string, minRequests = SITE_DOWN_MIN_REQUESTS, label = "Web 5xx rate % (CloudFront)"): MathExpression {
   return new MathExpression({
-    expression: `IF(r >= ${SITE_DOWN_MIN_REQUESTS}, FILL(e, 0), 0)`,
+    expression: `IF(r >= ${minRequests}, FILL(e, 0), 0)`,
     usingMetrics: {
       e: cloudFront("5xxErrorRate", { DistributionId: distributionId }, "Average"),
       r: cloudFront("Requests", { DistributionId: distributionId }),
     },
     period: FIVE_MINUTES,
-    label: "Web 5xx rate % (CloudFront)",
+    label,
   });
 }
 
 /** The router's execution and validation errors and its throttles, added up. */
-export function routerFailures(functionName: string): MathExpression {
+export function routerFailures(functionName: string, label = "Router errors and throttles"): MathExpression {
   const fn = { FunctionName: functionName };
   return new MathExpression({
     expression: "FILL(x, 0) + FILL(v, 0) + FILL(t, 0)",
@@ -85,7 +97,7 @@ export function routerFailures(functionName: string): MathExpression {
       t: cloudFront("FunctionThrottles", fn),
     },
     period: FIVE_MINUTES,
-    label: "Router errors and throttles",
+    label,
   });
 }
 
@@ -95,6 +107,10 @@ export interface WebAlarmsProps {
   readonly distributionId: string;
   /** The router CloudFront Function's name (the web stack's SSM output). */
   readonly routerFunctionName: string;
+  /** The operator page's distribution ID (the web stack's SSM output). */
+  readonly opsDistributionId: string;
+  /** The operator page's router CloudFront Function's name (the web stack's SSM output). */
+  readonly opsRouterFunctionName: string;
   readonly topics: AlarmTopics;
 }
 
@@ -111,6 +127,10 @@ export interface WebAlarmsProps {
  *   FunctionValidationErrors and FunctionThrottles, 5 or more in 5 minutes.
  *   Every request a broken router sees errors, so this fires even when there
  *   are too few requests for Site down, and says where to look.
+ * - `opsDown` and `opsRouterFailing` (P2, supply-checkout-8jc.47): the same
+ *   two on the operator page's own distribution and router (ops.), with
+ *   thresholds for its handful of operators (OPS_DOWN_*,
+ *   OPS_ROUTER_FAILING_ABOVE). P2 is enough: operators have the CLI.
  * - `rumSurge` (P2) and `rumFlood` (P1): the RUM app monitor's ingested
  *   events above RUM_EVENTS_SURGE_PER_HOUR and RUM_EVENTS_FLOOD_PER_HOUR in
  *   an hour (supply-checkout-3sv.7). The RUM client's limits bound honest
@@ -125,17 +145,19 @@ export interface WebAlarmsProps {
 export class WebAlarms extends Construct {
   readonly siteDown: Alarm;
   readonly routerFailing: Alarm;
+  readonly opsDown: Alarm;
+  readonly opsRouterFailing: Alarm;
   readonly rumSurge: Alarm;
   readonly rumFlood: Alarm;
   readonly alarms: Alarm[];
 
   constructor(scope: Construct, id: string, props: WebAlarmsProps) {
     super(scope, id);
-    const alarm = (alarmId: string, title: string, rule: string, metric: MathExpression, threshold: number) => {
+    const alarm = (alarmId: string, title: string, rule: string, metric: MathExpression, threshold: number, severity: Severity = "P1", journey = "Every journey") => {
       const a = new Alarm(this, alarmId, {
-        alarmName: `supply-checkout-${props.envName}-p1-${alarmId}`,
+        alarmName: `supply-checkout-${props.envName}-${severity.toLowerCase()}-${alarmId}`,
         alarmDescription: [
-          `P1 ${title} (Every journey, CloudFront).`,
+          `${severity} ${title} (${journey}, CloudFront).`,
           rule,
           "Runbook: docs/observability.md, When the web app is down.",
         ].join(" "),
@@ -146,7 +168,7 @@ export class WebAlarms extends Construct {
         datapointsToAlarm: 1,
         treatMissingData: TreatMissingData.NOT_BREACHING,
       });
-      props.topics.notify(a, "P1");
+      props.topics.notify(a, severity);
       return a;
     };
     this.siteDown = alarm(
@@ -162,6 +184,24 @@ export class WebAlarms extends Construct {
       `The router CloudFront Function's execution errors, validation errors and throttles at least ${ROUTER_FAILING_ABOVE + 1} in 5 minutes: requests to app., the apex and /demo/ get 5xx. Usually a bad router deploy.`,
       routerFailures(props.routerFunctionName),
       ROUTER_FAILING_ABOVE,
+    );
+    this.opsDown = alarm(
+      "ops-page-down",
+      "Operator page down",
+      `The operator page's distribution's 5xxErrorRate above ${OPS_DOWN_PERCENT}% for 5 minutes, once it has at least ${OPS_DOWN_MIN_REQUESTS} requests: ops. is failing (its router, the bucket, or nothing live on the ops channel). Operators can use npm run ops meanwhile.`,
+      siteErrorRate(props.opsDistributionId, OPS_DOWN_MIN_REQUESTS, "Operator page 5xx rate % (CloudFront)"),
+      OPS_DOWN_PERCENT,
+      "P2",
+      "Operators",
+    );
+    this.opsRouterFailing = alarm(
+      "ops-router-failing",
+      "Operator page router failing",
+      `The operator page's router CloudFront Function's execution errors, validation errors and throttles at least ${OPS_ROUTER_FAILING_ABOVE + 1} in 5 minutes: requests to ops. get 5xx. Usually a bad router deploy.`,
+      routerFailures(props.opsRouterFunctionName, "Operator page router errors and throttles"),
+      OPS_ROUTER_FAILING_ABOVE,
+      "P2",
+      "Operators",
     );
     // Anyone can send the RUM app monitor events with the public identity pool, and each is billed (supply-checkout-3sv.7)
     const rum = (alarmId: string, severity: Severity, title: string, threshold: number) => {
@@ -184,6 +224,6 @@ export class WebAlarms extends Construct {
     };
     this.rumSurge = rum("rum-events-surge", "P2", "RUM events surge", RUM_EVENTS_SURGE_PER_HOUR);
     this.rumFlood = rum("rum-events-flood", "P1", "RUM events flood", RUM_EVENTS_FLOOD_PER_HOUR);
-    this.alarms = [this.siteDown, this.routerFailing, this.rumSurge, this.rumFlood];
+    this.alarms = [this.siteDown, this.routerFailing, this.opsDown, this.opsRouterFailing, this.rumSurge, this.rumFlood];
   }
 }
