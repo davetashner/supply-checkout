@@ -141,6 +141,20 @@ describe.skipIf(!endpoint)("company equipment (DynamoDB Local)", () => {
     expect(await stock(ctx)).toBe(3);
   });
 
+  it("adds a line by a document write only of its item's kind, so a supply line can't return equipment stock (supply-checkout-1dg.19)", async () => {
+    const ctx = await team();
+    const v = await version(ctx);
+    // The equipment item's kind, read with its key only (DynamoDB returns the key even when there's no kind)
+    await expect(updateDocument(db, ctx, "projects", "s1", { items: { ladder: { name: "Step ladder", out: 2, returned: 0 } } }, { expectedVersion: v })).rejects.toThrow("This item is company equipment");
+    await expect(updateDocument(db, ctx, "projects", "s1", { items: { "0123": { name: "Nitrile gloves", kind: "equipment", out: 0 } } }, { expectedVersion: v })).rejects.toThrow("This item is a supply");
+    await expect(returnItems(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "ladder", quantity: 2 })).rejects.toThrow(InvalidInputError);
+    expect(await version(ctx)).toBe(v);
+    expect(await stock(ctx)).toBe(4);
+    // A supply with no kind, and a one-off, are fine
+    await updateDocument(db, ctx, "projects", "s1", { items: { "0123": { name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 }, rags: { name: "Rags", price: 1, out: 1 } } }, { expectedVersion: v });
+    expect(Object.keys(await lines(ctx)).sort()).toEqual(["0123", "rags"]);
+  });
+
   it("never lets concurrent returns and lost records take an equipment line past what went out", async () => {
     const ctx = await team();
     await checkout(db, ctx, { operationId: randomUUID(), projectId: "s1", productKey: "ladder", quantity: 3 });

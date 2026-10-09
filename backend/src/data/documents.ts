@@ -393,6 +393,70 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
   return data;
 }
 
+/** How many products checkNewLineKinds reads at once. */
+const KIND_READS = 25;
+
+/**
+ * The most lines one document write may add to a project, each read for its
+ * item's kind. A receipt read has at most 200 (MAX_RECEIPT_LINES), and a
+ * receipt saved as a new project writes its lines with the project; anything
+ * else adds one at a time, or through the commands.
+ */
+export const MAX_NEW_LINES = 500;
+
+/**
+ * A line a document write adds has its item's kind (supply-checkout-1dg.19):
+ * no supply line (no `kind`, whose counts the write may set) under an item
+ * that is company equipment, and no equipment line under a supply.
+ * Otherwise a supply line written under an equipment item's key, with
+ * something out, would come back through the return command as equipment
+ * stock nobody took. Lines already on the project keep the kind they were
+ * taken as, whatever the item's kind is now (ADR 0017, decision 8), so the
+ * commands go by the line, and only lines the write adds are read for.
+ * A line under a key that isn't an item (a one-off, or an item since deleted)
+ * has no kind to agree with, and no stock for a return to add to; a key no
+ * item could have (productKey) isn't read at all. Reads only `kind`,
+ * consistently, a few items at a time (the data API's role has GetItem, not
+ * BatchGetItem), and at most MAX_NEW_LINES per write.
+ */
+async function checkNewLineKinds(db: Db, teamId: string, data: DocumentData, before: StoredDocument | undefined): Promise<void> {
+  const storedLines = isMap(before?.data.items) ? before.data.items : {};
+  const lines = isMap(data.items) ? data.items : {};
+  // (checkKinds has refused a new line bought for the client: only addLines adds one)
+  const added = Object.entries(lines).filter(([key, line]) => isMap(line) && !(Object.hasOwn(storedLines, key) && isMap(storedLines[key]))) as [string, Record<string, unknown>][];
+  if (added.length > MAX_NEW_LINES) throw new InvalidInputError(`A write adds at most ${MAX_NEW_LINES} lines to a project`);
+  const read = added.filter(([key]) => isProductKey(key));
+  for (let i = 0; i < read.length; i += KIND_READS) {
+    await Promise.all(
+      read.slice(i, i + KIND_READS).map(async ([key, line]) => {
+        const { Item: product } = await connection(db).doc.send(
+          new GetCommand({ TableName: db.tableName, Key: keys.product(teamId, key), ConsistentRead: true, ProjectionExpression: "PK, #kind", ExpressionAttributeNames: { "#kind": "kind" } }),
+        );
+        // No such item (its PK is read so that one with no kind is still found)
+        if (!product) return;
+        const equipment = product.kind === "equipment";
+        if ((line.kind === "equipment") !== equipment) {
+          throw new InvalidInputError(
+            equipment
+              ? "This item is company equipment, so a new line for it is too: it goes on the project through checkout (POST .../projects/{projectId}/checkout)"
+              : "This item is a supply, so a new line for it has no kind",
+          );
+        }
+      }),
+    );
+  }
+}
+
+/** Whether `key` could be a product's key (productKey). */
+function isProductKey(key: string): boolean {
+  try {
+    productKey(key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * A project's `closedAt` is the server's (supply-checkout-1dg.16): the list
  * `since` a day keeps a finished project by it (recentFilter), so it can't
@@ -531,6 +595,7 @@ async function write(
     if (collection === "projects" && !before && isAdhocId(id)) throw new InvalidInputError('Project IDs starting "adhoc-" are kept for the General Use project, which Quick take makes');
     const at = (options.now ?? new Date()).toISOString();
     const data = checkDocument(collection, build(before), { userId: ctx.userId, at }, before);
+    if (collection === "projects") await checkNewLineKinds(db, ctx.teamId, data, before);
     const adhoc = collection === "projects" ? await adhocChange(db, ctx, id, before, data, at) : undefined;
     const version = (before?.version ?? 0) + 1;
     // Unchanged since the read: same version and, for products, same stock
