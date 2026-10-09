@@ -201,6 +201,18 @@ describe("checkout", () => {
   });
 });
 
+describe("a product keyed like a team's billing attribute (supply-checkout-3sv.25)", () => {
+  it("checks out and returns under the data role's deny: the key is a nested path, not a top-level name", async () => {
+    for (const key of ["test", "seats"]) {
+      table.put({ PK: "TEAM#team-a", SK: `PRODUCT#${key}`, type: "product", key, version: 1, ...gloves, code: key });
+      table.put({ PK: "TEAM#team-a", SK: `PROJECT#p-${key}`, type: "project", id: `p-${key}`, version: 1, client: "Echo", date: "2026-09-26", status: "open", items: {} });
+      expect((await call("POST", `/teams/team-a/projects/p-${key}/checkout`, { operationId: op(), productKey: key, quantity: 2 })).status, key).toBe(200);
+      expect((await call("POST", `/teams/team-a/projects/p-${key}/return`, { operationId: op(), productKey: key, quantity: 2 })).status, key).toBe(200);
+      expect(table.get("TEAM#team-a", `PRODUCT#${key}`)?.stock, key).toBe(10);
+    }
+  });
+});
+
 describe("add lines", () => {
   const LINES = "/teams/team-a/projects/s1/lines";
   const tape = { productKey: "k-tape", quantity: 2, name: " Painter's tape ", price: 6.25, cost: 6.25 };

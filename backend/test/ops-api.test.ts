@@ -912,7 +912,7 @@ describe("the operator audit", () => {
 
   it("shows owners what support did, as Supply Checkout support, never who", async () => {
     await call("PUT", `/ops/teams/${teamA}/comp`, { body: { plan: "free", until: "2026-12-31", reason: "Pilot", expectedVersion: 1 }, key: "comp-key-0001" });
-    const data = createDataHandler({ dbForTeam: (teamId) => table.db(teamId), obs: fakeObservability(), now: () => now });
+    const data = createDataHandler({ dbForTeam: (teamId) => table.dataDb(teamId), obs: fakeObservability(), now: () => now });
     const request = (userId: string) =>
       ({
         routeKey: "GET /teams/{teamId}/support-actions",
@@ -1118,7 +1118,7 @@ describe("reopening a closed team (supply-checkout-6uw.6)", () => {
   it("shows the owners what support did, never who", async () => {
     const closed = await closeC(24 * 60);
     await reopen(teamC, { reason: "Disputed closure", expectedVersion: closed.version });
-    const data = createDataHandler({ dbForTeam: (teamId) => table.db(teamId), obs: fakeObservability(), now: () => now });
+    const data = createDataHandler({ dbForTeam: (teamId) => table.dataDb(teamId), obs: fakeObservability(), now: () => now });
     const res = await data({
       routeKey: "GET /teams/{teamId}/support-actions",
       rawPath: `/teams/${teamC}/support-actions`,
