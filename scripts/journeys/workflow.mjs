@@ -39,7 +39,7 @@
 //     read from the other run is checked against a fixed shape before it's used or written out.
 //     Uses `gh api` (GH_TOKEN, actions: write for the cancel).
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, fstatSync, openSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readConfig } from "./lib/config.mjs";
@@ -260,10 +260,24 @@ export function main(argv, env = process.env, log = console.log, api = ghApi) {
     return problems.length ? 1 : 0;
   }
   if (command === "outputs" && argv.length === 2) {
-    if (!existsSync(file)) return 0;
-    if (!env.GITHUB_OUTPUT) throw new Error("GITHUB_OUTPUT isn't set");
-    if (statSync(file).size > MAX_VERDICT_BYTES) throw new Error(`${path.basename(file)} is over ${MAX_VERDICT_BYTES} bytes`);
-    appendFileSync(env.GITHUB_OUTPUT, outputLines(JSON.parse(readFileSync(file, "utf8"))));
+    // Opened once, and the size checked and the text read through that one descriptor, so the
+    // file can't be swapped between the check and the read
+    let fd;
+    try {
+      fd = openSync(file, "r");
+    } catch (e) {
+      if (e.code === "ENOENT") return 0;
+      throw e;
+    }
+    try {
+      if (!env.GITHUB_OUTPUT) throw new Error("GITHUB_OUTPUT isn't set");
+      const stat = fstatSync(fd);
+      if (!stat.isFile()) throw new Error(`${path.basename(file)} isn't a file`);
+      if (stat.size > MAX_VERDICT_BYTES) throw new Error(`${path.basename(file)} is over ${MAX_VERDICT_BYTES} bytes`);
+      appendFileSync(env.GITHUB_OUTPUT, outputLines(JSON.parse(readFileSync(fd, "utf8"))));
+    } finally {
+      closeSync(fd);
+    }
     return 0;
   }
   if (command === "wait-for-prod") return waitForProd(argv.slice(1), { api, log });

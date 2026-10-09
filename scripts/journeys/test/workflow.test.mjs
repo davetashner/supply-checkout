@@ -1,7 +1,7 @@
 // node --test scripts/journeys/test/ (part of npm run test:scripts): the journeys workflow's own
 // steps, checking the secrets before signing in and passing the failed steps to the deploy.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -53,6 +53,10 @@ test("outputs: only well-formed step entries reach the deploy", () => {
     assert.throws(() => main(["outputs", file], { GITHUB_OUTPUT: out }), /over 1048576 bytes/);
     writeFileSync(file, "failed=J1.1 (desktop-chrome)");
     assert.throws(() => main(["outputs", file], { GITHUB_OUTPUT: out }), SyntaxError);
+    // A folder in the verdict file's place is refused, not read
+    const folder = path.join(dir, "folder.json");
+    mkdirSync(folder);
+    assert.throws(() => main(["outputs", folder], { GITHUB_OUTPUT: out }), /folder\.json isn't a file/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
