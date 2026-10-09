@@ -25,9 +25,13 @@ async function openReset(page) {
   return backend;
 }
 
-async function askFor(page, email) {
+// Sends with Enter in the field: in Firefox, a click on a button right after typing on a screen
+// that just appeared sometimes loses its mousedown (the page gets the mousemove and mouseup), so
+// nothing is sent. The first test clicks Send code, once the screen has settled.
+async function askFor(page, email, { click = false } = {}) {
   await account(page).getByLabel("Email address").fill(email);
-  await account(page).getByRole("button", { name: "Send code" }).click();
+  if (click) await account(page).getByRole("button", { name: "Send code" }).click();
+  else await account(page).getByLabel("Email address").press("Enter");
   await expect(account(page).getByRole("heading", { name: "Check your email" })).toBeVisible();
 }
 
@@ -44,7 +48,7 @@ test("someone who forgot their password asks for a code, sets a new one and sign
   await expect(account(page).locator("#resetForm")).toHaveAttribute("method", "post");
   await expectAccessible(page);
 
-  await askFor(page, "  pat@example.com ");
+  await askFor(page, "  pat@example.com ", { click: true });
   expect(backend.requests("POST", "/auth/password-reset").map((c) => c.body)).toEqual([{ email: "pat@example.com" }]);
   // The same words whether or not there's an account, with what to try when no code comes
   await expect(account(page)).toContainText("If there's an account for this address (pat@example.com), we've sent a code. It works for an hour.");
@@ -86,7 +90,8 @@ test("an address that isn't one is refused before it's sent, and the API's refus
   // One the app takes but the API doesn't
   backend.on("POST", "/auth/password-reset", { status: 400, body: { error: { code: "bad_request", message: "bad" } } });
   await account(page).getByLabel("Email address").fill("pat@example");
-  await account(page).getByRole("button", { name: "Send code" }).click();
+  // Enter, as in askFor
+  await account(page).getByLabel("Email address").press("Enter");
   await expect(alert(page)).toHaveText("Enter your email address, like name@example.com.");
   await expect(account(page).getByRole("button", { name: "Send code" })).toBeEnabled();
   // The API can't be reached
@@ -103,7 +108,8 @@ test("past the API's limits, it points at the sign-in page's own reset", { tag: 
   await expect(fallback).toBeHidden();
   backend.on("POST", "/auth/password-reset", limited);
   await account(page).getByLabel("Email address").fill("pat@example.com");
-  await account(page).getByRole("button", { name: "Send code" }).click();
+  // Enter, as in askFor
+  await account(page).getByLabel("Email address").press("Enter");
   await expect(alert(page)).toHaveText("Too many reset requests for now. Try again in an hour, or reset your password on the sign-in page.");
   await expect(fallback).toBeVisible();
   // Managed Login's own reset
