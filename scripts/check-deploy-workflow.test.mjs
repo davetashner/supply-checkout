@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { afterApplyApproval, deployTextProblems, grantsIdToken, needsClosure } from "./check-deploy-workflow.mjs";
+import { afterApplyApproval, deployTextProblems, grantsIdToken, hashRefAllowed, needsClosure } from "./check-deploy-workflow.mjs";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const script = path.join(root, "scripts", "check-deploy-workflow.mjs");
@@ -170,6 +170,32 @@ test("rule 5: every setup-node says package-manager-cache: false, in every job",
   assert.deepEqual(deployTextProblems(inPlan(node("          package-manager-cache: 'false'"))), []);
   // Case doesn't hide the action
   assert.deepEqual(deployTextProblems(inPlan(node(undefined).replace("actions/setup-node", "Actions/Setup-Node"))), [problem("plan", 2)]);
+});
+
+test("rule 6: no raw assembly hash in an output, an env, a with or a run", () => {
+  const trust = (text) => good.replace("      - run: echo refuse", text);
+  const plan = good.replace("    environment: production\n    permissions:\n      contents: read\n      id-token: write\n", "    environment: production\n    permissions:\n      contents: read\n      id-token: write\n    outputs:\n      OUT\n");
+  const withOutput = (line) => plan.replace("OUT", line);
+  // An HMAC output, and the web build's hash, are fine
+  assert.deepEqual(deployTextProblems(withOutput("hash-hmac: ${{ steps.unpack.outputs.hash-hmac }}")), []);
+  assert.deepEqual(deployTextProblems(trust("      - env:\n          H: ${{ needs.plan.outputs.hash-hmac }}\n          B: ${{ needs.build.outputs.hash }}\n        run: echo ok")), []);
+  // A raw one isn't, by its name or by what it carries
+  assert.deepEqual(deployTextProblems(withOutput("hash: ${{ steps.unpack.outputs.hash }}")), [
+    "job plan's output hash names a hash: pass only an HMAC of one, as an output ending in -hmac, since an output reaches the log through any step that uses it",
+    "job plan's outputs uses steps.unpack.outputs.hash, a raw hash, which the log would show; use an -hmac output",
+  ]);
+  assert.match(deployTextProblems(withOutput("template-hash-copy: x")).join("\n"), /output template-hash-copy names a hash/);
+  assert.match(deployTextProblems(withOutput("digest: ${{ steps.synth.outputs.hash-true }}")).join("\n"), /outputs uses steps\.synth\.outputs\.hash-true, a raw hash/);
+  assert.deepEqual(deployTextProblems(trust("      - name: Check\n        env:\n          PLAN_HASH: ${{ needs.plan.outputs.hash }}\n        run: echo ok")), ["job trust, step 1 (Check) uses needs.plan.outputs.hash, a raw hash, which the log would show; use an -hmac output"]);
+  assert.match(deployTextProblems(trust("      - run: echo ${{ needs . synth . outputs . hash-copy }}")).join("\n"), /step 1 \(run\) uses needs\.synth\.outputs\.hash-copy/);
+  assert.match(deployTextProblems(trust("      - uses: actions/upload-artifact@abc\n        with:\n          name: ${{ steps.synth.outputs.HASH }}")).join("\n"), /uses steps\.synth\.outputs\.HASH, a raw hash/);
+  // In a job without the token too, and in a job's env
+  assert.match(deployTextProblems(good.replace("    steps:\n      - &release", "    env:\n      X: ${{ needs.plan.outputs.hash }}\n    steps:\n      - &release")).join("\n"), /job synth's env uses needs\.plan\.outputs\.hash/);
+  // Only the build job's own hash is the web build's
+  assert.match(deployTextProblems(trust("      - run: echo ${{ steps.hash.outputs.hash }}")).join("\n"), /uses steps\.hash\.outputs\.hash/);
+  assert.equal(hashRefAllowed("steps", "hash", "hash", "build"), true);
+  assert.equal(hashRefAllowed("needs", "synth", "hash", "plan"), false);
+  assert.equal(hashRefAllowed("needs", "synth", "artifact-id", "plan"), true);
 });
 
 test("refuses a YAML merge key anywhere", () => {

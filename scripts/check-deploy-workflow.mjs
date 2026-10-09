@@ -24,6 +24,14 @@
 //   5. Every actions/setup-node step, in any job, says `package-manager-cache: false`: setup-node
 //      v5 and later cache npm on their own when package.json names a packageManager (or
 //      devEngines.packageManager), so leaving it out could one day turn a cache on unseen.
+//   6. No raw assembly or template hash passes between jobs or steps where the log shows it: no
+//      job output whose name has "hash" in it unless it ends in -hmac (an HMAC under
+//      DEPLOY_ASSEMBLY_KEY), and no ${{ needs.<job>.outputs.<…hash…> }} or
+//      ${{ steps.<step>.outputs.<…hash…> }} in a job's env, outputs or with, or a step's env,
+//      with or run, unless it ends in -hmac. GitHub prints a step's env in its header, and its run
+//      with expressions filled in, masking only secrets; the source is public and the synth
+//      deterministic, so a template hash there could be brute-forced back to the account. The
+//      one exception is the build job's `hash`, of the web build, whose files are public anyway.
 //
 // It's a tripwire, not a proof: a run step could still reach the release's code some other way
 // (a curl of the tarball, say), and files the release's jobs hand over (artifacts, outputs) still
@@ -48,7 +56,27 @@ const MAIN_COMMIT = "${{ github.sha }}";
 const RELEASE_SHA = /needs\s*\.\s*release\s*\.\s*outputs\s*\.\s*sha/i;
 const FETCHES_CODE = /\bgit\b[^\n]*\b(checkout|fetch|clone|worktree|switch|pull|restore)\b|\bgh\b[^\n]*\b(repo\s+clone|pr\s+checkout)\b/i;
 
+/** The job whose `hash` output is of the public web build, not of an assembly. */
+export const WEB_BUILD_JOB = "build";
+const OUTPUT_REF = /\b(needs|steps)\s*\.\s*([A-Za-z0-9_-]+)\s*\.\s*outputs\s*\.\s*([A-Za-z0-9_-]+)/gi;
+
 const isMap = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/** Whether a reference to an output, from job `inJob`, may show in a log: not a raw hash, unless it's the web build's. */
+export function hashRefAllowed(kind, from, name, inJob) {
+  if (!/hash/i.test(name) || /-hmac$/i.test(name)) return true;
+  if (kind.toLowerCase() === "needs") return from === WEB_BUILD_JOB && name === "hash";
+  return inJob === WEB_BUILD_JOB && name === "hash";
+}
+
+/** Every raw-hash output reference in a value (env, outputs, with, run). */
+function rawHashRefs(value, inJob) {
+  const refs = [];
+  for (const [ref, kind, from, name] of JSON.stringify(value ?? null).matchAll(OUTPUT_REF)) {
+    if (!hashRefAllowed(kind, from, name, inJob)) refs.push(ref.replace(/\s+/g, ""));
+  }
+  return refs;
+}
 const squash = (s) => String(s).replace(/\s+/g, "");
 
 /** Whether these permissions (a job's or the workflow's) let a job request an OIDC token. */
@@ -87,6 +115,20 @@ export function deployProblems(workflow) {
   const jobs = isMap(workflow.jobs) ? workflow.jobs : {};
   for (const [id, job] of Object.entries(jobs)) {
     if (!isMap(job)) continue;
+    for (const name of Object.keys(isMap(job.outputs) ? job.outputs : {})) {
+      if (/hash/i.test(name) && !/-hmac$/i.test(name) && !(id === WEB_BUILD_JOB && name === "hash")) {
+        problems.push(`job ${id}'s output ${name} names a hash: pass only an HMAC of one, as an output ending in -hmac, since an output reaches the log through any step that uses it`);
+      }
+    }
+    for (const [where, value] of [["env", job.env], ["outputs", job.outputs], ["with", job.with]]) {
+      for (const ref of rawHashRefs(value, id)) problems.push(`job ${id}'s ${where} uses ${ref}, a raw hash, which the log would show; use an -hmac output`);
+    }
+    (Array.isArray(job.steps) ? job.steps : []).forEach((step, i) => {
+      if (!isMap(step)) return;
+      for (const ref of rawHashRefs({ env: step.env, with: step.with, run: step.run }, id)) {
+        problems.push(`job ${id}, step ${i + 1} (${step.name ?? step.uses ?? "run"}) uses ${ref}, a raw hash, which the log would show; use an -hmac output`);
+      }
+    });
     (Array.isArray(job.steps) ? job.steps : []).forEach((step, i) => {
       if (!isMap(step) || typeof step.uses !== "string" || !/^actions\/setup-node@/i.test(step.uses.trim())) return;
       const off = isMap(step.with) ? step.with["package-manager-cache"] : undefined;

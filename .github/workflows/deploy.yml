@@ -23,7 +23,7 @@ name: Deploy
 #                   commit, with and without the backup copy, and keeps both assemblies as the
 #                   run's artifact, the account ID swapped for a placeholder
 #                   (scripts/assembly-pack.sh) and the whole encrypted (scripts/assembly-seal.mjs),
-#                   with their hashes as outputs
+#                   with their hashes inside
 #   plan            `production` (approval 1): deploys nothing and runs no release code (only
 #                   main's tooling and main's locked CDK CLI, on the synth job's files as data);
 #                   signs in, drops to CDK's read-only lookup role, picks and unpacks the synth
@@ -69,7 +69,11 @@ name: Deploy
 # secret DEPLOY_ASSEMBLY_KEY (artifacts of a public repository are public, and its asset hashes
 # were computed over templates that named the account); plan opens it and puts the account back,
 # and each apply job synthesizes again from the same commit and must reach the plan's hash. No
-# job prints a template hash: one could be brute-forced back to the account too.
+# raw template hash goes into a job output, a step's env or with, or the log: GitHub prints a
+# step's env in its header and masks only secrets, and the source is public and the synth
+# deterministic, so anyone could brute-force the 12-digit account from one. synth seals its
+# hashes into the artifact, and plan hands the apply jobs only HMAC-SHA256(DEPLOY_ASSEMBLY_KEY,
+# hash) (assembly-seal.mjs hmac). scripts/check-deploy-workflow.mjs keeps it so.
 on:
   workflow_dispatch:
     inputs:
@@ -327,8 +331,9 @@ jobs:
     # placeholder (scripts/assembly-pack.sh) and the whole encrypted with the repository secret
     # DEPLOY_ASSEMBLY_KEY (scripts/assembly-seal.mjs): artifacts of a public repository are
     # public, and the asset hashes inside were computed over templates that named the account, so
-    # the account could be brute-forced from them. plan checks the one it uses against this job's
-    # hash output, which is never printed, for the same reason. The CDK app needs the account
+    # the account could be brute-forced from them. Each assembly's hash goes inside the sealed
+    # file (expected-hash/), never into an output or the log, for the same reason, and plan
+    # checks the one it uses against it. The CDK app needs the account
     # (the stacks name it, and an apply job's synth gets it from its credentials), so it gets it
     # from the repository secret AWS_DEPLOY_ROLE_ARN, which the trust job uses too: the account ID
     # isn't secret from the release commit, which deploys into it.
@@ -342,8 +347,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      hash-copy: ${{ steps.synth.outputs.hash-true }}
-      hash-no-copy: ${{ steps.synth.outputs.hash-false }}
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
     env:
       ENV_NAME: prod
@@ -400,9 +403,10 @@ jobs:
             context=(-c "envName=$ENV_NAME")
             if [[ "$copy" == false ]]; then context+=(-c backupCopy=false); fi
             CDK_DEFAULT_ACCOUNT="$account" ./node_modules/.bin/cdk synth --app "./node_modules/.bin/tsx bin/app.ts" --quiet --no-notices "${context[@]}"
-            # An output only: printed, it could be brute-forced back to the account
-            hash="$(bash ../.deploy-tools/scripts/assembly-hash.sh cdk.out)"
-            echo "hash-$copy=$hash" >> "$GITHUB_OUTPUT"
+            # Sealed with the assembly, never an output or printed: it could be brute-forced back
+            # to the account
+            mkdir -p "$RUNNER_TEMP/assembly/expected-hash"
+            bash ../.deploy-tools/scripts/assembly-hash.sh cdk.out > "$RUNNER_TEMP/assembly/expected-hash/backup-copy-$copy"
             bash ../.deploy-tools/scripts/assembly-pack.sh pack cdk.out "$RUNNER_TEMP/assembly/backup-copy-$copy" "$account"
           done
       # Both packed assemblies in one file, encrypted (AES-256-GCM, main's script), so the
@@ -440,7 +444,7 @@ jobs:
       contents: read
       id-token: write
     outputs:
-      hash: ${{ steps.unpack.outputs.hash }}
+      hash-hmac: ${{ steps.unpack.outputs.hash-hmac }}
       copy: ${{ steps.backup.outputs.copy }}
       stateless-changed: ${{ steps.stateless.outputs.changed }}
       stateful-changed: ${{ steps.stateful.outputs.changed }}
@@ -465,21 +469,18 @@ jobs:
         working-directory: .deploy-tools/infra
         run: npm ci --ignore-scripts --no-audit --no-fund
       # The synth and build jobs ran release code: take only real hashes and IDs from them, so
-      # they can't put their own text into a command or the summary the approver reads
+      # they can't put their own text into a command or the summary the approver reads. The
+      # build's hash is of the public web build, so it may show; synth's hashes are sealed.
       - name: Check the synth and build jobs' outputs
         env:
-          HASH_COPY: ${{ needs.synth.outputs.hash-copy }}
-          HASH_NO_COPY: ${{ needs.synth.outputs.hash-no-copy }}
           ASSEMBLY_ARTIFACT_ID: ${{ needs.synth.outputs.artifact-id }}
           BUILD_HASH: ${{ needs.build.outputs.hash }}
           BUILD_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
         run: |
-          for hash in "$HASH_COPY" "$HASH_NO_COPY" "$BUILD_HASH"; do
-            if [[ ! "$hash" =~ ^[0-9a-f]{64}$ ]]; then
-              echo "::error::A synth or build job's hash isn't one (a 64-character hex hash)"
-              exit 1
-            fi
-          done
+          if [[ ! "$BUILD_HASH" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::The build job's hash isn't one (a 64-character hex hash)"
+            exit 1
+          fi
           for id in "$ASSEMBLY_ARTIFACT_ID" "$BUILD_ARTIFACT_ID"; do
             if [[ ! "$id" =~ ^[0-9]+$ ]]; then
               echo "::error::A synth or build job's artifact ID isn't one (a number)"
@@ -565,18 +566,23 @@ jobs:
           fi
           echo "copy=$copy" >> "$GITHUB_OUTPUT"
       # The assembly for that answer, with this account's ID put back: byte for byte what the
-      # synth job wrote, so it must reach that job's hash, and each apply job's own synth must
-      # reach it too. No hash is printed: one could be brute-forced back to the account.
+      # synth job wrote, so it must reach the hash sealed with it, and each apply job's own synth
+      # must reach it too. The hash is never printed or passed on raw: only its HMAC under
+      # DEPLOY_ASSEMBLY_KEY goes to the apply jobs, since a raw one could be brute-forced back to
+      # the account.
       - name: Unpack the assembly
         id: unpack
         env:
           COPY: ${{ steps.backup.outputs.copy }}
-          HASH_COPY: ${{ needs.synth.outputs.hash-copy }}
-          HASH_NO_COPY: ${{ needs.synth.outputs.hash-no-copy }}
           QUALIFIER: ${{ steps.lookup.outputs.qualifier }}
+          DEPLOY_ASSEMBLY_KEY: ${{ secrets.DEPLOY_ASSEMBLY_KEY }}
         run: |
           account="$(aws sts get-caller-identity --query Account --output text)"
-          if [[ "$COPY" == true ]]; then expected="$HASH_COPY"; else expected="$HASH_NO_COPY"; fi
+          expected="$(cat "$RUNNER_TEMP/packed/expected-hash/backup-copy-$COPY")"
+          if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::The sealed assembly has no hash for backupCopy=$COPY. Run the deploy again."
+            exit 1
+          fi
           mkdir -p "$RUNNER_TEMP/plan"
           bash .deploy-tools/scripts/assembly-pack.sh unpack "$RUNNER_TEMP/packed/backup-copy-$COPY" "$RUNNER_TEMP/plan/cdk.out" "$account"
           # cdk.out isn't inert to the CLI: its manifest names the files cdk reads, the context
@@ -590,7 +596,8 @@ jobs:
             exit 1
           fi
           echo "The unpacked assembly's hash is the synth job's"
-          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+          hmac="$(node .deploy-tools/scripts/assembly-seal.mjs hmac <<< "$hash")"
+          echo "hash-hmac=$hmac" >> "$GITHUB_OUTPUT"
       # From a folder with nothing but the assembly (no cdk.json, so no app or plugin of the
       # release's), with main's cdk
       - name: Diff the stateful stacks
@@ -696,15 +703,20 @@ jobs:
           context=(-c "envName=$ENV_NAME")
           if [[ "${BACKUP_COPY:?}" == false ]]; then context+=(-c backupCopy=false); fi
           ./node_modules/.bin/cdk synth --app "./node_modules/.bin/tsx bin/app.ts" --quiet --no-notices "${context[@]}"
-          # An output only: printed, it could be brute-forced back to the account
-          hash="$(bash ../.deploy-tools/scripts/assembly-hash.sh cdk.out)"
-          echo "hash=$hash" >> "$GITHUB_OUTPUT"
-      - name: Check it's what the plan showed
+      # The plan passes on only the HMAC of its hash under DEPLOY_ASSEMBLY_KEY: this step hashes
+      # its own synth and compares HMACs, and the raw hash never leaves the step
+      - &check-plan-hash
+        name: Check it's what the plan showed
         env:
-          PLAN_HASH: ${{ needs.plan.outputs.hash }}
-          HASH: ${{ steps.synth.outputs.hash }}
+          PLAN_HASH_HMAC: ${{ needs.plan.outputs.hash-hmac }}
+          DEPLOY_ASSEMBLY_KEY: ${{ secrets.DEPLOY_ASSEMBLY_KEY }}
         run: |
-          if [[ -z "$PLAN_HASH" || "$HASH" != "$PLAN_HASH" ]]; then
+          if [[ ! "$PLAN_HASH_HMAC" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::The plan's hash HMAC isn't one (64 hex characters). Run the deploy again."
+            exit 1
+          fi
+          mine="$(bash .deploy-tools/scripts/assembly-hash.sh infra/cdk.out | node .deploy-tools/scripts/assembly-seal.mjs hmac)"
+          if [[ "$mine" != "$PLAN_HASH_HMAC" ]]; then
             echo "::error::This synth's template hash isn't the plan's: what would deploy isn't what was approved. Run the deploy again."
             exit 1
           fi
@@ -765,16 +777,7 @@ jobs:
       - *sign-in
       - *prove
       - *synth
-      - name: Check it's what the plan showed
-        env:
-          PLAN_HASH: ${{ needs.plan.outputs.hash }}
-          HASH: ${{ steps.synth.outputs.hash }}
-        run: |
-          if [[ -z "$PLAN_HASH" || "$HASH" != "$PLAN_HASH" ]]; then
-            echo "::error::This synth's template hash isn't the plan's: what would deploy isn't what was approved. Run the deploy again."
-            exit 1
-          fi
-          echo "Same templates as the plan"
+      - *check-plan-hash
       # The build job's web build, by its upload's ID, checked against that job's hash before
       # anything deploys, so a missing or changed build stops the job with nothing changed. That
       # job ran release code, so its outputs must look like a hash and an ID first.

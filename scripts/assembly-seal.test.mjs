@@ -1,20 +1,20 @@
 // node --test scripts/assembly-seal.test.mjs (part of npm run test:scripts)
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { KEY_ENV, MAGIC, open, seal, secretFrom } from "./assembly-seal.mjs";
+import { hashHmac, KEY_ENV, MAGIC, open, seal, secretFrom } from "./assembly-seal.mjs";
 
 const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "assembly-seal.mjs");
 const root = mkdtempSync(path.join(tmpdir(), "assembly-seal-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 // A made-up key, built so it reads as nothing like one (gitleaks)
 const key = "test key ".repeat(5);
-const run = (args, env = { [KEY_ENV]: key }) => spawnSync("node", [script, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, ...env } });
+const run = (args, env = { [KEY_ENV]: key }, input = undefined) => spawnSync("node", [script, ...args], { encoding: "utf8", input, env: { PATH: process.env.PATH, ...env } });
 const template = '{"Resources":{"R":{"Type":"AWS::SNS::Topic"}}}';
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -123,4 +123,23 @@ test("refuses a missing or short key, naming the secret, and bad usage", () => {
   assert.match(missing.stderr, /DEPLOY_ASSEMBLY_KEY isn't set/);
   assert.match(run(["unseal", "a", "b"]).stderr, /usage/);
   assert.match(run(["seal", "a"]).stderr, /usage/);
+});
+
+test("hmac gives HMAC-SHA256(key, hash) of an assembly hash, and nothing for anything else", () => {
+  const hash = sha("an assembly");
+  const expected = createHmac("sha256", key).update(hash).digest("hex");
+  assert.equal(hashHmac(hash, key), expected);
+  assert.notEqual(hashHmac(hash, `${key}-other`), expected);
+  const cmd = run(["hmac"], { [KEY_ENV]: key }, `${hash}\n`);
+  assert.equal(cmd.status, 0, cmd.stderr);
+  assert.equal(cmd.stdout, `${expected}\n`);
+  assert.equal(cmd.stdout.includes(hash), false);
+  for (const bad of ["", "abc", hash.toUpperCase(), `${hash}0`, `${hash} ${hash}`]) {
+    const refused = run(["hmac"], { [KEY_ENV]: key }, bad);
+    assert.equal(refused.status, 1, bad);
+    assert.match(refused.stderr, /hmac takes an assembly hash/);
+    assert.equal(refused.stdout, "");
+  }
+  assert.match(run(["hmac"], {}, hash).stderr, /DEPLOY_ASSEMBLY_KEY isn't set/);
+  assert.match(run(["hmac", "extra"], { [KEY_ENV]: key }, hash).stderr, /usage/);
 });

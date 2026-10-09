@@ -521,6 +521,8 @@ jobs:
           CDK_DEFAULT_ACCOUNT="$ACCOUNT" npx cdk synth --quiet
           synth="$(bash ../scripts/assembly-hash.sh cdk.out)"
           bash ../scripts/assembly-pack.sh pack cdk.out "$RUNNER_TEMP/packed/backup-copy-true" "$ACCOUNT"
+          mkdir "$RUNNER_TEMP/packed/expected-hash"
+          echo "$synth" > "$RUNNER_TEMP/packed/expected-hash/backup-copy-true"
           DEPLOY_ASSEMBLY_KEY="$(openssl rand -base64 32)"
           export DEPLOY_ASSEMBLY_KEY
           node ../scripts/assembly-seal.mjs seal "$RUNNER_TEMP/packed" "$RUNNER_TEMP/assembly.sealed"
@@ -531,7 +533,13 @@ jobs:
           unpacked="$(bash ../scripts/assembly-hash.sh "$RUNNER_TEMP/unpacked")"
           echo "$synth $unpacked"
           if [[ "$synth" != "$unpacked" ]]; then echo "::error::The packed and unpacked assembly's hash isn't the synth's, so the deploy's plan would always fail"; exit 1; fi
+          if [[ "$(cat "$RUNNER_TEMP/opened/expected-hash/backup-copy-true")" != "$synth" ]]; then echo "::error::The hash sealed with the assembly isn't the synth's"; exit 1; fi
+          # The plan hands the apply jobs only the HMAC: an apply job's own synth must reach it
+          plan_hmac="$(node ../scripts/assembly-seal.mjs hmac <<< "$unpacked")"
+          apply_hmac="$(bash ../scripts/assembly-hash.sh cdk.out | node ../scripts/assembly-seal.mjs hmac)"
+          if [[ ! "$plan_hmac" =~ ^[0-9a-f]{64}$ || "$plan_hmac" != "$apply_hmac" || "$plan_hmac" == "$synth" ]]; then echo "::error::The plan's and an apply job's hash HMACs don't match"; exit 1; fi
           if grep -qaF "$ACCOUNT" "$RUNNER_TEMP/assembly.sealed"; then echo "::error::The sealed assembly shows the account ID"; exit 1; fi
+          if grep -qaF "$synth" "$RUNNER_TEMP/assembly.sealed"; then echo "::error::The sealed assembly shows the assembly's hash"; exit 1; fi
           for file in cdk.out/*.json "$RUNNER_TEMP"/packed/backup-copy-true/*; do
             if grep -qaF "$(sha256sum "$file" | cut -d' ' -f1)" "$RUNNER_TEMP/assembly.sealed"; then echo "::error::The sealed assembly shows the SHA-256 of $file"; exit 1; fi
           done

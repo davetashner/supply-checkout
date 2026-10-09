@@ -8,6 +8,7 @@
 //
 //   DEPLOY_ASSEMBLY_KEY=… node scripts/assembly-seal.mjs seal <packed folder> <sealed file>
 //   DEPLOY_ASSEMBLY_KEY=… node scripts/assembly-seal.mjs open <sealed file> <new folder>
+//   bash scripts/assembly-hash.sh <cdk.out> | DEPLOY_ASSEMBLY_KEY=… node scripts/assembly-seal.mjs hmac
 //
 // seal  takes a folder of folders (backup-copy-true/, backup-copy-false/) of plain files, as
 //       assembly-pack.sh writes them, and writes one file: AES-256-GCM over the files' names and
@@ -18,10 +19,16 @@
 //       The plan's hash check against the synth job's hash (on the unpacked assembly) is still
 //       what proves the bytes; this only keeps them from the public.
 //
+// hmac  prints HMAC-SHA256(key, hash) of the assembly hash on its standard input (64 hex
+//       characters), refusing anything else. The deploy passes only these between jobs: a raw
+//       template hash in a job output reaches the public log (a step's env is printed in its
+//       header, and only secrets are masked), and the public source and a deterministic synth let
+//       anyone brute-force the 12-digit account from one. Without the key, an HMAC gives nothing.
+//
 // The key comes from the environment, never argv, and nothing here prints it. The synth job holds
 // it too, so it hides the assembly from the public, not from the release's code (which knows the
 // account anyway: it deploys into it).
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, scryptSync } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -139,6 +146,12 @@ export function open(bytes, secret) {
   });
 }
 
+/** HMAC-SHA256(secret, hash) of an assembly hash, in hex; refuses anything but a 64-character hex hash. */
+export function hashHmac(hash, secret) {
+  if (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) fail("hmac takes an assembly hash (64 hex characters) on its standard input");
+  return createHmac("sha256", secret).update(hash).digest("hex");
+}
+
 /** Writes opened files into `dir`, which mustn't exist yet. */
 export function writeFiles(files, dir) {
   create(dir, () => mkdirSync(dir));
@@ -154,9 +167,11 @@ export function writeFiles(files, dir) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const [mode, from, to] = process.argv.slice(2);
   try {
-    if (!["seal", "open"].includes(mode) || !from || !to) fail("usage: assembly-seal.mjs seal|open <from> <to>");
+    if (!(mode === "hmac" ? from === undefined : ["seal", "open"].includes(mode) && from && to)) fail("usage: assembly-seal.mjs seal|open <from> <to>, or hmac with the hash on standard input");
     const secret = secretFrom(process.env);
-    if (mode === "seal") {
+    if (mode === "hmac") {
+      console.log(hashHmac(readFileSync(0, "utf8").trim(), secret));
+    } else if (mode === "seal") {
       const files = packedFiles(from);
       const sealed = seal(files, secret);
       create(to, () => writeFileSync(to, sealed, { flag: "wx" }));
