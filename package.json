@@ -1,6 +1,6 @@
 {
   "name": "supply-checkout",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "private": true,
   "description": "Shared supply checkout projects with barcode and receipt scanning, built as a static web bundle.",
   "type": "module",
