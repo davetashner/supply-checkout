@@ -133,7 +133,7 @@ export async function start(config) {
   box.setAttribute("aria-live", "polite");
   document.querySelector(".top").after(box);
   // owner: the signed-in user, once the device's owner mark says it's them (see watchOwner)
-  let db = null, created = null, owner = null, switched = false;
+  let db = null, owner = null, switched = false;
   const session = createSession(config, {
     onSignedOut: () => { if (db) db.stop(); signIn(); },
     onRefreshed: () => { if (db) db.reconnect(); },
@@ -283,9 +283,8 @@ export async function start(config) {
       keyName = name;
       btn.disabled = true;
       try {
+        // A new team comes with the first-run checklist for its owner (firstRun below)
         const { team } = await session.api("POST", "/teams", { name }, { "Idempotency-Key": key });
-        // A new team: its owner gets the first-run checklist (firstRun below)
-        created = team.id;
         resolve(team);
       }
       catch (err) {
@@ -586,27 +585,44 @@ export async function start(config) {
     }
   }
 
-  // The first-run checklist (src/first-run.js) for an owner's open team: for a team they just
-  // created, or one whose checklist this device started and they haven't finished or
-  // dismissed. Its state is kept per team (firstRunKey); if storage can't be read, a team
-  // created now still gets it until the page is closed.
+  // The first-run checklist (src/first-run.js) for an owner's open team that has one it hasn't
+  // finished or dismissed. Its progress is the team's, kept on the server (supply-checkout-fs56):
+  // /me's `checklist`, which every new team starts with, and PATCH /teams/{teamId}/checklist
+  // when a receipt is saved or it's finished or dismissed, so every owner sees the same one on
+  // every device. The invite step ticks from the team: it has other members (/me's `members`),
+  // or a pending invite. A checklist an earlier version kept only on this device (firstRunKey)
+  // is started on the server, if the team has none, and then forgotten here.
   function firstRun(me, team) {
     if (team.role !== "owner" || team.closedAt || team.subscriptionEnded) return null;
-    const key = firstRunKey(team.id);
-    const state = local.json(key) || (created === team.id ? {} : null);
-    if (!state || state.done) return null;
+    const path = `/teams/${encodeURIComponent(team.id)}/checklist`;
+    const send = (change) => session.api("PATCH", path, change);
+    const key = firstRunKey(team.id), kept = local.json(key);
+    let checklist = team.checklist;
+    if (kept && !checklist && !kept.done) {
+      checklist = { receipt: kept.receipt === true, done: false };
+      send({ started: true, ...(checklist.receipt ? { receipt: true } : {}) }).then(() => local.remove(key), () => {});
+    } else if (kept) local.remove(key);
+    if (!checklist || checklist.done) return null;
+    const state = { receipt: checklist.receipt, invited: team.members > 1 };
     const fr = {
       state,
-      save: () => local.set(key, JSON.stringify(state)),
+      // Each change is the server's to keep; one that doesn't save is shown on this page only
+      save: (change) => { send(change).catch(() => {}); },
       // Set by the checklist, to redraw it
       onChange: () => {},
       invite: () => openMembers(session.api, team, me.user.id, changed, invited(fr)),
       importCsv: () => openImport(session.api, team.id, download),
     };
+    // An invite another owner, or this one on another device, sent and nobody has accepted yet
+    if (!state.invited) {
+      session.api("GET", `/teams/${encodeURIComponent(team.id)}/invites`).then(({ invites }) => {
+        if (invites.some((i) => i.inviteStatus === "pending")) invited(fr)();
+      }, () => {});
+    }
     return fr;
   }
   // What the members screen runs when an invite is sent: tick the checklist's step
-  const invited = (fr) => () => { if (fr) { fr.state.invited = true; fr.save(); fr.onChange(); } };
+  const invited = (fr) => () => { if (fr && !fr.state.invited) { fr.state.invited = true; fr.onChange(); } };
 
   function open(me, team) {
     // The session ended while the team was being chosen (a refresh found it over, or another

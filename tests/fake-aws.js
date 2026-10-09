@@ -299,7 +299,8 @@ export class FakeBackend {
       return [204];
     }
     if (path === "/teams" && method === "POST") {
-      const team = { ...TEAM, id: "t-" + call.headers["idempotency-key"].slice(0, 8), name: call.body.name, role: "owner" };
+      // A new team starts the first-run checklist (backend/src/data/checklist.ts)
+      const team = { ...TEAM, id: "t-" + call.headers["idempotency-key"].slice(0, 8), name: call.body.name, role: "owner", members: 1, checklist: { receipt: false, done: false } };
       const again = this.teams.find((t) => t.id === team.id);
       if (again) return [200, { team: again }];
       this.teams.push(team);
@@ -322,6 +323,9 @@ export class FakeBackend {
 
     m = path.match(/^\/teams\/([^/]+)\/support-actions$/);
     if (m) return this.support(decodeURIComponent(m[1]), call.query, err);
+
+    m = path.match(/^\/teams\/([^/]+)\/checklist$/);
+    if (m && method === "PATCH") return this.checklist(decodeURIComponent(m[1]), call.body, err);
 
     m = path.match(/^\/teams\/([^/]+)\/settings$/);
     if (m) return this.teamSettings(decodeURIComponent(m[1]), method, call.body, err);
@@ -483,6 +487,21 @@ export class FakeBackend {
     if (!mine) return err(403, "permission_denied", "not_member");
     if (mine.role === "viewer") return err(403, "permission_denied", "view_only");
     return [200, { usage: this.usageOf(team) }];
+  }
+
+  // The first-run checklist's progress as the API keeps it (backend/src/data/checklist.ts): owners
+  // of an open team only, each field only ever true; `started` starts one for a team without.
+  // /me carries it as the team's `checklist`
+  checklist(team, body, err) {
+    const mine = this.teams.find((t) => t.id === team);
+    if (!mine || mine.role !== "owner") return err(403, "permission_denied", mine ? "owners_only" : "not_member");
+    if (mine.closedAt) return err(403, "permission_denied", "team_closed");
+    if (mine.subscriptionEnded) return err(403, "permission_denied", "subscription_ended");
+    const fields = Object.keys(body || {});
+    if (!fields.length || fields.some((f) => !["started", "receipt", "done"].includes(f) || body[f] !== true)) return err(400, "bad_request");
+    const cur = mine.checklist || { receipt: false, done: false };
+    mine.checklist = { receipt: cur.receipt || !!body.receipt, done: cur.done || !!body.done };
+    return [200, { checklist: mine.checklist }];
   }
 
   // The team settings as the API runs them (backend/src/data/settings.ts): owners get the

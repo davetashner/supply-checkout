@@ -1057,6 +1057,50 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
+  /teams/{teamId}/checklist:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    patch:
+      tags: [settings]
+      operationId: setChecklist
+      summary: Mark the team's first-run checklist's progress. Owners only.
+      description: |
+        The first-run checklist the app shows a new team's owners
+        (supply-checkout-fs56). It's the team's, so every owner sees the same
+        one on every device: `GET /me` carries it as each team's `checklist`,
+        to owners only. Send any of the fields, each only ever `true`: a step
+        done stays done. `receipt` marks a scanned receipt saved, `done` the
+        checklist finished or dismissed, and `started` starts one for a team
+        that never had one (a new team always has one). Only these are stored:
+        the app ticks the other steps from the team's own data. Refused for a
+        closed team, and for one read-only for billing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                started: { type: boolean, enum: [true] }
+                receipt: { type: boolean, enum: [true] }
+                done: { type: boolean, enum: [true] }
+            example: { done: true }
+      responses:
+        "200":
+          description: The checklist after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checklist]
+                properties:
+                  checklist: { $ref: "#/components/schemas/Checklist" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429":
+          description: "Too many requests: API Gateway's throttle for this route (10 a second across all callers). Try again shortly."
   /me:
     get:
       tags: [account]
@@ -3273,6 +3317,18 @@ components:
         paymentGraceEndsAt: { type: [string, "null"], format: date-time, description: "A `past_due` team still in its 7-day grace period: when it becomes read-only unless the payment goes through. `null` otherwise." }
         billingAccount: { type: boolean, description: "The team has a Stripe customer (made by its first checkout), so its owners can open the Customer Portal (`createPortalSession`)." }
         cancelsAt: { type: [string, "null"], format: date-time, description: "When a subscription that was canceled (in the Customer Portal) ends: the end of its current period. It keeps working until then. `null` when it renews, or has already ended." }
+        checklist:
+          description: "Owners only: the first-run checklist's progress (`setChecklist`), or `null` for a team that never had one. Always `null` for contributors and viewers."
+          oneOf:
+            - $ref: "#/components/schemas/Checklist"
+            - type: "null"
+    Checklist:
+      type: object
+      description: "The team's first-run checklist's stored progress (`setChecklist`)."
+      required: [receipt, done]
+      properties:
+        receipt: { type: boolean, description: An owner saved a scanned receipt. }
+        done: { type: boolean, description: An owner finished or dismissed the checklist. }
     Preferences:
       type: object
       description: The caller's own app preferences, the defaults until they change one.

@@ -3,11 +3,13 @@
 // empty team ready: add supplies (by hand, or a CSV from the import's template), invite the
 // crew, create a first project, and scan a receipt where receipt reading is available. Each step
 // ticks itself off from what's saved: the team has an item, someone was invited from the
-// members screen, the team has a project, a scanned receipt was saved (receiptSaved()). It
-// shows until every step is done or the owner dismisses it, and that's remembered for the team.
+// members screen (or the team has other members or a pending invite), the team has a project, a
+// scanned receipt was saved (receiptSaved()). It shows until every step is done or an owner
+// dismisses it, and that's kept for the team on the server, so it's the same on every device.
 //
-// cap is the runtime's use("firstRun") (account.js): { state, save(), invite(), importCsv(),
-// onChange }. act is the app's side: { addItem(), newProject(), redraw() }.
+// cap is the runtime's use("firstRun") (account.js): { state: { receipt, invited }, save(change),
+// invite(), importCsv(), onChange }, where save sends { receipt: true } or { done: true }. act
+// is the app's side: { addItem(), newProject(), redraw() }.
 import { morph } from "./dom.js";
 
 const STEPS = [
@@ -29,8 +31,6 @@ const action = ([a, label, cls]) => a === "receiptFile"
 export function createFirstRun(cap, act) {
   const { state } = cap;
   let done = {}, closed = false;
-  // Kept from the start, so a reload before any step is done still shows it
-  cap.save();
   cap.onChange = act.redraw;
 
   const box = document.createElement("section");
@@ -40,7 +40,7 @@ export function createFirstRun(cap, act) {
   box.hidden = true;
   document.getElementById("main").before(box);
 
-  function finish() { state.done = true; cap.save(); }
+  function finish() { state.done = true; cap.save({ done: true }); }
   box.addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b) return;
@@ -81,8 +81,9 @@ export function createFirstRun(cap, act) {
     },
     // A receipt was saved (src/main.js's saveReceipt): its step is done, and stays done
     receiptSaved() {
+      if (state.receipt) return;
       state.receipt = true;
-      cap.save();
+      cap.save({ receipt: true });
     },
   };
 }

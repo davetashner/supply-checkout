@@ -256,6 +256,8 @@ export async function createTeam(
     owners: 1,
     members: 1,
     createdAt,
+    // Every new team starts the first-run checklist for its owners (checklist.ts)
+    checklistStartedAt: createdAt,
     version: 1,
     ...(owner.test === true ? { test: true as const } : {}),
   };

@@ -20,10 +20,10 @@ export const TEAM_KEY = "supplyCheckout.team";
 // web builds'), and is forgotten the same way.
 export const DRAFT_KEY = "supplyCheckout.receiptDraft";
 export const draftKey = (teamId) => `${DRAFT_KEY}.${teamId}`;
-// The first-run checklist's state for a team this device's owner created (src/first-run.js):
-// {} while it's showing, invited once they've invited someone, receipt once they've saved a
-// scanned receipt, done once it's finished or dismissed. Not forgotten on sign-out, so a
-// dismissed checklist stays dismissed; it holds no team data.
+// Where earlier versions kept the first-run checklist's state for a team this device's owner
+// created ({} while it showed, receipt once a scanned receipt was saved, done once finished or
+// dismissed). The server keeps it now (supply-checkout-fs56): account.js moves one still
+// showing there, and forgets the key.
 export const FIRST_RUN_KEY = "supplyCheckout.firstRun";
 export const firstRunKey = (teamId) => `${FIRST_RUN_KEY}.${teamId}`;
 // Whose the team choice and drafts on this device are: the user ID from /me. A session can

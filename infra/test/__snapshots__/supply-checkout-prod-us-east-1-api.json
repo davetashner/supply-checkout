@@ -5590,6 +5590,56 @@
         }
       }
     },
+    "HttpApiPATCHteamsteamIdchecklistDataIntegrationPermission8C258B50": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "DataFunctionLive5A545D6E"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/checklist"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPATCHteamsteamIdchecklist131BFE9E": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "PATCH /teams/{teamId}/checklist",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETteamsteamIdproductsDataIntegration012ABD77"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiGETteamsteamIdsupportactionsDataIntegrationPermissionB53A05A1": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {
@@ -7791,6 +7841,10 @@
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
           },
+          "PATCH /teams/{teamId}/checklist": {
+            "ThrottlingRateLimit": 10,
+            "ThrottlingBurstLimit": 20
+          },
           "POST /teams/{teamId}/receipts/read": {
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
@@ -7982,6 +8036,8 @@
         "HttpApiGETteamsteamIdreceiptsusage11D88952",
         "HttpApiPATCHmepreferencesAccountIntegrationPermission3918B86B",
         "HttpApiPATCHmepreferences176919F2",
+        "HttpApiPATCHteamsteamIdchecklistDataIntegrationPermission8C258B50",
+        "HttpApiPATCHteamsteamIdchecklist131BFE9E",
         "HttpApiPATCHteamsteamIdmembersuserIdAccountIntegrationPermission15C68DE8",
         "HttpApiPATCHteamsteamIdmembersuserIdEF500EC2",
         "HttpApiPOSTauthpasswordresetconfirmPasswordResetIntegrationPermission7D1055ED",
