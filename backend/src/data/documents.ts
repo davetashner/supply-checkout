@@ -397,6 +397,14 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
 const KIND_READS = 25;
 
 /**
+ * The most lines one document write may add to a project, each read for its
+ * item's kind. A receipt read has at most 200 (MAX_RECEIPT_LINES), and a
+ * receipt saved as a new project writes its lines with the project; anything
+ * else adds one at a time, or through the commands.
+ */
+export const MAX_NEW_LINES = 500;
+
+/**
  * A line a document write adds has its item's kind (supply-checkout-1dg.19):
  * no supply line (no `kind`, whose counts the write may set) under an item
  * that is company equipment, and no equipment line under a supply.
@@ -406,18 +414,25 @@ const KIND_READS = 25;
  * taken as, whatever the item's kind is now (ADR 0017, decision 8), so the
  * commands go by the line, and only lines the write adds are read for.
  * A line under a key that isn't an item (a one-off, or an item since deleted)
- * has no kind to agree with, and no stock for a return to add to. Reads only
- * `kind`, consistently, a few items at a time.
+ * has no kind to agree with, and no stock for a return to add to; a key no
+ * item could have (productKey) isn't read at all. Reads only `kind`,
+ * consistently, a few items at a time (the data API's role has GetItem, not
+ * BatchGetItem), and at most MAX_NEW_LINES per write.
  */
 async function checkNewLineKinds(db: Db, teamId: string, data: DocumentData, before: StoredDocument | undefined): Promise<void> {
   const storedLines = isMap(before?.data.items) ? before.data.items : {};
   const lines = isMap(data.items) ? data.items : {};
   // (checkKinds has refused a new line bought for the client: only addLines adds one)
   const added = Object.entries(lines).filter(([key, line]) => isMap(line) && !(Object.hasOwn(storedLines, key) && isMap(storedLines[key]))) as [string, Record<string, unknown>][];
-  for (let i = 0; i < added.length; i += KIND_READS) {
+  if (added.length > MAX_NEW_LINES) throw new InvalidInputError(`A write adds at most ${MAX_NEW_LINES} lines to a project`);
+  const read = added.filter(([key]) => isProductKey(key));
+  for (let i = 0; i < read.length; i += KIND_READS) {
     await Promise.all(
-      added.slice(i, i + KIND_READS).map(async ([key, line]) => {
-        const product = await readKind(db, teamId, key);
+      read.slice(i, i + KIND_READS).map(async ([key, line]) => {
+        const { Item: product } = await connection(db).doc.send(
+          new GetCommand({ TableName: db.tableName, Key: keys.product(teamId, key), ConsistentRead: true, ProjectionExpression: "PK, #kind", ExpressionAttributeNames: { "#kind": "kind" } }),
+        );
+        // No such item (its PK is read so that one with no kind is still found)
         if (!product) return;
         const equipment = product.kind === "equipment";
         if ((line.kind === "equipment") !== equipment) {
@@ -432,18 +447,14 @@ async function checkNewLineKinds(db: Db, teamId: string, data: DocumentData, bef
   }
 }
 
-/** A product's `kind` (and its PK, so one with no kind is still found), or undefined when there's no such product, or the key can't name one. */
-async function readKind(db: Db, teamId: string, key: string): Promise<Record<string, unknown> | undefined> {
-  let Key: Record<string, string>;
+/** Whether `key` could be a product's key (productKey). */
+function isProductKey(key: string): boolean {
   try {
-    Key = keys.product(teamId, key);
+    productKey(key);
+    return true;
   } catch {
-    return undefined;
+    return false;
   }
-  const { Item } = await connection(db).doc.send(
-    new GetCommand({ TableName: db.tableName, Key, ConsistentRead: true, ProjectionExpression: "PK, #kind", ExpressionAttributeNames: { "#kind": "kind" } }),
-  );
-  return Item;
 }
 
 /**

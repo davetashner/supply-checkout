@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
 import { InvalidInputError } from "../src/data/index.js";
+import { MAX_NEW_LINES } from "../src/data/documents.js";
 import type { Observability } from "../src/observability/index.js";
 import { MemoryTable } from "./memory-table.js";
 
@@ -473,6 +474,11 @@ describe("project documents and the new fields", () => {
     expect(projectVersion()).toBe(v);
     // A supply product with no kind, a key that's no item (a one-off, or deleted), and a key no item could have are fine
     expect(await patchProject({ items: { ...many, "0123": { name: "Nitrile gloves", price: 12.5, out: 3, returned: 0 }, drill: { name: "Drill", kind: "equipment", out: 0 }, ["k".repeat(300)]: { name: "Long", price: 1, out: 1 } } })).toMatchObject({ status: 200 });
+    // At most MAX_NEW_LINES added by one write; lines already there don't count
+    const lots = (n: number, from = 0) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`bulk-${from + i}`, { name: "Bulk", price: 1, out: 1 }]));
+    expect(await patchProject({ items: lots(MAX_NEW_LINES + 1) })).toMatchObject({ status: 400, body: { error: { message: `A write adds at most ${MAX_NEW_LINES} lines to a project` } } });
+    expect(await patchProject({ items: lots(MAX_NEW_LINES) })).toMatchObject({ status: 200 });
+    expect(await patchProject({ items: { ...lots(MAX_NEW_LINES), ...lots(1, MAX_NEW_LINES) } })).toMatchObject({ status: 200 });
     // An equipment line taken by checkout, then edited by a write, is not new
     expect(await call("POST", CHECKOUT, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 200 });
     expect(await patchProject({ items: { ladder: { name: "Ladder (tall)" } } })).toMatchObject({ status: 200 });
