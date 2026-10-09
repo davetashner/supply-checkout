@@ -1,4 +1,4 @@
-import { DEMO, OPS, SITE, buildApp, currentBuild } from "../scripts/builds.mjs";
+import { WITH_WEB, buildApp, currentBuild } from "../scripts/builds.mjs";
 import { enabled, report } from "./coverage.js";
 import { acquireRunLock } from "./run-lock.js";
 
@@ -8,8 +8,6 @@ import { acquireRunLock } from "./run-lock.js";
 export default async function globalSetup() {
   await acquireRunLock();
   await buildApp(currentBuild());
-  await buildApp(DEMO);
-  await buildApp(OPS);
-  await buildApp(SITE);
+  for (const build of WITH_WEB) await buildApp(build);
   if (enabled) report().cleanCache();
 }

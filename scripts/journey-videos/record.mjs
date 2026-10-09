@@ -26,7 +26,9 @@
 // phone the names end in -phone. With --evidence, the traces and screenshots go in
 // dist/journey-videos/evidence/ (t<n>-trace.zip, t<n>-shot-<k>.jpg), named in the sidecar. It holds the Playwright run lock (tests/run-lock.js) from start
 // to end, runs one test at a time in one Chromium, and exits 1 if any recorded test failed; the
-// videos are still written, showing the failure.
+// videos are still written, showing the failure. It exits 2 if it couldn't record at all (a
+// build, the test listing or the recording run failed), so a caller can tell the two apart:
+// the release's evidence job carries on after 1 and stops after 2.
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -185,7 +187,7 @@ async function main() {
   const { frame, titleCard, stepCard, endCard } = await import("./director.mjs");
   const { concatWebm, webmDuration } = await import("./webm.mjs");
   const { acquireRunLock, releaseRunLock } = await import("../../tests/run-lock.js");
-  const { buildApp, distDir, DEMO } = await import("../builds.mjs");
+  const { buildApp, distDir, WITH_WEB } = await import("../builds.mjs");
   const { run, onInterrupt } = await import("./process.mjs");
   const registry = JSON.parse(readFileSync(join(ROOT, "journeys/registry.json"), "utf8"));
   const size = frame(opts.viewport, { marketing: opts.marketing });
@@ -211,8 +213,9 @@ async function main() {
   };
   const stopHandling = onInterrupt(cleanup);
   try {
-    // Listing the tests loads the web build, and tests/demo.spec.js the demo's
-    for (const build of ["web", DEMO]) {
+    // Listing the tests loads every spec: the web build's, and the demo's, the operator page's
+    // and the home page's (tests/global-setup.js builds the same ones)
+    for (const build of ["web", ...WITH_WEB]) {
       if (!opts.build && existsSync(join(distDir(build), "index.html"))) continue;
       console.log(`Building the ${build} app…`);
       await buildApp(build);
@@ -278,7 +281,7 @@ async function main() {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   main().catch((error) => {
-    console.error(error.message || error);
-    process.exitCode = 1;
+    console.error(`No journey videos recorded: ${error.message || error}`);
+    process.exitCode = 2;
   });
 }
