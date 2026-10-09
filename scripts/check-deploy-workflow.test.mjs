@@ -123,7 +123,7 @@ test("rule 2: a job that can request the token uses only actions/* actions", () 
   assert.match(deployTextProblems(step("      - uses: someone/action@v1")).join("\n"), /may use only actions\/\* actions, not someone\/action@v1/);
   assert.match(deployTextProblems(step("      - uses: actions/checkout/../../evil@v1")).join("\n"), /may use only actions\/\* actions/);
   assert.match(deployTextProblems(step("      - uses: 5")).join("\n"), /may use only actions\/\* actions, not 5/);
-  assert.deepEqual(deployTextProblems(step("      - uses: actions/setup-node@abc")), []);
+  assert.deepEqual(deployTextProblems(step("      - uses: actions/setup-node@abc\n        with:\n          package-manager-cache: false")), []);
 });
 
 test("rule 2: a job that inherits the workflow's permissions is checked too", () => {
@@ -140,8 +140,8 @@ test("rule 3: no cache in a job that can request the token, the apply jobs inclu
   const plan = (text) => good.replace("      - uses: actions/download-artifact@abc", text);
   assert.deepEqual(deployTextProblems(plan("      - uses: actions/cache@abc\n        with:\n          path: x\n          key: y")), ["job plan, step 2 (actions/cache@abc): the job can request the OIDC token, so it may restore no cache"]);
   assert.match(deployTextProblems(plan("      - uses: actions/cache/restore@abc")).join("\n"), /may restore no cache/);
-  assert.match(deployTextProblems(plan("      - name: Node\n        uses: actions/setup-node@abc\n        with:\n          cache: npm")).join("\n"), /step 2 \(Node\): .*may restore no cache/);
-  assert.deepEqual(deployTextProblems(plan("      - uses: actions/setup-node@abc\n        with:\n          node-version: 24")), []);
+  assert.match(deployTextProblems(plan("      - name: Node\n        uses: actions/setup-node@abc\n        with:\n          cache: npm\n          package-manager-cache: false")).join("\n"), /step 2 \(Node\): .*may restore no cache/);
+  assert.deepEqual(deployTextProblems(plan("      - uses: actions/setup-node@abc\n        with:\n          node-version: 24\n          package-manager-cache: false")), []);
   const applyCache = good.replace("  apply:\n    needs: [release, plan, apply-stateful]\n    runs-on: x\n    environment: production\n    permissions:\n      id-token: write\n    steps:\n      - *release", "  apply:\n    needs: [release, plan, apply-stateful]\n    runs-on: x\n    environment: production\n    permissions:\n      id-token: write\n    steps:\n      - *release\n      - uses: actions/cache@abc");
   assert.deepEqual(deployTextProblems(applyCache), ["job apply, step 2 (actions/cache@abc): the job can request the OIDC token, so it may restore no cache"]);
   // A job without the token may (it's not deploy.yml's way, but this rule is about the token)
@@ -154,6 +154,22 @@ test("rule 4: the jobs that run the release with the token are past an apply app
   assert.match(deployTextProblems(good.replace("  apply:\n    needs: [release, plan, apply-stateful]", "  apply:\n    needs: [release]")).join("\n"), /job apply runs the release/);
   // journeys only after apply
   assert.match(deployTextProblems(good.replace("    needs: [release, apply]\n", "    needs: [release]\n")).join("\n"), /job journeys runs the release/);
+});
+
+test("rule 5: every setup-node says package-manager-cache: false, in every job", () => {
+  const node = (withs) => `      - name: Node\n        uses: actions/setup-node@abc\n${withs === undefined ? "" : `        with:\n${withs}`}`;
+  const inPlan = (text) => good.replace("      - uses: actions/download-artifact@abc", text);
+  const inSynth = (text) => good.replace("    steps:\n      - &release", `    steps:\n${text}\n      - &release`);
+  const problem = (job, step) => `job ${job}, step ${step} (Node): setup-node must say package-manager-cache: false, or it may cache on its own`;
+  assert.deepEqual(deployTextProblems(inPlan(node("          node-version: 24"))), [problem("plan", 2)]);
+  assert.deepEqual(deployTextProblems(inPlan(node(undefined))), [problem("plan", 2)]);
+  assert.deepEqual(deployTextProblems(inPlan(node("          package-manager-cache: true"))), [problem("plan", 2)]);
+  // A job without the token too: synth's install could be cached
+  assert.deepEqual(deployTextProblems(inSynth(node("          node-version: 24"))), [problem("synth", 1)]);
+  assert.deepEqual(deployTextProblems(inSynth(node("          package-manager-cache: false"))), []);
+  assert.deepEqual(deployTextProblems(inPlan(node("          package-manager-cache: 'false'"))), []);
+  // Case doesn't hide the action
+  assert.deepEqual(deployTextProblems(inPlan(node(undefined).replace("actions/setup-node", "Actions/Setup-Node"))), [problem("plan", 2)]);
 });
 
 test("refuses a YAML merge key anywhere", () => {

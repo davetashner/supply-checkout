@@ -21,6 +21,9 @@
 //   4. Except the jobs in AFTER_APPLY_APPROVAL, which deploy the release and so run its code:
 //      each must be past an apply approval, in an environment and after `plan`, or after such a
 //      job.
+//   5. Every actions/setup-node step, in any job, says `package-manager-cache: false`: setup-node
+//      v5 and later cache npm on their own when package.json names a packageManager (or
+//      devEngines.packageManager), so leaving it out could one day turn a cache on unseen.
 //
 // It's a tripwire, not a proof: a run step could still reach the release's code some other way
 // (a curl of the tarball, say), and files the release's jobs hand over (artifacts, outputs) still
@@ -84,6 +87,13 @@ export function deployProblems(workflow) {
   const jobs = isMap(workflow.jobs) ? workflow.jobs : {};
   for (const [id, job] of Object.entries(jobs)) {
     if (!isMap(job)) continue;
+    (Array.isArray(job.steps) ? job.steps : []).forEach((step, i) => {
+      if (!isMap(step) || typeof step.uses !== "string" || !/^actions\/setup-node@/i.test(step.uses.trim())) return;
+      const off = isMap(step.with) ? step.with["package-manager-cache"] : undefined;
+      if (off !== false && String(off).trim() !== "false") {
+        problems.push(`job ${id}, step ${i + 1} (${step.name ?? step.uses}): setup-node must say package-manager-cache: false, or it may cache on its own`);
+      }
+    });
     const permissions = job.permissions === undefined ? workflow.permissions : job.permissions;
     if (!grantsIdToken(permissions)) continue;
     (Array.isArray(job.steps) ? job.steps : []).forEach((step, i) => {
