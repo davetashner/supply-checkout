@@ -2,7 +2,8 @@
 // the IAM layer of isolation for starting a checkout.
 //
 // Like the data function, the billing function's own role can't reach the
-// table. For each request it assumes the billing-access role tagged with:
+// table, but for when a user's password was last reset (session-reset.ts).
+// For each request it assumes the billing-access role tagged with:
 //
 //   teamId          the path's team; the caller's membership is checked on
 //                   this handle before anything else (authorizeTeam)      TEAM#<teamId>

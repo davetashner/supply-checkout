@@ -32,27 +32,23 @@ working:
 
 ## Why
 
-The artifact saves a checkout as two writes: the project line (`PATCH` with the
-line's new absolute `out`), then the stock (`addStock` in `src/moves.js`, a
-read-then-write). Marks on the line and the item keep a retry from counting twice
-there, but two people
-checking out the same line at once can lose a count, and nothing records why
-stock changed.
+The retired claude.ai artifact saved a checkout as two writes: the project line
+(`PATCH` with the line's new absolute `out`), then the stock (a read-then-write).
+Marks on the line and the item kept a retry from counting twice there, but two
+people checking out the same line at once could lose a count, and nothing
+recorded why stock changed.
 
 Each command here is **one DynamoDB transaction**: the line, the stock and a
 movement record change together or not at all. Counts are added on the server,
 so concurrent checkouts can't lose one. Every command carries an **operation
 ID**, so a retry returns the first result instead of applying it again.
 
-The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-runtime-adapter.md)).
-
 ## What the adapter switches
 
-`src/moves.js` sends every checkout and return: through the commands when the
-db has `command` (the web build's adapter, `src/aws/db.js`), otherwise as the
-artifact's two writes. It saves an item whose stock changes outside a project
-(`saveItem`) through the adapter's `saveItem` when there is one, otherwise as
-the artifact's document write.
+`src/moves.js` sends every checkout and return through the commands (the web
+build's adapter, `src/aws/db.js`), and saves an item whose stock changes outside
+a project through the adapter's `saveItem`. The demo and the tests' mock runtime
+(`tests/mock-claude.js`) have the same commands, run in the page.
 
 | App action (src/main.js) | Artifact build | Web build (AWS adapter) |
 | --- | --- | --- |
@@ -415,7 +411,7 @@ movement or the operation record changed.
 | `403 permission_denied`, `reason: "not_member"` | Not a member of the team | As for document writes |
 | `404 not_found` | No such project, or (stock adjustment) no such item | Show the message (the web build handles it as for `400`) |
 | `409 aborted` | The project is closed ("Reopen it to …"), or the line or item changed on every retry | Show the message. Safe to retry with the same ID |
-| `409 aborted`, `reason: "equipment_out"` | A document write closing a project (Finished Return) while company equipment is still out on it | Ask about each piece still out (back, still at the job, or lost or broken), then close |
+| `409 aborted`, `reason: "equipment_out"` | A document write closing a project (Finished Return), or removing an equipment line, while company equipment is still out on it | Ask about each piece still out (back, still at the job, or lost or broken), then close |
 | `409 aborted`, `reason: "adhoc_open"` | A document write reopening a finished General Use project while another General Use project is open | Show the message: finish the open one first |
 | `429`, `5xx`, timeout, network error | Unknown whether it ran | Retry with the same ID, with backoff |
 
@@ -427,14 +423,36 @@ before answering `409`, so `409` from contention is rare.
 - **Open projects only.** Checkout and return need the project's `status` to be
   anything but `closed`, checked inside the transaction. A closed project takes
   no checkouts and **no returns**: to record a late return, reopen the project,
-  return, and finish the return again, or correct the line's counts with a
-  line edit (which doesn't move stock). This matches the app, which hides the
+  return, and finish the return again, or correct a supply line's counts with
+  a line edit (which doesn't move stock). This matches the app, which hides the
   scan bar on a closed project ([section 4a](../architecture/README.md#4a-project-states)).
 - **Returned never exceeds out**, checked inside the transaction. With
   equipment lost or broken, `returned + lost` never exceeds `out`.
 - **No project closes with equipment out.** A `PUT` or `PATCH` that sets
   `status: "closed"` is refused with `409 aborted`, reason `equipment_out`,
-  while any equipment line has `out − returned − lost > 0`.
+  while any equipment line has `out − returned − lost > 0`. Removing such a
+  line (leaving it out of a `PUT`, or `null` in a `PATCH`) is refused the
+  same way, so what's out can't drop off the project.
+- **Equipment counts change only through commands.** On an equipment line
+  that's already on the project, a `PUT` or `PATCH` may only repeat the stored
+  `out`, `returned` and `lost` (0 for one stored as missing); anything else is
+  refused with `400`. They change through checkout, return, lost and move,
+  which move stock and record movements, so two document writes (`out: 0`,
+  then a removal or `status: "closed"`) can't get past the rule above. An
+  equipment line the write adds has nothing out: a whole-number `out` equal
+  to its `returned` plus `lost` (usually all 0), or it's refused with `400`.
+  Equipment goes out only through checkout, quick take and move, so a later
+  return can't bring back stock that never left storage. A supply line's
+  counts can still be corrected by a line edit.
+- **Deleting a project drops what's out on it.** Deleting a project isn't
+  refused while equipment is still out on it (ADR 0017, section 4): its lines
+  go with it, so nothing tracks that equipment any more, and stock doesn't
+  change. Return it or mark it lost first, or count it back into storage
+  afterwards with a `count` stock adjustment.
+- **A line is an object.** In a `PATCH`, `"items": {"<key>": null}` removes
+  the line (it isn't stored as `null`); any other value that isn't an object
+  is refused with `400`, unless it's a legacy value the write carries over
+  unchanged.
 - **The line fields are checked on document writes too** (`documents.ts`):
   a line's `kind` is `"equipment"` or missing and can't change once the line
   exists; `lost` and `lostCharge` are only on equipment lines (a charge only

@@ -5,7 +5,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import type { BillingScope, DbForBilling } from "../src/api/billing-db.js";
-import { type BillingStripe, type CheckoutSessionParams, createBillingHandler, idempotencyKey, INVOICE_PAGE, type InvoiceLike, type PortalSessionParams, trialEnd } from "../src/api/billing-handler.js";
+import { type BillingStripe, type CheckoutSessionParams, createBillingHandler, idempotencyKey, INVOICE_PAGE, type InvoiceLike, type PortalSessionParams, trialAllowed, trialEnd } from "../src/api/billing-handler.js";
 import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
@@ -363,6 +363,63 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
     patchTeam({ trialEndsAt: undefined, createdAt: new Date(now - 2 * DAY).toISOString() });
     await checkout();
     expect(stripe.state.sessions[0]?.params.subscription_data.trial_end).toBe(Math.floor((now + (TRIAL_DAYS - 2) * DAY) / 1000));
+  });
+
+  describe("never a trial for a team that is or was unpaid (supply-checkout-8jc.44)", () => {
+    const owed = (status: string, amount_due: number, amount_paid = 0) => ({ id: `in_test_${status}`, number: null, status, created: 0, currency: "usd", total: amount_due, amount_due, amount_paid, customer: "cus_test_9" });
+    const noTrial = async () => {
+      const { status, body } = await checkout();
+      expect(status).toBe(201);
+      expect(body.checkout.trialEndsAt).toBeNull();
+      const params = stripe.state.sessions[0]?.params as CheckoutSessionParams;
+      expect(params.payment_method_collection).toBe("always");
+      expect(params.subscription_data).toEqual({ metadata: { teamId: TEAM, plan: "starter" } });
+    };
+
+    it("gives none to an unpaid team still in its app trial, and reads no invoices for it", async () => {
+      // Trying to game it: unpaid, with days of the app trial left, then a trial to have the debt written off
+      patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "unpaid" });
+      await noTrial();
+      expect(stripe.state.invoiceLists).toEqual([]);
+    });
+
+    it("gives none when any of the customer's subscriptions is unpaid, though the team hasn't heard", async () => {
+      patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "canceled" });
+      stripe.state.subscriptions = [{ status: "canceled" }, { status: "unpaid" }];
+      await noTrial();
+    });
+
+    it.each([
+      ["written off (void)", owed("void", 900)],
+      ["still owed", owed("open", 900)],
+      ["uncollectible", owed("uncollectible", 900)],
+      ["paid", owed("paid", 900, 900)],
+    ])("gives none to a customer with an invoice %s", async (_, invoice) => {
+      patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "canceled" });
+      stripe.state.invoices = [owed("paid", 0), invoice];
+      await noTrial();
+      expect(stripe.state.invoiceLists).toEqual([{ customer: "cus_test_9", limit: 100 }]);
+    });
+
+    it("still gives one to a customer only ever invoiced $0, or with only a draft", async () => {
+      patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "canceled" });
+      stripe.state.invoices = [owed("paid", 0), owed("draft", 900)];
+      const { body } = await checkout();
+      expect(body.checkout.trialEndsAt).toBe(new Date(now + 13 * DAY).toISOString());
+      expect(stripe.state.sessions[0]?.params.payment_method_collection).toBe("if_required");
+    });
+
+    it("decides each rule on its own", () => {
+      const team = { status: "canceled", trialEndsAt: new Date(now + 13 * DAY).toISOString() };
+      expect(trialAllowed(team, now, [], [])).toBe(true);
+      expect(trialAllowed({ ...team, trialEndsAt: new Date(now - DAY).toISOString() }, now, [], [])).toBe(false);
+      expect(trialAllowed({ ...team, status: "unpaid" }, now, [], [])).toBe(false);
+      expect(trialAllowed(team, now, [{ status: "unpaid" }], [])).toBe(false);
+      expect(trialAllowed(team, now, [], [{ status: "void", amount_due: 1, amount_paid: 0 }])).toBe(false);
+      expect(trialAllowed(team, now, [], [{ status: "paid", amount_due: 0, amount_paid: 1 }])).toBe(false);
+      expect(trialAllowed(team, now, [], [{ status: "draft", amount_due: 1, amount_paid: 0 }])).toBe(true);
+      expect(trialAllowed({ ...team, trialEndsAt: "never" }, now, [], [])).toBe(false);
+    });
   });
 
   it("works out the trial's end", () => {
@@ -942,12 +999,66 @@ describe("GET /teams/{teamId}/billing/invoices (supply-checkout-eja)", () => {
     expect(stripe.state.invoiceLists).toHaveLength(0);
   });
 
-  it("refuses a closed team", async () => {
-    patchTeam({ closedAt: new Date(now - DAY).toISOString(), purgeAfter: new Date(now + 29 * DAY).toISOString() });
-    const { status, body } = await invoices();
-    expect(status).toBe(403);
-    expect(body.error.reason).toBe("team_closed");
-    expect(stripe.state.invoiceLists).toHaveLength(0);
+  describe("a closed team, until it's deleted (supply-checkout-8jc.24)", () => {
+    const closed = (fields: Record<string, unknown> = {}) => patchTeam({ closedAt: new Date(now - DAY).toISOString(), purgeAfter: new Date(now + 29 * DAY).toISOString(), ...fields });
+
+    it.each([
+      ["an owner", { closedBy: OWNER }],
+      ["the lapsed-team job", { closedBy: "system:lapsed", status: "canceled" }],
+    ])("lists them for its owners when %s closed it", async (_, fields) => {
+      closed(fields);
+      stripe.state.invoices = [invoice(2), invoice(1)];
+      const { status, body } = await invoices();
+      expect(status).toBe(200);
+      expect(body.invoices.map((i: { id: string }) => i.id)).toEqual(["in_test_2", "in_test_1"]);
+      expect(stripe.state.invoiceLists).toEqual([{ customer: "cus_test_9", limit: INVOICE_PAGE }]);
+    });
+
+    it("still needs two-step sign-in, before Stripe is called", async () => {
+      closed();
+      cognito[OWNER] = { totp: false, federated: false };
+      expect((await invoices()).body.error).toMatchObject({ code: "permission_denied", reason: "mfa_required" });
+      expect(stripe.state.invoiceLists).toHaveLength(0);
+    });
+
+    it("still refuses the portal", async () => {
+      closed();
+      const { status, body } = await checkout({ routeKey: routeKey(BILLING_ROUTES.find((r) => r.action === "createPortalSession") as (typeof BILLING_ROUTES)[number]), rawBody: "" });
+      expect(status).toBe(403);
+      expect(body.error.reason).toBe("team_closed");
+    });
+
+    it.each([
+      [CONTRIBUTOR, "owners_only"],
+      [VIEWER, "owners_only"],
+      [OUTSIDER, "not_member"],
+    ])("still refuses %s (%s) before calling Stripe", async (user, reason) => {
+      closed();
+      const { status, body } = await invoices({ user });
+      expect(status).toBe(403);
+      expect(body.error).toMatchObject({ code: "permission_denied", reason });
+      expect(stripe.state.invoiceLists).toHaveLength(0);
+    });
+
+    it.each([
+      ["its purgeAfter has passed", () => ({ purgeAfter: new Date(now - 1000).toISOString() })],
+      ["its purgeAfter is now", () => ({ purgeAfter: new Date(now).toISOString() })],
+      ["it has no purgeAfter", () => ({ purgeAfter: undefined })],
+      ["its purgeAfter isn't a date", () => ({ purgeAfter: "soon" })],
+      ["the purge has marked it", () => ({ purging: new Date(now - 1000).toISOString() })],
+    ])("answers 409 team_deleting, without calling Stripe, once %s", async (_, fields) => {
+      closed(fields());
+      const { status, body } = await invoices();
+      expect(status).toBe(409);
+      expect(body.error).toMatchObject({ code: "aborted", reason: "team_deleting" });
+      expect(stripe.state.invoiceLists).toHaveLength(0);
+    });
+
+    it("answers no_billing_account for a closed team with no Stripe customer", async () => {
+      closed({ stripeCustomerId: undefined, stripeSubscriptionId: undefined, status: "trialing" });
+      expect((await invoices()).body.error.reason).toBe("no_billing_account");
+      expect(stripe.state.invoiceLists).toHaveLength(0);
+    });
   });
 
   it("fails with 500, counts it apart from the portal and logs no Stripe message when Stripe fails", async () => {
@@ -963,5 +1074,21 @@ describe("GET /teams/{teamId}/billing/invoices (supply-checkout-eja)", () => {
     const exp = String(Math.floor(now / 1000) + 600);
     expect((await invoices({ claims: { sub: OWNER, token_use: "access", exp, iss: "https://elsewhere.example" } })).status).toBe(401);
     expect(scopes).toEqual([]);
+  });
+});
+
+describe("the billing-access role's read of the caller's two-step record (supply-checkout-3sv.23)", () => {
+  // CallerTotpRecordRead requires dynamodb:Select SPECIFIC_ATTRIBUTES, so billingPolicy refuses a read of the record
+  // without a projection: the two-step tests, which fail on any refusal, then show totpOnAt projects
+  it("refuses a GetItem of the record without a projection, or with Select other than SPECIFIC_ATTRIBUTES", () => {
+    const refused: { command: string; input: Record<string, unknown> }[] = [];
+    const allow = billingPolicy({ teamId: TEAM, userId: OWNER }, refused);
+    const Key = { PK: `USER#${OWNER}`, SK: "TOTP_ON" };
+    const at = { ProjectionExpression: "#at", ExpressionAttributeNames: { "#at": "totpOnAt" } };
+    expect(allow("GetCommand", { Key })).toBe(false);
+    expect(allow("GetCommand", { Key, ...at, Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(allow("GetCommand", { Key: { PK: "USER#someone-else", SK: "TOTP_ON" }, ...at })).toBe(false);
+    expect(allow("GetCommand", { Key, ...at })).toBe(true);
+    expect(refused).toHaveLength(3);
   });
 });

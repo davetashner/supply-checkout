@@ -3,15 +3,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PROD } from "../lib/config.mjs";
-import { consoleFailure, isExpectedConsoleError, isExpectedPageError } from "../lib/console.mjs";
+import { consoleFailure, isDocumentNotFound, isExpectedConsoleError, isExpectedPageError } from "../lib/console.mjs";
 import { createMasker } from "../lib/mask.mjs";
 import { formatScreen, isPasswordChoice } from "../lib/screen.mjs";
 
 const NOT_FOUND = "Failed to load resource: the server responded with a status of 404 ()";
 
-test("a 404 for one project or item is expected; any other 404 isn't", () => {
-  assert.equal(isExpectedConsoleError(NOT_FOUND, `${PROD.api}/teams/t1/products/e2e-1-201`), true);
-  assert.equal(isExpectedConsoleError(NOT_FOUND, `${PROD.api}/teams/t%201/projects/p-1`), true);
+test("a 404 for one project or item is a warning, not expected; any other 404 is a failure", () => {
+  for (const url of [`${PROD.api}/teams/t1/products/e2e-1-201`, `${PROD.api}/teams/t%201/projects/p-1`]) {
+    assert.equal(isDocumentNotFound(NOT_FOUND, url), true, url);
+    assert.equal(isExpectedConsoleError(NOT_FOUND, url), false, url);
+  }
   for (const url of [
     `${PROD.api}/teams/t1/products`,
     `${PROD.api}/teams/t1/settings`,
@@ -24,9 +26,13 @@ test("a 404 for one project or item is expected; any other 404 isn't", () => {
     "",
     undefined,
     "not a url",
-  ]) assert.equal(isExpectedConsoleError(NOT_FOUND, url), false, String(url));
+  ]) {
+    assert.equal(isExpectedConsoleError(NOT_FOUND, url), false, String(url));
+    assert.equal(isDocumentNotFound(NOT_FOUND, url), false, String(url));
+  }
   // Another status for the same document is a failure
   for (const status of [400, 403, 409, 500]) {
+    assert.equal(isDocumentNotFound(`Failed to load resource: the server responded with a status of ${status} ()`, `${PROD.api}/teams/t1/products/a`), false, String(status));
     assert.equal(isExpectedConsoleError(`Failed to load resource: the server responded with a status of ${status} ()`, `${PROD.api}/teams/t1/products/a`), false, String(status));
   }
 });
@@ -67,14 +73,15 @@ test("a screen description stays short", () => {
   assert.equal(formatScreen(undefined), "page (no URL); headings none; alerts none; fields none; controls none");
 });
 
-test("only the RUM client's failure to get its credentials is an expected page error", () => {
+test("only WebKit's report of the RUM client's Cognito request cut off is an expected page error", () => {
   for (const m of [
-    "Error: CWR: Failed to retrieve Cognito identity: TypeError: Load failed",
     "/cognito-identity.us-east-1.amazonaws.com/ due to access control checks.",
     "Fetch API cannot load https://cognito-identity.us-west-2.amazonaws.com/ due to access control checks.",
   ]) assert.equal(isExpectedPageError(m), true, m);
   for (const m of [
     "TypeError: Load failed",
+    // Handled by the app now (src/aws/rum.js): a failure if it's ever uncaught again
+    "Error: CWR: Failed to retrieve Cognito identity: TypeError: Load failed",
     "Error: CWR: something else",
     "Error: CWR: Failed to retrieve Cognito identity: TypeError: Load failed; and then something else",
     "Error: CWR: Failed to retrieve Cognito identity: TypeError: x is undefined",

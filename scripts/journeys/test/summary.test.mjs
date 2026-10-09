@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { envMasker, main, parseArgs, results, signInLine, summarize } from "../prod-summary.mjs";
+import { envMasker, main, notFoundLine, parseArgs, results, signInLine, summarize } from "../prod-summary.mjs";
 import { fakeEnv } from "./helpers.mjs";
 
 const registry = {
@@ -141,4 +141,24 @@ test("the summary counts the sign-ins through Managed Login and from saved sessi
   assert.match(summarize(report, { journeys: [] }).markdown, /Sign-ins through Managed Login: crew 2, owner 1; from a saved session: crew 1, viewer 1\./);
   assert.equal(signInLine(results({ suites: [] })), "");
   assert.doesNotMatch(summarize({ suites: [] }, { journeys: [] }).markdown, /Sign-ins/);
+});
+
+test("the summary counts 404s for a project or item as a warning, and they don't fail the run", () => {
+  const ann = (n) => Array.from({ length: n }, () => ({ type: "journeys-not-found", description: "console: Failed to load resource: the server responded with a status of 404 ()" }));
+  const report = { suites: [{ title: "J0", specs: [
+    // Counted per try, from the runs' annotations when they have them
+    { title: "a", tags: ["@J0.2"], tests: [{ projectName: "desktop-chrome", status: "expected", results: [{ duration: 1, annotations: ann(2) }] }] },
+    { title: "b", tags: [], tests: [{ projectName: "iphone-safari", status: "flaky", annotations: ann(9), results: [{ duration: 1, annotations: ann(1) }, { duration: 1, annotations: [] }] }] },
+    { title: "c", tags: ["@J0.3"], tests: [{ projectName: "desktop-chrome", status: "expected", annotations: ann(1), results: [{ duration: 1 }] }] },
+    { title: "d", tags: ["@J0.3"], tests: [{ projectName: "iphone-safari", status: "expected", results: [{ duration: 1 }] }] },
+  ] }] };
+  const line = "4 fetches of a project or item got a 404 (a live event racing a delete, which the app takes as deleted): J0.2 (desktop-chrome); b (iphone-safari); J0.3 (desktop-chrome). Not a failure; file a bead if it keeps happening.";
+  assert.equal(notFoundLine(results(report)), line);
+  const s = summarize(report, registry);
+  assert.equal(s.ok, true);
+  assert.ok(s.markdown.includes(`> **Warning:** ${line}`));
+  const one = { suites: [{ title: "J0", specs: [report.suites[0].specs[2]] }] };
+  assert.match(notFoundLine(results(one)), /^1 fetch of a project or item got a 404 /);
+  assert.equal(notFoundLine(results({ suites: [] })), "");
+  assert.doesNotMatch(summarize({ suites: [] }, { journeys: [] }).markdown, /got a 404/);
 });

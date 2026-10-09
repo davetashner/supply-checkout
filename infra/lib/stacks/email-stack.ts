@@ -12,8 +12,8 @@ import { LambdaSubscription } from "aws-cdk-lib/aws-sns-subscriptions";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { GSI2, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
-import { EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, emailResourceNames, WELCOME_ENV } from "../../../backend/src/email/names.js";
+import { GSI2, PASSWORD_RESET_HINT_PARTITIONS, PASSWORD_RESET_LIMIT_ATTRIBUTES, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
+import { EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, emailResourceNames, PASSWORD_RESET_ENV, WELCOME_ENV } from "../../../backend/src/email/names.js";
 import { SECURITY_NOTICE_EVENTS, SECURITY_NOTICES_ENV } from "../../../backend/src/identity/names.js";
 import { TEST_MAIL_DOMAIN_ENV } from "../../../backend/src/data/test-accounts.js";
 import type { DeploymentConfig } from "../config.js";
@@ -69,6 +69,12 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  *   notices dead-letter queue (SQS-encrypted, 14 days), as EventBridge does
  *   with one it couldn't deliver, so it can be replayed. A notice SES refuses
  *   isn't retried; it's counted (SecurityNoticeFailures).
+ * - A confirmed password reset (supply-checkout-6uw.32) reaches the function
+ *   from the identity stack's post confirmation trigger instead, an
+ *   asynchronous invoke by its fixed name
+ *   (emailResourceNames().securityNoticesFunction) with the user's sub. Only
+ *   the trigger's role is granted it (an identity policy; the function has no
+ *   resource policy for it). Retries and the dead-letter queue are the same.
  *
  * The welcome email (supply-checkout-6uw.25, backend/src/email/welcome-handler.ts):
  *
@@ -89,6 +95,24 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  *   dead-letter queue (SQS-encrypted, 14 days: a sub and a sign-up method, no
  *   address), which alarms ("Welcome emails dropped").
  *
+ * Password resets asked for in the app (supply-checkout-6uw.26,
+ * backend/src/email/password-reset-handler.ts):
+ *
+ * - The api stack's password reset function invokes this one asynchronously,
+ *   by its fixed name (emailResourceNames().passwordResetFunction), with the
+ *   address. Only that function's role is granted it. It has Cognito email a
+ *   code to an account that can have one, emails a "sign in with Google" (or
+ *   Apple) hint to an address only a Google or Apple account has, and sends
+ *   nothing to any other address (the owner's decision, 2026-10-08).
+ * - The function may call AdminGetUser and ListUsers on the app pool only,
+ *   send the app's email (grantSendEmail), and UpdateItem naming only
+ *   PASSWORD_RESET_LIMIT_ATTRIBUTES, returning nothing, in `RESETLIMIT#HINT`
+ *   partitions (the provider hints' limits, keyed by hashes). The API counts the
+ *   requests' limits before it invokes this. Cognito's ForgotPassword is a
+ *   public call (the web client's ID), so it needs no permission.
+ * - No retries and no dead-letter queue: a request holds an address, and the
+ *   person can simply ask again. A request older than 15 minutes is dropped.
+ *
  * Deploy after the data stack (the table's key ARN, from SSM), the primary
  * region's domain stack (the topic) and the identity stack (the app pool's ID
  * and ARN, from SSM).
@@ -100,6 +124,8 @@ export class EmailStack extends SupplyCheckoutStack {
   readonly securityNoticeEvents: Rule;
   readonly welcome: NodejsFunction;
   readonly welcomeDeadLetterQueue: Queue;
+  /** Password resets asked for in the app: Cognito's code, or a "sign in with Google" hint for a Google or Apple account's address (supply-checkout-6uw.26). */
+  readonly passwordReset: NodejsFunction;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "email", layer: "stateless" });
@@ -213,6 +239,75 @@ export class EmailStack extends SupplyCheckoutStack {
 
     [this.securityNotices, this.securityNoticeEvents] = this.addSecurityNotices(config, table, tableArn, tableKeyArn);
     [this.welcome, this.welcomeDeadLetterQueue] = this.addWelcome(config, table, tableArn, tableKeyArn);
+    this.passwordReset = this.addPasswordReset(config, table, tableArn, tableKeyArn);
+  }
+
+  /** The password reset function (see the class comment). */
+  private addPasswordReset(config: DeploymentConfig, table: string, tableArn: string, tableKeyArn: string): NodejsFunction {
+    const identity = identityOutputParameters(config.envName);
+    const userPoolArn = StringParameter.valueForStringParameter(this, identity.userPoolArn);
+    const logGroup = new LogGroup(this, "PasswordResetLogs", { retention: LOG_RETENTION });
+    const role = new Role(this, "PasswordResetRole", {
+      assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
+      description: "Execution role for the password reset function",
+    });
+    role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
+    // A fixed name: the api stack's password reset function invokes it by name
+    const fn = new NodejsFunction(this, "PasswordResetFunction", {
+      functionName: emailResourceNames(config.envName).passwordResetFunction,
+      role,
+      logGroup,
+      entry: `${BACKEND}src/email/password-reset.ts`,
+      projectRoot: BACKEND,
+      depsLockFilePath: `${BACKEND}package-lock.json`,
+      runtime: Runtime.NODEJS_24_X,
+      architecture: Architecture.ARM_64,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      description: "Sends a password reset code, or a sign-in-with-Google hint (supply-checkout-6uw.26)",
+      environment: {
+        NODE_OPTIONS: "--enable-source-maps",
+        TABLE_NAME: table,
+        [PASSWORD_RESET_ENV.userPoolId]: StringParameter.valueForStringParameter(this, identity.userPoolId),
+        [PASSWORD_RESET_ENV.clientId]: StringParameter.valueForStringParameter(this, identity.webClientId),
+        [WELCOME_ENV.supportAddress]: supportAddress(config),
+      },
+      // The request holds an address: never kept in a queue, and not tried again
+      retryAttempts: 0,
+      maxEventAge: Duration.minutes(15),
+      bundling,
+    });
+    // noreply@ only, through the configuration set (lib/email.ts)
+    grantSendEmail(fn, config);
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "FindAppUsers",
+        actions: ["cognito-idp:AdminGetUser", "cognito-idp:ListUsers"],
+        resources: [userPoolArn],
+      }),
+    );
+    // backend/src/data/password-resets.ts: the provider hints' counters, by hashes, returning nothing (the API counts the requests)
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "CountPasswordResetHints",
+        actions: ["dynamodb:UpdateItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...PASSWORD_RESET_HINT_PARTITIONS] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...PASSWORD_RESET_LIMIT_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "TableKeyThroughDynamoDb",
+        actions: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"],
+        resources: [tableKeyArn],
+        conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
+      }),
+    );
+    return fn;
   }
 
   /** The welcome email function and its dead-letter queue (see the class comment). */
@@ -349,6 +444,8 @@ export class EmailStack extends SupplyCheckoutStack {
       reason: "This is the dead-letter queue: it holds security notice events the function or EventBridge couldn't deliver.",
     });
     const fn = new NodejsFunction(this, "SecurityNoticesFunction", {
+      // A fixed name: the identity stack's post confirmation trigger invokes it by name with a confirmed password reset (supply-checkout-6uw.32)
+      functionName: emailResourceNames(config.envName).securityNoticesFunction,
       role,
       logGroup,
       entry: `${BACKEND}src/identity/security-notices.ts`,
@@ -358,7 +455,7 @@ export class EmailStack extends SupplyCheckoutStack {
       architecture: Architecture.ARM_64,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      description: "Emails the account when its password, two-step sign-in or email is changed directly against Cognito",
+      description: "Emails the account when its password, two-step sign-in or email is changed directly against Cognito, or its password is reset",
       environment: { NODE_OPTIONS: "--enable-source-maps", TABLE_NAME: table, [SECURITY_NOTICES_ENV.userPoolId]: userPoolId },
       retryAttempts: 2,
       deadLetterQueue: deadLetters,

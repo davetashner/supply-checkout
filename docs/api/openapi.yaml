@@ -92,6 +92,10 @@ info:
       that doesn't track stock or doesn't exist yet, is 400 `bad_request` and
       changes nothing. A new item starts counting with a `count` adjustment
       after it's created. See [commands.md](commands.md).
+    - A project's `closedAt` is the server's too, but isn't refused: older
+      versions of the app send it, and it's ignored. The write that finishes
+      a project (`status` to `closed`) stamps it with the server's time;
+      every other write keeps the stored value (supply-checkout-1dg.16).
     - Every other field is kept exactly as written. The `Product`, `Project` and
       `ProjectLine` schemas list the fields the app writes; all of them,
       including each line's `code`, read back unchanged.
@@ -1053,6 +1057,50 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
+  /teams/{teamId}/checklist:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    patch:
+      tags: [settings]
+      operationId: setChecklist
+      summary: Mark the team's first-run checklist's progress. Owners only.
+      description: |
+        The first-run checklist the app shows a new team's owners
+        (supply-checkout-fs56). It's the team's, so every owner sees the same
+        one on every device: `GET /me` carries it as each team's `checklist`,
+        to owners only. Send any of the fields, each only ever `true`: a step
+        done stays done. `receipt` marks a scanned receipt saved, `done` the
+        checklist finished or dismissed, and `started` starts one for a team
+        that never had one (a new team always has one). Only these are stored:
+        the app ticks the other steps from the team's own data. Refused for a
+        closed team, and for one read-only for billing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                started: { type: boolean, enum: [true] }
+                receipt: { type: boolean, enum: [true] }
+                done: { type: boolean, enum: [true] }
+            example: { done: true }
+      responses:
+        "200":
+          description: The checklist after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checklist]
+                properties:
+                  checklist: { $ref: "#/components/schemas/Checklist" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429":
+          description: "Too many requests: API Gateway's throttle for this route (10 a second across all callers). Try again shortly."
   /me:
     get:
       tags: [account]
@@ -1430,7 +1478,11 @@ paths:
       description: |
         Cognito's GlobalSignOut with the caller's own access token: their
         refresh tokens stop working, and Cognito refuses their access tokens
-        (so the billing routes do). The app sends it when turning two-step
+        (so the billing routes do). Then the time is recorded as the
+        account's password reset time, so every route refuses a session
+        from before it (`password_reset`), a Managed Login session's
+        too. The app sends it after changing the password (unless the
+        caller unticks Sign out everywhere), and when turning two-step
         sign-in on answered `signout_failed`.
       requestBody:
         required: false
@@ -1500,6 +1552,7 @@ paths:
       description: |
         Owners first, then contributors, then viewers, each by email. `email`
         is the address the member joined with, or `null` if there wasn't one.
+        `name` is the name on their account, or `null` if they have none.
       responses:
         "200":
           description: The team's members.
@@ -1863,6 +1916,10 @@ paths:
         keeps it: Checkout asks for no card, the subscription's trial ends
         when the team's does (`trialEndsAt` in the answer), and if no card is
         added by then Stripe cancels it. Otherwise Checkout asks for a card.
+        A team that is or was unpaid never gets a trial: not when the team or
+        any of its Stripe subscriptions is `unpaid`, nor when Stripe has ever
+        invoiced its customer for money (paid, owed, written off or
+        uncollectible).
 
         Nothing about the team changes here: the Stripe webhook sets its plan,
         seats and status once the owner finishes on Stripe. Idempotent: the
@@ -1985,7 +2042,9 @@ paths:
         and tax ID on the customer (collected by Checkout, changed in the
         portal). A link is null unless it's an https page on stripe.com.
         Stripe emails invoices and receipts itself. A team whose subscription
-        ended still lists its invoices.
+        ended still lists its invoices, and so does a closed team (closed by
+        an owner or for lapsed billing), read-only, until its deletion is due
+        (`deletesAt`): the purge deletes the team's Stripe customer with it.
       responses:
         "200":
           description: The team's latest invoices.
@@ -2014,10 +2073,10 @@ paths:
                   hasMore: { type: boolean, description: "There are older invoices; the Customer Portal lists them all." }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403":
-          description: "`permission_denied`: `owners_only`, `not_member`, `mfa_required` or `mfa_sign_in_again` (checked after membership and role, as for `createPortalSession`), or `team_closed` (reopen the team first)."
+          description: "`permission_denied`: `owners_only`, `not_member`, `mfa_required` or `mfa_sign_in_again` (checked after membership and role, as for `createPortalSession`, and for a closed team too)."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "409":
-          description: "`aborted` with `reason: \"no_billing_account\"`: the team has no Stripe customer yet, so no invoices."
+          description: "`aborted` with `reason: \"no_billing_account\"`: the team has no Stripe customer yet, so no invoices; or with `reason: \"team_deleting\"`: the team is closed and its deletion is due or under way."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "500":
           description: "`internal`: Stripe couldn't be reached or refused the request. Try again."
@@ -2498,6 +2557,81 @@ paths:
           headers:
             Set-Cookie: { $ref: "#/components/headers/ClearCookie" }
         "403": { $ref: "#/components/responses/OriginRefused" }
+  /auth/password-reset:
+    post:
+      tags: [auth]
+      operationId: requestPasswordReset
+      summary: Ask for a password reset code for an address.
+      description: |
+        For someone who can't sign in (supply-checkout-6uw.26). Answers 204
+        whatever the address, without looking it up, so the answer can't say
+        whether it has an account. Afterwards, out of the request's sight: if
+        the address has an account that can have a password, Cognito emails it
+        a reset code (enter it with `/auth/password-reset/confirm`); if only a
+        Google or Apple account has it, it gets a short "sign in with Google"
+        (or Apple) hint; any other address gets nothing, and the app says on
+        screen what to try. Limited per address and per IP address by the hour
+        and the day (requests, not accounts): past a limit, 429
+        `rate_limited` and nothing is sent. Hints are limited to one an
+        address a day, and a daily cap for everyone; past those the answer is
+        still 204.
+      security: []
+      parameters: [{ $ref: "#/components/parameters/origin" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        "204":
+          description: Taken. A code (or a provider hint) goes to the address if it has an account, unless a limit was reached.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/OriginRefused" }
+        "429":
+          description: "`quota_exceeded` / `rate_limited`: too many requests for this address or from this network; try later, or use Managed Login's reset."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /auth/password-reset/confirm:
+    post:
+      tags: [auth]
+      operationId: confirmPasswordReset
+      summary: Set a new password with the emailed reset code.
+      description: |
+        Cognito's ConfirmForgotPassword with the web client. Then sign in with
+        the new password. Every way the code can fail (wrong, expired, never
+        sent) is `code_mismatch`. A confirmed reset signs the account out
+        everywhere and emails its verified address (the user pool's post
+        confirmation trigger, as for a reset through Managed Login).
+      security: []
+      parameters: [{ $ref: "#/components/parameters/origin" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, code, password]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                code: { type: string, pattern: "^[0-9]{6}$" }
+                password: { type: string, minLength: 12, maxLength: 256, description: The pool's policy, with upper and lower case letters, a digit and a symbol. }
+      responses:
+        "204":
+          description: The password is set.
+        "400":
+          description: "`bad_request`: a malformed body, `code_mismatch` (the code is wrong or expired) or `password_invalid` (the policy, or a password used before)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403": { $ref: "#/components/responses/OriginRefused" }
+        "429":
+          description: "`quota_exceeded`: too many tries; wait a few minutes."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503": { $ref: "#/components/responses/Unavailable" }
 components:
   securitySchemes:
     cognito:
@@ -3120,11 +3254,11 @@ components:
         createdByName: { type: string, description: "Who prepared the project, when `createdBy` is `null`." }
         createdAt: { type: string, format: date-time }
         status: { type: string, enum: [open, closed], description: "Closing is refused (409 `equipment_out`) while company equipment is still out. Reopening a General Use project is refused (409 `adhoc_open`) while another General Use project is open." }
-        closedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time, description: "When the project was last finished. Set by the server, from its own clock, on the write that changes `status` to `closed` (or creates a finished project); every other write keeps the stored value, so a reopened project keeps it. A `closedAt` in a body is ignored (supply-checkout-1dg.16)." }
         kind: { const: adhoc, description: "The team's General Use project (ADR 0017), `adhoc-<n>`, made only by the quick take; a document write can't add, change or remove it, or create a project whose ID starts `adhoc-`. Absent for a client project." }
         items:
           type: object
-          description: The project's lines, keyed by product key.
+          description: "The project's lines, keyed by product key. In a PATCH, a line set to `null` is removed (it isn't stored); any other value that isn't an object is refused (400) unless the write carries a legacy value over unchanged. Removing an equipment line with something still out (`out − returned − lost > 0`), by `null` or by leaving it out of a PUT, is refused (409 `equipment_out`)."
           additionalProperties: { $ref: "#/components/schemas/ProjectLine" }
         source:
           type: object
@@ -3140,7 +3274,7 @@ components:
         name: { type: string }
         price: { type: number, minimum: 0 }
         cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "What the business paid per each (ADR 0014): copied from the product at the line's first checkout, or the receipt's cost each for a line a receipt adds. Absent when unknown; any other value is refused with 400 `bad_request`." }
-        out: { type: integer, minimum: 0, description: How many were taken. }
+        out: { type: integer, minimum: 0, description: "How many were taken. On an equipment line, set only by the commands: a write may only repeat it, and an equipment line a write adds has `out` equal to `returned` plus `lost`." }
         returned: { type: integer, minimum: 0, description: "How many came back. With `lost`, never more than `out`." }
         kind: { const: equipment, description: "Company equipment (ADR 0017), from the product at the line's first checkout; it can't change. Not charged." }
         lost: { type: integer, minimum: 0, description: Equipment only. How many were lost or broken. }
@@ -3183,6 +3317,18 @@ components:
         paymentGraceEndsAt: { type: [string, "null"], format: date-time, description: "A `past_due` team still in its 7-day grace period: when it becomes read-only unless the payment goes through. `null` otherwise." }
         billingAccount: { type: boolean, description: "The team has a Stripe customer (made by its first checkout), so its owners can open the Customer Portal (`createPortalSession`)." }
         cancelsAt: { type: [string, "null"], format: date-time, description: "When a subscription that was canceled (in the Customer Portal) ends: the end of its current period. It keeps working until then. `null` when it renews, or has already ended." }
+        checklist:
+          description: "Owners only: the first-run checklist's progress (`setChecklist`), or `null` for a team that never had one. Always `null` for contributors and viewers."
+          oneOf:
+            - $ref: "#/components/schemas/Checklist"
+            - type: "null"
+    Checklist:
+      type: object
+      description: "The team's first-run checklist's stored progress (`setChecklist`)."
+      required: [receipt, done]
+      properties:
+        receipt: { type: boolean, description: An owner saved a scanned receipt. }
+        done: { type: boolean, description: An owner finished or dismissed the checklist. }
     Preferences:
       type: object
       description: The caller's own app preferences, the defaults until they change one.
@@ -3220,9 +3366,13 @@ components:
         failedAt: { type: [string, "null"], format: date-time }
     Member:
       type: object
-      required: [userId, email, role, joinedAt]
+      required: [userId, name, email, role, joinedAt]
       properties:
         userId: { type: string }
+        name:
+          type: [string, "null"]
+          maxLength: 100
+          description: "Their name from their account (given and family names, from sign-up or Google or Apple), on one line and without invisible characters; null if they have none. Copied when they create a team or accept an invite, and kept current each time they load the app (`GET /me`). They choose it themselves, so show it beside the email, not instead of it. Only owners list members, so only the team's owners see it."
         email: { type: [string, "null"], description: The address they joined with. }
         role: { type: string, enum: [owner, contributor, viewer] }
         joinedAt: { type: [string, "null"], format: date-time }
@@ -3253,7 +3403,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_reset, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -3262,12 +3412,12 @@ components:
                 without an owner. `team_full`: the team is at its member cap.
                 `team_closed`: the team was closed and is read-only.
                 `team_deleting`: the closed team is about to be deleted and
-                can't be reopened.
+                can't be reopened (nor its invoices listed).
                 `stock_changed`: a stock count sent with `expectedStock` found
                 the stock already changed from it (the message says what it is now).
-                `equipment_out`: Finished Return (closing a project) while company
-                equipment is still out on it; each piece must be back, lost or
-                broken first (ADR 0017).
+                `equipment_out`: Finished Return (closing a project), or removing
+                an equipment line, while company equipment is still out on it;
+                each piece must be back, lost or broken first (ADR 0017).
                 `adhoc_open`: reopening a finished General Use project while another
                 General Use project is open; a team has at most one open (ADR 0017).
                 Verifying an email address: `code_mismatch` (the code isn't
@@ -3286,7 +3436,12 @@ components:
                 sign-in on. `mfa_sign_in_again`: a billing route for an owner
                 whose session (the token's `auth_time`) began before two-step
                 sign-in was turned on: sign in again, with the password and the
-                code. Setting it up: `password_invalid` (the password
+                code. `password_reset` (with `unauthenticated`, on any route
+                that takes the app's token): the session (the token's
+                `auth_time`) began before the account's password was last
+                reset, or before it was last signed out everywhere
+                (`POST /me/sign-out-everywhere`); sign out, of Managed Login
+                too, and sign in again. Setting it up: `password_invalid` (the password
                 policy), `password_mismatch` (the current password is wrong
                 or missing), `federated_sign_in` (a Google or Apple user,
                 who has nothing to set up), and `signout_failed` (it's on, but
@@ -3503,7 +3658,7 @@ components:
       description: "`bad_request`: malformed JSON, ID, field, query or cursor."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Unauthenticated:
-      description: "`unauthenticated`: no token, an expired or ID token. (API Gateway's own 401 has the body `{\"message\":\"Unauthorized\"}`.)"
+      description: "`unauthenticated`: no token, an expired or ID token, or (reason `password_reset`) a session that began before the account's password was last reset. (API Gateway's own 401 has the body `{\"message\":\"Unauthorized\"}`.)"
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Forbidden:
       description: |

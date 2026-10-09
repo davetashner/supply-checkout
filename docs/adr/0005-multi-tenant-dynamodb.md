@@ -20,7 +20,7 @@ Use **one DynamoDB table** (`app`), on-demand capacity, point-in-time recovery o
 
 | Entity | PK | SK | Notes |
 | --- | --- | --- | --- |
-| Team | `TEAM#<teamId>` | `META` | name, plan, seats, subscription status, home region |
+| Team | `TEAM#<teamId>` | `META` | name, plan, seats, subscription status, home region, the first-run checklist's progress (supply-checkout-fs56) |
 | Member | `TEAM#<teamId>` | `MEMBER#<userId>` | role: owner, contributor, viewer |
 | User's teams | `USER#<userId>` | `TEAM#<teamId>` | reverse lookup for the team switcher |
 | Invite | `TEAM#<teamId>` | `INVITE#<inviteId>` | email, role, expiry (TTL); GSI on hashed token, second GSI on hashed email (pending invites at first sign-in) |

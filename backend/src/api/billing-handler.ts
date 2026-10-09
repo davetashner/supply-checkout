@@ -20,6 +20,11 @@
 // does (`trialEndsAt`, TRIAL_DAYS after it was made) and Checkout asks for no
 // card (payment_method_collection `if_required`); if no card is added by then,
 // Stripe cancels the subscription. After the trial, Checkout asks for a card.
+// A trial is never given to a team that is or was unpaid (supply-checkout-8jc.44,
+// trialAllowed): not when the team or any of its customer's subscriptions is
+// `unpaid`, nor when Stripe has ever invoiced the customer for money (paid,
+// owed, written off or uncollectible), so a trial can't be used to have an
+// unpaid subscription's debt written off (billing/replaced.ts).
 // The seat quantity isn't the owner's to choose (supply-checkout-8jc.20): it's
 // the team's billed members as they are now (countBilledMembers, at least 1),
 // the same number the seat sync keeps the subscription at afterwards
@@ -35,12 +40,16 @@
 // on every invoice; owners change them in the portal. Stripe itself emails the
 // invoices and receipts (its Dashboard's customer email settings), so nothing
 // here sends mail. The invoice list is read-only, for the same customer as the
-// portal, and passes on only Stripe's own https links.
+// portal, and passes on only Stripe's own https links. Unlike the portal, it
+// stays open to a closed team's owners until the purge is due
+// (supply-checkout-8jc.24), so they can save their invoices before the team
+// and its Stripe customer are deleted.
 //
 // Isolation, in order:
 // 1. API Gateway's JWT authorizer checks the Cognito access token; this
 //    handler re-checks it (an access token from our issuer, not expired) and
-//    takes the user only from `sub`.
+//    takes the user only from `sub`. A session that began before the user's
+//    password was last reset is refused (session-reset.ts, supply-checkout-6uw.33).
 // 2. The team comes only from the path, and the caller must be its owner
 //    (authorizeTeam, then requireRole), before the body is read or Stripe is
 //    called.
@@ -92,6 +101,7 @@ import {
   type Team,
   TeamClosedError,
   type TeamContext,
+  TeamDeletingError,
   totpOnAt,
   trialEnd,
 } from "../data/index.js";
@@ -101,6 +111,7 @@ import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handl
 import type { UserInfo } from "./cognito-user.js";
 import { accessToken, ApiError, errorResponse, header, json, jsonBody, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
+import type { SessionCheck } from "./session-reset.js";
 import { BILLING_ROUTES, type BillingRoute, IDEMPOTENCY_HEADER, routeKey } from "./routes.js";
 
 /** What the checkout needs from the Stripe client (the `stripe` package's, or a fake in tests). */
@@ -194,6 +205,8 @@ export interface CheckoutSessionParams {
 
 export interface BillingHandlerDeps {
   readonly dbFor: DbForBilling;
+  /** Refuses a session from before the caller's last password reset (session-reset.ts). The Lambda entry always sets it. */
+  readonly sessionCheck?: SessionCheck;
   /** The Stripe client, read from Secrets Manager on first use (billing/stripe.ts). */
   readonly stripe: () => Promise<BillingStripe>;
   /** The price ID for a catalog price, by its lookup key (billing/prices.ts). */
@@ -237,9 +250,31 @@ const CLOSED_CHECKOUT = "This team was closed. Reopen it before choosing a plan.
  */
 export const MIN_TRIAL_LEFT_MS = 49 * 60 * 60_000;
 
+/** How many of the customer's invoices Checkout reads to decide on a trial (trialAllowed). */
+export const TRIAL_INVOICES_READ = 100;
+
+/**
+ * Whether Checkout may give the team a free trial (supply-checkout-8jc.44), each rule explicit rather than left
+ * to the trial's dates: its app trial has at least MIN_TRIAL_LEFT_MS left; the team isn't `unpaid`; none of its
+ * customer's subscriptions is `unpaid`; and Stripe has never invoiced the customer for money (`invoices`: any
+ * invoice but a draft with an amount due or paid, so one paid, still owed, written off or uncollectible all count).
+ * So a team that is or was unpaid pays at once.
+ */
+export function trialAllowed(
+  team: { readonly status?: string; readonly trialEndsAt?: unknown; readonly createdAt?: unknown },
+  at: number,
+  subscriptions: readonly { readonly status: string }[],
+  invoices: readonly { readonly status: string | null; readonly amount_due: number; readonly amount_paid: number }[],
+): boolean {
+  if (!(trialEnd(team) - at >= MIN_TRIAL_LEFT_MS)) return false;
+  if (team.status === "unpaid" || subscriptions.some((s) => s.status === "unpaid")) return false;
+  return !invoices.some((i) => i.status !== "draft" && (i.amount_due > 0 || i.amount_paid > 0));
+}
+
 /** The data layer's and Stripe's errors, as this route answers them. */
 export function errorFor(error: unknown): ApiError {
   if (error instanceof TeamClosedError) return new ApiError(403, "permission_denied", error.message, "team_closed");
+  if (error instanceof TeamDeletingError) return new ApiError(409, "aborted", error.message, "team_deleting");
   return dataErrorFor(error);
 }
 
@@ -363,14 +398,18 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     const seats = Math.max(1, await countBilledMembers(db, ctx));
     const stripe = await deps.stripe();
     // A subscription the webhook hasn't recorded yet (another checkout just finished): one per team
-    if (team.stripeCustomerId && (await stripe.subscriptions.list({ customer: team.stripeCustomerId, status: "all", limit: 10 })).data.some((s) => !hasEnded(s.status))) {
+    const subscriptions = team.stripeCustomerId ? (await stripe.subscriptions.list({ customer: team.stripeCustomerId, status: "all", limit: 10 })).data : [];
+    if (subscriptions.some((s) => !hasEnded(s.status))) {
       throw new ApiError(409, "aborted", "This team already has a subscription. Change it from Manage billing.", "already_subscribed");
     }
     const priceId = await deps.priceFor(input.plan, input.price);
     const customer = await customerFor(stripe, ctx, team);
     const at = now();
     const trialEndsMs = trialEnd(team);
-    const trial = trialEndsMs - at >= MIN_TRIAL_LEFT_MS;
+    // The customer's invoices only when nothing else has ruled a trial out (a new customer has none)
+    const mayTrial = trialAllowed(team, at, subscriptions, []);
+    const invoices = mayTrial && team.stripeCustomerId ? (await stripe.invoices.list({ customer: team.stripeCustomerId, limit: TRIAL_INVOICES_READ })).data : [];
+    const trial = mayTrial && trialAllowed(team, at, subscriptions, invoices);
     const back = (outcome: string) => `${deps.appUrl}/?billing=${outcome}&team=${encodeURIComponent(ctx.teamId)}`;
     const params: CheckoutSessionParams = {
       mode: "subscription",
@@ -428,13 +467,17 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
 
   /**
    * The team's latest invoices, newest first, as Stripe has them for the
-   * team's own customer: the same owners-only checks and refusals as the
-   * portal. Drafts (not sent yet, no page) are left out; `hasMore` says older
+   * team's own customer: the same owners-only and two-step checks as the
+   * portal. Unlike the portal, a closed team's owners (closed by an owner or
+   * by the lapsed-team job) still get them, read-only, until the purge
+   * deletes the team and its Stripe customer (supply-checkout-8jc.24): 409
+   * `team_deleting` once its `purgeAfter` has passed or the purge has marked
+   * it. Drafts (not sent yet, no page) are left out; `hasMore` says older
    * ones are in the portal. Nothing from the request reaches Stripe.
    */
   async function listInvoices(event: DataEvent, userId: string, route: BillingRoute): Promise<APIGatewayProxyStructuredResultV2> {
     const ctx = await ownerContext(event, userId, route);
-    const customer = await linkedCustomer(ctx);
+    const customer = (await linkedTeam(ctx, { whileClosed: true })).stripeCustomerId;
     const stripe = await deps.stripe();
     const page = await stripe.invoices.list({ customer, limit: INVOICE_PAGE });
     const invoices = page.data
@@ -455,17 +498,20 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     return json(200, { invoices, hasMore: page.has_more });
   }
 
-  /** The Stripe customer linked to the caller's team: 403 `team_closed` for a closed team, 409 `no_billing_account` for none. */
-  async function linkedTeam(ctx: TeamContext): Promise<Awaited<ReturnType<typeof getTeam>> & { readonly stripeCustomerId: string }> {
-    if (ctx.closed) throw new TeamClosedError("This team was closed. Reopen it before managing billing.");
+  /**
+   * The Stripe customer linked to the caller's team: 403 `team_closed` for a closed team (unless `whileClosed`: then
+   * 409 `team_deleting` only once the purge is due or has started), 409 `no_billing_account` for none.
+   */
+  async function linkedTeam(ctx: TeamContext, options: { readonly whileClosed?: boolean } = {}): Promise<Awaited<ReturnType<typeof getTeam>> & { readonly stripeCustomerId: string }> {
+    if (ctx.closed && !options.whileClosed) throw new TeamClosedError("This team was closed. Reopen it before managing billing.");
     const team = await getTeam(dbFor({ teamId: ctx.teamId }), ctx);
+    // A closed team's invoices only until its deletion is due: the purge then deletes its Stripe customer too
+    if (isClosed(team) && (team.purging !== undefined || !(typeof team.purgeAfter === "string" && Date.parse(team.purgeAfter) > now()))) {
+      throw new TeamDeletingError("This team is being deleted, and its invoices with it.");
+    }
     const customer = team.stripeCustomerId;
     if (!customer || !ID.test(customer)) throw new ApiError(409, "aborted", "This team has no billing account yet. Subscribe first.", "no_billing_account");
     return { ...team, stripeCustomerId: customer };
-  }
-
-  async function linkedCustomer(ctx: TeamContext): Promise<string> {
-    return (await linkedTeam(ctx)).stripeCustomerId;
   }
 
   const actions: Record<BillingRoute["action"], (event: DataEvent, userId: string, route: BillingRoute) => Promise<APIGatewayProxyStructuredResultV2>> = {
@@ -483,6 +529,7 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
       if (!route) throw new ApiError(404, "not_found", "No such route");
       const userId = callerId(event, now());
       if (event.requestContext.authorizer.jwt.claims.iss !== deps.issuerUrl) throw new ApiError(401, "unauthenticated", "Sign in again");
+      await deps.sessionCheck?.(event, userId);
       const response = await actions[route.action](event, userId, route);
       status = response.statusCode ?? 200;
       return response;

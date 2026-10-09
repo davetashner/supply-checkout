@@ -111,6 +111,8 @@ test("bead data changed: rebuilds the page silently", () => {
   assert.notEqual(hashOf(r), before);
 });
 
+// repo() has no origin/main, so git can't date the committed export: that
+// counts as old, and a stale export blocks
 test("stale export: rebuilds the page and blocks, asking for npm run beads:pr", () => {
   const r = repo();
   run(r);
@@ -129,6 +131,47 @@ test("stale export with the page current: blocks, asking for beads:pr", () => {
   const res = run(r);
   assert.equal(res.json.decision, "block");
   assert.match(res.json.reason, /npm run beads:pr/);
+});
+
+// Points origin/main at a commit of the export made `hoursAgo` hours ago
+function commitExport(r, hoursAgo) {
+  const date = new Date(Date.now() - hoursAgo * 3600_000).toISOString();
+  writeFileSync(join(r.dir, ".beads", "issues.jsonl"), `{"id":"supply-checkout-old-${hoursAgo}"}\n`);
+  execFileSync("git", ["commit", "-q", "-am", "export"], { cwd: r.dir, env: { ...gitEnv, GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: date } });
+  git(r.dir, "update-ref", "refs/remotes/origin/main", "HEAD");
+}
+
+test("stale export committed on origin/main under a day ago: rebuilds the page, doesn't block", () => {
+  const r = repo();
+  commitExport(r, 2);
+  r.edit({ title: "Recent" });
+  const res = run(r);
+  assert.equal(res.status, 0);
+  assert.equal(res.stdout, "", "at most one export PR a day");
+  assert.ok(readFileSync(r.page, "utf8").includes("Recent"), "rebuilt the page");
+});
+
+test("stale export committed on origin/main a day ago or more: blocks", () => {
+  const r = repo();
+  commitExport(r, 25);
+  const res = run(r);
+  assert.equal(res.json.decision, "block");
+  assert.match(res.json.reason, /npm run beads:pr/);
+});
+
+test("origin/main with no committed export: counts as old, and blocks", () => {
+  const r = repo();
+  // A history of its own, with an empty tree: it has never had the export
+  const empty = git(r.dir, "hash-object", "-t", "tree", "/dev/null").trim();
+  git(r.dir, "update-ref", "refs/remotes/origin/main", git(r.dir, "commit-tree", empty, "-m", "other").trim());
+  r.edit({ title: "Changed" });
+  assert.equal(run(r).json.decision, "block");
+});
+
+test("current export with a recent commit: silent", () => {
+  const r = repo();
+  git(r.dir, "update-ref", "refs/remotes/origin/main", "HEAD");
+  assert.equal(run(r).stdout, "");
 });
 
 test("in a worktree: silent, and builds nothing", () => {

@@ -1,6 +1,6 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
-import { checkOut, recordReturn, markLost, saveItem, addLines, markOf, quickTake, moveLine } from "./moves.js";
+import { checkOut, recordReturn, markLost, saveItem, addLines, quickTake, moveLine } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY, MAX_BRAND, brandOf, nameWithBrand, brandHTML, visibleText } from "./format.js";
 import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts, lostRows, lineLabel, isAdhoc, projectTitle, leftOut } from "./project-math.js";
 import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
@@ -71,6 +71,7 @@ async function write(fn, okMsg, projectId) {
     return false;
   }
 }
+const STILL_OUT = "Return it or mark it lost before removing it.";
 const ADHOC_OPEN = "Another General Use project is open. Finish it before reopening this one.";
 const OFFLINE = "You're offline, so that wasn't saved. Try again when you're back online.";
 // Why the page is read-only, when the runtime says (the web build: an owner closed the team);
@@ -83,7 +84,7 @@ async function readViewOnly() { try { viewOnly = (await userNs.viewOnlyNotice())
 // in the form can be changed, sent again or closed (src/dom.js), so a second tap can't save
 // twice, and nothing shows as saved before it is. If it didn't save for the connection, what
 // was entered stays, the form says it isn't saved, and the button says Try again: the same
-// action again, with the same operation ID (src/moves.js), so a save whose answer was lost
+// action again, with the same operation ID (src/aws/db.js), so a save whose answer was lost
 // counts once. fn resolves to whether it saved.
 const TRY = "Try again";
 // Wires a modal form's submit. Not while it's saving: the button is disabled then, so only a
@@ -121,35 +122,9 @@ async function saving(form, fn) {
   go.focus();
 }
 
-// A checkout or return whose project line saved but whose storage count didn't (the artifact's
-// two writes, src/moves.js): the quantity can't change, so Try again finishes the same action,
-// and the note says the project has it.
-//
-// Until it's finished, Escape and tapping outside don't close the form (src/dom.js), and Cancel
-// asks for a second tap first, since closing it leaves the storage count unchanged.
-function owing(m, action) {
-  if (!action.due) return;
-  m.querySelectorAll(".stepper input, .stepper button").forEach(c => { c.disabled = true; });
-  m.querySelector("#f").dataset.owing = "";
-  const note = m.querySelector("#saveFailed");
-  if (note) note.textContent = "Saved on the project, but the storage count didn't save. Tap Try again to finish; nothing is counted twice. Cancel leaves storage as it is.";
-}
-// Cancel, which warns first while a storage count is owed (owing above)
-const cancelling = (m, action) => {
-  const b = m.querySelector("#cancel");
-  b.addEventListener("click", () => (action.due ? arm(b, "Tap again to leave storage as it is", closeModal) : closeModal()));
-};
-
 const currentProject = () => projects.find(s => s.id === ui.projectId);
 // The team's open General Use project (ADR 0017, section 4), if this page has one
 const openAdhoc = () => projects.find(s => isAdhoc(s) && s.status !== "closed");
-// The project a quick take aims at: the open General Use project, or the next adhoc-<n> after every one this page holds
-function adhocStart() {
-  const open = openAdhoc(), date = todayISO();
-  // Only adhoc-<integer> IDs count, so it's never adhoc-NaN
-  const n = Math.max(0, ...projects.filter(isAdhoc).map(s => Number(s.id.slice(6))).filter(Number.isInteger)) + 1;
-  return { id: open ? open.id : `adhoc-${n}`, date, body: { kind: "adhoc", client: "", date, createdBy: myId, createdAt: new Date().toISOString(), status: "open", items: {} } };
-}
 // Open projects where an item still has something out, the General Use project first, then newest first (as held):
 // returns from anywhere (ADR 0017, section 5). The item is its key, or its barcode on a line.
 function outOn(key, code) {
@@ -216,7 +191,7 @@ window.addEventListener("online", () => {
 // meanwhile, the page is read-only (canWrite) and it hides, as for a team that opens closed.
 function draw() {
   drawView();
-  if (firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, projects.length || Number(olderExist));
+  if (firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, projects.length || Number(olderExist), receiptOK);
 }
 function drawView() {
   $("#tab-projects").setAttribute("aria-pressed", ui.tab === "projects");
@@ -490,6 +465,7 @@ async function once(id, fn) {
   pending = null; draw();
 }
 
+// closedAt here is only for the moment before the server answers: the server stamps its own time (supply-checkout-1dg.16)
 const finish = id => write(() => db.doc("projects/" + id).update({ status: "closed", closedAt: new Date().toISOString() }), "Return finished", id);
 
 // Before you finish: for each piece of equipment still out, how many are back, how many were
@@ -786,7 +762,7 @@ function checkoutModal(s, code, key = keyOf(code), recode = null) {
     const goText = v => s ? `Add ${v} to project` : `Take ${v}`;
     const getQty = wireStepper(m, "fQty", v => setText(m.querySelector("#go"), goText(v)));
     m.querySelector("#go").textContent = goText(1);
-    cancelling(m, action);
+    m.querySelector("#cancel").addEventListener("click", closeModal);
     const form = m.querySelector("#f");
     onSubmit(form, () => {
       const qty = getQty(); if (!qty) { toast("Choose at least 1."); return; }
@@ -806,18 +782,11 @@ function checkoutModal(s, code, key = keyOf(code), recode = null) {
           if (!await write(() => db.doc("products/" + key).set({ code, name, price, updatedAt: new Date().toISOString() }))) return false;
           action.saved = true;
         }
-        const fresh = (s ? currentProject() || s : openAdhoc()) || {}, cur = own(fresh.items || {}, key);
-        // A new line copies the item's cost too (ADR 0014); an existing line keeps its snapshot
-        const from = cur || prod, cost = from && hasCost(from) ? { cost: from.cost } : {};
-        const counts = { out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
-        // Company equipment (ADR 0017) has no price on the project, and says who took it last and
-        // when. The artifact build writes this line; the web build's server makes the same one.
-        const item = (cur ? isEquipmentLine(cur) : isEquipment(prod))
-          ? { code, name: cur ? cur.name : name, kind: "equipment", ...cost, ...counts, takenBy: myId || fresh.createdByName || "", takenAt: new Date().toISOString() }
-          : { code, name: cur ? cur.name : name, price: cur ? cur.price : price, ...cost, ...counts };
-        if (!s) return closing(write(() => quickTake(db, action, key, qty, item, oneOff, adhocStart()), `Took ${qty} × ${item.name} (General Use)`));
-        return closing(write(() => checkOut(db, action, s.id, key, qty, item, oneOff), `Checked out ${qty} × ${item.name}`, s.id));
-      }).then(() => owing(m, action));
+        // The server makes the line (or adds to the one there, which keeps its name)
+        const fresh = (s ? currentProject() || s : openAdhoc()) || {}, cur = own(fresh.items || {}, key), what = cur ? cur.name : name;
+        if (!s) return closing(write(() => quickTake(db, action, key, qty, oneOff, todayISO()), `Took ${qty} × ${what} (General Use)`));
+        return closing(write(() => checkOut(db, action, s.id, key, qty, oneOff), `Checked out ${qty} × ${what}`, s.id));
+      });
     });
   });
 }
@@ -975,7 +944,7 @@ function returnModal(s, code, key = keyOf(code), named = false, recode = null) {
     };
     wireRecode(m, code, recode);
     const getR = wireStepper(m, "fRet", paint); paint(1);
-    cancelling(m, action);
+    m.querySelector("#cancel").addEventListener("click", closeModal);
     const form = m.querySelector("#f");
     onSubmit(form, () => {
       const r = getR(); if (!r) { toast("Choose at least 1."); return; }
@@ -986,7 +955,7 @@ function returnModal(s, code, key = keyOf(code), named = false, recode = null) {
           if (named) { ui.tab = "projects"; ui.projectId = s.id; draw(); }
           toast(`${done.quantity} returned · ${int(done.line.returned)} of ${int(done.line.out)} back`);
         }, undefined, s.id));
-      }).then(() => owing(m, action));
+      });
     });
   });
 }
@@ -995,19 +964,28 @@ function lineModal(s, key) {
   const l = own(s.items || {}, key); if (!l) return;
   // Company equipment on loan has no price on the project (ADR 0017), and nor does the General Use project
   const equip = isEquipmentLine(l), bought = l.purchased === true, adhoc = isAdhoc(s);
+  // Company equipment's counts change only through checkout, return, lost and move (ADR 0017), which
+  // move stock and record why, so the editor shows them and doesn't change them. Nor is a line
+  // removed while some of it is still out: the server refuses that too (supply-checkout-1dg.17).
+  const eq = equip ? equipmentCounts(l) : null;
   // The open General Use project's line can move, whole, to an open client project (ADR 0017, section 5)
   const jobs = adhoc && s.status !== "closed" ? projects.filter(x => !isAdhoc(x) && x.status !== "closed") : null;
   openModal(`
     <h2>${esc(bought ? lineLabel(l) : l.name || "Item")}</h2>
     <div class="code">${esc(codeText(l.code))}</div>
-    <form id="f" style="display:grid;gap:14px">
-      ${equip ? `<p class="hint" style="margin:0">Company equipment: not charged.</p>` : adhoc ? `<p class="hint" style="margin:0">Taken for no job: not charged.</p>` : `<div class="field"><label for="fPrice">Price each on this project ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>`}
+    ${eq ? `<form id="f" style="display:grid;gap:14px">
+      <p class="hint" style="margin:0">Company equipment: not charged. Its counts change when it's checked out, returned, or marked lost at Finished Return.</p>
+      <div class="summary"><span>Taken <b>${eq.o}</b></span><span>Returned <b>${eq.r}</b></span>${eq.lost ? `<span>Lost or broken <b>${eq.lost}</b></span>` : ""}<span>Still out <b>${eq.still}</b></span></div>
+      ${eq.still ? `<p class="hint" style="margin:0">${STILL_OUT}</p>` : ""}
+      <div class="modal-actions">${eq.still ? "" : `<button type="button" class="btn danger" id="remove">Remove</button>`}<span class="spacer"></span><button type="button" class="btn primary" id="cancel">Close</button></div>
+    </form>` : `<form id="f" style="display:grid;gap:14px">
+      ${adhoc ? `<p class="hint" style="margin:0">Taken for no job: not charged.</p>` : `<div class="field"><label for="fPrice">Price each on this project ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>`}
       <div class="row2">
         <div class="field"><label for="fOut">Taken</label><input type="number" id="fOut" min="0" inputmode="numeric" value="${int(l.out)}"></div>
         ${bought ? "" : `<div class="field"><label for="fRet">Returned</label><input type="number" id="fRet" min="0" inputmode="numeric" value="${int(l.returned)}"></div>`}
       </div>
       <div class="modal-actions"><button type="button" class="btn danger" id="remove">Remove</button><span class="spacer"></span><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
-    </form>
+    </form>`}
     ${jobs ? `<form id="mv" class="move" style="display:grid;gap:10px;margin-top:18px">
       <h3>Move to a project</h3>
       ${jobs.length ? `<p class="hint" style="margin:0">The whole line, with its counts, goes to that project at the price it was taken at. Storage doesn't change.</p>
@@ -1022,47 +1000,39 @@ function lineModal(s, key) {
       const to = m.querySelector("#fTo").value, x = projects.find(j => j.id === to);
       saving(mv, () => closing(write(() => moveLine(db, (moves[to] ||= {}), s.id, key, to), `Moved to ${projectTitle(x)}`, s.id)));
     });
-    // The form is busy until it's removed, so it's removed once
-    armButton(m.querySelector("#remove"), "Tap to remove", () => busy(form, () => closing(write(() => removeLine(s.id, key), "Removed", s.id))));
-    onSubmit(form, () => {
-      // Taken never below what's back and lost; returned never above what isn't lost
+    // The form is busy until it's removed, so it's removed once. Refused for equipment still out
+    // that this page didn't know about (someone took more meanwhile): the latest is showing.
+    const remove = m.querySelector("#remove");
+    if (remove) armButton(remove, "Tap to remove", () => busy(form, () => closing(write(() => removeLine(s.id, key).catch(e => {
+      throw e && e.reason === "equipment_out" ? { code: "refused", message: `Some of this is still out, so it wasn't removed. ${STILL_OUT}` } : e;
+    }), "Removed", s.id))));
+    if (!eq) onSubmit(form, () => {
+      // Returned never above what's taken
       // Bought for the client: nothing comes back, so there's no returned to change
-      const lost = int(l.lost), out = Math.max(int(m.querySelector("#fOut").value), lost);
-      const returned = bought ? 0 : Math.min(int(m.querySelector("#fRet").value), out - lost);
+      const out = int(m.querySelector("#fOut").value);
+      const returned = bought ? 0 : Math.min(int(m.querySelector("#fRet").value), out);
       // Typed prices are kept in whole cents (ADR 0014); the server records who typed one on a bought line
-      const price = equip || adhoc ? {} : { price: Math.max(0, round2(m.querySelector("#fPrice").value)) };
+      const price = adhoc ? {} : { price: Math.max(0, round2(m.querySelector("#fPrice").value)) };
       const patch = bought ? { out, ...price } : { out, returned, ...price };
       saving(form, () => closing(write(() => db.doc("projects/" + s.id).update({ items: { [key]: patch } }), "Saved", s.id)));
     });
   });
 }
 
-// Removes a line without making a project someone else deleted again. The web build's db saves the
-// project without it, on the version it read, so a project deleted since is refused (ADR 0006).
-// claude.ai's db has no conditional writes, but its update refuses a document that's gone, so
-// the artifact build sets the line to null in one update: nothing is read first, so there's no
-// moment in which the project could be deleted and then saved again. A null line is a removed one
-// (projects are read without them, liveProject below). If the runtime refuses a null value, the
-// project is read and saved whole without the line, as long as it's still there: that leaves the
-// moment between the read and the write, as before.
+// Removes a line without making a project someone else deleted again: the project is saved
+// without it, on the version that was read, so a project deleted since is refused (ADR 0006).
 async function removeLine(id, key) {
   const ref = db.doc("projects/" + id);
-  // Without commands (the demo and the tests' mock runtime), the update comes first
-  if (!db.command) {
-    try { await ref.update({ items: { [key]: null } }); return; }
-    // Refused: the project is gone (not_found below), the runtime doesn't take a null value, or
-    // this user is a viewer (the set below is refused too)
-    catch (e) { if (e.code !== "invalid_argument") throw e; }
-  }
   const got = await ref.get();
   if (!got.exists) throw { code: "not_found" };
-  const body = got.data(); body.items = { ...(body.items || {}) }; delete body.items[key];
+  const body = got.data(); body.items = { ...body.items }; delete body.items[key];
   await ref.set(body);
 }
-// A project as the app shows it: without lines the artifact build removed (removeLine above)
+// A project as the app shows it: without the removed lines (null) and the markers of lines
+// moved to a client project that the retired claude.ai artifact saved, which data imported
+// from it can still hold
 function liveProject(d) {
   const s = { id: d.id, ...d.data() };
-  // ...and without the markers of lines moved to a client project (moveLine in src/moves.js)
   for (const [k, it] of Object.entries(Object(s.items))) {
     if (it === null || it.moved) delete s.items[k];
     else delete it.moved;
@@ -1526,8 +1496,8 @@ $("#rBody").addEventListener("click", e => {
     const half = Math.floor(int(line.qty) / 2); line.qty = int(line.qty) - half;
     const other = d.dests.find(x => x.id !== line.dest);
     const copy = { ...line, id: uid(), qty: half, dest: other ? other.id : line.dest };
-    // Its own action: not the operation or mark the line it came from may have kept (src/aws/db.js, src/moves.js)
-    delete copy.operation; delete copy.mark;
+    // Its own action: not the operation the line it came from may have kept (src/aws/db.js)
+    delete copy.operation;
     d.lines.splice(d.lines.indexOf(line) + 1, 0, copy); saveDraft(); renderReceipt();
     const f = $("#q-" + copy.id); f && f.focus();
   }
@@ -1562,13 +1532,10 @@ async function saveReceipt() {
   const toStock = lines.filter(l => l.dest === "stock");
   if (!usedDests.length && !toStock.length) { toast("Nothing to save. Assign each item to a client or to General inventory."); return; }
   // From the first attempt until it's saved, the draft is locked: each destination and stock
-  // line is one action, with its operation IDs and marks (src/aws/db.js, src/moves.js), so
-  // saving again after a lost answer adds nothing twice. A changed line would be a new
-  // operation, adding again what an earlier attempt may have saved, so nothing can be changed
-  // meanwhile. The marks are made and the lock saved with the draft before anything is sent,
-  // so they last through a reload.
-  for (const l of toStock) markOf(l);
-  for (const x of usedDests) markOf(x);
+  // line is one action, with its operation IDs (src/aws/db.js), so saving again after a lost
+  // answer adds nothing twice. A changed line would be a new operation, adding again what an
+  // earlier attempt may have saved, so nothing can be changed meanwhile. The lock is saved with
+  // the draft before anything is sent, so it lasts through a reload.
   d.locked = true; rSaving = true; saveDraft(); renderReceipt();
   // Didn't save: the draft keeps what hasn't been saved. If it failed for the connection, it
   // stays locked and the button says Try again. Refused (a project deleted, view-only, storage
@@ -1611,7 +1578,7 @@ async function saveReceipt() {
       if (isBought(l)) {
         // The receipt price each, and the reviewer's price if they typed one; never a markup price
         const typed = typedPrice(l);
-        const b = own(bought, k) || (bought[k] = { code, name: effName(l), cost: unitCost(l), out: 0, ...(typed === undefined ? {} : { typed, by: myId || d.by.trim() }) });
+        const b = own(bought, k) || (bought[k] = { code, name: effName(l), cost: unitCost(l), out: 0, ...(typed === undefined ? {} : { typed }) });
         b.out += eaches(l);
         continue;
       }
@@ -1654,6 +1621,7 @@ async function saveReceipt() {
     }
   }
   rSaving = false; draft = null; saveDraft(); ui.receipt = false;
+  if (firstRun) firstRun.receiptSaved();
   if (savedIds.length === 1) ui.projectId = savedIds[0];
   ui.tab = "projects"; draw(); window.scrollTo(0, 0);
   const nStock = toStock.reduce((a, l) => a + eaches(l), 0);

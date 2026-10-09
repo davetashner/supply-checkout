@@ -21,6 +21,8 @@ const OUTSIDER = "user-outsider";
 let table: MemoryTable;
 let counts: Record<string, number>;
 let handler: ReturnType<typeof createDataHandler>;
+/** The handler's clock: NOW, unless a test turns it to stamp a project finished at another time (closedAt). */
+let clock = NOW;
 
 function fakeObservability(): Observability {
   counts = {};
@@ -44,7 +46,8 @@ beforeEach(() => {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(teamId)) throw new InvalidInputError("Invalid team ID");
     return table.db(teamId);
   };
-  handler = createDataHandler({ dbForTeam, obs: fakeObservability(), now: () => NOW });
+  clock = NOW;
+  handler = createDataHandler({ dbForTeam, obs: fakeObservability(), now: () => clock });
 });
 
 interface Request {
@@ -273,9 +276,10 @@ describe("documents (the app's db contract)", () => {
     // A new line leaves the others alone
     ({ body } = await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { items: { b: { name: "Rags", out: 1, returned: 0 } } } } }));
     expect(Object.keys(body.data.items)).toEqual(["a", "b"]);
-    // Top-level fields merge too, and a non-map value replaces
+    // Top-level fields merge too, and a null line removes it (closedAt is the server's, not the device's)
     ({ body } = await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { status: "closed", closedAt: "2026-09-02T00:00:00Z", items: { b: null } } } }));
-    expect(body).toMatchObject({ version: 4, data: { client: "Echo", status: "closed", closedAt: "2026-09-02T00:00:00Z", items: { b: null } } });
+    expect(body).toMatchObject({ version: 4, data: { client: "Echo", status: "closed", closedAt: new Date(NOW).toISOString() } });
+    expect(Object.keys(body.data.items)).toEqual(["a"]);
     expect(body.data.items.a.returned).toBe(2);
     await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { tags: ["x"] } } });
     ({ body } = await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { tags: ["y"] } } }));
@@ -505,10 +509,40 @@ describe("documents (the app's db contract)", () => {
     };
     expect((await call("PUT", "/teams/team-a/projects/s1", { body: { data: receiptProject } })).body.data).toEqual(receiptProject);
     await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { status: "closed", closedAt: "2026-09-02T00:00:00.000Z" } } });
-    expect((await call("GET", "/teams/team-a/projects/s1")).body.data).toEqual({ ...receiptProject, status: "closed", closedAt: "2026-09-02T00:00:00.000Z" });
+    expect((await call("GET", "/teams/team-a/projects/s1")).body.data).toEqual({ ...receiptProject, status: "closed", closedAt: new Date(NOW).toISOString() });
     const full = { ...product, cost: 9, packSize: 12, notes: "Blue box" };
     expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: full } })).body.data).toEqual(full);
     expect((await call("PATCH", "/teams/team-a/products/0123", { body: { data: { cost: 8 } } })).body.data).toEqual({ ...full, cost: 8 });
+  });
+
+  // supply-checkout-1dg.16: the since list keeps a finished project by closedAt, so it's the server's clock, never the device's
+  it("stamps closedAt with the server's time when a project is finished, whatever the app sends", async () => {
+    const path = "/teams/team-a/projects/s1";
+    const stored = async () => (await call("GET", path)).body.data;
+    const at = (iso: string) => {
+      clock = Date.parse(iso);
+      return new Date(clock).toISOString();
+    };
+    // An open project has none, even if the request carries one
+    expect((await call("PUT", path, { body: { data: { ...project("2026-01-05"), closedAt: "2026-01-05T00:00:00.000Z" } } })).body.data).not.toHaveProperty("closedAt");
+    expect((await call("PATCH", path, { body: { data: { closedAt: "2026-01-05T00:00:00.000Z" } } })).body.data).not.toHaveProperty("closedAt");
+    // Finished Return as the app sends it, from a device whose clock is a year behind: the server's time
+    const first = at("2026-02-01T09:00:00Z");
+    expect((await call("PATCH", path, { body: { data: { status: "closed", closedAt: "2025-02-01T09:00:00.000Z" } } })).body.data.closedAt).toBe(first);
+    // Edits to the finished project keep it: a PUT of the whole document, a PATCH, either with another closedAt
+    at("2026-03-01T09:00:00Z");
+    expect((await call("PUT", path, { body: { data: { ...(await stored()), closedAt: "2027-01-01T00:00:00.000Z" } } })).body.data.closedAt).toBe(first);
+    expect((await call("PATCH", path, { body: { data: { client: "Echo Ltd", closedAt: null } } })).body.data.closedAt).toBe(first);
+    // Reopened, it keeps the time it was last finished; finished again, a new time
+    expect((await call("PATCH", path, { body: { data: { status: "open", closedAt: "2027-01-01T00:00:00.000Z" } } })).body.data).toMatchObject({ status: "open", closedAt: first });
+    const second = at("2026-04-01T09:00:00Z");
+    expect((await call("PATCH", path, { body: { data: { status: "closed" } } })).body.data.closedAt).toBe(second);
+    expect(await stored()).toMatchObject({ status: "closed", closedAt: second });
+    // A new project written finished is stamped too, and a legacy finished one without closedAt stays without
+    const third = at("2026-05-01T09:00:00Z");
+    expect((await call("PUT", "/teams/team-a/projects/s2", { body: { data: { ...project("2020-01-01"), status: "closed", closedAt: "2020-01-01T00:00:00.000Z" } } })).body.data.closedAt).toBe(third);
+    table.put({ PK: "TEAM#team-a", SK: "PROJECT#legacy", GSI1PK: "TEAM#team-a#PROJECTS", GSI1SK: "2020-01-01#legacy", type: "project", id: "legacy", version: 1, client: "Old", date: "2020-01-01", status: "closed", items: {} });
+    expect((await call("PATCH", "/teams/team-a/projects/legacy", { body: { data: { client: "Older", closedAt: "2026-05-01T00:00:00.000Z" } } })).body.data).not.toHaveProperty("closedAt");
   });
 
   it("refuses to update a document that doesn't exist", async () => {
@@ -553,19 +587,24 @@ describe("documents (the app's db contract)", () => {
 
   // The app's first load (supply-checkout-1dg.11): open projects and recent finished ones, not every project ever
   it("lists only open projects and finished ones from since a day, with since", async () => {
-    const closed = (date: string | undefined, extra: Record<string, unknown> = {}) => ({ client: "Echo", ...(date === undefined ? {} : { date }), status: "closed", items: {}, ...extra });
-    const docs: Record<string, unknown> = {
+    const closed = (date: string | undefined, finishedAt = "2025-06-01T10:00:00.000Z") => ({ client: "Echo", ...(date === undefined ? {} : { date }), status: "closed", items: {}, finishedAt });
+    const docs: Record<string, Record<string, unknown>> = {
       openOld: project("2023-02-01"),
       openNoStatus: { client: "Legacy", date: "2022-01-01", items: {} },
       closedOld: closed("2025-12-31"),
       closedOn: closed("2026-01-01"),
       closedNew: closed("2026-09-01"),
-      closedLate: closed("2024-05-01", { closedAt: "2026-03-04T10:00:00.000Z" }),
-      closedEarly: closed("2024-05-01", { closedAt: "2025-03-04T10:00:00.000Z" }),
+      closedLate: closed("2024-05-01", "2026-03-04T10:00:00.000Z"),
+      closedEarly: closed("2024-05-01", "2025-03-04T10:00:00.000Z"),
       closedUndated: closed(undefined),
       closedBlank: closed(""),
     };
-    for (const [id, data] of Object.entries(docs)) expect((await call("PUT", `/teams/team-a/projects/${id}`, { body: { data } })).status).toBe(200);
+    // Each finished one finished (closedAt, the server's clock) when it says
+    for (const [id, { finishedAt, ...data }] of Object.entries(docs)) {
+      clock = typeof finishedAt === "string" ? Date.parse(finishedAt) : NOW;
+      expect((await call("PUT", `/teams/team-a/projects/${id}`, { body: { data } })).status).toBe(200);
+    }
+    clock = NOW;
     // A legacy item the rename's backfill hasn't moved yet: filtered the same way
     for (const [id, status] of [["sheetOld", "closed"], ["sheetOpen", "open"]]) {
       table.put({ PK: "TEAM#team-a", SK: `SHEET#${id}`, GSI1PK: "TEAM#team-a#SHEETS", GSI1SK: `2020-01-01#${id}`, type: "sheet", id, version: 1, client: "Old", date: "2020-01-01", status, items: {} });
@@ -594,6 +633,7 @@ describe("documents (the app's db contract)", () => {
 
   it("reads on through pages that match nothing, so a filtered page is rarely empty", async () => {
     // 25 finished projects from long ago, then an open one, by ID; two items a read
+    clock = Date.parse("2020-01-02T10:00:00Z");
     for (let i = 10; i < 35; i++) await call("PUT", `/teams/team-a/projects/a${i}`, { body: { data: { ...project("2020-01-01"), status: "closed" } } });
     await call("PUT", "/teams/team-a/projects/b-open", { body: { data: project("2020-01-01") } });
     table.pageItems = 2;

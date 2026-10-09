@@ -154,6 +154,25 @@
                 "Service": "events.amazonaws.com"
               },
               "Resource": "*",
+              "Sid": "AllowCostAlertChangesToEncrypt"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:GenerateDataKey*"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Resource": "*",
               "Sid": "AllowSupportSmtpUserAlertToEncrypt"
             }
           ],
@@ -717,6 +736,41 @@
                 "Ref": "AlarmTopicsP213C63151"
               },
               "Sid": "AllowCostAnomaliesToPublish"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":events:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":rule/supply-checkout-prod-operator-cost-alert-changes"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP213C63151"
+              },
+              "Sid": "AllowCostAlertChangesToPublish"
             },
             {
               "Action": "sns:Publish",
@@ -1478,7 +1532,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Security notices failing (J0, us-east-1). Any SecurityNoticeFailures over 15 minutes: someone set a password or turned on two-step sign-in and the account's own verified address wasn't told (SES refused the message or took more than 3 seconds, or there's no verified address). The change stands anyway, so an account taken over this way goes unnoticed by its owner (supply-checkout-8jc.15). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Security notices failing (J0, us-east-1). Any SecurityNoticeFailures over 15 minutes: someone set a password or turned on two-step sign-in and the account's own verified address wasn't told (SES refused the message or took more than 3 seconds, or there's no verified address). The change stands anyway, so an account taken over this way goes unnoticed by its owner (supply-checkout-8jc.15). Also after a password reset (kind passwordReset, via reset, supply-checkout-6uw.32): the post confirmation trigger couldn't sign the account out (reason sign_out: sessions from before the reset may still work, so sign the user out by hand), or record its time (record_reset, also from POST /me/sign-out-everywhere: the API won't refuse sessions from before it; see docs/journeys.md) or couldn't hand over the reset notice (no_user, invoke, deferred), or the notices function couldn't send it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-security-notices-failing",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
@@ -1856,6 +1910,71 @@
                   }
                 ],
                 "MetricName": "WelcomeEmailsRefused",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmspasswordresethintscapped0BF3B381": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Password reset hints capped (J0, us-east-1). Any PasswordResetHintsCapped in an hour: the \"sign in with Google\" (or Apple) hints for password resets asked for in the app reached their cap for the UTC day (PASSWORD_RESET_HINTS_PER_DAY, 500), so no more go out until midnight UTC. They go only to Google or Apple accounts' verified addresses, so this is either real demand or someone pushing many of those addresses through the route (supply-checkout-6uw.26). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-password-reset-hints-capped",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "PasswordResetHintsCapped (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "PasswordResetHintsCapped",
                 "Namespace": "SupplyCheckout"
               },
               "Period": 3600,
@@ -5634,6 +5753,150 @@
         "AlarmTopicsP213C63151"
       ]
     },
+    "CostAlertsChanges11670D29": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The cost budgets, their notifications or subscribers, or the cost anomaly monitor or subscription were deleted or changed outside a deploy (supply-checkout-3sv.19)",
+        "EventPattern": {
+          "source": [
+            "aws.budgets",
+            "aws.ce"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "userIdentity": {
+              "invokedBy": [
+                {
+                  "exists": false
+                },
+                {
+                  "anything-but": "cloudformation.amazonaws.com"
+                }
+              ]
+            },
+            "$or": [
+              {
+                "eventSource": [
+                  "budgets.amazonaws.com"
+                ],
+                "eventName": [
+                  "DeleteBudget",
+                  "UpdateBudget",
+                  "CreateNotification",
+                  "UpdateNotification",
+                  "DeleteNotification",
+                  "CreateSubscriber",
+                  "UpdateSubscriber",
+                  "DeleteSubscriber"
+                ],
+                "requestParameters": {
+                  "budgetName": [
+                    "supply-checkout-prod-monthly",
+                    "supply-checkout-prod-bedrock"
+                  ]
+                }
+              },
+              {
+                "eventSource": [
+                  "budgets.amazonaws.com"
+                ],
+                "eventName": [
+                  "UpdateBudget"
+                ],
+                "requestParameters": {
+                  "newBudget": {
+                    "budgetName": [
+                      "supply-checkout-prod-monthly",
+                      "supply-checkout-prod-bedrock"
+                    ]
+                  }
+                }
+              },
+              {
+                "eventSource": [
+                  "ce.amazonaws.com"
+                ],
+                "eventName": [
+                  "DeleteAnomalyMonitor",
+                  "UpdateAnomalyMonitor"
+                ],
+                "requestParameters": {
+                  "monitorArn": [
+                    {
+                      "Fn::GetAtt": [
+                        "CostAlertsMonitor6895C43D",
+                        "MonitorArn"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "eventSource": [
+                  "ce.amazonaws.com"
+                ],
+                "eventName": [
+                  "DeleteAnomalySubscription",
+                  "UpdateAnomalySubscription"
+                ],
+                "requestParameters": {
+                  "subscriptionArn": [
+                    {
+                      "Fn::GetAtt": [
+                        "CostAlertsSubscriptionEABF71E9",
+                        "SubscriptionArn"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-cost-alert-changes",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP213C63151"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the cost alerts at <detail-eventTime>, outside a deploy (CloudTrail event <detail-eventID> says who). The budget or cost anomaly alerts may be silenced. Follow \\\"When the cost alerts are changed\\\" in docs/observability.md.\""
+            }
+          }
+        ]
+      }
+    },
     "SupportSmtpWatchUserChanges23FABB0B": {
       "Type": "AWS::Events::Rule",
       "Properties": {
@@ -7857,10 +8120,43 @@
               "Sid": "CloseLapsedTeam"
             },
             {
-              "Action": [
-                "dynamodb:GetItem",
-                "dynamodb:PutItem"
-              ],
+              "Action": "dynamodb:GetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "LAPSE#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "type",
+                    "sentAt",
+                    "expiresAt"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "ReadLapseRecords"
+            },
+            {
+              "Action": "dynamodb:PutItem",
               "Condition": {
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [
@@ -8013,6 +8309,7 @@
             "EMAIL_CONFIGURATION_SET": "supply-checkout-prod-transactional",
             "EMAIL_REGION": "us-east-1",
             "EMAIL_APP_URL": "https://app.supplycheckout.com",
+            "EMAIL_SUPPORT_ADDRESS": "support@supplycheckout.com",
             "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
             "SUPPLY_CHECKOUT_ENV": "prod"
           }
@@ -13900,6 +14197,13 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmspasswordresethintscapped0BF3B381",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmswelcomeemailfunctionfailing8BF1DBD8",
                   "Arn"
                 ]
@@ -14531,7 +14835,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsChecked (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsReadOnly (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsUnstarted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsChecked (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsReadOnly (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsUnstarted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsChecked (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsReadOnly (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsUnstarted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsChecked (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsReadOnly (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsUnstarted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":115,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J0: password reset provider hints, requests limited, and hints capped\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"PasswordResetProviderHints\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetProviderHints (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetsLimited\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetsLimited (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetHintsCapped\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetHintsCapped (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetProviderHints\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetProviderHints (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetsLimited\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetsLimited (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetHintsCapped\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetHintsCapped (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },

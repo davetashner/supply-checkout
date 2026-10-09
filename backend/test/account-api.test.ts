@@ -6,12 +6,13 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AccountScope, DbForAccount } from "../src/api/account-db.js";
-import { createAccountHandler } from "../src/api/account-handler.js";
+import { type AccountHandlerDeps, createAccountHandler } from "../src/api/account-handler.js";
 import type { CognitoUser, TotpSetup } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, createInvite, emailSeenHash, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, MEMBERS_PER_TRIAL_TEAM, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
+import { createSessionCheck } from "../src/api/session-reset.js";
+import { authorizeTeam, createInvite, emailSeenHash, passwordResetAt, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, MEMBERS_PER_TRIAL_TEAM, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { connection } from "../src/data/client.js";
 import { REGION, accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog } from "./helpers.js";
@@ -57,7 +58,11 @@ let totpFailure: Error | undefined;
 // How many sign-outs everywhere fail before one works
 let signOutFailures: number;
 let signOutRefusal: ApiError | undefined;
+// Each user's name as Cognito's GetUser gives it (CognitoUser.name), if any
+let names: Record<string, string>;
 let handler: ReturnType<typeof createAccountHandler>;
+// What beforeEach builds the handler with, for a test that adds to it
+let deps: AccountHandlerDeps;
 
 function fakeObservability(): Observability {
   counts = {};
@@ -85,6 +90,7 @@ beforeEach(() => {
   signOutFailures = 0;
   signOutRefusal = undefined;
   logs = [];
+  names = {};
   scopes = [];
   table = new MemoryTable();
   table.seedTeam("team-a", { [OWNER]: "owner", [PAT]: "contributor" });
@@ -100,7 +106,8 @@ beforeEach(() => {
     const user = USERS[token.replace(/^token-/, "")];
     if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
     const seen = verifiedNow.has(user.sub) ? { ...user, emailVerified: true, emailVerifiedInCognito: true } : user;
-    return totpOn.has(user.sub) ? { ...seen, totp: true } : seen;
+    const named = names[user.sub] ? { ...seen, name: names[user.sub] } : seen;
+    return totpOn.has(user.sub) ? { ...named, totp: true } : named;
   };
   const totp: TotpSetup = {
     async setPassword(token, proposed, previous) {
@@ -136,7 +143,8 @@ beforeEach(() => {
       verifiedNow.add(token.replace(/^token-/, ""));
     },
   };
-  handler = createAccountHandler({ dbFor, userInfo, emailCodes, totp, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, noticeTimeoutMs: 50, now: () => now });
+  deps = { dbFor, userInfo, emailCodes, totp, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, noticeTimeoutMs: 50, now: () => now };
+  handler = createAccountHandler(deps);
 });
 
 interface Request {
@@ -220,9 +228,11 @@ describe("POST /teams", () => {
       cancelsAt: null,
       members: 1,
       memberCap: MEMBERS_PER_TRIAL_TEAM,
+      // A new team starts its first-run checklist (supply-checkout-fs56)
+      checklist: { receipt: false, done: false },
     });
     const id = body.team.id as string;
-    expect(table.get(`TEAM#${id}`, "META")).toMatchObject({ owners: 1, homeRegion: REGION, createdAt: new Date(now).toISOString() });
+    expect(table.get(`TEAM#${id}`, "META")).toMatchObject({ owners: 1, homeRegion: REGION, createdAt: new Date(now).toISOString(), checklistStartedAt: new Date(now).toISOString() });
     expect(table.get(`TEAM#${id}`, `MEMBER#${MALLORY}`)).toMatchObject({ role: "owner", email: "mallory@example.com" });
     expect(table.get(`USER#${MALLORY}`, `TEAM#${id}`)).toMatchObject({ role: "owner", teamName: "Mallory Cleaning" });
     expect(counts.SignUps).toBe(1);
@@ -281,9 +291,25 @@ describe("GET /me", () => {
     expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null } });
     expect(body.teams).toEqual([
       created,
-      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, reopenBy: null, comp: null, subscriptionEnded: false, readOnlyReason: null, readOnlyDeletesAt: null, readOnlyLastDay: null, paymentGraceEndsAt: null, billingAccount: false, cancelsAt: null, members: 2, memberCap: MEMBERS_PER_TRIAL_TEAM },
+      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, reopenBy: null, comp: null, subscriptionEnded: false, readOnlyReason: null, readOnlyDeletesAt: null, readOnlyLastDay: null, paymentGraceEndsAt: null, billingAccount: false, cancelsAt: null, members: 2, memberCap: MEMBERS_PER_TRIAL_TEAM, checklist: null },
     ].map((t) => JSON.parse(JSON.stringify(t))));
     expect(body.invites).toEqual([]);
+  });
+
+  it("shows the first-run checklist's progress to owners only, and none for a team that never had one", async () => {
+    const created = (await create(MALLORY, "Mallory Cleaning", "mallory-checklist")).body.team;
+    const id = created.id as string;
+    const teamOf = async (user: string, teamId: string) => ((await call("GET", "/me", { user })).body.teams as { id: string; checklist: unknown }[]).find((t) => t.id === teamId)?.checklist;
+    expect(await teamOf(MALLORY, id)).toEqual({ receipt: false, done: false });
+    table.put({ ...table.get(`TEAM#${id}`, "META"), checklistReceipt: true, checklistDone: "yes" });
+    // Anything stored that isn't true is not done
+    expect(await teamOf(MALLORY, id)).toEqual({ receipt: true, done: false });
+    // A team from before the checklist was kept on the server
+    expect(await teamOf(OWNER, "team-a")).toBeNull();
+    // Contributors and viewers never get it, even when the team has one
+    table.put({ ...table.get("TEAM#team-a", "META"), checklistStartedAt: new Date(now).toISOString(), checklistDone: true });
+    expect(await teamOf(OWNER, "team-a")).toEqual({ receipt: false, done: true });
+    expect(await teamOf(PAT, "team-a")).toBeNull();
   });
 
   it("shows a live comp from support (ADR 0015), but not one that has run out", async () => {
@@ -590,7 +616,9 @@ describe("two-step sign-in", () => {
   });
 
   it("still signs the caller out everywhere when the time can't be recorded, and logs it", async () => {
+    const forgotten: string[] = [];
     const refusing = createAccountHandler({
+      sessionCheck: Object.assign(async () => {}, { forget: (userId: string) => void forgotten.push(userId) }),
       dbFor: () => table.guarded((command) => command !== "UpdateCommand"),
       userInfo: async () => ({ sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false }),
       emailCodes: { send: async () => {}, verify: async () => {} },
@@ -607,6 +635,24 @@ describe("two-step sign-in", () => {
     expect(response.statusCode).toBe(204);
     expect(totpCalls).toEqual([["signOutEverywhere", `token-${OWNER}`]]);
     expect(logs).toContainEqual(["Two-step sign-in time not recorded", { userId: OWNER, code: "AccessDeniedException" }]);
+    // The same for the sign-out everywhere's record (supply-checkout-6uw.33): signed out, and logged
+    expect((await refusing(event("POST", "/me/sign-out-everywhere"))).statusCode).toBe(204);
+    expect(logs).toContainEqual(["Sign-out time not recorded", { userId: OWNER, code: "AccessDeniedException" }]);
+    // Counted, so it alarms ("Security notices failing", supply-checkout-6uw.34): sessions from before still pass
+    expect(counts[BusinessMetric.SecurityNoticeFailures]).toBe(1);
+    // Dropped anyway: a write can land though its answer failed (a timeout), so the cache is read again
+    expect(forgotten).toEqual([OWNER]);
+  });
+
+  // supply-checkout-6uw.34: the check's cache in this container doesn't let sessions from before the sign-out through
+  it("refuses a session from before the sign-out everywhere at once, not after the reset time's cache runs out", async () => {
+    handler = createAccountHandler({ ...deps, sessionCheck: createSessionCheck({ lookup: (userId) => passwordResetAt(table.db(), userId), now: () => now }) });
+    const before = { user: OWNER, claims: { sub: OWNER, token_use: "access", exp: String(Math.floor(now / 1000) + 600), iss: ISSUER, client_id: "web", auth_time: Math.floor(now / 1000) - 3600 } };
+    // No record yet: through, and that's kept for RESET_CACHE_MS
+    expect((await call("GET", "/me", before)).status).toBe(200);
+    expect(await call("POST", "/me/sign-out-everywhere", before)).toEqual({ status: 204, body: undefined });
+    expect(await call("GET", "/me", before)).toMatchObject({ status: 401, body: { error: { code: "unauthenticated", reason: "password_reset" } } });
+    expect(counts[BusinessMetric.SecurityNoticeFailures]).toBeUndefined();
   });
 
   it("checks the request before calling Cognito", async () => {
@@ -642,6 +688,19 @@ describe("two-step sign-in", () => {
     expect(await call("POST", "/me/sign-out-everywhere", { user: FEDERATED, body: {} })).toEqual({ status: 204, body: undefined });
     expect(totpCalls).toEqual([["signOutEverywhere", `token-${OWNER}`], ["signOutEverywhere", `token-${FEDERATED}`]]);
     expect((await call("POST", "/me/sign-out-everywhere", { body: { all: true } })).status).toBe(400);
+  });
+
+  // supply-checkout-6uw.33: after the sign-out, the API refuses every session from before it too
+  it("records the sign-out's time as the password reset record's, in the caller's own partition, only after the sign-out", async () => {
+    // Changing the password records nothing: the caller may choose to stay signed in, and the app's next call is the sign-out
+    expect((await call("POST", "/me/password", { body: { password: "Correct-Horse-9", currentPassword: "Old-Horse-9" } })).status).toBe(204);
+    expect(table.get(`USER#${OWNER}`, "PASSWORD_RESET")).toBeUndefined();
+    expect(await call("POST", "/me/sign-out-everywhere")).toEqual({ status: 204, body: undefined });
+    expect(table.get(`USER#${OWNER}`, "PASSWORD_RESET")).toEqual({ PK: `USER#${OWNER}`, SK: "PASSWORD_RESET", passwordResetAt: new Date(now).toISOString() });
+    // A sign-out that fails records nothing
+    signOutRefusal = new ApiError(401, "unauthenticated", "Sign in again");
+    expect((await call("POST", "/me/sign-out-everywhere", { user: FEDERATED })).status).toBe(401);
+    expect(table.get(`USER#${FEDERATED}`, "PASSWORD_RESET")).toBeUndefined();
   });
 
   it("tries a throttled sign-out everywhere again, but not one refused for a revoked token", async () => {
@@ -929,7 +988,7 @@ describe("keeping members' email current", () => {
     expect(JSON.parse(me.body as string).teams).toHaveLength(2);
     expect(memberEmail("team-a", PAT)).toBe("pat@example.com");
     expect(memberEmail("team-b", PAT)).toBe("pat-old@example.com");
-    expect(logs).toContainEqual(["Member email not updated", { teamId: "team-b", code: "ProvisionedThroughputExceededException" }]);
+    expect(logs).toContainEqual(["Member details not updated", { teamId: "team-b", code: "ProvisionedThroughputExceededException" }]);
     expect(JSON.stringify(logs)).not.toMatch(/pat@|pat-old@/);
   });
 
@@ -949,6 +1008,102 @@ describe("keeping members' email current", () => {
     expect(table.get(`USER#${UNVERIFIED}`, "VERIFIED_EMAIL")).toBeDefined();
     expect(memberEmail("team-a", UNVERIFIED)).toBe("old@example.com");
     expect(logs).toContainEqual(["Member emails not updated", { code: "InternalServerError" }]);
+  });
+});
+
+describe("members' names (supply-checkout-lx7)", () => {
+  const memberOf = (team: string, user: string) => table.get(`TEAM#${team}`, `MEMBER#${user}`);
+  const memberUpdates = () => table.calls.filter((c) => c.command === "UpdateCommand" && c.partitions.some((p) => p.startsWith("TEAM#")));
+  const listed = async (team = "team-a") => (await call("GET", `/teams/${team}/members`)).body.members as { userId: string; name: string | null; email: string | null }[];
+
+  it("stores the owner's name when they create a team, and the owner sees it", async () => {
+    names[MALLORY] = "Mallory Mop";
+    const { body } = await create(MALLORY, "Mallory Cleaning", "create-key-n1");
+    const id = body.team.id as string;
+    expect(memberOf(id, MALLORY)).toMatchObject({ role: "owner", email: "mallory@example.com", displayName: "Mallory Mop" });
+    // Never under `name`, which the operators' index and the billing roles may read
+    expect(memberOf(id, MALLORY)).not.toHaveProperty("name");
+    const members = (await call("GET", `/teams/${id}/members`, { user: MALLORY })).body.members;
+    expect(members).toEqual([{ userId: MALLORY, name: "Mallory Mop", email: "mallory@example.com", role: "owner", joinedAt: new Date(now).toISOString() }]);
+  });
+
+  it("stores no name for someone without one, and lists theirs as null", async () => {
+    const { body } = await create(MALLORY, "Mallory Cleaning", "create-key-n2");
+    expect(memberOf(body.team.id as string, MALLORY)).not.toHaveProperty("displayName");
+    expect((await listed())[0]).toMatchObject({ userId: OWNER, name: null });
+  });
+
+  it("stores the name of someone who accepts an invite", async () => {
+    names[PAT] = "Pat Lee";
+    await table.seedTeam("team-b", { [OWNER]: "owner" });
+    const { inviteId, token } = await invite("pat@example.com", { team: "team-b", role: "viewer" });
+    expect((await accept(PAT, inviteId, token)).status).toBe(200);
+    expect(memberOf("team-b", PAT)).toMatchObject({ role: "viewer", displayName: "Pat Lee" });
+    expect((await listed("team-b")).find((m) => m.userId === PAT)?.name).toBe("Pat Lee");
+  });
+
+  it("keeps the caller's own name current on /me, removes it when they clear it, and writes nothing when it's current", async () => {
+    names[PAT] = "Pat Lee";
+    expect((await call("GET", "/me", { user: PAT })).status).toBe(200);
+    expect(memberOf("team-a", PAT)?.displayName).toBe("Pat Lee");
+    // Only the caller's own member item
+    expect(memberOf("team-a", OWNER)).not.toHaveProperty("displayName");
+    const writes = memberUpdates().length;
+    expect((await call("GET", "/me", { user: PAT })).status).toBe(200);
+    expect(memberUpdates()).toHaveLength(writes);
+    names[PAT] = "Patricia Lee";
+    await call("GET", "/me", { user: PAT });
+    expect((await listed()).find((m) => m.userId === PAT)?.name).toBe("Patricia Lee");
+    names = {};
+    await call("GET", "/me", { user: PAT });
+    expect(memberOf("team-a", PAT)).not.toHaveProperty("displayName");
+    expect((await listed()).find((m) => m.userId === PAT)?.name).toBeNull();
+    // A member with no name and no change costs no write
+    const after = memberUpdates().length;
+    await call("GET", "/me", { user: PAT });
+    expect(memberUpdates()).toHaveLength(after);
+  });
+
+  it("keeps the name current for someone whose email isn't verified, without touching their address", async () => {
+    table.put({ PK: "TEAM#team-a", SK: `MEMBER#${UNVERIFIED}`, type: "member", teamId: "team-a", userId: UNVERIFIED, role: "viewer", email: "old@example.com" });
+    table.put({ PK: `USER#${UNVERIFIED}`, SK: "TEAM#team-a", type: "userTeam", userId: UNVERIFIED, teamId: "team-a", teamName: "team-a", role: "viewer" });
+    names[UNVERIFIED] = "Una Verified";
+    expect((await call("GET", "/me", { user: UNVERIFIED })).status).toBe(200);
+    expect(memberOf("team-a", UNVERIFIED)).toMatchObject({ email: "old@example.com", displayName: "Una Verified" });
+  });
+
+  it("copies the name with a newly verified address", async () => {
+    table.put({ PK: "TEAM#team-a", SK: `MEMBER#${UNVERIFIED}`, type: "member", teamId: "team-a", userId: UNVERIFIED, role: "viewer", email: "old@example.com" });
+    table.put({ PK: `USER#${UNVERIFIED}`, SK: "TEAM#team-a", type: "userTeam", userId: UNVERIFIED, teamId: "team-a", teamName: "team-a", role: "viewer" });
+    names[UNVERIFIED] = "Una Verified";
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
+    expect((await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).status).toBe(204);
+    expect(memberOf("team-a", UNVERIFIED)).toMatchObject({ email: "pat@example.com", displayName: "Una Verified" });
+  });
+
+  it("leaves a closed team's member item as it is", async () => {
+    names[PAT] = "Pat Lee";
+    table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), closedAt: new Date(now).toISOString() });
+    await call("GET", "/me", { user: PAT });
+    expect(memberOf("team-a", PAT)).not.toHaveProperty("displayName");
+  });
+
+  it("never logs the name when the write fails", async () => {
+    names[PAT] = "Pat Secretname";
+    const original = table.scoped.bind(table);
+    table.scoped = (partitions) => {
+      const db = original(partitions);
+      return fakeDb(async (command) => {
+        const name = (command as { constructor: { name: string } }).constructor.name;
+        if (name === "UpdateCommand" && String((command.input.Key as { PK?: string }).PK) === "TEAM#team-a") {
+          throw Object.assign(new Error("Pat Secretname"), { name: "ProvisionedThroughputExceededException" });
+        }
+        return connection(db).doc.send(command as never);
+      });
+    };
+    expect((await handler(event("GET", "/me", { user: PAT }))).statusCode).toBe(200);
+    expect(logs).toContainEqual(["Member details not updated", { teamId: "team-a", code: "ProvisionedThroughputExceededException" }]);
+    expect(JSON.stringify(logs)).not.toMatch(/Secretname/);
   });
 });
 

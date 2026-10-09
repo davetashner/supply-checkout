@@ -397,6 +397,7 @@
             "NODE_OPTIONS": "--enable-source-maps",
             "TABLE_NAME": "supply-checkout-prod-app",
             "WELCOME_FUNCTION": "supply-checkout-prod-welcome-email",
+            "SECURITY_NOTICES_FUNCTION": "supply-checkout-prod-security-notices",
             "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
             "SUPPLY_CHECKOUT_ENV": "prod"
           }
@@ -492,7 +493,7 @@
                     "noticeAddressAt"
                   ]
                 },
-                "StringEqualsIfExists": {
+                "StringEquals": {
                   "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
                 }
               },
@@ -616,6 +617,84 @@
           "Version": "2012-10-17"
         },
         "PolicyName": "PostConfirmationWelcome34244705",
+        "Roles": [
+          {
+            "Ref": "PostConfirmationRoleBD0B0389"
+          }
+        ]
+      }
+    },
+    "PostConfirmationResetSignOutED7EA942": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "cognito-idp:AdminUserGlobalSignOut",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "UserPool6BA7E5F2",
+                  "Arn"
+                ]
+              },
+              "Sid": "SignOutAfterReset"
+            },
+            {
+              "Action": "dynamodb:UpdateItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "USER#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "passwordResetAt"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "RecordPasswordReset"
+            },
+            {
+              "Action": "lambda:InvokeFunction",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:lambda:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":function:supply-checkout-prod-security-notices"
+                  ]
+                ]
+              },
+              "Sid": "QueueResetNotice"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "PostConfirmationResetSignOutED7EA942",
         "Roles": [
           {
             "Ref": "PostConfirmationRoleBD0B0389"

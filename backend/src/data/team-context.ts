@@ -29,6 +29,7 @@ import {
   hashInviteToken,
   isClosed,
   isMemberRole,
+  memberName,
   normalizeEmail,
   teamCounts,
   teamIdForRequest,
@@ -235,7 +236,7 @@ function notBeingDeleted(db: Db, userId: string) {
  */
 export async function createTeam(
   db: Db,
-  owner: { readonly userId: string; readonly email?: string; readonly test?: boolean },
+  owner: { readonly userId: string; readonly email?: string; readonly name?: string; readonly test?: boolean },
   input: { readonly name: string; readonly plan?: string; readonly seats?: number; readonly requestKey?: string },
   now = new Date(),
 ): Promise<{ team: Team; context: TeamContext; created: boolean }> {
@@ -255,10 +256,13 @@ export async function createTeam(
     owners: 1,
     members: 1,
     createdAt,
+    // Every new team starts the first-run checklist for its owners (checklist.ts)
+    checklistStartedAt: createdAt,
     version: 1,
     ...(owner.test === true ? { test: true as const } : {}),
   };
-  const member: Member = { type: "member", teamId, userId, role: "owner", email: owner.email, joinedAt: createdAt };
+  const ownerName = memberName(owner.name, undefined);
+  const member: Member = { type: "member", teamId, userId, role: "owner", email: owner.email, ...(ownerName ? { displayName: ownerName } : {}), joinedAt: createdAt };
   const userTeam: UserTeam = { type: "userTeam", userId, teamId, teamName: team.name, role: "owner" };
   const epoch = Math.floor(now.getTime() / 1000);
   const mine = await teamsOf(db, userId);
@@ -382,7 +386,7 @@ async function tokenMatches(db: Db, invite: Invite, token: string): Promise<bool
  */
 export async function acceptInvite(
   db: Db,
-  user: { readonly userId: string; readonly verifiedEmail: string },
+  user: { readonly userId: string; readonly verifiedEmail: string; readonly name?: string },
   invite: Invite,
   token: string,
   now = new Date(),
@@ -401,7 +405,8 @@ export async function acceptInvite(
   // A closed team takes nobody new; its invites were deleted when it closed
   if (!count || count.closed) throw new NotFoundError(INVITE_GONE);
   if (count.members >= count.cap) throw new TeamFullError(teamFull(count.cap));
-  const member: Member = { type: "member", teamId: invite.teamId, userId, role: invite.role, email, joinedAt: now.toISOString() };
+  const name = memberName(user.name, undefined);
+  const member: Member = { type: "member", teamId: invite.teamId, userId, role: invite.role, email, ...(name ? { displayName: name } : {}), joinedAt: now.toISOString() };
   const userTeam: UserTeam = { type: "userTeam", userId, teamId: invite.teamId, teamName: invite.teamName, role: invite.role };
   try {
     await connection(db).doc.send(

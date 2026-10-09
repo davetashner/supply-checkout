@@ -1,7 +1,7 @@
 import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, RECEIPT_ROUTES, routeKey, WEBHOOK_ROUTES } from "../../backend/src/api/routes.js";
+import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, PASSWORD_RESET_ROUTES, RECEIPT_ROUTES, routeKey, WEBHOOK_ROUTES } from "../../backend/src/api/routes.js";
 import {
   BILLING_READ_ATTRIBUTES,
   COMP_DISCOUNT_AUDIT_ATTRIBUTES,
@@ -43,15 +43,17 @@ function api(region: string = EAST, context: Record<string, unknown> = {}, overr
 }
 
 type Resource = { Properties: Record<string, unknown>; [k: string]: unknown };
+/** The functions whose own roles read the password reset record (supply-checkout-6uw.33). */
+const RESET_READERS = ["DataFunction", "AccountFunction", "BillingFunction", "ReceiptsFunction"] as const;
 const resources = (t: Template, type: string) => Object.entries(t.findResources(type)) as [string, Resource][];
 
 describe("HTTP API routes", () => {
-  it("serves every data, receipt, account, billing, auth and ops route in the primary region, the ops routes nowhere else, and no others", () => {
+  it("serves every data, receipt, account, billing, auth, password reset and ops route in the primary region, the ops routes nowhere else, and no others", () => {
     const { template } = api();
     const keys = resources(template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(keys).toEqual([...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map(routeKey).sort());
+    expect(keys).toEqual([...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...PASSWORD_RESET_ROUTES, ...OPS_ROUTES].map(routeKey).sort());
     const west = resources(api(WEST).template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(west).toEqual([...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
+    expect(west).toEqual([...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...PASSWORD_RESET_ROUTES].map(routeKey).sort());
     expect(keys).toContain("POST /teams/{teamId}/receipts/read");
     // The inventory commands and the stock history, next to the document routes
     expect(keys).toEqual(
@@ -93,9 +95,9 @@ describe("HTTP API routes", () => {
   it("routes data, account, billing, auth and ops requests to their functions' live aliases", () => {
     const { template } = api();
     const integrations = resources(template, "AWS::ApiGatewayV2::Integration").map(([, r]) => JSON.stringify(r.Properties.IntegrationUri));
-    expect(integrations).toHaveLength(7);
-    for (const fn of ["DataFunctionLive", "ReceiptsFunctionLive", "AccountFunctionLive", "BillingFunctionLive", "BillingWebhookFunctionLive", "AuthFunctionLive", "OpsFunctionLive"]) expect(integrations.some((i) => i.includes(fn)), fn).toBe(true);
-    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 7);
+    expect(integrations).toHaveLength(8);
+    for (const fn of ["DataFunctionLive", "ReceiptsFunctionLive", "AccountFunctionLive", "BillingFunctionLive", "BillingWebhookFunctionLive", "AuthFunctionLive", "PasswordResetFunctionLive", "OpsFunctionLive"]) expect(integrations.some((i) => i.includes(fn)), fn).toBe(true);
+    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 8);
   });
 
   it("allows only the app's and the operator page's origins (and localhost outside prod), with credentials for the cookie", () => {
@@ -139,6 +141,7 @@ describe("HTTP API routes", () => {
     const [[, stage]] = resources(template, "AWS::ApiGatewayV2::Stage") as [[string, Resource]];
     expect(stage.Properties.RouteSettings).toEqual({
       "POST /teams/{teamId}/imports": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "PATCH /teams/{teamId}/checklist": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "POST /teams/{teamId}/receipts/read": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /teams/{teamId}/receipts/usage": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "GET /me": { ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100 },
@@ -165,6 +168,8 @@ describe("HTTP API routes", () => {
       "POST /teams/{teamId}/billing/portal": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "GET /teams/{teamId}/billing/invoices": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /billing/webhook": { ThrottlingRateLimit: 20, ThrottlingBurstLimit: 50 },
+      "POST /auth/password-reset": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "POST /auth/password-reset/confirm": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /ops/teams": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /ops/teams/{teamId}": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "PUT /ops/teams/{teamId}/comp": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
@@ -205,7 +210,7 @@ describe("functions", () => {
   it("run Node.js 24 on arm64, with the data function at 1 GB, and the ops and reopen functions in the primary region only", () => {
     const { template } = api();
     const fns = resources(template, "AWS::Lambda::Function").map(([id, r]) => [id, r.Properties] as const);
-    expect(fns).toHaveLength(9);
+    expect(fns).toHaveLength(10);
     expect(fns.some(([id]) => id.startsWith("OpsFunction"))).toBe(true);
     expect(fns.some(([id]) => id.startsWith("OpsReopenFunction"))).toBe(true);
     expect(resources(api(WEST).template, "AWS::Lambda::Function").some(([id]) => id.startsWith("Ops"))).toBe(false);
@@ -237,10 +242,86 @@ describe("functions", () => {
     expect(env("AuthFunction")).toMatchObject({ AUTH_URL: "https://auth.supplycheckout.com", CLIENT_ID: { Ref: expect.stringMatching(/webclientid/i) }, ALLOWED_ORIGINS: "https://app.supplycheckout.com" });
   });
 
-  it("don't give any function's own role DynamoDB access", () => {
+  it("let the password reset function count only its request limits and invoke only the password reset function, in the primary region (supply-checkout-6uw.26)", () => {
+    for (const region of [EAST, WEST]) {
+      const { template } = api(region);
+      const [[id, fn]] = resources(template, "AWS::Lambda::Function").filter(([fid]) => fid.startsWith("PasswordResetFunction")) as [[string, Resource]];
+      expect(fn.Properties.Environment).toMatchObject({
+        Variables: {
+          TABLE_NAME: "supply-checkout-prod-app",
+          CLIENT_ID: { Ref: expect.stringMatching(/webclientid/i) },
+          ISSUER_URL: { Ref: expect.stringMatching(/issuerurl/i) },
+          ALLOWED_ORIGINS: "https://app.supplycheckout.com",
+          PASSWORD_RESET_FUNCTION: "supply-checkout-prod-password-reset",
+          PASSWORD_RESET_REGION: EAST,
+        },
+      });
+      const role = (fn.Properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
+      const statements = resources(template, "AWS::IAM::Policy")
+        .filter(([, p]) => (p.Properties.Roles as { Ref: string }[]).some((r) => r.Ref === role))
+        .flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+      expect(statements, id).toEqual([
+        expect.objectContaining({ Action: ["logs:CreateLogStream", "logs:PutLogEvents"] }),
+        {
+          Sid: "QueuePasswordResets",
+          Effect: "Allow",
+          Action: "lambda:InvokeFunction",
+          Resource: { "Fn::Join": ["", [`arn:aws:lambda:${EAST}:`, { Ref: "AWS::AccountId" }, ":function:supply-checkout-prod-password-reset"]] },
+        },
+        {
+          Sid: "CountPasswordResets",
+          Effect: "Allow",
+          Action: "dynamodb:UpdateItem",
+          Resource: { "Fn::Join": ["", [`arn:aws:dynamodb:${region}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] },
+          Condition: {
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["RESETLIMIT#ADDRESS#*", "RESETLIMIT#IP#*"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "count", "expiresAt"] },
+            StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+          },
+        },
+        expect.objectContaining({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } }),
+        { Effect: "Allow", Action: ["xray:PutTelemetryRecords", "xray:PutTraceSegments"], Resource: "*" },
+      ]);
+    }
+  });
+
+  it("don't give any function's own role DynamoDB access, but the password reset function's its limits' counters, and the reset time's read", () => {
     const { template } = api();
     for (const [id, policy] of resources(template, "AWS::IAM::Policy")) {
-      expect(JSON.stringify(policy.Properties.PolicyDocument), id).not.toContain("dynamodb:");
+      if (id.startsWith("PasswordResetFunctionRole")) continue;
+      const statements = (policy.Properties.PolicyDocument as { Statement: { Sid?: string }[] }).Statement.filter((s) => !(RESET_READERS.some((r) => id.startsWith(`${r}Role`)) && s.Sid === "ReadPasswordResetTime"));
+      expect(JSON.stringify(statements), id).not.toContain("dynamodb:");
+    }
+  });
+
+  // supply-checkout-6uw.33
+  it("let the data, account, billing and receipts functions' own roles read only when a user's password was last reset", () => {
+    for (const region of [EAST, WEST]) {
+      const { template } = api(region);
+      const table = { "Fn::Join": ["", [`arn:aws:dynamodb:${region}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] };
+      const readers = resources(template, "AWS::IAM::Policy").filter(([, p]) => JSON.stringify(p.Properties.PolicyDocument).includes("ReadPasswordResetTime"));
+      expect(readers.map(([id]) => id.replace(/RoleDefaultPolicy.*$/, "")).sort()).toEqual([...RESET_READERS].sort());
+      for (const [id, policy] of readers) {
+        const statements = (policy.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement;
+        expect(statements.filter((s) => s.Sid === "ReadPasswordResetTime"), id).toEqual([
+          {
+            Sid: "ReadPasswordResetTime",
+            Effect: "Allow",
+            Action: "dynamodb:GetItem",
+            Resource: table,
+            Condition: {
+              "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+              "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "passwordResetAt"] },
+              // Required: a GetItem without a projection mustn't read the whole item
+              StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+            },
+          },
+        ]);
+        // The table's key, through DynamoDB only
+        expect(statements.filter((s) => s.Sid === "TableKeyThroughDynamoDb"), id).toEqual([
+          expect.objectContaining({ Action: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"], Condition: { StringEquals: { "kms:ViaService": { "Fn::Join": ["", ["dynamodb.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } } } }),
+        ]);
+      }
     }
   });
 });
@@ -570,9 +651,9 @@ describe("receipts function and receipt-access role (ADR 0008)", () => {
       expect(RECEIPT_MODEL_REGIONS.every((r) => r.startsWith("us-"))).toBe(true);
       expect(RECEIPT_MODEL_REGIONS).toContain(region);
       expect(JSON.stringify(bedrock)).not.toContain("*");
-      // Besides Bedrock: writing its own logs and assuming its own role; nothing else
+      // Besides Bedrock: writing its own logs, assuming its own role and reading when the caller's password was reset; nothing else
       const other = statements.filter((s) => !JSON.stringify(s.Action).includes("bedrock:")).map((s) => s.Action);
-      expect(other).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], ["sts:AssumeRole", "sts:TagSession"]]);
+      expect(other).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], ["sts:AssumeRole", "sts:TagSession"], "dynamodb:GetItem", ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"]]);
     }
   });
 
@@ -701,7 +782,8 @@ describe("billing function and billing-access role (ADR 0009)", () => {
       Resource: expect.anything(),
       Condition: {
         "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["USER#${aws:PrincipalTag/userId}"], "dynamodb:Attributes": ["PK", "SK", "totpOnAt"] },
-        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        // Required, not IfExists: a GetItem without a projection is denied (supply-checkout-3sv.23)
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     });
     expect(totpUpdate).toEqual({
@@ -803,6 +885,9 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
       template.hasResourceProperties("AWS::SQS::Queue", {
         QueueName: "supply-checkout-prod-seat-syncs.fifo",
         FifoQueue: true,
+        // Deduplicated per customer, so no sender can drop another customer's sync (supply-checkout-8jc.26)
+        DeduplicationScope: "messageGroup",
+        FifoThroughputLimit: "perMessageGroupId",
         SqsManagedSseEnabled: true,
         VisibilityTimeout: 180,
         RedrivePolicy: { deadLetterTargetArn: { "Fn::GetAtt": [Match.stringLikeRegexp("^SeatSyncsDeadLetterQueue"), "Arn"] }, maxReceiveCount: 5 },
@@ -887,6 +972,9 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
     // The worker reads the team's test mark, for its metrics only (supply-checkout-o60.12), and can never write it
     expect(BILLING_READ_ATTRIBUTES).toContain("test");
     expect(BILLING_UPDATE_ATTRIBUTES).not.toContain("test");
+    // The nightly entitlement check conditions its fix on the version it read (supply-checkout-8jc.27)
+    expect(BILLING_READ_ATTRIBUTES).toContain("version");
+    expect(BILLING_UPDATE_ATTRIBUTES).toContain("version");
     // supply-checkout-6e4b: PutItem only (append-only), the tagged team's operator audit only, an audit item's attributes only
     expect(audit).toEqual({
       Sid: "CompDiscountAuditPutOnly",

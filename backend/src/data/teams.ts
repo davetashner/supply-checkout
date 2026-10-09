@@ -16,6 +16,7 @@ import {
   REOPEN_CUTOFF_MINUTES,
   REOPENS_PER_TEAM_PER_DAY,
   isClosed,
+  memberName,
   memberRole,
   normalizeEmail,
   ownersUpdate,
@@ -96,6 +97,33 @@ export async function setOwnMemberEmail(db: Db, ctx: TeamContext, verifiedEmail:
         ExpressionAttributeValues: { ":email": email },
       }),
     );
+    return true;
+  } catch (error) {
+    if ((error as { name?: string } | null)?.name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
+}
+
+/**
+ * Sets the display name on the caller's own MEMBER item to `name` (memberName()), or
+ * removes it when `name` is undefined (they cleared theirs in Cognito), when
+ * that differs from what's stored (supply-checkout-lx7). Like
+ * setOwnMemberEmail: always the context's own user, any role, not on a
+ * closed team, never recreates a membership. True when it wrote.
+ */
+export async function setOwnMemberName(db: Db, ctx: TeamContext, name: string | undefined): Promise<boolean> {
+  writable(db, ctx, "viewer", { whileEnded: true });
+  if (name !== undefined && memberName(name, undefined) !== name) throw new InvalidInputError("Invalid name");
+  const update = name === undefined
+    ? { UpdateExpression: "REMOVE displayName", ConditionExpression: "attribute_exists(PK) AND attribute_exists(displayName)" }
+    : {
+        UpdateExpression: "SET displayName = :name",
+        // AND binds tighter than OR: the item exists, and has no name or another one
+        ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(displayName) OR attribute_exists(PK) AND displayName <> :name",
+        ExpressionAttributeValues: { ":name": name },
+      };
+  try {
+    await connection(db).doc.send(new UpdateCommand({ TableName: db.tableName, Key: keys.member(ctx.teamId, ctx.userId), ...update }));
     return true;
   } catch (error) {
     if ((error as { name?: string } | null)?.name === "ConditionalCheckFailedException") return false;

@@ -8,7 +8,8 @@
 // whose subscription ended (its trial ended without a card, or payments stopped), with a
 // notice, and for its owners a way to subscribe again on Stripe Checkout. Owners of a team
 // with a Stripe customer get Billing, the Stripe Customer Portal (a card, plan changes,
-// invoices, cancelling) and Invoices (the latest ones, invoices.js), and a canceled
+// invoices, cancelling) and Invoices (the latest ones, invoices.js; a closed team's owners
+// keep Invoices until it's deleted), and a canceled
 // subscription says when it ends. Billing needs
 // two-step sign-in (an authenticator app, mfa.js), which Account sets up; when the server
 // refuses billing for want of it, the setup opens. Account also changes the password
@@ -25,6 +26,7 @@ import { openDeleteAccount } from "./delete-account.js";
 import { openVerifyEmail } from "./verify-email.js";
 import { openTwoStep } from "./mfa.js";
 import { openChangePassword } from "./password.js";
+import { openReset } from "./reset-password.js";
 import { openInvoices } from "./invoices.js";
 import { showWhatsNew } from "./whats-new.js";
 
@@ -82,16 +84,23 @@ const errorText = (m) => `<p class="error" role="alert" id="accountError"${m ? "
 // Not once another screen has taken over (the session ended while a request was on its way)
 const setError = (m) => { const e = box.querySelector("#accountError"); if (e) { e.textContent = m; e.hidden = false; } };
 
-// The invite in the link (?invite=<id>&token=<token>), kept across sign-in
+// The invite in the link (?invite=<id>&token=<token>), kept across sign-in. A link copied
+// from the email's HTML source has "&amp;token=" (supply-checkout-6uw.29): read that too.
 function takeInvite() {
   const q = new URLSearchParams(location.search);
   if (q.has("invite")) {
-    tab.set(INVITE_KEY, JSON.stringify({ id: q.get("invite"), token: q.get("token") }));
+    tab.set(INVITE_KEY, JSON.stringify({ id: q.get("invite"), token: q.get("token") ?? q.get("amp;token") }));
     history.replaceState(null, "", location.pathname);
   }
   return tab.json(INVITE_KEY);
 }
 const dropInvite = () => tab.remove(INVITE_KEY);
+// An invite link with its ID or token missing or mangled (cut short, or broken across lines
+// when copied): the server can't accept it, so say so rather than try. IDs are the API's
+// (1 to 128 letters, digits, - or _); tokens are base64url.
+const INVITE_ID = /^[A-Za-z0-9_-]{1,128}$/, INVITE_TOKEN = /^[A-Za-z0-9_-]{1,256}$/;
+const wellFormed = (invite) => typeof invite.id === "string" && INVITE_ID.test(invite.id) && typeof invite.token === "string" && INVITE_TOKEN.test(invite.token);
+const INCOMPLETE = "This invite link is incomplete. Open it again from the email, or ask for a new invite.";
 
 // The saved invite, if it's for this user. It's marked with the first user it's offered to,
 // so after that user's session ends without Sign out, the next person to sign in in this tab
@@ -124,12 +133,14 @@ export async function start(config) {
   box.setAttribute("aria-live", "polite");
   document.querySelector(".top").after(box);
   // owner: the signed-in user, once the device's owner mark says it's them (see watchOwner)
-  let db = null, created = null, owner = null, switched = false;
+  let db = null, owner = null, switched = false;
   const session = createSession(config, {
     onSignedOut: () => { if (db) db.stop(); signIn(); },
     onRefreshed: () => { if (db) db.reconnect(); },
     // A refresh answered with another user's tokens: the refresh cookie is someone else's now
     onUserChanged: () => accountChanged(),
+    // The API refused this session as older than the account's password reset
+    onPasswordReset: () => passwordWasReset(),
   });
 
   // Signed out: a link to Managed Login. Following it leaves the page.
@@ -149,7 +160,14 @@ export async function start(config) {
     show(`<h2>Sign in</h2>
       <p>${invited ? "Sign in with the email address your invite was sent to, and then you can join the team." : "Sign in to see your team's projects and inventory."}</p>
       ${errorText(session.notice)}
-      <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn">Sign in</a></div>`);
+      <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn">Sign in</a></div>
+      <p><button type="button" class="btn ghost" id="forgotPassword">Forgot your password?</button></p>`, (el) => {
+      // Our own reset (reset-password.js), which helps when the address has no account
+      el.querySelector("#forgotPassword").addEventListener("click", () => {
+        session.notice = "";
+        openReset({ show, setError, apiUrl: config.apiUrl, signInUrl: () => session.signInUrl(), back: signIn });
+      });
+    });
     return until(() => {});
   }
 
@@ -188,6 +206,22 @@ export async function start(config) {
     show(`<h2>${title}</h2>
       <p>${text}</p>
       <div class="actions"><a class="btn primary big" href="${esc(out)}" id="signInAgain" data-autofocus>Sign in again</a></div>`);
+  }
+  // This session began before the account was last signed out everywhere (supply-checkout-6uw.33):
+  // after a password reset, or a password change or turning two-step sign-in on in another session,
+  // so the message names none of them (supply-checkout-6uw.34). The API refuses it everywhere, so
+  // stop, and offer to sign in again. Signing
+  // out here and of Managed Login, whose session from before would otherwise sign straight back
+  // in, keeps the team and drafts for the same person, as signing in again for billing does.
+  function passwordWasReset() {
+    owner = null;
+    if (db) db.stop();
+    closeModal();
+    show(`<h2>Signed out everywhere</h2>
+      <p>This account was signed out everywhere after this session began, so it's been signed out here too. That happens when the password is reset or changed, or two-step sign-in is turned on. Sign in again.</p>
+      <div class="actions"><button type="button" class="btn primary big" id="resetSignInAgain" data-autofocus>Sign in again</button></div>`, (el) => {
+      el.querySelector("#resetSignInAgain").addEventListener("click", (e) => signOut(e, true));
+    });
   }
   const twoStepOn = () => signedOutEverywhere("Two-step sign-in is on", "You've been signed out everywhere, here too. Sign in again with your email, your password and a code from your authenticator app.");
   const passwordChanged = () => signedOutEverywhere("Your password is changed", "You've been signed out everywhere, here too. Sign in again with your new password.");
@@ -249,9 +283,8 @@ export async function start(config) {
       keyName = name;
       btn.disabled = true;
       try {
+        // A new team comes with the first-run checklist for its owner (firstRun below)
         const { team } = await session.api("POST", "/teams", { name }, { "Idempotency-Key": key });
-        // A new team: its owner gets the first-run checklist (firstRun below)
-        created = team.id;
         resolve(team);
       }
       catch (err) {
@@ -267,11 +300,14 @@ export async function start(config) {
   const joinInvite = (me, invite) => until((resolve) => {
     const known = me.invites.find((i) => i.id === invite.id);
     const hasTeams = me.teams.length > 0;
+    // A broken link can't be joined: say so at once, with no Join, and forget it
+    const broken = !wellFormed(invite);
+    if (broken) dropInvite();
     show(`<h2>${known ? "Join " + esc(known.teamName) : "Join a team"}</h2>
       <p>${known ? `${esc(known.teamName)} invited you as ${ROLE[known.role]}.` : "You've been invited to join a team."}</p>
       ${verifyPrompt(me)}
-      ${errorText("")}
-      <div class="actions"><button type="button" class="btn primary" id="join" data-autofocus>Join</button>
+      ${errorText(broken ? INCOMPLETE : "")}
+      <div class="actions"><button type="button" class="btn primary" id="join"${broken ? " hidden" : " data-autofocus"}>Join</button>
       <button type="button" class="btn" id="skip">${hasTeams ? "Not now" : "Create my own team instead"}</button></div>
       ${whoami(me)}`, (el) => {
       wireWhoami(el, me);
@@ -288,10 +324,12 @@ export async function start(config) {
           join.disabled = false;
           // Already a member: carry on to the team as usual
           if (err.code === "aborted") { dropInvite(); resolve(null); return; }
-          if (err.code === "not_found") { dropInvite(); join.hidden = true; }
+          // not_found: expired, used or someone else's; bad_request: the link is broken
+          if (err.code === "not_found" || err.code === "bad_request") { dropInvite(); join.hidden = true; }
           const prompt = el.querySelector("#verifyPrompt");
           if (err.code === "permission_denied" && prompt) prompt.hidden = false;
-          setError(err.code === "not_found" ? "This invite has expired, was already used, or was sent to a different email address. Ask the person who invited you for a new one."
+          setError(err.code === "bad_request" ? INCOMPLETE
+            : err.code === "not_found" ? "This invite has expired, was already used, or was sent to a different email address. Ask the person who invited you for a new one."
             : err.code === "permission_denied" ? "Your email address isn't verified yet. Verify it, then join."
             : err.reason === "team_full" ? "This team is full. Ask the person who invited you to make room, then try again."
             : err.code === "quota_exceeded" ? "You're already in as many teams as you can be. Leave one to join this one."
@@ -329,7 +367,12 @@ export async function start(config) {
   async function chooseTeam(me) {
     const invite = inviteFor(me);
     const joined = invite && await joinInvite(me, invite);
-    if (joined) return joined;
+    // The /me that loaded the page doesn't list the team just joined: add it, so the switcher
+    // shows it with the others without a reload (supply-checkout-6uw.29)
+    if (joined) {
+      me.teams = [...me.teams.filter((t) => t.id !== joined.id), joined];
+      return joined;
+    }
     if (!me.teams.length) return newTeam(me);
     return me.teams.find((t) => t.id === local.get(TEAM_KEY)) || me.teams[0];
   }
@@ -420,7 +463,10 @@ export async function start(config) {
     const ended = !team.closedAt && team.subscriptionEnded;
     // The Customer Portal: owners of an open team that has a Stripe customer
     const billing = owner && !team.closedAt && team.billingAccount;
-    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button><button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}${identity(who, team)}<button type="button" class="btn ghost" id="signOut">Sign out</button>`
+    // Invoices: owners of a team with a Stripe customer, closed or not, so a closed team's owners can save them
+    // before it's deleted (the server refuses once the deletion is due)
+    const invoices = owner && team.billingAccount;
+    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button>` : ""}${invoices ? `<button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}${identity(who, team)}<button type="button" class="btn ghost" id="signOut">Sign out</button>`
       + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "")
       + (!team.closedAt && !ended && team.cancelsAt ? `<p class="closed-note" role="status" id="cancelNote">This team's subscription was canceled. Everything works until ${esc(day(team.cancelsAt))}; then the team becomes read-only.${billing ? " To keep it, renew it from Billing." : " Ask an owner to renew it to keep it."}</p>` : "")
       + (!team.closedAt && !ended && team.paymentGraceEndsAt ? `<p class="closed-note" role="status" id="graceNote">A payment for this team didn't go through. Everything works until ${esc(moment(team.paymentGraceEndsAt))}; then the team becomes read-only until it's paid.${owner ? " Update the payment method in Billing to keep it working." : " Ask an owner to update the payment method."}</p>` : "")
@@ -435,10 +481,8 @@ export async function start(config) {
     if (verify) verify.addEventListener("click", () => openVerifyEmail(session, me.user.email, (fresh) => { me.user = fresh.user; verify.remove(); }));
     if (owner) {
       bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed, invited(fr)));
-      if (billing) {
-        bar.querySelector("#manageBilling").addEventListener("click", (e) => manageBilling(me, team, e.currentTarget));
-        bar.querySelector("#invoices").addEventListener("click", () => openInvoices(session.api, team, (e) => needsTwoStep(me, e)));
-      }
+      if (billing) bar.querySelector("#manageBilling").addEventListener("click", (e) => manageBilling(me, team, e.currentTarget));
+      if (invoices) bar.querySelector("#invoices").addEventListener("click", () => openInvoices(session.api, team, (e) => needsTwoStep(me, e)));
       if (ended) {
         const subscribeButton = bar.querySelector("#subscribe"), pay = bar.querySelector("#payBilling");
         if (subscribeButton) subscribeButton.addEventListener("click", (e) => subscribe(me, team, e.currentTarget));
@@ -541,27 +585,44 @@ export async function start(config) {
     }
   }
 
-  // The first-run checklist (src/first-run.js) for an owner's open team: for a team they just
-  // created, or one whose checklist this device started and they haven't finished or
-  // dismissed. Its state is kept per team (firstRunKey); if storage can't be read, a team
-  // created now still gets it until the page is closed.
+  // The first-run checklist (src/first-run.js) for an owner's open team that has one it hasn't
+  // finished or dismissed. Its progress is the team's, kept on the server (supply-checkout-fs56):
+  // /me's `checklist`, which every new team starts with, and PATCH /teams/{teamId}/checklist
+  // when a receipt is saved or it's finished or dismissed, so every owner sees the same one on
+  // every device. The invite step ticks from the team: it has other members (/me's `members`),
+  // or a pending invite. A checklist an earlier version kept only on this device (firstRunKey)
+  // is started on the server, if the team has none, and then forgotten here.
   function firstRun(me, team) {
     if (team.role !== "owner" || team.closedAt || team.subscriptionEnded) return null;
-    const key = firstRunKey(team.id);
-    const state = local.json(key) || (created === team.id ? {} : null);
-    if (!state || state.done) return null;
+    const path = `/teams/${encodeURIComponent(team.id)}/checklist`;
+    const send = (change) => session.api("PATCH", path, change);
+    const key = firstRunKey(team.id), kept = local.json(key);
+    let checklist = team.checklist;
+    if (kept && !checklist && !kept.done) {
+      checklist = { receipt: kept.receipt === true, done: false };
+      send({ started: true, ...(checklist.receipt ? { receipt: true } : {}) }).then(() => local.remove(key), () => {});
+    } else if (kept) local.remove(key);
+    if (!checklist || checklist.done) return null;
+    const state = { receipt: checklist.receipt, invited: team.members > 1 };
     const fr = {
       state,
-      save: () => local.set(key, JSON.stringify(state)),
+      // Each change is the server's to keep; one that doesn't save is shown on this page only
+      save: (change) => { send(change).catch(() => {}); },
       // Set by the checklist, to redraw it
       onChange: () => {},
       invite: () => openMembers(session.api, team, me.user.id, changed, invited(fr)),
       importCsv: () => openImport(session.api, team.id, download),
     };
+    // An invite another owner, or this one on another device, sent and nobody has accepted yet
+    if (!state.invited) {
+      session.api("GET", `/teams/${encodeURIComponent(team.id)}/invites`).then(({ invites }) => {
+        if (invites.some((i) => i.inviteStatus === "pending")) invited(fr)();
+      }, () => {});
+    }
     return fr;
   }
   // What the members screen runs when an invite is sent: tick the checklist's step
-  const invited = (fr) => () => { if (fr) { fr.state.invited = true; fr.save(); fr.onChange(); } };
+  const invited = (fr) => () => { if (fr && !fr.state.invited) { fr.state.invited = true; fr.onChange(); } };
 
   function open(me, team) {
     // The session ended while the team was being chosen (a refresh found it over, or another

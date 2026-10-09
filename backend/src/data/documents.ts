@@ -236,8 +236,15 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
     // Each line keeps its barcode (`code`), its price each and its cost each (`price`, `cost`,
     // ADR 0014), which the typed functions bound the same way
     const storedLines = isMap(before?.data.items) ? before.data.items : {};
+    // A line is an object. null removes it (the app's removeLine; a PATCH can't otherwise drop a
+    // key), so it's never stored. Anything else is refused, unless the write carries a legacy
+    // value over unchanged (supply-checkout-1dg.10)
+    if (isMap(data.items)) data.items = Object.fromEntries(Object.entries(data.items).filter(([, line]) => line !== null));
     for (const [key, line] of Object.entries((data.items ?? {}) as Record<string, unknown>)) {
-      if (!isMap(line)) continue;
+      if (!isMap(line)) {
+        if (Object.hasOwn(storedLines, key) && sameValue(line, storedLines[key])) continue;
+        throw new InvalidInputError("A line is a JSON object, or null to remove it");
+      }
       const stored = Object.hasOwn(storedLines, key) && isMap(storedLines[key]) ? storedLines[key] : undefined;
       if ("code" in line) barcode(line.code);
       // A line's name is a copy of the item's: one the write changes loses its control and invisible
@@ -270,6 +277,10 @@ const isWhole = (v: unknown): v is number => typeof v === "number" && Number.isI
 const counted = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 /** What's still out on an equipment line (ADR 0017): neither back nor lost. */
 const stillOut = (line: Record<string, unknown> | undefined) => (line ? counted(line.out) - counted(line.returned) - counted(line.lost) : 0);
+/** An equipment line's counts, which only the checkout, return, lost and move commands change. */
+const EQUIPMENT_COUNTS = ["out", "returned", "lost"] as const;
+/** The same count: as stored, or 0 written for one stored as missing (or the other way round). */
+const sameCount = (a: unknown, b: unknown) => sameValue(a, b) || ((a === undefined || a === 0) && (b === undefined || b === 0));
 
 /**
  * Company equipment and the lines that carry it (ADR 0017, section 7):
@@ -283,6 +294,15 @@ const stillOut = (line: Record<string, unknown> | undefined) => (line ? counted(
  *   exists. `lost` (whole eaches) and `lostCharge` (money) are only on
  *   equipment lines, and a charge only on a client project. A changed line keeps
  *   `returned + lost <= out`.
+ * - An equipment line's `out`, `returned` and `lost` change only through the
+ *   checkout, return, lost and move commands, which move stock and record a
+ *   movement: a write to an existing equipment line may only repeat them
+ *   (supply-checkout-1dg.17). Otherwise two writes (`out: 0`, then null)
+ *   would remove, or close a project over, a line with equipment still out.
+ *   A line the write adds is held to the rules above, and has nothing still
+ *   out (supply-checkout-1dg.18): equipment goes out only through checkout,
+ *   quick take and move. The artifact import (artifact-import.ts) doesn't come
+ *   through here, and copies what the artifact had out as it was.
  * - `takenBy` and `takenAt` (the checkout command's), and `priceSetBy` and
  *   `priceSetAt`, are the server's: a write may only repeat what's stored.
  * - A line bought for the client (`purchased: true`, keyed
@@ -292,7 +312,8 @@ const stillOut = (line: Record<string, unknown> | undefined) => (line ? counted(
  *   server's: a changed price is "manual", stamped with who changed it and
  *   when (`priceSetBy`, `priceSetAt`), so a typed price can be traced.
  * - A project isn't closed (`status: "closed"`) while an equipment line has
- *   something still out: EquipmentOutError (409).
+ *   something still out, and no such line is removed: EquipmentOutError (409).
+ * - A project's `closedAt` is the server's: stampClosedAt.
  */
 function checkKinds(collection: Collection, data: DocumentData, actor: Actor, before?: StoredDocument): DocumentData {
   const stored = before?.data;
@@ -301,6 +322,7 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
     return data;
   }
   if (!sameValue(data.kind, stored?.kind)) throw new InvalidInputError("A project's kind is set by the server");
+  stampClosedAt(data, stored, actor.at);
   const storedLines = isMap(stored?.items) ? stored.items : {};
   const lines = isMap(data.items) ? data.items : {};
   for (const [key, line] of Object.entries(lines)) {
@@ -331,6 +353,9 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
       else if (old?.priceSet === undefined) delete line.priceSet;
       else line.priceSet = old.priceSet;
     }
+    if (old && equipment && EQUIPMENT_COUNTS.some((field) => !sameCount(line[field], old[field]))) {
+      throw new InvalidInputError("An equipment line's out, returned and lost change only through checkout, return, lost and move (POST .../projects/{projectId}/checkout, /return, /lost, /move)");
+    }
     if (has("lost") && (!equipment || !isWhole(line.lost))) throw new InvalidInputError("lost is a whole number, on company equipment lines only");
     if (has("lostCharge")) {
       if (!equipment || data.kind === "adhoc") throw new InvalidInputError("lostCharge is only on company equipment lines of a client project");
@@ -339,6 +364,21 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
     // Counts the write changes: what came back and what was lost can't be more than went out
     if (!sameValue(line, old) && typeof line.out === "number" && counted(line.returned) + counted(line.lost) > line.out) {
       throw new InvalidInputError("A line's returned and lost can't add up to more than its out");
+    }
+    // A line the write adds has nothing out: a whole out (which a checkout can add to), and a whole
+    // returned and lost if any, with out = returned + lost.
+    // Equipment goes out only through checkout, quick take and move, which take it from storage or
+    // carry it from the General Use project; one written out here would come back as stock nobody
+    // took (supply-checkout-1dg.18)
+    if (!old && equipment && (!isWhole(line.out) || EQUIPMENT_COUNTS.some((field) => has(field) && !isWhole(line[field])) || stillOut(line) !== 0)) {
+      throw new InvalidInputError("A new equipment line has nothing out: equipment goes out only through checkout, quick take and move (POST .../projects/{projectId}/checkout, /adhoc/checkout, .../projects/{projectId}/move)");
+    }
+  }
+  // Removing an equipment line (left out of a PUT, or null in a PATCH) with something still out is
+  // refused as closing the project is: it would lose track of what's out (supply-checkout-1dg.10)
+  for (const [key, old] of Object.entries(storedLines)) {
+    if (isMap(old) && old.kind === "equipment" && stillOut(old) > 0 && !Object.hasOwn(lines, key)) {
+      throw new EquipmentOutError("Equipment is still out on this line: return it or mark it lost before removing it");
     }
   }
   if (data.status === "closed") {
@@ -351,6 +391,85 @@ function checkKinds(collection: Collection, data: DocumentData, actor: Actor, be
     }
   }
   return data;
+}
+
+/** How many products checkNewLineKinds reads at once. */
+const KIND_READS = 25;
+
+/**
+ * The most lines one document write may add to a project, each read for its
+ * item's kind. A receipt read has at most 200 (MAX_RECEIPT_LINES), and a
+ * receipt saved as a new project writes its lines with the project; anything
+ * else adds one at a time, or through the commands.
+ */
+export const MAX_NEW_LINES = 500;
+
+/**
+ * A line a document write adds has its item's kind (supply-checkout-1dg.19):
+ * no supply line (no `kind`, whose counts the write may set) under an item
+ * that is company equipment, and no equipment line under a supply.
+ * Otherwise a supply line written under an equipment item's key, with
+ * something out, would come back through the return command as equipment
+ * stock nobody took. Lines already on the project keep the kind they were
+ * taken as, whatever the item's kind is now (ADR 0017, decision 8), so the
+ * commands go by the line, and only lines the write adds are read for.
+ * A line under a key that isn't an item (a one-off, or an item since deleted)
+ * has no kind to agree with, and no stock for a return to add to; a key no
+ * item could have (productKey) isn't read at all. Reads only `kind`,
+ * consistently, a few items at a time (the data API's role has GetItem, not
+ * BatchGetItem), and at most MAX_NEW_LINES per write.
+ */
+async function checkNewLineKinds(db: Db, teamId: string, data: DocumentData, before: StoredDocument | undefined): Promise<void> {
+  const storedLines = isMap(before?.data.items) ? before.data.items : {};
+  const lines = isMap(data.items) ? data.items : {};
+  // (checkKinds has refused a new line bought for the client: only addLines adds one)
+  const added = Object.entries(lines).filter(([key, line]) => isMap(line) && !(Object.hasOwn(storedLines, key) && isMap(storedLines[key]))) as [string, Record<string, unknown>][];
+  if (added.length > MAX_NEW_LINES) throw new InvalidInputError(`A write adds at most ${MAX_NEW_LINES} lines to a project`);
+  const read = added.filter(([key]) => isProductKey(key));
+  for (let i = 0; i < read.length; i += KIND_READS) {
+    await Promise.all(
+      read.slice(i, i + KIND_READS).map(async ([key, line]) => {
+        const { Item: product } = await connection(db).doc.send(
+          new GetCommand({ TableName: db.tableName, Key: keys.product(teamId, key), ConsistentRead: true, ProjectionExpression: "PK, #kind", ExpressionAttributeNames: { "#kind": "kind" } }),
+        );
+        // No such item (its PK is read so that one with no kind is still found)
+        if (!product) return;
+        const equipment = product.kind === "equipment";
+        if ((line.kind === "equipment") !== equipment) {
+          throw new InvalidInputError(
+            equipment
+              ? "This item is company equipment, so a new line for it is too: it goes on the project through checkout (POST .../projects/{projectId}/checkout)"
+              : "This item is a supply, so a new line for it has no kind",
+          );
+        }
+      }),
+    );
+  }
+}
+
+/** Whether `key` could be a product's key (productKey). */
+function isProductKey(key: string): boolean {
+  try {
+    productKey(key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A project's `closedAt` is the server's (supply-checkout-1dg.16): the list
+ * `since` a day keeps a finished project by it (recentFilter), so it can't
+ * come from a device's clock. A write that finishes the project (or makes a
+ * finished one) stamps it with the write's time; any other write keeps what's
+ * stored, or none, so a reopened project keeps the time it was last finished.
+ * A `closedAt` in the request, which older versions of the app send, is
+ * ignored rather than refused.
+ */
+function stampClosedAt(data: DocumentData, stored: DocumentData | undefined, at: string): void {
+  if (data.status === "closed" && stored?.status !== "closed") data.closedAt = at;
+  else if (stored !== undefined && Object.hasOwn(stored, "closedAt")) data.closedAt = stored.closedAt;
+  else delete data.closedAt;
 }
 
 /** The app's update: nested maps merge key by key; anything else replaces. */
@@ -476,6 +595,7 @@ async function write(
     if (collection === "projects" && !before && isAdhocId(id)) throw new InvalidInputError('Project IDs starting "adhoc-" are kept for the General Use project, which Quick take makes');
     const at = (options.now ?? new Date()).toISOString();
     const data = checkDocument(collection, build(before), { userId: ctx.userId, at }, before);
+    if (collection === "projects") await checkNewLineKinds(db, ctx.teamId, data, before);
     const adhoc = collection === "projects" ? await adhocChange(db, ctx, id, before, data, at) : undefined;
     const version = (before?.version ?? 0) + 1;
     // Unchanged since the read: same version and, for products, same stock

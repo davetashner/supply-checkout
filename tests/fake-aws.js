@@ -24,7 +24,10 @@ const AWS = /^https:\/\/[^/]+\.amazonaws\.com\//;
 
 // Cognito's GetId and GetCredentialsForIdentity, and the data plane's PutRumEvents
 export class FakeRum {
-  constructor() {
+  // cognitoFails: Cognito Identity's requests fail, with an answer the client can't read (an
+  // outage page). Not an aborted request: Firefox logs that as a CORS console error.
+  constructor({ cognitoFails = false } = {}) {
+    this.cognitoFails = cognitoFails;
     this.cognito = [];
     this.batches = [];
     this.other = [];
@@ -50,6 +53,7 @@ export class FakeRum {
   answerCognito(route, req) {
     const target = req.headers()["x-amz-target"], body = req.postDataJSON();
     this.cognito.push({ target, body });
+    if (this.cognitoFails) return route.fulfill({ status: 503, headers: CORS, contentType: "text/html", body: "<h1>Service Unavailable</h1>" });
     const reply = (json) => route.fulfill({ status: 200, headers: CORS, contentType: "application/x-amz-json-1.1", body: JSON.stringify(json) });
     if (target === "AWSCognitoIdentityService.GetId") return reply({ IdentityId: `${RUM_REGION}:identity-1` });
     return reply({
@@ -93,7 +97,7 @@ const endAck = (data, delta) => {
 
 export class FakeBackend {
   // docs: { "<teamId>/<collection>/<id>": data }
-  // members: { "<teamId>": [{ userId, email, role, joinedAt }] }, for the members screen
+  // members: { "<teamId>": [{ userId, name, email, role, joinedAt }] }, for the members screen
   // teamInvites: { "<teamId>": [{ id, email, role, createdAt, expiresAt, inviteStatus, failureReason, failedAt }] },
   // the invites its owners see there (invites is the signed-in user's own, for /me)
   // supportActions: { "<teamId>": [{ eventId, ts, actor, action, reason, before, after }] }, newest first
@@ -228,6 +232,14 @@ export class FakeBackend {
     }
     if (path === "/auth/refresh") return this.signedIn ? [200, this.issue()] : err(401, "unauthenticated");
     if (path === "/auth/sign-out") { this.signedIn = false; return [204]; }
+    // Resetting a password (supply-checkout-6uw.26): any address is taken alike; 123456 is the
+    // code, and a password the pool's policy refuses ("short") is refused
+    if (path === "/auth/password-reset") return /^[^\s@]+@[^\s@]+$/.test(call.body.email) ? [204] : err(400, "bad_request");
+    if (path === "/auth/password-reset/confirm") {
+      if (call.body.code !== "123456") return err(400, "bad_request", "code_mismatch");
+      if (call.body.password === "short") return err(400, "bad_request", "password_invalid");
+      return [204];
+    }
     const bearer = call.headers.authorization || "";
     if (!this.token || (bearer !== "Bearer " + this.token && !(this.shareTokens && this.issued.has(bearer.slice(7))))) return [401, { message: "Unauthorized" }];
 
@@ -287,7 +299,8 @@ export class FakeBackend {
       return [204];
     }
     if (path === "/teams" && method === "POST") {
-      const team = { ...TEAM, id: "t-" + call.headers["idempotency-key"].slice(0, 8), name: call.body.name, role: "owner" };
+      // A new team starts the first-run checklist (backend/src/data/checklist.ts)
+      const team = { ...TEAM, id: "t-" + call.headers["idempotency-key"].slice(0, 8), name: call.body.name, role: "owner", members: 1, checklist: { receipt: false, done: false } };
       const again = this.teams.find((t) => t.id === team.id);
       if (again) return [200, { team: again }];
       this.teams.push(team);
@@ -310,6 +323,9 @@ export class FakeBackend {
 
     m = path.match(/^\/teams\/([^/]+)\/support-actions$/);
     if (m) return this.support(decodeURIComponent(m[1]), call.query, err);
+
+    m = path.match(/^\/teams\/([^/]+)\/checklist$/);
+    if (m && method === "PATCH") return this.checklist(decodeURIComponent(m[1]), call.body, err);
 
     m = path.match(/^\/teams\/([^/]+)\/settings$/);
     if (m) return this.teamSettings(decodeURIComponent(m[1]), method, call.body, err);
@@ -378,10 +394,21 @@ export class FakeBackend {
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
     const badCost = coll === "projects" && Object.values(data.items || {}).some((l) => l && typeof l === "object" && "cost" in l && !cents(l.cost));
     if (badCost) return err(400, "bad_request");
+    // An equipment line a write adds has nothing out: equipment goes out only through the commands
+    // (checkKinds in backend/src/data/documents.ts, supply-checkout-1dg.18)
+    const whole = (n) => Number.isInteger(n) && n >= 0;
+    const emptyLine = (l) => whole(l.out) && ["returned", "lost"].every((f) => !(f in l) || whole(l[f])) && l.out === (l.returned || 0) + (l.lost || 0);
+    const added = (k, l) => l && typeof l === "object" && l.kind === "equipment" && !Object.hasOwn(cur?.data.items || {}, k);
+    if (coll === "projects" && Object.entries(data.items || {}).some(([k, l]) => added(k, l) && !emptyLine(l))) return err(400, "bad_request");
     // No project closes while company equipment is still out on it (ADR 0017, documents.ts)
     const stillOut = (l) => l && l.kind === "equipment" && (l.out || 0) - (l.returned || 0) - (l.lost || 0) > 0;
     if (coll === "projects" && data.status === "closed" && cur?.data.status !== "closed" && Object.values(data.items || {}).some(stillOut)) {
       return [409, { error: { code: "aborted", message: "Equipment is still out on this project", reason: "equipment_out" } }];
+    }
+    // ...and no line with equipment still out is removed (supply-checkout-1dg.10)
+    const kept = (k) => data.items && Object.hasOwn(data.items, k) && data.items[k] !== null;
+    if (coll === "projects" && Object.entries(cur?.data.items || {}).some(([k, l]) => stillOut(l) && !kept(k))) {
+      return [409, { error: { code: "aborted", message: "Equipment is still out on this line: return it or mark it lost before removing it", reason: "equipment_out" } }];
     }
     // One open General Use project per team (ADR 0017, documents.ts)
     if (coll === "projects" && data.kind === "adhoc" && data.status !== "closed" && cur?.data.status === "closed" && this.openAdhoc(team)) {
@@ -460,6 +487,21 @@ export class FakeBackend {
     if (!mine) return err(403, "permission_denied", "not_member");
     if (mine.role === "viewer") return err(403, "permission_denied", "view_only");
     return [200, { usage: this.usageOf(team) }];
+  }
+
+  // The first-run checklist's progress as the API keeps it (backend/src/data/checklist.ts): owners
+  // of an open team only, each field only ever true; `started` starts one for a team without.
+  // /me carries it as the team's `checklist`
+  checklist(team, body, err) {
+    const mine = this.teams.find((t) => t.id === team);
+    if (!mine || mine.role !== "owner") return err(403, "permission_denied", mine ? "owners_only" : "not_member");
+    if (mine.closedAt) return err(403, "permission_denied", "team_closed");
+    if (mine.subscriptionEnded) return err(403, "permission_denied", "subscription_ended");
+    const fields = Object.keys(body || {});
+    if (!fields.length || fields.some((f) => !["started", "receipt", "done"].includes(f) || body[f] !== true)) return err(400, "bad_request");
+    const cur = mine.checklist || { receipt: false, done: false };
+    mine.checklist = { receipt: cur.receipt || !!body.receipt, done: cur.done || !!body.done };
+    return [200, { checklist: mine.checklist }];
   }
 
   // The team settings as the API runs them (backend/src/data/settings.ts): owners get the
@@ -824,6 +866,30 @@ export function installFakeSocket(mode) {
   }
   window.WebSocket = FakeSocket;
 }
+
+// Counts the API requests the app hasn't finished reading the answer to (unanswered below),
+// for a test on page.clock: a jump past 15 seconds also fires the timeout of any request still
+// in flight (src/aws/http.js), and a test that sets the clock against a timer the app sets
+// once an answer is read must wait for that first. Call before openAws.
+export const trackAnswers = (page) => page.addInitScript(() => {
+  window.__apiPending = 0;
+  const fetch = window.fetch, json = Response.prototype.json;
+  window.fetch = (url, ...rest) => {
+    if (!String(url).includes("/_api/")) return fetch(url, ...rest);
+    window.__apiPending++;
+    return fetch(url, ...rest).then((res) => {
+      if (res.status === 204) window.__apiPending--;
+      else res.__api = true;
+      return res;
+    }, (e) => { window.__apiPending--; throw e; });
+  };
+  Response.prototype.json = function () {
+    const read = json.call(this);
+    if (this.__api) read.finally(() => window.__apiPending--).catch(() => {});
+    return read;
+  };
+});
+export const unanswered = (page) => page.evaluate(() => window.__apiPending);
 
 // Loads the web build with the fake backend. storage: { local: {...}, session: {...} },
 // set before the app starts.

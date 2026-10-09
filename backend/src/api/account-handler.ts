@@ -58,7 +58,12 @@
 //                                   sign-in" below), then emails the account's
 //                                   verified address ("Security notices").
 //   POST /me/sign-out-everywhere    Signs the caller out everywhere: what the
-//                                   app sends when turning TOTP on couldn't.
+//                                   app sends after changing the password
+//                                   (unless the caller opts out), and when
+//                                   turning TOTP on couldn't. Then records the
+//                                   time as the password reset record's, so
+//                                   the API refuses every session from before
+//                                   it too (supply-checkout-6uw.33).
 //   PATCH /me/preferences           The caller's own app preferences: the What's
 //                                   New banner on or off, and the local date it
 //                                   was last shown (data/preferences.ts). GET /me
@@ -75,6 +80,8 @@
 // 1. API Gateway's JWT authorizer checks the Cognito access token; this handler
 //    re-checks it (an access token from our issuer, not expired) and takes the
 //    user only from `sub`. Nothing in the path, query or body names a user.
+//    A session that began before the user's password was last reset is
+//    refused (session-reset.ts, supply-checkout-6uw.33).
 // 2. The email comes from Cognito (GetUser with the caller's own token), and
 //    only a verified one lists invites. Accepting also needs the invite's
 //    token from the emailed link, checked against the stored hash in the same
@@ -175,6 +182,7 @@ import {
   countEmailCode,
   createInvite,
   createTeam,
+  checklistOf,
   deleteInviteForEmail,
   deleteUserRows,
   findInviteForEmail,
@@ -195,6 +203,7 @@ import {
   removeMember,
   setMemberRole,
   setOwnMemberEmail,
+  setOwnMemberName,
   listInvites,
   listInvitesForEmail,
   listTeamsForUser,
@@ -203,6 +212,7 @@ import {
   noticeAddress,
   recordNoticeAddress,
   recordTotpOn,
+  recordPasswordReset,
   hasEnded,
   isTestAccount,
   billingAccess,
@@ -243,10 +253,13 @@ import type { CognitoUser, DeleteUser, EmailCodes, TotpSetup, UserInfo } from ".
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
 import { accessToken, ApiError, errorResponse, header, json, jsonBody, noContent, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
+import type { SessionCheck } from "./session-reset.js";
 import { ACCOUNT_ROUTES, type AccountRoute, IDEMPOTENCY_HEADER, routeKey } from "./routes.js";
 
 export interface AccountHandlerDeps {
   readonly dbFor: DbForAccount;
+  /** Refuses a session from before the caller's last password reset (session-reset.ts). The Lambda entry always sets it. */
+  readonly sessionCheck?: SessionCheck;
   readonly userInfo: UserInfo;
   /** Emails the caller a verification code and checks it (cognito-user.ts). */
   readonly emailCodes: EmailCodes;
@@ -356,6 +369,8 @@ export function teamBody(team: Team, role: Role, now = new Date()) {
     cancelsAt: team.cancelAtPeriodEnd === true && !hasEnded(team.status) && typeof team.currentPeriodEnd === "string" ? team.currentPeriodEnd : null,
     members: typeof team.members === "number" ? team.members : null,
     memberCap: memberCap(team, now),
+    // The first-run checklist's progress (supply-checkout-fs56): owners only, as only they see it
+    checklist: role === "owner" ? checklistOf(team) : null,
   };
 }
 
@@ -397,7 +412,7 @@ function lastOwnerOf(names: string[]): string {
 }
 
 /** A member as the members routes return them: never the stored item as is. */
-const memberBody = (member: Member) => ({ userId: member.userId, email: member.email ?? null, role: member.role, joinedAt: member.joinedAt ?? null });
+const memberBody = (member: Member) => ({ userId: member.userId, name: member.displayName ?? null, email: member.email ?? null, role: member.role, joinedAt: member.joinedAt ?? null });
 
 /** Two addresses the same but for ASCII case and surrounding space, and neither empty. */
 const sameAddress = (a?: string, b?: string) => !!a?.trim() && !!b?.trim() && verifiedEmailHash(a) === verifiedEmailHash(b);
@@ -440,7 +455,7 @@ const CLOSED_NOTICES: NoticeMetrics = { sent: BusinessMetric.TeamClosedNotices, 
 const REOPENED_NOTICES: NoticeMetrics = { sent: BusinessMetric.TeamReopenedNotices, failures: BusinessMetric.TeamReopenedNoticeFailures, log: "Team reopened emails not sent" };
 
 /** An email to the account's own verified address about a change to how it signs in (noticeAccount). */
-type AccountNotice = SecurityNotice["kind"];
+type AccountNotice = Exclude<SecurityNotice["kind"], "passwordReset">;
 
 /** How long a security notice may wait on SES before the change is answered without it. */
 const NOTICE_TIMEOUT_MS = 3000;
@@ -479,7 +494,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
             throw error;
           });
           if (!ctx) return undefined;
-          if (email) await keepMemberEmail(db, ctx, email);
+          await keepMemberProfile(db, ctx, email, user.name);
           return teamBody(await getTeam(db, ctx), ctx.role, new Date(now()));
         }),
       )
@@ -496,21 +511,25 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
 
   /**
    * Brings the caller's MEMBER email in one team up to their verified address
-   * (supply-checkout-xv3k): the members list and owner notices read it, and it
-   * was copied when they joined. Reads first, so an address already current
-   * costs no write. Closed teams are left as they are. Best effort: a failure
-   * is logged (the team ID and error name only) and the request goes on.
+   * (supply-checkout-xv3k), when they have one, and their name up to Cognito's
+   * (supply-checkout-lx7; removed if they cleared it): the members list and
+   * owner notices read them, and they were copied when they joined. Reads
+   * first, so a member already current costs no write. Closed teams are left
+   * as they are. Best effort: a failure is logged (the team ID and error name
+   * only, never the address or name) and the request goes on.
    */
-  async function keepMemberEmail(db: ReturnType<DbForAccount>, ctx: TeamContext, email: string): Promise<void> {
+  async function keepMemberProfile(db: ReturnType<DbForAccount>, ctx: TeamContext, email: string | undefined, name?: string): Promise<void> {
     if (ctx.closed) return;
-    // Two /me calls at once, around an address change, could each read and write: the
-    // last write wins, and if it carried the older address the next /me corrects it
-    // (both only ever write an address Cognito verified for this user). Self-healing.
+    // Two /me calls at once, around a change, could each read and write: the
+    // last write wins, and if it carried the older value the next /me corrects it
+    // (both only ever write what Cognito says for this user). Self-healing.
     try {
       const member = await getMember(db, ctx, ctx.userId);
-      if (member && member.email !== email) await setOwnMemberEmail(db, ctx, email);
+      if (!member) return;
+      if (email && member.email !== email) await setOwnMemberEmail(db, ctx, email);
+      if (member.displayName !== name) await setOwnMemberName(db, ctx, name);
     } catch (error) {
-      obs.logger.warn("Member email not updated", { teamId: ctx.teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      obs.logger.warn("Member details not updated", { teamId: ctx.teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
     }
   }
 
@@ -535,8 +554,8 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     }
   }
 
-  /** keepMemberEmail in every team the caller is in (their own USER# rows), each on a session for that team after the membership check. */
-  async function keepMemberEmails(userId: string, email: string): Promise<void> {
+  /** keepMemberProfile in every team the caller is in (their own USER# rows), each on a session for that team after the membership check. */
+  async function keepMemberEmails(userId: string, email: string, name: string | undefined): Promise<void> {
     const rows = await listTeamsForUser(dbFor({ userId }), userId);
     await Promise.all(
       rows.slice(0, MAX_TEAMS_PER_USER).map(async (row) => {
@@ -545,7 +564,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
           if (error instanceof ForbiddenError) return undefined;
           throw error;
         });
-        if (ctx) await keepMemberEmail(db, ctx, email);
+        if (ctx) await keepMemberProfile(db, ctx, email, name);
       }),
     );
   }
@@ -558,7 +577,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const db = dbFor({ userId, teamId: teamIdForRequest(userId, key) });
     // A test account (its verified address, from Cognito, at the test mail domain) makes a test team: metrics only
     const test = isTestAccount(user, deps.testMailDomain);
-    const { team, context, created } = await createTeam(db, { userId, email: verifiedEmail(user), test }, { name: body.name as string, requestKey: key }, new Date(now()));
+    const { team, context, created } = await createTeam(db, { userId, email: verifiedEmail(user), name: user.name, test }, { name: body.name as string, requestKey: key }, new Date(now()));
     if (created) obs.count(BusinessMetric.SignUps, 1, { teamId: team.teamId, ...testMark(team.test) });
     return json(created ? 201 : 200, { team: teamBody(team, context.role) });
   }
@@ -567,14 +586,15 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const inviteId = event.pathParameters?.inviteId;
     if (typeof inviteId !== "string" || !ID.test(inviteId)) throw new ApiError(400, "bad_request", "Invalid invite ID");
     const token = event.body ? jsonBody(event, ["token"]).token : undefined;
-    const email = verifiedEmail(await cognitoUser(event, userId));
+    const user = await cognitoUser(event, userId);
+    const email = verifiedEmail(user);
     if (!email) throw new ApiError(403, "permission_denied", "Verify your email address to accept invites");
     const at = new Date(now());
     const invite = await findInviteForEmail(dbFor({ userId, invitee: hashEmail(email) }), email, inviteId, at);
     // Unknown, expired, used, for someone else, or no token: one answer for all
     if (!invite || typeof token !== "string") throw new ApiError(404, "not_found", "This invite has expired, was already used, or is for another email address");
     const db = dbFor({ userId, teamId: invite.teamId });
-    const ctx = await acceptInvite(db, { userId, verifiedEmail: email }, invite, token, at);
+    const ctx = await acceptInvite(db, { userId, verifiedEmail: email, name: user.name }, invite, token, at);
     obs.count(BusinessMetric.InvitesAccepted, 1, { teamId: ctx.teamId, ...testMark(ctx.test) });
     const team = await getTeam(db, ctx);
     await queueSeatSync(ctx.teamId, team);
@@ -1009,7 +1029,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     // member item's email only names the member (the members list, owner
     // notices); it's never what entitles anyone to an invite.
     try {
-      await keepMemberEmails(userId, normalizeEmail(before.email));
+      await keepMemberEmails(userId, normalizeEmail(before.email), after.name);
     } catch (error) {
       obs.logger.warn("Member emails not updated", { code: (error as { name?: string } | null)?.name ?? "Unknown" });
     }
@@ -1101,11 +1121,39 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     }
   }
 
-  /** Ends every session the caller has (GlobalSignOut with their own token), this one too. */
+  /**
+   * Ends every session the caller has (GlobalSignOut with their own token),
+   * this one too. GlobalSignOut revokes refresh tokens only, so the time is
+   * then recorded as the password reset record's (data/password-reset-time.ts,
+   * supply-checkout-6uw.33): every API route refuses a session from before it,
+   * an access token or a Managed Login session cookie's (session-reset.ts).
+   * After a password change it's the takeover response, so it's recorded
+   * here, after the sign-out, rather than at POST /me/password: there the
+   * caller can choose to stay signed in, and the app's next call is this one,
+   * with a token from before. The caller has been signed out by then, so a
+   * failed record doesn't fail the answer: it's logged as an error (the
+   * user ID and the error's name only) and counted (SecurityNoticeFailures,
+   * reason `record_reset`), which alarms. Either way (a write can land though
+   * its answer timed out), this container's cached reset time for the caller
+   * is then dropped (SessionCheck.forget), so
+   * sessions from before are refused here at once; other containers see it
+   * within RESET_CACHE_MS.
+   */
   async function signOutEverywhere(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     if (event.body) jsonBody(event, []);
     await cognitoUser(event, userId);
     await endEverySession(accessToken(event), userId);
+    try {
+      await recordPasswordReset(dbFor({ userId }), userId, new Date(now()));
+    } catch (error) {
+      obs.logger.error("Sign-out time not recorded", { userId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      // Sessions from before the sign-out may still pass the API's check: raise "Security notices failing"
+      obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind: "signOutEverywhere", reason: "record_reset", via: "api" });
+    } finally {
+      // This container's cached time may be older now, even after a failure (a write that landed but
+      // whose answer timed out): the next request reads it again
+      deps.sessionCheck?.forget?.(userId);
+    }
     return noContent();
   }
 
@@ -1167,6 +1215,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       if (!action) throw new ApiError(404, "not_found", "No such route");
       const userId = callerId(event, now());
       if (event.requestContext.authorizer.jwt.claims.iss !== deps.issuerUrl) throw new ApiError(401, "unauthenticated", "Sign in again");
+      await deps.sessionCheck?.(event, userId);
       const response = await actions[action](event, userId);
       status = response.statusCode ?? 200;
       return response;

@@ -106,6 +106,7 @@ Events for a team you've just been added to start within about 30 seconds of joi
   - `404`: it was deleted since; treat as a `delete`.
   - `403 permission_denied`: the user is no longer a member. Unsubscribe, close the socket, stop polling, and show that they've been removed from the team.
 - **`delete`**: drop the document locally. No fetch.
+- **Deleted documents**: a `put` for a save from before a delete only fetches a 404, which the browser logs. The web app skips it (`src/aws/db.js`): after its own delete, until the delete's event arrives, a `put` for a version up to the one deleted; after a `delete` event, a `put` whose `at` is earlier. Any other `put` is fetched, so a document made again under the same ID still shows. A re-list forgets them.
 - **Once**: skip an event whose `eventId` you've already applied (the web app remembers the last 500, `src/aws/live.js`). Events without an `eventId` always go through.
 - **`list`**: re-list the collection (see [Collection events](#collection-events)).
 - **Coalesce**: keep at most one fetch in flight per document; if more events for it arrive meanwhile, fetch once more when it finishes. A busy project can change several times a second.

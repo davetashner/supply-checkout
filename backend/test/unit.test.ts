@@ -5,6 +5,7 @@ import * as data from "../src/data/index.js";
 import {
   ConflictError,
   createDb,
+  createProduct,
   ForbiddenError,
   InvalidInputError,
   listProjectsByDate,
@@ -20,7 +21,7 @@ import { retryDelay } from "../src/data/documents.js";
 import { MAX_MONEY, money } from "../src/data/money.js";
 import { date, dateFormat, gsi1, isCalendarDay, keys, strip } from "../src/data/keys.js";
 import { legacy } from "../src/data/legacy-sheets.js";
-import { billingAccess, deletionLastDay, deletionTime, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, PAYMENT_GRACE_DAYS, READ_ONLY_RETENTION_DAYS, teamCounts, teamName } from "../src/data/model.js";
+import { billingAccess, deletionLastDay, deletionTime, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, MEMBER_NAME_MAX, memberCap, memberName, PAYMENT_GRACE_DAYS, READ_ONLY_RETENTION_DAYS, teamCounts, teamName } from "../src/data/model.js";
 import { tableName } from "../src/data/schema.js";
 import { assertContext, writable } from "../src/data/team-context.js";
 import * as teamContextFile from "../src/data/team-context.js";
@@ -180,6 +181,16 @@ describe("TeamContext (ADR 0005)", () => {
     await expect(updateProduct(offline, contributor, "p1", { code: "", name: "Glo\u202eves", price: 1 }, 1)).rejects.toThrow(new InvalidInputError("name has an invisible or control character in it"));
     await expect(updateProduct(offline, contributor, "p1", { code: "", name: "x".repeat(201), price: 1 }, 1)).rejects.toThrow(new InvalidInputError("Invalid product"));
   });
+
+  it("holds a product's price to the money rule on create and edit, before it reaches DynamoDB (supply-checkout-hv70)", async () => {
+    const contributor = await contextFor("contributor");
+    const rule = new InvalidInputError(`price must be an amount from 0 to ${MAX_MONEY} with at most two decimals`);
+    for (const price of [MAX_MONEY + 1, MAX_MONEY + 0.01, 0.001, 1.005, -0.01, Number.NaN, Number.POSITIVE_INFINITY, "3"]) {
+      const input = { code: "", name: "x", price: price as number };
+      await expect(createProduct(offline, contributor, "p1", input), String(price)).rejects.toThrow(rule);
+      await expect(updateProduct(offline, contributor, "p1", input, 1), String(price)).rejects.toThrow(rule);
+    }
+  });
 });
 
 describe("team names and project fields (supply-checkout-1dg.13)", () => {
@@ -197,6 +208,40 @@ describe("team names and project fields (supply-checkout-1dg.13)", () => {
     await expect(data.createProject(offline, contributor, { ...project, createdByName: "Sam\u200b" })).rejects.toThrow(new InvalidInputError("Invalid name"));
     await expect(data.createProject(offline, contributor, { ...project, source: { store: "Shop\u2067", receiptDate: "" } })).rejects.toThrow(new InvalidInputError("Invalid store"));
     await expect(data.updateProject(offline, contributor, "s1", { client: "Echo\u2066" }, 1)).rejects.toThrow(new InvalidInputError("Invalid client"));
+  });
+});
+
+describe("members' names (supply-checkout-lx7)", () => {
+  it("joins given and family names on one line, trimmed", () => {
+    expect(memberName("  Pat ", " Lee  ")).toBe("Pat Lee");
+    expect(memberName("Pat", undefined)).toBe("Pat");
+    expect(memberName(undefined, "Lee")).toBe("Lee");
+    expect(memberName("Mary\nAnn", "O'Neil\tSmith")).toBe("Mary Ann O'Neil Smith");
+    expect(memberName("José", "Núñez")).toBe("José Núñez");
+  });
+
+  it("is nothing for no name, a blank one or one that isn't text", () => {
+    expect(memberName(undefined, undefined)).toBeUndefined();
+    expect(memberName("   ", "")).toBeUndefined();
+    expect(memberName(42, { a: 1 })).toBeUndefined();
+    expect(memberName("\u200B", "\u202E")).toBeUndefined();
+  });
+
+  it("drops invisible and bidi characters that could hide or reorder what an owner reads", () => {
+    expect(memberName("Pat\u202Eeel", "Lee\u200B")).toBe("Pateel Lee");
+    expect(memberName("Pat\u0000", "\u2028Lee")).toBe("Pat Lee");
+  });
+
+  it("cuts a long name, without leaving half a character", () => {
+    expect(memberName("a".repeat(500), "b")).toBe("a".repeat(MEMBER_NAME_MAX));
+    const cut = memberName("a".repeat(MEMBER_NAME_MAX - 1) + "😀", undefined) as string;
+    expect(cut.isWellFormed()).toBe(true);
+    expect(cut.length).toBeLessThanOrEqual(MEMBER_NAME_MAX);
+    expect(memberName("a".repeat(MEMBER_NAME_MAX - 2) + " b c", undefined)).toBe("a".repeat(MEMBER_NAME_MAX - 2) + " b");
+  });
+
+  it("gives back what it's given once it's made one (setOwnMemberName checks this)", () => {
+    for (const name of ["Pat Lee", "a".repeat(MEMBER_NAME_MAX), "José Núñez"]) expect(memberName(name, undefined)).toBe(name);
   });
 });
 

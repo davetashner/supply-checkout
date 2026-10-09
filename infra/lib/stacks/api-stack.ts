@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { Aws, Duration, Stack, Validations } from "aws-cdk-lib";
+import { ArnFormat, Aws, Duration, Stack, Validations } from "aws-cdk-lib";
 import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import {
   ApiMapping,
@@ -17,7 +17,7 @@ import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import { ArnPrincipal, Effect, PolicyDocument, PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Alias, Architecture, type IFunction, Runtime } from "aws-cdk-lib/aws-lambda";
 import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
-import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
+import { DeduplicationScope, FifoThroughputLimit, Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { type BundlingOptions, NodejsFunction, OutputFormat } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup } from "aws-cdk-lib/aws-logs";
 import { AaaaRecord, ARecord, RecordTarget } from "aws-cdk-lib/aws-route53";
@@ -35,12 +35,14 @@ import {
   IDEMPOTENCY_HEADER,
   OPS_ROUTES,
   OPS_SESSION_TAG,
+  PASSWORD_RESET_ROUTES,
   RECEIPT_ROUTES,
   routeKey,
   RECEIPT_SESSION_TAGS,
   TEAM_SESSION_TAG,
   WEBHOOK_ROUTES,
 } from "../../../backend/src/api/routes.js";
+import { emailResourceNames } from "../../../backend/src/email/names.js";
 import {
   COMMITTING_IMPORTS_PARTITION,
   BILLING_READ_ATTRIBUTES,
@@ -54,6 +56,8 @@ import {
   IMPORT_INDEX_ATTRIBUTES,
   INVITE_LIMIT_ATTRIBUTES,
   INVITE_LIMIT_PREFIX,
+  PASSWORD_RESET_LIMIT_ATTRIBUTES,
+  PASSWORD_RESET_REQUEST_PARTITIONS,
   MEMBER_ROW_ATTRIBUTES,
   MEMBER_SEAT_ATTRIBUTES,
   OPERATOR_AUDIT_PREFIX,
@@ -61,6 +65,7 @@ import {
   OPS_OWNERS_PREFIX,
   OPS_TEAMS_PARTITION,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
+  PASSWORD_RESET_RECORD_ATTRIBUTES,
   RECEIPT_RATE_ATTRIBUTES,
   RECEIPT_RATE_PREFIX,
   RECEIPT_TRIAL_CAP_ATTRIBUTES,
@@ -131,7 +136,7 @@ export const bundling: BundlingOptions = {
  *   in an HttpOnly cookie, served by the `auth` function. No authorizer: they
  *   run on the cookie, with SameSite=Strict and an Origin check.
  * - Team isolation, second layer (ADR 0005): the data function's own role
- *   can't reach the table. For each request it assumes the data-access role
+ *   can't reach the table (but for the password reset time, below). For each request it assumes the data-access role
  *   with the session tag `teamId=<path team>`, and that role may only touch
  *   items whose partition key is `TEAM#<tag>`, or the team's date index
  *   partition `TEAM#<tag>#PROJECTS` (or `TEAM#<tag>#SHEETS`, its name before
@@ -151,6 +156,11 @@ export const bundling: BundlingOptions = {
  *   request is entitled to it, and a member only after an owner's checks
  *   (backend/src/api/account-db.ts).
  *   No Scan, no BatchWriteItem, and never another user's partition.
+ * - Sessions from before a password reset (supply-checkout-6uw.33): the
+ *   data, account, billing and receipts functions' own roles may read one
+ *   attribute, `passwordResetAt`, in `USER#` partitions, and nothing else of
+ *   the table (grantPasswordResetRead), to refuse a token whose session began
+ *   before the caller's last reset (backend/src/api/session-reset.ts).
  * - Functions are NodejsFunction (Node.js 24, arm64) behind a `live` alias,
  *   ready for CodeDeploy canaries (ADR 0012). The data function has 1 GB of
  *   memory for CPU: its work is JSON and TLS, and more memory means less
@@ -171,6 +181,8 @@ export class ApiStack extends SupplyCheckoutStack {
   readonly api: HttpApi;
   readonly dataFunction: NodejsFunction;
   readonly authFunction: NodejsFunction;
+  /** The password reset routes (supply-checkout-6uw.26): queues requests for the email stack's password reset function, and confirms resets with Cognito. */
+  readonly passwordResetFunction: NodejsFunction;
   readonly accountFunction: NodejsFunction;
   readonly dataAccessRole: Role;
   readonly accountAccessRole: Role;
@@ -228,6 +240,43 @@ export class ApiStack extends SupplyCheckoutStack {
       },
     });
 
+    // Resetting a forgotten password from the app (supply-checkout-6uw.26). Its role may count the
+    // requests' limits (UpdateItem in the RESETLIMIT#ADDRESS# and RESETLIMIT#IP# partitions only, below),
+    // invoke the password reset function by its fixed name in the primary region, and nothing else: no
+    // Cognito admin call (ConfirmForgotPassword is a public call with the web client's ID)
+    const passwordResetTarget = emailResourceNames(config.envName).passwordResetFunction;
+    this.passwordResetFunction = this.handler("PasswordResetFunction", "password-reset", {
+      memorySize: 256,
+      description: "Password resets from the app's sign-in screen: queues a request, and confirms a code",
+      environment: {
+        [API_ENV.tableName]: table,
+        [API_ENV.clientId]: ssm(identity.webClientId),
+        [API_ENV.issuerUrl]: ssm(identity.issuerUrl),
+        [API_ENV.allowedOrigins]: origins.join(","),
+        [API_ENV.passwordResetFunction]: passwordResetTarget,
+        [API_ENV.passwordResetRegion]: config.primaryRegion,
+      },
+    });
+    this.passwordResetFunction.addToRolePolicy(
+      new PolicyStatement({
+        sid: "QueuePasswordResets",
+        actions: ["lambda:InvokeFunction"],
+        resources: [Stack.of(this).formatArn({ service: "lambda", region: config.primaryRegion, resource: "function", resourceName: passwordResetTarget, arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
+      }),
+    );
+    this.passwordResetFunction.addToRolePolicy(
+      new PolicyStatement({
+        sid: "CountPasswordResets",
+        actions: ["dynamodb:UpdateItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...PASSWORD_RESET_REQUEST_PARTITIONS] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...PASSWORD_RESET_LIMIT_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+
     this.accountFunction = this.handler("AccountFunction", "account", {
       memorySize: 512,
       description: "The signed-in user's teams and invites; creates teams, manages members and invites, and accepts invites",
@@ -242,6 +291,8 @@ export class ApiStack extends SupplyCheckoutStack {
         resources: [ssm(`/supply-checkout/${config.envName}/data/table-key-arn`)],
         conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
       });
+    // The password reset function counts its limits in the table, encrypted with this key
+    this.passwordResetFunction.addToRolePolicy(tableKeyStatement());
 
     // The data-access role: DynamoDB on one team's partitions, chosen by the session tag
     const dataRole = this.dataFunction.role;
@@ -400,6 +451,8 @@ export class ApiStack extends SupplyCheckoutStack {
     const billing = this.addBilling(config, table, tableArn, region, appOrigin, ssm(identity.issuerUrl), tableKeyStatement);
     this.billingFunction = billing.fn;
     this.billingAccessRole = billing.role;
+    // Every function the app's access tokens reach checks the session against the caller's last password reset
+    for (const fn of [this.dataFunction, this.accountFunction, this.billingFunction, this.receiptsFunction]) this.grantPasswordResetRead(fn, tableArn, tableKeyStatement);
     const events = this.addBillingEvents(config, table, tableArn, region, tableKeyStatement);
     this.webhookFunction = events.webhook;
     this.billingQueue = events.queue;
@@ -523,6 +576,18 @@ export class ApiStack extends SupplyCheckoutStack {
         reason: "Stripe calls the webhook without a Cognito token; the function verifies the Stripe-Signature header against the endpoint's signing secret before it does anything.",
       });
     }
+    // Password resets (supply-checkout-6uw.26): no authorizer, an Origin check in the function, and their own throttles
+    const resetIntegration = new HttpLambdaIntegration("PasswordResetIntegration", this.live(this.passwordResetFunction));
+    for (const route of PASSWORD_RESET_ROUTES) {
+      const added = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: resetIntegration });
+      stage.node.addDependency(...added);
+      routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
+      Validations.of(added[0] as Construct).acknowledge({
+        id: "AwsSolutions-APIG4",
+        reason: "Resetting a forgotten password happens before the person can sign in, so there's no token: the function checks the Origin header, and the address's and IP address's limits are applied before anything is sent.",
+      });
+    }
+
     (stage.node.defaultChild as CfnStage).routeSettings = routeSettings;
     const authIntegration = new HttpLambdaIntegration("AuthIntegration", this.live(this.authFunction));
     for (const route of AUTH_ROUTES) {
@@ -554,7 +619,8 @@ export class ApiStack extends SupplyCheckoutStack {
   /**
    * The billing function and the billing-access role it assumes (ADR 0009,
    * supply-checkout-x0l). Owners start Stripe Checkout through it. Its own
-   * role can't reach the table: it may assume the billing-access role, and
+   * role can't reach the table (but for the password reset time,
+   * grantPasswordResetRead): it may assume the billing-access role, and
    * read the one Stripe secret key for this environment and mode
    * (secretsmanager:GetSecretValue on that secret's ARN only). The
    * billing-access role, tagged with the path's team and (once Stripe has
@@ -570,7 +636,7 @@ export class ApiStack extends SupplyCheckoutStack {
    *   attributes, returning nothing.
    * - GetItem and UpdateItem in `USER#<userId>`, the caller's own `sub`,
    *   naming only the keys and `totpOnAt` (TOTP_RECORD_ATTRIBUTES), reads
-   *   projected and updates returning nothing: when the caller turned
+   *   projected (Select SPECIFIC_ATTRIBUTES, required) and updates returning nothing: when the caller turned
    *   two-step sign-in on (supply-checkout-8jc.14), which the billing routes
    *   compare with the token's auth_time, and record when there's none.
    *   `userId` is the unused marker otherwise.
@@ -654,7 +720,10 @@ export class ApiStack extends SupplyCheckoutStack {
               },
             }),
             // When the caller turned two-step sign-in on (supply-checkout-8jc.14): only
-            // that attribute, only in their own partition (the tag is the verified sub)
+            // that attribute, only in their own partition (the tag is the verified sub).
+            // Projected: Select required, not IfExists, so a GetItem without a projection
+            // (which may carry neither Select nor Attributes) is denied (supply-checkout-3sv.23).
+            // totpOnAt (data/two-step.ts), its only caller, always projects
             new PolicyStatement({
               sid: "CallerTotpRecordRead",
               effect: Effect.ALLOW,
@@ -662,7 +731,7 @@ export class ApiStack extends SupplyCheckoutStack {
               resources: [tableArn],
               conditions: {
                 "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [user], "dynamodb:Attributes": [...TOTP_RECORD_ATTRIBUTES] },
-                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
             new PolicyStatement({
@@ -707,12 +776,15 @@ export class ApiStack extends SupplyCheckoutStack {
    *   dead-letter queue (the "Billing events stuck" alarm). Only the webhook
    *   may send to it.
    * - The seat sync queue (supply-checkout-l50) is FIFO too, grouped by
-   *   Stripe customer, with its own dead-letter queue ("Seat syncs stuck"):
+   *   Stripe customer and deduplicated within the group, with its own
+   *   dead-letter queue ("Seat syncs stuck"):
    *   the account function sends one after a membership change, and the
    *   nightly seat reconciliation (observability/ops-checks.ts) one per team.
    *   A seat sync names only a Stripe customer; the worker finds the team
    *   from its link, and takes only seat syncs from this queue
-   *   (SEAT_QUEUE_ARN), so neither sender can pass off a Stripe event.
+   *   (SEAT_QUEUE_ARN), so neither sender can pass off a Stripe event, and
+   *   only seat syncs whose customer and ID match their group and
+   *   deduplication ID, so neither can drop another customer's sync.
    * - The worker applies each event, and sets a subscription's seat
    *   quantity to the team's billed members. Its own role can't reach the
    *   table: it may read the Stripe secret key, send owner emails (grantSendEmail), and
@@ -772,6 +844,9 @@ export class ApiStack extends SupplyCheckoutStack {
     const seatQueue = new Queue(this, "SeatSyncsQueue", {
       queueName: names.seatQueue,
       fifo: true,
+      // Deduplicated within a customer's group, so one sender can't drop another customer's sync by sending its ID first (supply-checkout-8jc.26)
+      deduplicationScope: DeduplicationScope.MESSAGE_GROUP,
+      fifoThroughputLimit: FifoThroughputLimit.PER_MESSAGE_GROUP_ID,
       encryption: QueueEncryption.SQS_MANAGED,
       enforceSSL: true,
       visibilityTimeout: Duration.seconds(workerTimeout.toSeconds() * 6),
@@ -1137,7 +1212,8 @@ export class ApiStack extends SupplyCheckoutStack {
   /**
    * The receipts function and the receipt-access role it assumes (ADR 0008).
    *
-   * - Like the data function, its own role can't reach the table. Per request
+   * - Like the data function, its own role can't reach the table (but for
+   *   the password reset time, grantPasswordResetRead). Per request
    *   it assumes the receipt-access role tagged with the path's team and the
    *   caller (`teamId`, and `userId`: always the token's `sub`), which may
    *   read only that team's partition (the membership check, the team's
@@ -1256,6 +1332,36 @@ export class ApiStack extends SupplyCheckoutStack {
       }),
     );
     return { fn, role };
+  }
+
+  /**
+   * Lets a function refuse a session from before the caller's last password
+   * reset (backend/src/api/session-reset.ts, supply-checkout-6uw.33), with its
+   * own role: GetItem naming only the keys and `passwordResetAt`
+   * (PASSWORD_RESET_RECORD_ATTRIBUTES, which no other item has), and only
+   * projected (dynamodb:Select SPECIFIC_ATTRIBUTES required), in `USER#` partitions, and the table's key through DynamoDB. No other
+   * action, attribute or partition. The function's own role has no per-user
+   * session, so IAM can't name the caller or the sort key: the code reads
+   * only `USER#<sub>` / `PASSWORD_RESET` for the verified token's `sub`, and
+   * all any other read could see is when another user last reset their
+   * password.
+   */
+  private grantPasswordResetRead(fn: NodejsFunction, tableArn: string, tableKeyStatement: () => PolicyStatement): void {
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadPasswordResetTime",
+        effect: Effect.ALLOW,
+        actions: ["dynamodb:GetItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...PASSWORD_RESET_RECORD_ATTRIBUTES] },
+          // Required, not IfExists: a GetItem without a projection may carry neither key, and would read the whole item
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    fn.addToRolePolicy(tableKeyStatement());
   }
 
   /** A function from backend/src/<dir>/<name>.ts. */

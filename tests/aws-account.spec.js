@@ -5,7 +5,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
 import { continueReview, teamPicker, switchTeam } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
-import { FakeBackend, TEAM, USER, ORIGIN, AUTH, CONFIG, openAws, connected, lastSocket, sockets, emit, setVisible } from "./fake-aws.js";
+import { FakeBackend, TEAM, USER, ORIGIN, AUTH, CONFIG, openAws, connected, lastSocket, sockets, emit, setVisible, trackAnswers, unanswered } from "./fake-aws.js";
 
 
 const seeded = (team = "t1") => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`${team}/${k}`, v]));
@@ -558,6 +558,65 @@ test.describe("first sign-in and teams", () => {
     expect(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite"))).toBeNull();
   });
 
+  test("joining a second team shows the switcher with both teams, without a reload", { tag: ["@J3.2", "@J0.3"] }, async ({ page }) => {
+    const backend = new FakeBackend({ invites: [invited], docs: seeded("t-i1") });
+    await openAws(page, backend, { storage: inviteLink() });
+    await page.getByRole("button", { name: "Join", exact: true }).click();
+    await connected(page);
+    const pick = teamPicker(page);
+    await expect(pick).toHaveValue("t-i1");
+    await expect(pick.locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
+    expect(backend.pageLoads).toBe(1);
+    expect(backend.requests("GET", "/me")).toHaveLength(1);
+  });
+
+  test("a team that /me already listed isn't listed twice once joined", { tag: ["@J3.2"] }, async ({ page }) => {
+    const backend = new FakeBackend({ teams: [TEAM, { ...TEAM, id: "t-i1", name: "Bravo Co", role: "contributor" }], invites: [invited], docs: seeded("t-i1") });
+    await openAws(page, backend, { storage: inviteLink() });
+    await page.getByRole("button", { name: "Join", exact: true }).click();
+    await connected(page);
+    await expect(teamPicker(page).locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
+  });
+
+  test("a link copied from the email's HTML source (&amp;token=) still joins", { tag: ["@J3.2"] }, async ({ page }) => {
+    const backend = new FakeBackend({ teams: [], invites: [invited], docs: seeded("t-i1") });
+    await openAws(page, backend, { path: "/?invite=i1&amp;token=tok" });
+    await page.getByRole("button", { name: "Join", exact: true }).click();
+    await connected(page);
+    expect(backend.requests("POST", "/invites/i1/accept")[0].body).toEqual({ token: "tok" });
+    await expect(page.locator(".teambar")).toContainText("Team: Bravo Co");
+  });
+
+  // A link whose ID or token was lost or mangled when it was copied
+  for (const [name, saved] of [
+    ["without a token", { id: "i1", token: null }],
+    ["with an empty token", { id: "i1", token: "" }],
+    ["with a token broken by a space", { id: "i1", token: "to k" }],
+    ["without an ID", { token: "tok" }],
+    ["with a mangled ID", { id: "i1>", token: "tok" }],
+  ]) {
+    test(`an invite link ${name} says it's incomplete, and doesn't try to join`, { tag: ["@J3.2"] }, async ({ page }) => {
+      const backend = new FakeBackend({ teams: [], invites: [invited] });
+      await openAws(page, backend, { storage: { session: { "supplyCheckout.invite": JSON.stringify(saved) } } });
+      await expect(alert(page)).toHaveText("This invite link is incomplete. Open it again from the email, or ask for a new invite.");
+      await expect(page.getByRole("button", { name: "Join", exact: true })).toBeHidden();
+      expect(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite"))).toBeNull();
+      expect(backend.requests("POST", /^\/invites\//)).toHaveLength(0);
+      await page.getByRole("button", { name: "Create my own team instead" }).click();
+      await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
+    });
+  }
+
+  test("an invite link the server finds malformed (400) says it's incomplete", { tag: ["@J3.2"] }, async ({ page }) => {
+    const backend = new FakeBackend({ teams: [], invites: [invited] });
+    backend.on("POST", "/invites/i1/accept", { status: 400, body: { error: { code: "bad_request", message: "Invalid invite ID" } } });
+    await openAws(page, backend, { storage: inviteLink() });
+    await page.getByRole("button", { name: "Join", exact: true }).click();
+    await expect(alert(page)).toHaveText("This invite link is incomplete. Open it again from the email, or ask for a new invite.");
+    await expect(page.getByRole("button", { name: "Join", exact: true })).toBeHidden();
+    expect(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite"))).toBeNull();
+  });
+
   test("an invite that's expired or used says so, and offers a team of their own", { tag: ["@J3.2"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams: [], invites: [invited] });
     await openAws(page, backend, { storage: inviteLink("wrong") });
@@ -745,6 +804,13 @@ test.describe("first sign-in and teams", () => {
 
   test("while polling instead of a socket, /me is asked at most every 10 minutes", { tag: ["@J0"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams, docs: seeded() });
+    // A jump of the clock past 15 seconds also fires the timeout of a request still in flight
+    // (src/aws/http.js). When the poll fires first in that jump (showing the tab started the
+    // re-list after the poll timer was set), it only marks the re-list to run again, and the
+    // timeout then fails the re-list, so the poll's request waits for a retry (src/aws/db.js).
+    // So each jump waits until the app has read every answer.
+    await trackAnswers(page);
+    const answered = () => expect.poll(() => unanswered(page)).toBe(0);
     await page.clock.install();
     // The socket never opens, so after three tries the app polls every 15 seconds
     await openAws(page, backend, { ws: { open: false } });
@@ -753,20 +819,18 @@ test.describe("first sign-in and teams", () => {
     const polls = () => backend.requests("GET", "/teams/t1/products").length;
     for (let i = 0; i < 3; i++) await page.clock.fastForward(5e3);
     await expect.poll(polls).toBeGreaterThan(1);
-    for (let i = 0; i < 8; i++) {
+    const poll = async () => {
+      await answered();
       const before = polls();
       await page.clock.fastForward(61e3);
       await expect.poll(polls).toBeGreaterThan(before);
-    }
+    };
+    for (let i = 0; i < 8; i++) await poll();
     expect(meCalls()).toBe(1);
     // Showing the tab again is not a poll: the usual minute applies
     await setVisible(page, true);
     await expect.poll(meCalls).toBe(2);
-    for (let i = 0; i < 9; i++) {
-      const before = polls();
-      await page.clock.fastForward(61e3);
-      await expect.poll(polls).toBeGreaterThan(before);
-    }
+    for (let i = 0; i < 9; i++) await poll();
     expect(meCalls()).toBe(2);
     await page.clock.fastForward(61e3);
     await expect.poll(meCalls).toBe(3);

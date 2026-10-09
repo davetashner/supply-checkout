@@ -121,7 +121,8 @@ export function reopenPolicy(team: string, denied: { command: string; input: Inp
  * LAPSE_OWNER_ATTRIBUTES (Select SPECIFIC_ATTRIBUTES); GetItem on a team's
  * META item naming only LAPSE_READ_ATTRIBUTES; UpdateItem there naming only
  * LAPSE_CLOSE_ATTRIBUTES, returning nothing; GetItem and PutItem in `LAPSE#`
- * partitions naming only LAPSE_RECORD_ATTRIBUTES. Nothing else.
+ * partitions naming only LAPSE_RECORD_ATTRIBUTES. Every GetItem projected
+ * (Select SPECIFIC_ATTRIBUTES). Nothing else.
  */
 export function lapsePolicy(denied: { command: string; input: Input }[] = []) {
   const within = (names: Iterable<string>, allowed: readonly string[]) => [...names].every((a) => allowed.includes(a));
@@ -140,7 +141,8 @@ export function lapsePolicy(denied: { command: string; input: Input }[] = []) {
           return typeof pk === "string" && pk.startsWith(OPS_OWNERS_PREFIX) && within(namedAttributes(input), LAPSE_OWNER_ATTRIBUTES);
         }
         case "GetCommand":
-          if (typeof input.ProjectionExpression !== "string") return false;
+          // dynamodb:Select SPECIFIC_ATTRIBUTES on both GetItem statements (ReadTeamBilling, ReadLapseRecords): projected only
+          if (typeof input.ProjectionExpression !== "string" || (input.Select !== undefined && input.Select !== "SPECIFIC_ATTRIBUTES")) return false;
           if (teamMeta(input)) return within(namedAttributes(input), LAPSE_READ_ATTRIBUTES);
           return lapse(partitionKey(input)) && within(namedAttributes(input), LAPSE_RECORD_ATTRIBUTES);
         case "PutCommand":

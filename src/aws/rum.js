@@ -102,6 +102,18 @@ function scrubbing(plugin) {
   return plugin;
 }
 
+/**
+ * A credentials provider whose failure is handled: the client calls its provider once without
+ * waiting for it (to have credentials ready before the page closes), so a failed Cognito request
+ * (WebKit fails one cut off by a reload "due to access control checks") would otherwise be an
+ * unhandled rejection. Callers that wait for it still see it fail; the client then sends nothing.
+ */
+export const handledProvider = (provider) => () => {
+  const credentials = provider();
+  credentials.catch(() => {});
+  return credentials;
+};
+
 /** Starts reporting to the app monitor in config.json (rumAppMonitorId, rumIdentityPoolId, rumRegion). */
 export function startRum(config, version) {
   const cookieAttributes = defaultCookieAttributes();
@@ -122,7 +134,7 @@ export function startRum(config, version) {
   // the client stops sending anything, so it fails closed. The hook adds no metadata.
   rum.setEventMetadataHook(scrubOrStop(rum));
   rum.setSigningConfigFactory(createSigningConfig);
-  rum.setAwsCredentials(new EnhancedAuthentication({ identityPoolId: config.rumIdentityPoolId, cookieAttributes }, config.rumAppMonitorId).ChainAnonymousCredentialsProvider);
+  rum.setAwsCredentials(handledProvider(new EnhancedAuthentication({ identityPoolId: config.rumIdentityPoolId, cookieAttributes }, config.rumAppMonitorId).ChainAnonymousCredentialsProvider));
   for (const plugin of [new PageViewPlugin(), new JsErrorPlugin(), new NavigationPlugin(), new ResourcePlugin(), new WebVitalsPlugin()]) rum.addPlugin(scrubbing(plugin));
   return rum;
 }

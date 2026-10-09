@@ -6,7 +6,7 @@
 import { SendMessageCommand } from "@aws-sdk/client-sqs";
 import { beforeEach, describe, expect, it } from "vitest";
 import { entitlementDrift, type EntitlementStripe, UNRECORDED_GRACE_SECONDS } from "../src/billing/entitlements.js";
-import { parseSeatSync, seatQuantity, type SeatStripe, type SeatSubscription, type SeatSyncMessage, seatUpdateKey, sqsSeatSyncQueue } from "../src/billing/seats.js";
+import { parseSeatSync, reconcileSeatSyncId, seatQuantity, type SeatStripe, type SeatSubscription, type SeatSyncMessage, seatUpdateKey, sqsSeatSyncQueue } from "../src/billing/seats.js";
 import type { SQSEvent } from "aws-lambda";
 import type { CompDiscountStripe } from "../src/billing/comp-discount.js";
 import { createBillingWorker, type QueueMessage, type SubscriptionLike, type WorkerStripe } from "../src/billing/worker.js";
@@ -37,6 +37,10 @@ let listed: string[];
 let customerGone: boolean;
 let listFails: boolean;
 let onRetrieve: (() => void) | undefined;
+let cancels: string[];
+/** Stripe's open invoices: ID and subscription. */
+let openInvoices: Map<string, string>;
+let voids: string[];
 let denied: { command: string; input: Record<string, unknown> }[];
 let scopes: WorkerScope[];
 let counts: [string, number, unknown][];
@@ -81,6 +85,12 @@ function patchTeam(fields: Record<string, unknown>) {
   table.put(Object.fromEntries(Object.entries({ ...meta, ...fields }).filter(([, v]) => v !== undefined)));
 }
 
+/** An event the billing worker applies (applySubscription), which moves the team's version. */
+function applyEvent(fields: Record<string, unknown>) {
+  const meta = table.get(`TEAM#${TEAM}`, "META") as Record<string, unknown>;
+  patchTeam({ ...fields, version: (meta.version as number) + 1 });
+}
+
 beforeEach(() => {
   table = new MemoryTable();
   // Two owners, one editor and two viewers: three billed seats
@@ -94,6 +104,9 @@ beforeEach(() => {
   customerGone = false;
   listFails = false;
   onRetrieve = undefined;
+  cancels = [];
+  openInvoices = new Map();
+  voids = [];
   denied = [];
   scopes = [];
   counts = [];
@@ -127,8 +140,20 @@ beforeEach(() => {
       async update() {
         throw new Error("not used");
       },
-      async cancel() {
-        throw new Error("not used");
+      async cancel(id) {
+        cancels.push(id);
+        subs.set(id, { ...(subs.get(id) as Sub), status: "canceled" });
+      },
+    },
+    invoices: {
+      async list({ subscription, status }) {
+        // Only open ones here: no subscription in these tests has a paid invoice
+        const open = status === "open" ? [...openInvoices].filter(([, sub]) => sub === subscription) : [];
+        return { data: open.map(([id]) => ({ id, customer: CUSTOMER })), has_more: false };
+      },
+      async voidInvoice(id) {
+        voids.push(id);
+        openInvoices.delete(id);
       },
     },
     subscriptionItems: {
@@ -419,11 +444,30 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     subs.set(SUB, subscription(3, { status: "past_due" }));
     onRetrieve = () => {
       onRetrieve = undefined;
-      patchTeam({ cancelAtPeriodEnd: true });
+      applyEvent({ cancelAtPeriodEnd: true });
     };
     await expect(nightly()).rejects.toThrow("changed meanwhile");
     expect(meta()).toMatchObject({ status: "active", cancelAtPeriodEnd: true });
     expect(drift()).toEqual([]);
+  });
+
+  it("doesn't overwrite a change and back (A to B to A) applied while the check was asking Stripe (supply-checkout-8jc.27)", async () => {
+    subs.set(SUB, subscription(3, { status: "past_due" }));
+    const before = meta().version as number;
+    // Cancelled and renewed again: every field is as the check read it, but the version moved twice
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      applyEvent({ cancelAtPeriodEnd: true });
+      applyEvent({ cancelAtPeriodEnd: false, currentPeriodEnd: "2026-12-01T00:00:00.000Z" });
+    };
+    await expect(nightly()).rejects.toThrow("changed meanwhile");
+    expect(meta()).toMatchObject({ status: "active", seats: 3, cancelAtPeriodEnd: false, currentPeriodEnd: "2026-12-01T00:00:00.000Z", version: before + 2 });
+    expect(drift()).toEqual([]);
+    // The retry reads the team again and fixes the drift that's still there
+    expect(await nightly()).toBe("in_sync");
+    expect(meta()).toMatchObject({ status: "past_due", seats: 3, version: before + 3 });
+    expect(drift()).toHaveLength(1);
+    expect(denied).toEqual([]);
   });
 
   it("turns a team read-only whose subscription ended without us hearing, after looking for a newer one", async () => {
@@ -456,6 +500,32 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     expect(await nightly()).toBe("in_sync");
     expect(logs.find(([, message]) => message === "Entitlement drift")?.[2]).toMatchObject({ fields: "subscription,status" });
     expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_2", status: "active" });
+  });
+
+  it("records a lost resubscription in place of an unpaid one, after cancelling it and voiding its open invoices (supply-checkout-8jc.44)", async () => {
+    subs.set(SUB, subscription(3, { status: "unpaid", created: OLD - 86400 }));
+    patchTeam({ status: "unpaid" });
+    openInvoices.set("in_test_overdue", SUB);
+    // A paused one (a trial that ended without a card) isn't live: the team keeps its unpaid one
+    subs.set("sub_test_2", subscription(3, { id: "sub_test_2", status: "paused", created: OLD }));
+    // Still overdue, so no seat sync
+    expect(await nightly()).toBe("subscription_ended");
+    expect(cancels).toEqual([]);
+    expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "unpaid" });
+    // Nor is a trial, or a past_due one that never took money: the old debt is written off only for a paid one
+    for (const status of ["trialing", "past_due"]) {
+      subs.set("sub_test_2", subscription(3, { id: "sub_test_2", status, created: OLD }));
+      expect(await nightly()).toBe("subscription_ended");
+      expect(cancels).toEqual([]);
+      expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "unpaid" });
+    }
+    subs.set("sub_test_2", subscription(3, { id: "sub_test_2", created: OLD }));
+    expect(await worker(seats("reconcile", "reconcile-2026-09-29-cus_test_1"))).toBe("in_sync");
+    expect(cancels).toEqual([SUB]);
+    expect(voids).toEqual(["in_test_overdue"]);
+    expect(logs).toContainEqual(["info", "Replaced unpaid subscription cleared", { teamId: TEAM, messageId: "reconcile-2026-09-29-cus_test_1", subscriptionId: SUB, status: "unpaid", canceled: true, voided: 1, refused: 0, by: "sub_test_2" }]);
+    expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_2", status: "active" });
+    expect(denied).toEqual([]);
   });
 
   it("ignores another customer's subscription in the listing, and changes nothing for an ended team with no newer one", async () => {
@@ -531,7 +601,7 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     // The billing worker applies the same change between the check's read and its write
     onRetrieve = () => {
       onRetrieve = undefined;
-      patchTeam({ status: "past_due", pastDueSince: "2026-09-27T00:00:00.000Z" });
+      applyEvent({ status: "past_due", pastDueSince: "2026-09-27T00:00:00.000Z" });
     };
     await expect(nightly()).rejects.toThrow("The team's subscription changed meanwhile");
     expect(counts).toEqual([]);
@@ -618,16 +688,44 @@ describe("seat sync messages", () => {
     const applied: QueueMessage[] = [];
     const deliveries: string[] = [];
     const handler = createWorkerHandler(async (m, delivery) => void (applied.push(m), deliveries.push(delivery)), obs(), SEATS_ARN);
-    const record = (id: string, source: string, body: unknown) => ({ messageId: id, eventSourceARN: source, body: JSON.stringify(body), attributes: { MessageGroupId: `g-${id}` } }) as unknown as SQSEvent["Records"][number];
+    // Each in its own group, so one refused doesn't hold back the next; a seat sync's deduplication ID is its own
+    const record = (id: string, source: string, body: unknown, customer = `g-${id}`) =>
+      ({ messageId: id, eventSourceARN: source, body: JSON.stringify(body), attributes: { MessageGroupId: customer, MessageDeduplicationId: (body as { id?: string }).id } }) as unknown as SQSEvent["Records"][number];
     const event = { eventId: "evt_1", type: "invoice.paid", created: 1, customer: CUSTOMER };
     const result = await handler({
-      Records: [record("m1", SEATS_ARN, seats()), record("m2", EVENTS_ARN, event), record("m3", EVENTS_ARN, seats()), record("m4", SEATS_ARN, event)],
+      Records: [record("m1", SEATS_ARN, seats(), CUSTOMER), record("m2", EVENTS_ARN, event), record("m3", EVENTS_ARN, seats()), record("m4", SEATS_ARN, event)],
     });
     expect(applied).toEqual([seats(), event]);
     // Each with the SQS message ID that delivered it (for the seat update's idempotency key)
     expect(deliveries).toEqual(["m1", "m2"]);
     // A seat sync passed off as an event, and the reverse, are refused
     expect(result.batchItemFailures).toEqual([{ itemIdentifier: "m3" }, { itemIdentifier: "m4" }]);
+  });
+
+  it("refuses a seat sync that doesn't match its delivery, so no sender can drop another customer's sync (supply-checkout-8jc.26)", async () => {
+    const SEATS_ARN = "arn:aws:sqs:test-local-1:account:supply-checkout-prod-seat-syncs.fifo";
+    const applied: string[] = [];
+    const handler = createWorkerHandler(async (m) => void applied.push("kind" in m ? m.id : m.eventId), obs(), SEATS_ARN);
+    const OTHER = "cus_test_2";
+    const RECONCILE = reconcileSeatSyncId("2026-09-28", CUSTOMER);
+    const record = (id: string, body: SeatSyncMessage, group: string = body.customer, dedupe: string = body.id) =>
+      ({ messageId: id, eventSourceARN: SEATS_ARN, body: JSON.stringify(body), attributes: { MessageGroupId: group, MessageDeduplicationId: dedupe } }) as unknown as SQSEvent["Records"][number];
+    const one = async (r: SQSEvent["Records"][number]) => (await handler({ Records: [r] })).batchItemFailures.length === 0;
+    expect(RECONCILE).toBe(`reconcile-2026-09-28-${CUSTOMER}`);
+    // Taken: a membership sync, and the nightly reconciliation's, each in its own customer's group under its own ID
+    expect(await one(record("ok1", seats("membership", "seats-1")))).toBe(true);
+    expect(await one(record("ok2", seats("reconcile", RECONCILE)))).toBe(true);
+    // Refused: another customer's group, no group, a deduplication ID that isn't its own (or none)
+    expect(await one(record("bad1", seats("membership", "seats-2"), OTHER))).toBe(false);
+    expect(await one({ ...record("bad2", seats("membership", "seats-3")), attributes: {} } as unknown as SQSEvent["Records"][number])).toBe(false);
+    expect(await one(record("bad3", seats("membership", "seats-4"), CUSTOMER, RECONCILE))).toBe(false);
+    // Refused: the reconciliation's ID for another customer, or with another reason, and reason reconcile without its ID
+    expect(await one(record("bad4", seats("reconcile", reconcileSeatSyncId("2026-09-28", OTHER))))).toBe(false);
+    expect(await one(record("bad5", seats("comp", RECONCILE)))).toBe(false);
+    expect(await one(record("bad6", seats("reconcile", "seats-5")))).toBe(false);
+    expect(await one(record("bad7", seats("reconcile", "reconcile-yesterday-" + CUSTOMER)))).toBe(false);
+    expect(applied).toEqual(["seats-1", RECONCILE]);
+    expect(logs.filter((l) => l[1] === "Billing event failed").map((l) => l[2])).toEqual(["bad1", "bad2", "bad3", "bad4", "bad5", "bad6", "bad7"].map((messageId) => ({ messageId, code: "SeatSyncMismatch" })));
   });
 
   it("queues on the billing queue in the customer's group, deduplicated by its own ID", async () => {

@@ -20,10 +20,10 @@ export const TEAM_KEY = "supplyCheckout.team";
 // web builds'), and is forgotten the same way.
 export const DRAFT_KEY = "supplyCheckout.receiptDraft";
 export const draftKey = (teamId) => `${DRAFT_KEY}.${teamId}`;
-// The first-run checklist's state for a team this device's owner created (src/first-run.js):
-// {} while it's showing, invited once they've invited someone, done once it's finished or
-// dismissed. Not forgotten on sign-out, so a dismissed checklist stays dismissed; it holds no
-// team data.
+// Where earlier versions kept the first-run checklist's state for a team this device's owner
+// created ({} while it showed, receipt once a scanned receipt was saved, done once finished or
+// dismissed). The server keeps it now (supply-checkout-fs56): account.js moves one still
+// showing there, and forgets the key.
 export const FIRST_RUN_KEY = "supplyCheckout.firstRun";
 export const firstRunKey = (teamId) => `${FIRST_RUN_KEY}.${teamId}`;
 // Whose the team choice and drafts on this device are: the user ID from /me. A session can
@@ -63,14 +63,17 @@ const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-"
 const random = (n) => b64url(crypto.getRandomValues(new Uint8Array(n)));
 // Why a call is refused once the session has ended here
 const ENDED = { code: "unauthenticated", message: "Signed out" };
+// Why a refresh is dropped once the API has refused the session for a password reset
+const RESETTING = { code: "unauthenticated", message: "Password reset" };
 const claimsOf = (jwt) => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))));
 
-export function createSession(config, { onSignedOut, onRefreshed, onUserChanged }) {
+export function createSession(config, { onSignedOut, onRefreshed, onUserChanged, onPasswordReset }) {
   const redirectUri = location.origin + "/";
   // ended: this tab is done with the session for good (the account was deleted, or another
   // tab changed who's signed in), so a refresh still on its way isn't taken up
   // user: the ID token's sub from sign-in, which every refresh must match
-  let tokens = null, refreshing = null, timer, signingOut = false, ended = false, user = null;
+  // resetting: the API refused this session as older than the account's password reset
+  let tokens = null, refreshing = null, timer, signingOut = false, ended = false, user = null, resetting = false;
   const post = (path, body) => request(config.apiUrl + path, { ...json("POST", body), credentials: "include" });
   const logoutUrl = () => `${config.authUrl}/logout?${new URLSearchParams({ client_id: config.clientId, logout_uri: redirectUri })}`;
 
@@ -121,18 +124,36 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged 
   // the other user's.
   function refresh() {
     if (ended) return Promise.reject(ENDED);
+    // Refused for a password reset: refreshed tokens would keep the old sign-in time, so none is sent
+    if (resetting) return Promise.reject(RESETTING);
     if (signingOut) return Promise.reject({ code: "unavailable", message: "Signing out" });
     refreshing ||= post("/auth/refresh")
       .then((t) => {
         if (ended) throw ENDED;
+        // The reset screen stays: a refresh on its way when the API refused the session for a
+        // password reset neither takes up new tokens (they'd keep the old sign-in time) nor
+        // shows the sign-in screen over it
+        if (resetting) throw RESETTING;
         // Someone else signed in in another tab (the refresh cookie is shared), and this tab
         // didn't hear of it: never take up their tokens here
         if (claimsOf(t.idToken).sub !== user) { end(); onUserChanged(); throw ENDED; }
         accept(t);
         onRefreshed();
-      }, (e) => { if (e.code === "unauthenticated") { tokens = null; onSignedOut(); } throw e; })
+      }, (e) => { if (e.code === "unauthenticated" && !resetting) { tokens = null; onSignedOut(); } throw e; })
       .finally(() => { refreshing = null; });
     return refreshing;
+  }
+
+  // The API refused this session: it began before the account was last signed out everywhere
+  // (a password reset or change, or two-step sign-in turned on; supply-checkout-6uw.33), and every call with its tokens will be refused the same way, so
+  // no refresh is tried (refreshed tokens keep the session's sign-in time). Said once; this
+  // call and every later one (each refused the same way) never settle, so nothing behind
+  // them shows an error or a sign-in screen over the one onPasswordReset shows, whose
+  // sign-out leaves the page.
+  function passwordWasReset() {
+    clearTimeout(timer);
+    if (!resetting) { resetting = true; onPasswordReset(); }
+    return new Promise(() => {});
   }
 
   return {
@@ -195,12 +216,16 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged 
       const send = () => {
         const init = body ? json(method, body, headers) : { method, headers: { ...headers } };
         init.headers.authorization = "Bearer " + tokens.accessToken;
-        return request(config.apiUrl + path, init, options);
+        return request(config.apiUrl + path, init, options).catch((e) => {
+          if (e.reason === "password_reset") return passwordWasReset();
+          throw e;
+        });
       };
       try { return await send(); }
       catch (e) {
         if (e.code !== "unauthenticated") throw e;
-        await refresh();
+        // A refresh dropped for a password reset leaves this call unanswered, as the reset's own are
+        await refresh().catch((r) => (resetting ? passwordWasReset() : Promise.reject(r)));
         return send();
       }
     },

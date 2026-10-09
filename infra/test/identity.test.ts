@@ -384,7 +384,8 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
       Condition: {
         "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
         "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "verifiedEmailHash", "verifiedAt"] },
-        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        // Required, not IfExists: a GetItem without a projection is denied (supply-checkout-3sv.23)
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     };
     const tableKey = {
@@ -405,7 +406,8 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
         Condition: {
           "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
           "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeAddressAt"] },
-          StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          // Required, not IfExists: a GetItem without a projection is denied (supply-checkout-3sv.23)
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
         },
       },
       {
@@ -430,7 +432,31 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
       Resource: { "Fn::Join": ["", [`arn:aws:lambda:${EAST}:`, { Ref: "AWS::AccountId" }, ":function:supply-checkout-staging-welcome-email"]] },
     };
     sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified, provenEmail, ...noticeAddress, welcome]);
-    sameStatements(statementsOf(template, roleOf(template, "PostConfirmation")), [logs("PostConfirmation"), xray, ...noticeAddress, welcome]);
+    // A confirmed password reset (supply-checkout-6uw.32): sign-out on this pool only, and an invoke of the security notices function only
+    const resetSignOut = { Sid: "SignOutAfterReset", Effect: "Allow", Action: "cognito-idp:AdminUserGlobalSignOut", Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
+    const resetNotice = {
+      Sid: "QueueResetNotice",
+      Effect: "Allow",
+      Action: "lambda:InvokeFunction",
+      Resource: { "Fn::Join": ["", [`arn:aws:lambda:${EAST}:`, { Ref: "AWS::AccountId" }, ":function:supply-checkout-staging-security-notices"]] },
+    };
+    // And recording the reset's time (supply-checkout-6uw.33): an update naming only the record's attributes, returning nothing, no read
+    const resetRecord = {
+      Sid: "RecordPasswordReset",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Resource: table,
+      Condition: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+        "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "passwordResetAt"] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    };
+    sameStatements(statementsOf(template, roleOf(template, "PostConfirmation")), [logs("PostConfirmation"), xray, ...noticeAddress, welcome, resetSignOut, resetRecord, resetNotice]);
+    // No other trigger may write it
+    for (const id of ["SignInGuard", "EmailVerified", "AccountLink"]) expect(JSON.stringify(statementsOf(template, roleOf(template, id))), id).not.toContain("passwordResetAt");
+    // No other role may sign anyone out or invoke the security notices function
+    for (const id of ["SignInGuard", "EmailVerified", "AccountLink"]) expect(JSON.stringify(statementsOf(template, roleOf(template, id))), id).not.toMatch(/GlobalSignOut|security-notices/);
     const link = { Sid: "LinkToExistingAccount", Effect: "Allow", Action: ["cognito-idp:AdminLinkProviderForUser", "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:ListUsers"], Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
     sameStatements(statementsOf(template, roleOf(template, "AccountLink")), [logs("AccountLink"), xray, link]);
     for (const role of Object.values(template.findResources("AWS::IAM::Role"))) expect(role.Properties.ManagedPolicyArns).toBeUndefined();
@@ -459,6 +485,9 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     expect(env("SignInGuard").TABLE_NAME).toBeUndefined();
     expect(env("AccountLink").TABLE_NAME).toBeUndefined();
     expect(env("PostConfirmation").TABLE_NAME).toBe("supply-checkout-staging-app");
+    // The security notices function, by its fixed name, for a confirmed password reset (supply-checkout-6uw.32)
+    expect(env("PostConfirmation").SECURITY_NOTICES_FUNCTION).toBe("supply-checkout-staging-security-notices");
+    expect(env("EmailVerified").SECURITY_NOTICES_FUNCTION).toBeUndefined();
     // A fixed name, for the Sign-up trigger failing alarm
     expect(template.toJSON().Resources[fnId(template, "PostConfirmation")].Properties.FunctionName).toBe("supply-checkout-staging-post-confirmation");
     // And for the pre token generation trigger, for the Sign-in trigger failing alarm (supply-checkout-3sv.16)
@@ -475,7 +504,7 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
   it("get their grant after the pool exists, so the pool can name the functions (no dependency cycle)", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0] as string;
-    const grantIds = ["EmailVerifiedUpdateUser", "EmailVerifiedProvenEmail", "EmailVerifiedNoticeAddress", "AccountLinkUsers", "PostConfirmationNoticeAddress"].map(
+    const grantIds = ["EmailVerifiedUpdateUser", "EmailVerifiedProvenEmail", "EmailVerifiedNoticeAddress", "AccountLinkUsers", "PostConfirmationNoticeAddress", "PostConfirmationResetSignOut"].map(
       (name) => Object.keys(template.findResources("AWS::IAM::Policy", { Properties: { PolicyName: Match.stringLikeRegexp(name) } }))[0],
     );
     for (const grantId of grantIds) expect(grantId).toBeDefined();

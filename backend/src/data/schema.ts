@@ -212,6 +212,40 @@ export const RECEIPT_TRIAL_CAP_ATTRIBUTES = [PK, SK, "count", "expiresAt"] as co
 export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;
 
 /**
+ * The partition prefix of the password reset limits (supply-checkout-6uw.26,
+ * data/password-resets.ts), one item per window (sort key `HOUR#…` or
+ * `DAY#…`) with a TTL:
+ *
+ * - `RESETLIMIT#ADDRESS#<hash>` and `RESETLIMIT#IP#<hash>`: reset requests for
+ *   one address (its inviteLimitKey) and from one IP address. The API's
+ *   password reset function counts them, and its role reaches only these.
+ * - `RESETLIMIT#HINT#<hash>` and `RESETLIMIT#HINT`: provider hints ("sign in
+ *   with Google") to one address, and to everyone together. The email stack's password reset
+ *   function counts them, and its role reaches only these.
+ *
+ * Both roles may use only UpdateItem, only PASSWORD_RESET_LIMIT_ATTRIBUTES and
+ * nothing returned. No address or IP address is stored, only their hashes.
+ */
+export const PASSWORD_RESET_LIMIT_PREFIX = "RESETLIMIT#";
+
+/** The request limits' partitions (the API's password reset function) and the provider hints' (the email stack's), as IAM LeadingKeys patterns. */
+export const PASSWORD_RESET_REQUEST_PARTITIONS = [`${PASSWORD_RESET_LIMIT_PREFIX}ADDRESS#*`, `${PASSWORD_RESET_LIMIT_PREFIX}IP#*`] as const;
+export const PASSWORD_RESET_HINT_PARTITIONS = [`${PASSWORD_RESET_LIMIT_PREFIX}HINT*`] as const;
+
+/**
+ * Provider hints ("sign in with Google", supply-checkout-6uw.26) the app may
+ * send a UTC day, to every address together: the one number to change to send
+ * fewer (0 sends none; the screen's guidance still mentions Google). A circuit
+ * breaker on the app's mail; the "Password reset hints capped" alarm says
+ * when it's reached. Each goes only to an address a Google or Apple account in
+ * the pool has, verified by its provider.
+ */
+export const PASSWORD_RESET_HINTS_PER_DAY = 500;
+
+/** The only attributes the password reset function may name: the keys, the window's count and its expiry (TTL). */
+export const PASSWORD_RESET_LIMIT_ATTRIBUTES = [PK, SK, "count", "expiresAt"] as const;
+
+/**
  * The operators' index (ADR 0015), sparse, with an INCLUDE projection of only
  * OPS_INDEX_ATTRIBUTES. It serves the ops function, whose role may query it
  * but has no read access to any TEAM# partition, so an operator can list teams
@@ -536,6 +570,25 @@ export const TOTP_ON_SK = "TOTP_ON";
 
 /**
  * The sort key of the item in a user's own `USER#<sub>` partition that holds
+ * when their password was last reset (supply-checkout-6uw.33,
+ * password-reset-time.ts): every API route the app's tokens reach refuses a
+ * session that began before it. Not a `LIMIT#` key, so deleting an account
+ * removes it.
+ */
+export const PASSWORD_RESET_SK = "PASSWORD_RESET";
+
+/**
+ * The only attributes the password reset record's readers and its writer may
+ * name in a `USER#` partition (dynamodb:Attributes): the keys and
+ * `passwordResetAt`, which no other item has. The post confirmation trigger
+ * may update only these (no read), and the data, account, billing and
+ * receipts functions' own roles may only read them, so neither can read or
+ * change a user's teams, proofs or notices, or set a TTL.
+ */
+export const PASSWORD_RESET_RECORD_ATTRIBUTES = [PK, SK, "passwordResetAt"] as const;
+
+/**
+ * The sort key of the item in a user's own `USER#<sub>` partition that holds
  * their app preferences (supply-checkout-005.17, preferences.ts): whether the
  * What's New banner is on, and the local date it was last shown. Not a
  * `LIMIT#` key, so deleting an account removes it.
@@ -579,7 +632,9 @@ export const STRIPE_LINK_READ_ATTRIBUTES = [PK, SK, "teamId"] as const;
  * reopen's pending resync and what decides it, billing/reopening.ts), and
  * what the access rules read (billingAccess: the trial's end and the team's
  * creation, and when it went past due or ended), and the test mark (`test`,
- * supply-checkout-o60.12), which only tags its metrics.
+ * supply-checkout-o60.12), which only tags its metrics, and the META item's
+ * `version`, which the nightly entitlement check conditions its fix on
+ * (supply-checkout-8jc.27).
  * Never documents, projects or anything else.
  */
 export const BILLING_READ_ATTRIBUTES = [
@@ -609,6 +664,7 @@ export const BILLING_READ_ATTRIBUTES = [
   "email",
   "userId",
   "test",
+  "version",
 ] as const;
 
 /**

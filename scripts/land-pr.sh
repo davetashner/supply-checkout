@@ -16,9 +16,11 @@
 #
 #   4. removes the local worktree and branch, and pulls main
 #   5. closes every bead named in a "Closes <bead-id>" line of the PR body
-#   6. releases the land lock, and if .beads/issues.jsonl is stale (and this
-#      isn't the export's own PR), runs npm run beads:pr, which opens the export
-#      PR and lands it with a land of its own
+#   6. releases the land lock, and if .beads/issues.jsonl is stale, this isn't
+#      the export's own PR, and the export committed on origin/main is a day
+#      old or more (node scripts/export-beads.mjs --due), runs npm run
+#      beads:pr, which opens the export PR and lands it with a land of its own.
+#      So there's at most one export PR a day.
 #   7. rebuilds the backlog page (the main checkout's dist/backlog/index.html,
 #      which people open locally)
 #   LAND_SKIP_BACKLOG=1 skips steps 6 and 7.
@@ -35,7 +37,7 @@
 # someone else already merged still gets steps 4 to 7. Steps 6 and 7 never
 # change the exit code: the PR is merged by then, and a failed export PR is
 # reported, left open to land, and flagged again by the Stop hook
-# (scripts/backlog-stop-hook.mjs) while the export stays stale.
+# (scripts/backlog-stop-hook.mjs) while the export stays stale and due.
 #
 # Usage: npm run land -- <pr-number>     (or scripts/land-pr.sh <pr-number>)
 set -euo pipefail
@@ -485,6 +487,9 @@ elif [ "$export_rc" -ne 0 ]; then
   if [[ "$branch" == chore/beads-export-* ]]; then
     # Beads changed while the export's own PR landed: no loop, just say so
     echo "The beads export is stale again; refresh it with: npm run beads:pr"
+  elif ! node scripts/export-beads.mjs --due >/dev/null 2>&1; then
+    # At most one export PR a day: the committed export is recent enough
+    echo "The beads export is stale, but the committed one is less than a day old: left for a later land (or run npm run beads:pr)"
   else
     say "The beads export is stale: refreshing it with npm run beads:pr"
     # Not a failure of this land: #$pr is merged either way, and the Stop hook

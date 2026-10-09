@@ -1,7 +1,8 @@
 // Per-team database handles for the data API: the second layer of team
 // isolation (ADR 0005).
 //
-// The data Lambda's own role can't touch the table. For each team it assumes
+// The data Lambda's own role can't touch the table, but for reading when a
+// user's password was last reset (session-reset.ts). For each team it assumes
 // the data-access role with a session tag `teamId=<team>`, and that role's
 // policy allows DynamoDB only on items whose partition key is `TEAM#<tag>` (or
 // the team's date index partition, `TEAM#<tag>#PROJECTS`, or `TEAM#<tag>#SHEETS`

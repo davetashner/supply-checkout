@@ -233,6 +233,7 @@ stateDiagram-v2
   closed --> [*] : Delete project
 ```
 
+- `closedAt` is stamped by the server, from its own clock, when a write closes the project; a time the app sends is ignored, since the list the app loads at start keeps a finished project by it (supply-checkout-1dg.16).
 - A reopened project is simply `open` again; `closedAt` keeps the time it was last closed.
 - Closing or reopening doesn't change stock. Only checkouts and returns do.
 - A closed project hides the scan bar, so nothing new is checked out or returned on it. Owners and contributors can still correct a line's counts and price, edit the project's details, or delete it. The checkout and return commands (section 4) enforce this on the server: they refuse a closed project with 409, so a late return means reopening the project (or correcting the line, which doesn't move stock).

@@ -11,7 +11,9 @@
 // Team isolation, in order, on every request:
 // 1. API Gateway's JWT authorizer checks the Cognito access token.
 // 2. This handler re-checks the claims it gets (an access token, not expired)
-//    and takes the user ID only from `sub`.
+//    and takes the user ID only from `sub`. A session that began before the
+//    user's password was last reset is refused (session-reset.ts,
+//    supply-checkout-6uw.33).
 // 3. The team comes only from the path. authorizeTeam reads the caller's
 //    MEMBER item for it and issues the TeamContext every data function needs;
 //    no membership, no context. The body can't name a team.
@@ -61,6 +63,9 @@ import {
   StockChangedError,
   setDocument,
   setTeamSettings,
+  setChecklist,
+  checklistChange,
+  CHECKLIST_FIELDS,
   type StoredDocument,
   SubscriptionEndedError,
   TeamClosedError,
@@ -73,6 +78,7 @@ import { BusinessMetric, type Observability, testMark } from "../observability/i
 import { ApiError, errorFor as apiErrorFor, errorResponse, json, jsonBody, noContent, notMember, viewOnly } from "./http.js";
 import { requireRole } from "./roles.js";
 import { DATA_ROUTES, type DataRoute, routeKey } from "./routes.js";
+import { alongside, type SessionCheck } from "./session-reset.js";
 import type { DbForTeam } from "./team-db.js";
 
 export type DataEvent = APIGatewayProxyEventV2WithJWTAuthorizer;
@@ -80,6 +86,8 @@ export type DataEvent = APIGatewayProxyEventV2WithJWTAuthorizer;
 export interface DataHandlerDeps {
   readonly dbForTeam: DbForTeam;
   readonly obs: Observability;
+  /** Refuses a session from before the caller's last password reset (session-reset.ts). The Lambda entry always sets it. */
+  readonly sessionCheck?: SessionCheck;
   readonly now?: () => number;
 }
 
@@ -290,6 +298,14 @@ async function settings(deps: DataHandlerDeps, route: DataRoute, event: DataEven
   deps.obs.count(BusinessMetric.Writes, 1, teamMetadata(ctx));
   return json(200, view);
 }
+/**
+ * The first-run checklist's progress (data/checklist.ts): owners only (the
+ * route's minRole, and setChecklist checks again), each field only ever true.
+ */
+async function checklist(deps: DataHandlerDeps, event: DataEvent, ctx: TeamContext): Promise<APIGatewayProxyStructuredResultV2> {
+  const change = checklistChange(jsonBody(event, CHECKLIST_FIELDS));
+  return json(200, { checklist: await setChecklist(deps.dbForTeam(ctx.teamId), ctx, change, new Date((deps.now ?? Date.now)())) });
+}
 const IMPORT_FIELDS = ["importId", "csv", "dryRun"];
 
 /**
@@ -331,6 +347,7 @@ async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ct
   if (route.operation === "importProducts") return runImport(deps, event, ctx);
   if (route.operation === "supportActions") return supportActions(deps, event, ctx);
   if (route.operation === "getSettings" || route.operation === "setSettings") return settings(deps, route, event, ctx);
+  if (route.operation === "setChecklist") return checklist(deps, event, ctx);
   if (COMMANDS.has(route.operation)) return runCommand(deps, route, event, ctx);
   const db = deps.dbForTeam(ctx.teamId);
   const collection = route.collection as Collection;
@@ -406,7 +423,8 @@ export function createDataHandler(deps: DataHandlerDeps) {
       const userId = callerId(event, now());
       if (typeof teamId !== "string") throw new ApiError(400, "bad_request", "Missing team ID");
       try {
-        ctx = await authorizeTeam(deps.dbForTeam(teamId), userId, teamId, new Date(now()));
+        // The session check alongside the membership check, its refusal first (session-reset.ts)
+        ctx = await alongside(deps.sessionCheck?.(event, userId), () => authorizeTeam(deps.dbForTeam(teamId), userId, teamId, new Date(now())));
       } catch (error) {
         // Not a member, or no such team: the same answer for both, so the
         // response doesn't reveal which teams exist

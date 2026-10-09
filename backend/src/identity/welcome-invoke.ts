@@ -37,6 +37,18 @@ const REGION = /^[a-z0-9-]+$/;
 const FUNCTION_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function welcomeInvoker(options: WelcomeInvokerOptions): SendWelcome {
+  const invoke = eventInvoker(options);
+  return (request) => invoke({ userId: request.userId, via: request.via });
+}
+
+/**
+ * Queues one asynchronous invoke (InvocationType Event) of a function in
+ * `region`, with `payload` as its event: what welcomeInvoker does, for any
+ * payload. The API's password reset route hands its requests over this way
+ * (api/password-reset-handler.ts, supply-checkout-6uw.26). Throws (naming only
+ * the status and error type) unless Lambda accepted it.
+ */
+export function eventInvoker(options: WelcomeInvokerOptions): (payload: unknown) => Promise<void> {
   if (!REGION.test(options.region)) throw new Error("Not an AWS region name");
   if (!FUNCTION_NAME.test(options.functionName)) throw new Error("Not a Lambda function name");
   const host = `lambda.${options.region}.amazonaws.com`;
@@ -44,8 +56,8 @@ export function welcomeInvoker(options: WelcomeInvokerOptions): SendWelcome {
   const signer = new SignatureV4({ service: "lambda", region: options.region, credentials: options.credentials ?? defaultProvider(), sha256: Sha256 });
   const doFetch = options.fetch ?? fetch;
 
-  return async (request) => {
-    const body = JSON.stringify({ userId: request.userId, via: request.via });
+  return async (payload) => {
+    const body = JSON.stringify(payload);
     const signed = await signer.sign({
       method: "POST",
       protocol: "https:",

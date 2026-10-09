@@ -4,12 +4,13 @@
 import { test, expect } from "./helpers.js";
 import { modal, goToInventory, goToProjects, createProject, enterBarcode, addToProject, startReturn, saveReturn, finishReturn, lineRow, startAddItem, inventoryRow, continueReview, addItem } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
-import { FakeBackend, TEAM, USER, openAws, connected, sockets, emit, receive, dropSocket, setVisible } from "./fake-aws.js";
+import { FakeBackend, TEAM, USER, openAws, connected, sockets, emit, receive, dropSocket, setVisible, trackAnswers, unanswered } from "./fake-aws.js";
 
 
 const seeded = () => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`t1/${k}`, v]));
-// How many times each collection has been listed (first pages only)
-const lists = (backend) => Object.fromEntries(["products", "projects"].map((c) => [c, backend.requests("GET", `/teams/t1/${c}`).filter((r) => !r.query.cursor).length]));
+// How many times each collection has been listed (first pages only, and not the one-project
+// probe for anything older that a re-list with nothing recent makes after it: limit=1)
+const lists = (backend) => Object.fromEntries(["products", "projects"].map((c) => [c, backend.requests("GET", `/teams/t1/${c}`).filter((r) => !r.query.cursor && !r.query.limit).length]));
 const card = (page, name) => page.getByRole("button", { name: new RegExp(name) });
 // The day the page lists projects from at start (recentSince in src/aws/db.js)
 const SINCE = (() => { const now = new Date(); return `${new Date(now.getFullYear(), now.getMonth() - 6, 1).getFullYear()}-01-01`; })();
@@ -806,6 +807,81 @@ test.describe("live updates", { tag: ["@J4"] }, () => {
     await expect(card(page, "Echo Studio")).toBeVisible();
   });
 
+  // A late event for a save from before the delete would only fetch a 404 (which the browser
+  // logs), so it isn't fetched; the document made again under the same ID still is
+  test("late events for a document deleted here or by someone else aren't fetched", async ({ page }) => {
+    await trackAnswers(page);
+    const backend = await open(page);
+    const gets = () => backend.requests("GET", "/teams/t1/projects/s1").length;
+    const before = Date.now();
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Delete project" }).click();
+    await page.getByRole("button", { name: "Tap again to delete" }).click();
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
+    await expect.poll(() => unanswered(page)).toBe(0);
+    // Deleted here, its own event not in yet: an event for the version deleted, or an older one
+    await emit(page, { v: 1, eventId: "l1", collection: "projects", id: "s1", op: "put", version: 1, at: before });
+    await emit(page, { v: 1, eventId: "l0", collection: "projects", id: "s1", op: "put", version: 0 });
+    // The delete's own event, then a retried event from before it (the stream's clock)
+    const at = Date.now() + 2000;
+    await emit(page, { v: 1, eventId: "l2", collection: "projects", id: "s1", op: "delete", version: 1, at });
+    await emit(page, { v: 1, eventId: "l1-retry", collection: "projects", id: "s1", op: "put", version: 1, at: at - 1000 });
+    // Another document's event is still fetched, so the ones above have been handled by now
+    await emit(page, { v: 1, eventId: "o1", collection: "projects", id: "s9", op: "put", version: 1 });
+    await expect.poll(() => backend.requests("GET", "/teams/t1/projects/s9").length).toBe(1);
+    expect(gets()).toBe(0);
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
+
+    // Made again by someone else, after the delete: fetched and shown
+    const v = backend.write("t1", "projects", "s1", { ...usedState.seed["projects/s1"], client: "Echo Again" });
+    await emit(page, { v: 1, eventId: "l3", collection: "projects", id: "s1", op: "put", version: v, at: at + 1000 });
+    await expect(card(page, "Echo Again")).toBeVisible();
+    expect(gets()).toBe(1);
+
+    // Deleted by someone else with no time on the event: a later event is fetched as before
+    backend.docs.delete("t1/projects/s1");
+    await emit(page, { v: 1, eventId: "l4", collection: "projects", id: "s1", op: "delete", version: v });
+    await expect(card(page, "Echo Again")).toHaveCount(0);
+    backend.write("t1", "projects", "s1", { ...usedState.seed["projects/s1"], client: "Echo Third" });
+    await emit(page, { v: 1, eventId: "l5", collection: "projects", id: "s1", op: "put", version: 1 });
+    await expect(card(page, "Echo Third")).toBeVisible();
+  });
+
+  test("a delete here whose own event arrives before its answer goes by the event", async ({ page }) => {
+    await trackAnswers(page);
+    const backend = await open(page);
+    const answer = backend.delay("DELETE", "/teams/t1/projects/s1");
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Delete project" }).click();
+    await page.getByRole("button", { name: "Tap again to delete" }).click();
+    await expect.poll(() => backend.requests("DELETE", "/teams/t1/projects/s1").length).toBe(1);
+    const at = Date.now();
+    await emit(page, { v: 1, eventId: "d1", collection: "projects", id: "s1", op: "delete", version: 1, at });
+    answer();
+    await expect.poll(() => unanswered(page)).toBe(0);
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
+    // Made again by someone else after the delete, at version 1: fetched and shown
+    backend.write("t1", "projects", "s1", { ...usedState.seed["projects/s1"], client: "Echo Again" });
+    await emit(page, { v: 1, eventId: "d2", collection: "projects", id: "s1", op: "put", version: 1, at: at + 1000 });
+    await expect(card(page, "Echo Again")).toBeVisible();
+  });
+
+  test("a re-list forgets a delete here whose own event never came", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Delete project" }).click();
+    await page.getByRole("button", { name: "Tap again to delete" }).click();
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
+    await setVisible(page, true);
+    await expect.poll(() => lists(backend).projects).toBe(3);
+    // Until the re-list has been read, the delete is still remembered
+    await page.waitForTimeout(200);
+    // Made again by someone else: its version 1 is fetched
+    backend.write("t1", "projects", "s1", { ...usedState.seed["projects/s1"], client: "Echo Again" });
+    await emit(page, { v: 1, eventId: "m1", collection: "projects", id: "s1", op: "put", version: 1 });
+    await expect(card(page, "Echo Again")).toBeVisible();
+  });
+
   test("events for one document are fetched one at a time, and never go backwards", async ({ page }) => {
     const backend = await open(page);
     const release = backend.hold("GET", "/teams/t1/projects/s1");
@@ -969,6 +1045,84 @@ test.describe("live updates", { tag: ["@J4"] }, () => {
     await expect.poll(() => lists(backend).projects).toBe(before.projects + 3);
     await setVisible(page, false);
     expect(lists(backend).projects).toBe(before.projects + 3);
+  });
+
+  test("a re-list asked for while one fails is tried again, waiting longer after each failure", async ({ page }) => {
+    await page.clock.install();
+    await trackAnswers(page);
+    const backend = await open(page);
+    // Every answer read, then time moves only when the test moves it
+    const answered = () => expect.poll(() => unanswered(page)).toBe(0);
+    await answered();
+    await page.clock.pauseAt(new Date(Date.now() + 60e3));
+    const products = () => lists(backend).products, before = products();
+    const failure = { status: 500, body: { error: { code: "internal", message: "boom" } } };
+    let release;
+    backend.on("GET", "/teams/t1/products", { wait: new Promise((r) => { release = r; }), ...failure });
+    // Shown again while the re-list that starts is still being read: one more is due
+    await setVisible(page, true);
+    await expect.poll(products).toBe(before + 1);
+    await setVisible(page, true);
+    // The re-list fails, and so does the first retry, 2 seconds later
+    backend.on("GET", "/teams/t1/products", failure);
+    release();
+    await answered();
+    await page.clock.runFor(1999);
+    expect(products()).toBe(before + 1);
+    await page.clock.runFor(1);
+    await expect.poll(products).toBe(before + 2);
+    await answered();
+    // The next retry waits 4 seconds, and gets through
+    await page.clock.runFor(3999);
+    expect(products()).toBe(before + 2);
+    await page.clock.runFor(1);
+    await expect.poll(products).toBe(before + 3);
+    await answered();
+    // A re-list that fails with none asked for meanwhile isn't retried: the next one asked for
+    // lists again
+    backend.on("GET", "/teams/t1/products", failure);
+    await setVisible(page, true);
+    await expect.poll(products).toBe(before + 4);
+    await answered();
+    await page.clock.runFor(30e3);
+    expect(products()).toBe(before + 4);
+    // A re-list asked for runs at once, in place of a retry waiting
+    backend.on("GET", "/teams/t1/products", { wait: new Promise((r) => { release = r; }), ...failure });
+    await setVisible(page, true);
+    await expect.poll(products).toBe(before + 5);
+    await setVisible(page, true);
+    release();
+    await answered();
+    await page.clock.runFor(1000);
+    await setVisible(page, true);
+    await expect.poll(products).toBe(before + 6);
+    await answered();
+    await page.clock.runFor(30e3);
+    expect(products()).toBe(before + 6);
+  });
+
+  test("a failed re-list isn't retried once the user is no longer in the team", async ({ page }) => {
+    await page.clock.install();
+    await trackAnswers(page);
+    const backend = await open(page);
+    const answered = () => expect.poll(() => unanswered(page)).toBe(0);
+    await answered();
+    await page.clock.pauseAt(new Date(Date.now() + 60e3));
+    const before = lists(backend);
+    let products, projects;
+    backend.on("GET", "/teams/t1/products", { wait: new Promise((r) => { products = r; }), status: 500, body: { error: { code: "internal", message: "boom" } } });
+    backend.on("GET", "/teams/t1/projects", { wait: new Promise((r) => { projects = r; }), status: 403, body: { error: { code: "permission_denied", message: "x" } } });
+    // Both re-lists are being read when another is asked for
+    await setVisible(page, true);
+    await expect.poll(() => lists(backend)).toEqual({ products: before.products + 1, projects: before.projects + 1 });
+    await setVisible(page, true);
+    // The projects say the user was removed; then the products fail
+    projects();
+    await expect(page.getByRole("heading", { name: `You're no longer in ${TEAM.name}` })).toBeVisible();
+    products();
+    await answered();
+    await page.clock.runFor(30e3);
+    expect(lists(backend)).toEqual({ products: before.products + 1, projects: before.projects + 1 });
   });
 
   test("reconnects with backoff, and re-lists after every subscribe", async ({ page }) => {

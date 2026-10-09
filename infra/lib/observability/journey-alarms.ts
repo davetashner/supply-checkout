@@ -10,6 +10,7 @@ import {
 import { Construct } from "constructs";
 import { billingResourceNames } from "../../../backend/src/billing/names.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
+import { PASSWORD_RESET_HINTS_PER_DAY } from "../../../backend/src/data/schema.js";
 import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import {
@@ -228,7 +229,7 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       title: "Security notices failing",
       journeys: "J0",
       severity: "P2",
-      rule: "Any SecurityNoticeFailures over 15 minutes: someone set a password or turned on two-step sign-in and the account's own verified address wasn't told (SES refused the message or took more than 3 seconds, or there's no verified address). The change stands anyway, so an account taken over this way goes unnoticed by its owner (supply-checkout-8jc.15).",
+      rule: "Any SecurityNoticeFailures over 15 minutes: someone set a password or turned on two-step sign-in and the account's own verified address wasn't told (SES refused the message or took more than 3 seconds, or there's no verified address). The change stands anyway, so an account taken over this way goes unnoticed by its owner (supply-checkout-8jc.15). Also after a password reset (kind passwordReset, via reset, supply-checkout-6uw.32): the post confirmation trigger couldn't sign the account out (reason sign_out: sessions from before the reset may still work, so sign the user out by hand), or record its time (record_reset, also from POST /me/sign-out-everywhere: the API won't refuse sessions from before it; see docs/journeys.md) or couldn't hand over the reset notice (no_user, invoke, deferred), or the notices function couldn't send it.",
       metric: business(BusinessMetric.SecurityNoticeFailures, region, FIFTEEN_MINUTES),
       threshold: 0,
     },
@@ -303,6 +304,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: `WelcomeEmailsRefused at least ${WELCOME_REFUSALS_ALARM_PER_HOUR} in an hour: SES refused a welcome email (sending paused, or a suppressed address). Counted apart from WelcomeEmailFailures; SES is out of the sandbox, so it no longer refuses unverified addresses and any refusal is worth a look (supply-checkout-6uw.25, supply-checkout-3sv.21).`,
       metric: business(BusinessMetric.WelcomeEmailsRefused, region, Duration.hours(1)),
       threshold: WELCOME_REFUSALS_ALARM_PER_HOUR - 1,
+      primaryOnly: true,
+    },
+    {
+      id: "password-reset-hints-capped",
+      title: "Password reset hints capped",
+      journeys: "J0",
+      severity: "P2",
+      rule: `Any PasswordResetHintsCapped in an hour: the "sign in with Google" (or Apple) hints for password resets asked for in the app reached their cap for the UTC day (PASSWORD_RESET_HINTS_PER_DAY, ${PASSWORD_RESET_HINTS_PER_DAY}), so no more go out until midnight UTC. They go only to Google or Apple accounts' verified addresses, so this is either real demand or someone pushing many of those addresses through the route (supply-checkout-6uw.26).`,
+      metric: business(BusinessMetric.PasswordResetHintsCapped, region, Duration.hours(1)),
+      threshold: 0,
       primaryOnly: true,
     },
     {

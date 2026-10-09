@@ -35,11 +35,49 @@
 // only and counted (WelcomeEmailFailures, reason `invoke` or `deferred`); the
 // confirmation never fails for it, and nothing tries it again: that account
 // gets no welcome unless an operator invokes the function for it.
+//
+// A confirmed password reset (supply-checkout-6uw.32): Cognito's
+// ConfirmForgotPassword doesn't revoke the account's refresh tokens, so
+// sessions from before the reset (an attacker's among them) would keep
+// working, and nobody would be told. Both ways to reset end in that call, the
+// app's (POST /auth/password-reset/confirm) and Managed Login's, and Cognito
+// runs this trigger after it (PostConfirmation_ConfirmForgotPassword), naming
+// the user in its own event. So the trigger, first of all:
+// - records the reset's time in the user's own partition (PASSWORD_RESET,
+//   data/password-reset-time.ts, supply-checkout-6uw.33): every API route the
+//   app's tokens reach then refuses a token whose session began before it
+//   (api/session-reset.ts), which covers the access tokens and the Managed
+//   Login session that the sign-out below doesn't end. The time is when the
+//   trigger started, after Cognito changed the password, and only ever moves
+//   later. Bounded (RECORD_RESET_TIMEOUT_MS), and alongside the sign-out. The role may name only the
+//   record's attributes in a USER# partition, and read nothing (identity
+//   stack). A failure is logged with the user's sub and the error's name
+//   only, and counted (SecurityNoticeFailures, kind `passwordReset`, reason
+//   `record_reset`), which alarms, and never fails the reset;
+// - signs the account out everywhere (AdminUserGlobalSignOut, on the app pool
+//   only: the role may call nothing else of Cognito's), before Cognito answers
+//   the reset, so the new password's first sign-in isn't signed out with
+//   them. It revokes refresh tokens only: access tokens (and a Managed Login
+//   session) can keep working for up to an hour. Bounded (SIGN_OUT_TIMEOUT_MS):
+//   a sign-out the timeout aborts may still complete at Cognito, which shows up
+//   as a false alarm and a notice without the sign-out sentence. A failure is
+//   logged with the user's sub and the error's name only, and counted (SecurityNoticeFailures, kind `passwordReset`,
+//   reason `sign_out`), which alarms, and never fails the reset;
+// - then hands the security notices function (security-notices-handler.ts) the
+//   user's sub, the time and whether the sign-out worked, with an
+//   asynchronous invoke, while it fits the budget (WELCOME_BUDGET_MS), as the
+//   welcome email does. That function emails the account's verified address
+//   (`passwordReset`). A failed hand-over is counted the same way (reason
+//   `invoke` or `deferred`).
+// CloudTrail isn't used for this: an unauthenticated call's record isn't
+// documented to name the user, and Managed Login's reset is recorded as its
+// own page events (forgotPassword_POST), not ConfirmForgotPassword.
 
 import type { PostConfirmationTriggerEvent } from "aws-lambda";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { isFederatedOnly } from "./email-verified-handler.js";
 import { SUB } from "./cognito-accounts.js";
+import type { PasswordResetNoticeRequest } from "./names.js";
 import type { NoticeAddressOutcome, RememberNoticeAddress } from "./notice-address.js";
 import type { SendWelcome } from "./welcome-invoke.js";
 
@@ -48,9 +86,36 @@ export interface PostConfirmationDeps {
   readonly obs: Observability;
   /** Hands a new account's welcome email to its function (welcome-invoke.ts). Without it, no welcome is sent. */
   readonly sendWelcome?: SendWelcome;
+  /** Records when the user's password was reset (data/password-reset-time.ts). Without it, nothing is recorded. */
+  readonly recordReset?: RecordReset;
+  /** Signs a user out everywhere (AdminUserGlobalSignOut) after a confirmed password reset. Without it, nobody is signed out. */
+  readonly signOutEverywhere?: SignOutEverywhere;
+  /** Hands a confirmed password reset's notice to the security notices function. Without it, no notice is sent. */
+  readonly sendResetNotice?: SendResetNotice;
   /** For tests. */
   readonly now?: () => number;
 }
+
+/** Records that the user's password was reset at `at`, unless a later time is recorded: true if it was written. */
+export type RecordReset = (userId: string, at: Date) => Promise<boolean>;
+
+/** The reset record's timeout (post-confirmation.ts passes it to the call): it runs alongside the sign-out, first, inside WELCOME_BUDGET_MS. */
+export const RECORD_RESET_TIMEOUT_MS = 1_000;
+
+/** What recording a reset came to: `recorded`, `not-later` (a later time was already there), `no-sub` or `failed` (both counted). */
+export type RecordResetOutcome = "recorded" | "not-later" | "no-sub" | "failed";
+
+/** AdminUserGlobalSignOut of one user. Throws (naming only the action, status and error type) unless Cognito answered 200. */
+export type SignOutEverywhere = (userPoolId: string, username: string) => Promise<void>;
+
+/** Queues one password reset notice with the security notices function. */
+export type SendResetNotice = (request: PasswordResetNoticeRequest) => Promise<void>;
+
+/** The sign-out's timeout (post-confirmation.ts passes it to the Cognito client): it comes first, inside WELCOME_BUDGET_MS. */
+export const SIGN_OUT_TIMEOUT_MS = 1_000;
+
+/** What signing out after a reset came to: `done`, or `failed` (counted). */
+export type SignOutOutcome = "done" | "failed";
 
 /**
  * How long the trigger may have run, the welcome email's invoke included:
@@ -65,6 +130,62 @@ export type WelcomeOutcome = "not-new" | "no-sub" | "queued" | "failed";
 
 export function createPostConfirmationHandler(deps: PostConfirmationDeps) {
   const now = deps.now ?? Date.now;
+  const errorName = (error: unknown) => (error as { name?: string } | null)?.name ?? "Unknown";
+  /** Logged with the sub when the event has a valid one, so an operator can find the user; never the username or email. */
+  const resetFailed = (message: string, code: string, reason: string, event?: PostConfirmationTriggerEvent) => {
+    const sub = event?.request?.userAttributes?.sub;
+    deps.obs.logger.error(message, { ...(typeof sub === "string" && SUB.test(sub) ? { userId: sub } : {}), code });
+    deps.obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind: "passwordReset", reason, via: "reset" });
+  };
+
+  const recordResetTime = async (record: RecordReset, event: PostConfirmationTriggerEvent, started: number): Promise<RecordResetOutcome> => {
+    const userId = event.request?.userAttributes?.sub;
+    if (typeof userId !== "string" || !SUB.test(userId)) {
+      resetFailed("Password reset time not recorded", "NoSub", "record_reset");
+      return "no-sub";
+    }
+    try {
+      return (await record(userId, new Date(started))) ? "recorded" : "not-later";
+    } catch (error) {
+      resetFailed("Password reset time not recorded", errorName(error), "record_reset", event);
+      return "failed";
+    }
+  };
+
+  const signOut = async (signOutEverywhere: SignOutEverywhere, event: PostConfirmationTriggerEvent): Promise<SignOutOutcome> => {
+    // Cognito's own event names the pool and the user; the role may sign out only the app pool's users
+    if (typeof event.userPoolId !== "string" || !event.userPoolId || typeof event.userName !== "string" || !event.userName) {
+      resetFailed("Not signed out after a password reset", "NoUser", "sign_out", event);
+      return "failed";
+    }
+    try {
+      await signOutEverywhere(event.userPoolId, event.userName);
+      return "done";
+    } catch (error) {
+      // cognitoRequest's error names only the action, status and type; its name is all that's logged
+      resetFailed("Not signed out after a password reset", errorName(error), "sign_out", event);
+      return "failed";
+    }
+  };
+
+  const resetNotice = async (send: SendResetNotice, event: PostConfirmationTriggerEvent, started: number, signedOut: boolean): Promise<WelcomeOutcome> => {
+    const userId = event.request?.userAttributes?.sub;
+    if (typeof userId !== "string" || !SUB.test(userId)) {
+      resetFailed("Password reset notice not queued", "NoSub", "no_user");
+      return "no-sub";
+    }
+    if (now() - started + WELCOME_INVOKE_TIMEOUT_MS > WELCOME_BUDGET_MS) {
+      resetFailed("Password reset notice not queued", "NoTimeLeft", "deferred");
+      return "failed";
+    }
+    try {
+      await send({ type: "passwordReset", userId, at: new Date(started).toISOString(), signedOut });
+      return "queued";
+    } catch (error) {
+      resetFailed("Password reset notice not queued", errorName(error), "invoke");
+      return "failed";
+    }
+  };
   const welcome = async (send: SendWelcome, event: PostConfirmationTriggerEvent, started: number): Promise<WelcomeOutcome> => {
     const attributes = event.request?.userAttributes ?? {};
     if (event.triggerSource !== "PostConfirmation_ConfirmSignUp" || isFederatedOnly(event.userName, attributes)) return "not-new";
@@ -87,6 +208,13 @@ export function createPostConfirmationHandler(deps: PostConfirmationDeps) {
 
   return async (event: PostConfirmationTriggerEvent): Promise<PostConfirmationTriggerEvent> => {
     const started = now();
+    const reset = event.triggerSource === "PostConfirmation_ConfirmForgotPassword";
+    // First, while the trigger's time is freshest, and side by side (each is bounded, so together they take
+    // one timeout at most): the reset's time, which the API compares with each session's, and its sign-out
+    const [recorded, signedOut] = await Promise.all([
+      reset && deps.recordReset ? recordResetTime(deps.recordReset, event, started) : undefined,
+      reset && deps.signOutEverywhere ? signOut(deps.signOutEverywhere, event) : undefined,
+    ]);
     let outcome: NoticeAddressOutcome | "failed";
     try {
       outcome = await deps.rememberNoticeAddress(event.userName, event.request?.userAttributes ?? {});
@@ -96,7 +224,15 @@ export function createPostConfirmationHandler(deps: PostConfirmationDeps) {
       deps.obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind: "emailChanged", reason: "record_address", via: "sign-up" });
     }
     const welcomed = deps.sendWelcome ? await welcome(deps.sendWelcome, event, started) : undefined;
-    deps.obs.logger.info("Notice address", { triggerSource: String(event.triggerSource), outcome, ...(welcomed ? { welcome: welcomed } : {}) });
+    const noticed = reset && deps.sendResetNotice ? await resetNotice(deps.sendResetNotice, event, started, signedOut === "done") : undefined;
+    deps.obs.logger.info("Notice address", {
+      triggerSource: String(event.triggerSource),
+      outcome,
+      ...(welcomed ? { welcome: welcomed } : {}),
+      ...(recorded ? { resetRecorded: recorded } : {}),
+      ...(signedOut ? { signOut: signedOut } : {}),
+      ...(noticed ? { resetNotice: noticed } : {}),
+    });
     return event;
   };
 }

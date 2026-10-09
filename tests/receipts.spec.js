@@ -441,7 +441,7 @@ test("if one project fails to save, only its items stay in the review", { tag: [
   await expect(tryAgain(page)).toBeEnabled();
 });
 
-// Saving again after a save whose answer was lost adds each line once (src/moves.js addLines)
+// Saving again after a save whose answer was lost adds each line once: the same addLines operation
 test("a receipt saved to an existing project again after a lost answer adds each line once", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
     savePrices: false,
@@ -460,10 +460,9 @@ test("a receipt saved to an existing project again after a lost answer adds each
   await tryAgain(page).click();
   await expect(toast(page)).toHaveText("Saved to 1 project");
   const s1 = (await docs(page, "projects/s1"))["projects/s1"];
-  // Found this receipt's mark from the lost attempt: nothing added twice
+  // The lost attempt's operation was applied already: nothing added twice
   expect(s1).toEqual(lost);
-  const mark = s1.items.SKU1.ops.at(-1);
-  expect(Object.values(s1.items).filter((it) => it.name === "Mop heads")).toEqual([{ code: "", name: "Mop heads", price: 4, cost: 4, out: 1, returned: 0, ops: [mark] }]);
+  expect(Object.values(s1.items).filter((it) => it.name === "Mop heads")).toEqual([{ code: "", name: "Mop heads", price: 4, cost: 4, out: 1, returned: 0 }]);
   expect(s1.savedReceipts).toBeUndefined();
 });
 
@@ -544,8 +543,8 @@ test("general-inventory lines saved again after a lost answer add to storage onc
   await tryAgain(page).click();
   await expect(toast(page)).toHaveText("12 added to storage");
   const products = await docs(page, "products/");
-  // Found the first item's marks from the lost attempt: its 5 were added once
-  expect(products["products/SKU1"]).toMatchObject({ stock: 15, ops: [expect.any(String)] });
+  // The first item's operation from the lost attempt was applied already: its 5 were added once
+  expect(products["products/SKU1"].stock).toBe(15);
   expect(products["products/nb-bins"].stock).toBe(5);
   expect(Object.values(products).find((p) => p.name === "Sponges")).toMatchObject({ stock: 4 });
 });
@@ -659,7 +658,7 @@ test("cases added to an existing project line add eaches and keep the line's pri
   await saveBtn(page).click();
   await expect(toast(page)).toHaveText("Saved to 1 project");
   const projects = await docs(page, "projects/");
-  expect(projects["projects/s1"].items.GL).toEqual({ code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 16, returned: 1, ops: [expect.any(String)] });
+  expect(projects["projects/s1"].items.GL).toEqual({ code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 16, returned: 1 });
 });
 
 // Receipt photos are shrunk before they're read (src/photo.js). Test photos are drawn in the

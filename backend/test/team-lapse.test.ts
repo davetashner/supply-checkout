@@ -624,3 +624,20 @@ describe("a test team (supply-checkout-o60.12)", () => {
     expect(counts.filter(([m]) => m === BusinessMetric.LapseFailures).map(([, , metadata]) => metadata)).toEqual([{ teamId: "probe", step: "error" }]);
   });
 });
+
+describe("its role's reads (supply-checkout-3sv.23)", () => {
+  // Both GetItem statements require dynamodb:Select SPECIFIC_ATTRIBUTES, so lapsePolicy refuses a read without a
+  // projection: every test here, which fails on any refusal, then shows readLapseTeam and warnedAt project
+  it("refuses a GetItem of a team or its own records without a projection, or with Select other than SPECIFIC_ATTRIBUTES", () => {
+    const policy = lapsePolicy(denied);
+    const warned = { PK: "LAPSE#team-a", SK: "WARNED#2026-10-01T12:00:00.000Z" };
+    const meta = { PK: "TEAM#team-a", SK: "META" };
+    expect(policy("GetCommand", { Key: warned })).toBe(false);
+    expect(policy("GetCommand", { Key: meta })).toBe(false);
+    expect(policy("GetCommand", { Key: warned, ProjectionExpression: "sentAt", Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(policy("GetCommand", { Key: warned, ProjectionExpression: "sentAt" })).toBe(true);
+    expect(policy("GetCommand", { Key: warned, ProjectionExpression: "sentAt", Select: "SPECIFIC_ATTRIBUTES" })).toBe(true);
+    expect(denied).toHaveLength(3);
+    denied.length = 0;
+  });
+});

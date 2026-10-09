@@ -88,6 +88,15 @@ describe("cognitoUserInfo", () => {
     expect(JSON.parse(init.body as string)).toEqual({ AccessToken: "access-token" });
   });
 
+  it("gives the name from given_name and family_name, made safe to store, and none when there's none (supply-checkout-lx7)", async () => {
+    const named = (attributes: Record<string, string>) =>
+      reply(200, { UserAttributes: [{ Name: "sub", Value: "u" }, ...Object.entries(attributes).map(([Name, Value]) => ({ Name, Value }))] });
+    expect((await cognitoUserInfo(ISSUER, named({ given_name: " Pat ", family_name: "Lee\u202E" }))("t")).name).toBe("Pat Lee");
+    expect((await cognitoUserInfo(ISSUER, named({ given_name: "Pat" }))("t")).name).toBe("Pat");
+    expect(await cognitoUserInfo(ISSUER, named({ given_name: "  " }))("t")).not.toHaveProperty("name");
+    expect(await cognitoUserInfo(ISSUER, named({}))("t")).not.toHaveProperty("name");
+  });
+
   it("treats an unverified or missing email as unverified", async () => {
     const unverified = reply(200, { UserAttributes: [{ Name: "sub", Value: "u" }, { Name: "email", Value: "a@example.com" }, { Name: "email_verified", Value: "false" }] });
     expect(await cognitoUserInfo(ISSUER, unverified)("t")).toMatchObject({ emailVerified: false, emailVerifiedInCognito: false, totp: false, federated: false });

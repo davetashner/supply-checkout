@@ -146,14 +146,15 @@ const lastOwner = { status: 409, body: { error: { code: "aborted", message: "A t
 describe("GET /teams/{teamId}/members", () => {
   it("lists the members, owners first, with only the fields the screen needs", async () => {
     member("team-a", "user-noemail", "viewer");
+    table.put({ ...(table.get("TEAM#team-a", `MEMBER#${CONTRIBUTOR}`) as Record<string, unknown>), displayName: "Cora Contributor" });
     expect(await list()).toEqual({
       status: 200,
       body: {
         members: [
-          { userId: OWNER, email: "owner@example.com", role: "owner", joinedAt: "2026-09-01T00:00:00.000Z" },
-          { userId: CONTRIBUTOR, email: "contributor@example.com", role: "contributor", joinedAt: "2026-09-01T00:00:00.000Z" },
-          { userId: "user-noemail", email: null, role: "viewer", joinedAt: "2026-09-01T00:00:00.000Z" },
-          { userId: VIEWER, email: "viewer@example.com", role: "viewer", joinedAt: "2026-09-01T00:00:00.000Z" },
+          { userId: OWNER, name: null, email: "owner@example.com", role: "owner", joinedAt: "2026-09-01T00:00:00.000Z" },
+          { userId: CONTRIBUTOR, name: "Cora Contributor", email: "contributor@example.com", role: "contributor", joinedAt: "2026-09-01T00:00:00.000Z" },
+          { userId: "user-noemail", name: null, email: null, role: "viewer", joinedAt: "2026-09-01T00:00:00.000Z" },
+          { userId: VIEWER, name: null, email: "viewer@example.com", role: "viewer", joinedAt: "2026-09-01T00:00:00.000Z" },
         ],
       },
     });
@@ -173,7 +174,7 @@ describe("PATCH /teams/{teamId}/members/{userId}", () => {
   it("changes the role on the member, their team switcher and the owner count together", async () => {
     expect(await setRole(VIEWER, "contributor")).toEqual({
       status: 200,
-      body: { member: { userId: VIEWER, email: "viewer@example.com", role: "contributor", joinedAt: "2026-09-01T00:00:00.000Z" } },
+      body: { member: { userId: VIEWER, name: null, email: "viewer@example.com", role: "contributor", joinedAt: "2026-09-01T00:00:00.000Z" } },
     });
     expect([roleOf(VIEWER), switcherRole(VIEWER)]).toEqual(["contributor", "contributor"]);
     expect((await setRole(VIEWER, "owner")).status).toBe(200);

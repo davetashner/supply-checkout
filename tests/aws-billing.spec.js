@@ -270,12 +270,18 @@ test("an owner of a team whose subscription ended can subscribe again or open Bi
   await expect(bar(page).locator("#cancelNote")).toHaveCount(0);
 });
 
-test("a closed team has no Billing and no cancellation note", { tag: ["@J7"] }, async ({ page }) => {
+test("a closed team has no Billing and no cancellation note, but its owners keep Invoices", { tag: ["@J7"] }, async ({ page }) => {
   await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING, cancelsAt: "2026-10-27T12:00:00.000Z", closedAt: "2026-09-26T12:00:00.000Z", deletesAt: "2026-10-26T12:00:00.000Z" }] }));
   await expect(bar(page).locator(".closed-note")).toHaveCount(1);
   await expect(bar(page).getByRole("button", { name: "Billing" })).toHaveCount(0);
-  await expect(bar(page).getByRole("button", { name: "Invoices" })).toHaveCount(0);
+  await expect(bar(page).getByRole("button", { name: "Invoices" })).toBeVisible();
   await expect(bar(page).locator("#cancelNote")).toHaveCount(0);
+});
+
+test("a closed team with no Stripe customer has no Invoices", { tag: ["@J7"] }, async ({ page }) => {
+  await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING, billingAccount: false, closedAt: "2026-09-26T12:00:00.000Z", deletesAt: "2026-10-26T12:00:00.000Z" }] }));
+  await expect(bar(page).locator(".closed-note")).toHaveCount(1);
+  await expect(bar(page).getByRole("button", { name: "Invoices" })).toHaveCount(0);
 });
 
 // Invoices (supply-checkout-eja): the team's latest invoices as Stripe has them, with links to Stripe
@@ -349,6 +355,29 @@ test("an owner whose team has no billing account yet is told there are no invoic
   backend.on("GET", INVOICES, error(409, "aborted", { reason: "no_billing_account" }));
   await bar(page).getByRole("button", { name: "Invoices" }).click();
   await expect(dialog(page).locator("#invoicesFail")).toHaveText("This team has no billing account yet, so it has no invoices.");
+  await expect(dialog(page).getByRole("button", { name: "Try again" })).toHaveCount(0);
+});
+
+// A closed team's owners can save its invoices until it's deleted (supply-checkout-8jc.24)
+const CLOSED = { closedAt: "2026-09-26T12:00:00.000Z", deletesAt: "2026-10-26T12:00:00.000Z" };
+
+test("an owner of a closed team sees its invoices, and is told to save them before it's deleted", { tag: ["@J7.3"] }, async ({ page }) => {
+  const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING, ...CLOSED }] }));
+  backend.on("GET", INVOICES, { status: 200, body: { invoices: [invoice(2), invoice(1)], hasMore: true } });
+  await bar(page).getByRole("button", { name: "Invoices" }).click();
+  await expect(dialog(page).locator(".hint").first()).toHaveText("Stripe emailed each invoice and receipt to your billing email. This team was closed: save any invoices you need before it's deleted on Oct 26, 2026, when they're deleted with it.");
+  await expect(dialog(page).locator(".invoice")).toHaveCount(2);
+  await expect(dialog(page).getByRole("link", { name: "Invoice ABCD-0002 as a PDF" })).toHaveAttribute("href", "https://pay.stripe.com/invoice/test_2/pdf");
+  await expect(dialog(page).locator("#olderInvoices")).toHaveText("Older invoices are in the emails from Stripe.");
+  const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(violations.map((v) => v.id)).toEqual([]);
+});
+
+test("an owner of a closed team whose deletion is due is told its invoices are going with it", { tag: ["@J7.3"] }, async ({ page }) => {
+  const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING, ...CLOSED }] }));
+  backend.on("GET", INVOICES, error(409, "aborted", { reason: "team_deleting" }));
+  await bar(page).getByRole("button", { name: "Invoices" }).click();
+  await expect(dialog(page).locator("#invoicesFail")).toHaveText("This team is being deleted, and its invoices with it.");
   await expect(dialog(page).getByRole("button", { name: "Try again" })).toHaveCount(0);
 });
 

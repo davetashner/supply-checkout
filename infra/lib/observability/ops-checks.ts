@@ -143,9 +143,9 @@ export interface OpsChecksProps {
  *   the last Checkout's time,
  *   and the test mark, which only tags its metrics);
  *   UpdateItem there naming only LAPSE_CLOSE_ATTRIBUTES, returning nothing
- *   (the closure: never status, plan, comps or Stripe IDs); GetItem and
- *   PutItem in `LAPSE#` partitions (its own records) naming only
- *   LAPSE_RECORD_ATTRIBUTES; send the app's email (grantSendEmail); and read
+ *   (the closure: never status, plan, comps or Stripe IDs); GetItem
+ *   (projected: Select SPECIFIC_ATTRIBUTES, required) and PutItem in `LAPSE#`
+ *   partitions (its own records) naming only LAPSE_RECORD_ATTRIBUTES; send the app's email (grantSendEmail); and read
  *   the Stripe secret key. No Scan, no DeleteItem, no Query of a team's
  *   partition, so it never reads projects, inventory or members' data.
  *   `lapseNotRunning` alarms when its LapseTeamsChecked gauge stops arriving.
@@ -501,9 +501,23 @@ export class OpsChecks extends Construct {
     );
     this.teamLapse.addToRolePolicy(
       new PolicyStatement({
+        sid: "ReadLapseRecords",
+        // Its own warning records, in LAPSE# partitions only, projected: Select required, not IfExists, so a GetItem
+        // without a projection is denied (supply-checkout-3sv.23). warnedAt, its only caller, always projects
+        actions: ["dynamodb:GetItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${LAPSE_PREFIX}*`] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_RECORD_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    this.teamLapse.addToRolePolicy(
+      new PolicyStatement({
         sid: "LapseRecords",
-        // Its own notice and warning records, in LAPSE# partitions only
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+        // Its own notice and warning records and its lease, in LAPSE# partitions only, returning nothing
+        actions: ["dynamodb:PutItem"],
         resources: [tableArn],
         conditions: {
           "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${LAPSE_PREFIX}*`] },

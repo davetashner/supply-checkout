@@ -1,8 +1,8 @@
 // The ad hoc checkout (ADR 0017, sections 4 to 6): Quick take onto the team's General Use project, its
 // card and screen, Return from the project list, a client project's "Not on this project" offering where
-// the item is out, moving an ad hoc line to a client project, and finishing the General Use project. In both
-// builds against the claude.ai runtime's mock (the artifact build's writes, section 6), then the
-// web build's commands against tests/fake-aws.js.
+// the item is out, moving an ad hoc line to a client project, and finishing the General Use project. Against
+// the mock runtime (tests/mock-claude.js, with the commands in the page), then the web build's
+// commands against tests/fake-aws.js.
 import { test, expect, openApp } from "./helpers.js";
 import { modal, waitUntilConnected, goToInventory, startReturn, saveReturn, finishReturn, lineRow, continueReview } from "./ui/index.js";
 import { FakeBackend, openAws, connected } from "./fake-aws.js";
@@ -291,9 +291,9 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
     await modal(page).getByLabel("Project", { exact: true }).selectOption("s2");
     await modal(page).getByRole("button", { name: "Move", exact: true }).click();
     await expect(toast(page)).toHaveText("Moved to Delta Dental");
-    // Gone from the General Use project, kept as a hidden marker, and on the client project as it was
+    // Gone from the General Use project, and on the client project as it was
     await expect(lineRow(page, "Nitrile gloves")).toHaveCount(0);
-    expect((await doc(page, "projects/adhoc-1")).items.G1).toMatchObject({ moved: "s2", out: 0 });
+    expect((await doc(page, "projects/adhoc-1")).items).not.toHaveProperty("G1");
     expect((await doc(page, "projects/s2")).items.G1).toMatchObject({ code: "G1", name: "Nitrile gloves", price: 11, cost: 9, out: 3, returned: 1 });
     expect((await doc(page, "products/G1")).stock).toBe(50);
     // Onto a line the client project already has: the counts add, its price stays
@@ -309,7 +309,7 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
     await expect(toast(page)).toHaveText("Moved to Echo Studio");
     expect((await doc(page, "projects/s1")).items["LAD-1"]).toMatchObject({ kind: "equipment", out: 3, returned: 0, lost: 1 });
     await expect(page.locator("#projectBody")).toContainText("Nothing on General Use yet.");
-    // The exports leave the markers out, and name the General Use project
+    // The exports name the General Use project
     await page.getByRole("button", { name: "Projects", exact: true }).click();
     await page.getByRole("button", { name: "Export data" }).click();
     await modal(page).getByRole("button", { name: "Everything (JSON)" }).click();
@@ -322,7 +322,7 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
     // A line taken again after it moved starts afresh
     await modal(page).getByRole("button", { name: "Close" }).click();
     await take(page, "G1");
-    expect((await doc(page, "projects/adhoc-1")).items.G1).toMatchObject({ out: 1, returned: 0, lost: 0, moved: false });
+    expect((await doc(page, "projects/adhoc-1")).items.G1).toEqual(expect.objectContaining({ out: 1, returned: 0 }));
     await openAdhoc(page);
     await expect(lineRow(page, "Nitrile gloves").locator("td").nth(1)).toHaveText("1");
   });
@@ -331,33 +331,28 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
     const s1 = { ...echo, items: { ...echo.items, "LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } };
     await open(page, { seed: { ...seed, "projects/s1": s1, "projects/adhoc-1": adhoc1({ G1: { code: "G1", name: "Nitrile gloves", price: 11, out: 3, returned: 0 }, "LAD-1": { code: "LAD-1", name: "Step ladder", price: 4, out: 1, returned: 0 } }) } });
     await openAdhoc(page);
-    // The client project saves, then the General Use project's write fails: Try again finishes it, once
+    // Not saved, then saved with the answer lost: Try again finds the move done
     await page.evaluate(() => { window.__mock.failWrites = { prefix: "projects/adhoc-1", code: "unavailable" }; });
     await lineRow(page, "Nitrile gloves").click();
     await modal(page).getByLabel("Project", { exact: true }).selectOption("s1");
     await modal(page).getByRole("button", { name: "Move", exact: true }).click();
     await expect(modal(page).getByRole("button", { name: "Try again" })).toBeVisible();
-    expect((await doc(page, "projects/s1")).items.G1.out).toBe(3);
-    // Then the General Use project saves, but the answer is lost: Try again finds the move done
+    expect((await doc(page, "projects/s1")).items).not.toHaveProperty("G1");
     await page.evaluate(() => { window.__mock.failWrites = null; window.__mock.loseWrites = "projects/adhoc-1"; });
     await modal(page).getByRole("button", { name: "Try again" }).click();
     await expect(modal(page).getByRole("button", { name: "Try again" })).toBeVisible();
+    expect((await doc(page, "projects/s1")).items.G1.out).toBe(3);
     await page.evaluate(() => { window.__mock.loseWrites = null; });
     await modal(page).getByRole("button", { name: "Try again" }).click();
     await expect(toast(page)).toHaveText("Moved to Echo Studio");
     expect((await doc(page, "projects/s1")).items.G1.out).toBe(3);
-    expect((await doc(page, "projects/adhoc-1")).items.G1.moved).toBe("s1");
+    expect((await doc(page, "projects/adhoc-1")).items).not.toHaveProperty("G1");
 
     // A supply where the client project has the item as equipment
     await lineRow(page, "Step ladder").click();
     await modal(page).getByLabel("Project", { exact: true }).selectOption("s1");
     await modal(page).getByRole("button", { name: "Move", exact: true }).click();
-    await expect(toast(page)).toHaveText("That project has this item as the other kind (a supply, or company equipment), so it wasn't moved. Correct the lines by hand.");
-    // Someone else moved it meanwhile
-    await page.evaluate(() => { window.__mock.docs.get("projects/adhoc-1").items["LAD-1"].moved = "s2"; });
-    await lineRow(page, "Step ladder").click();
-    await modal(page).getByRole("button", { name: "Move", exact: true }).click();
-    await expect(toast(page)).toHaveText("Someone else moved or removed this line, so it wasn't moved.");
+    await expect(toast(page)).toHaveText("The project has this item as company equipment; correct the lines by hand. The latest is showing.");
   });
 
   test("a move says when there's no client project to move to, or the client project is gone", async ({ page }) => {
@@ -367,32 +362,11 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
     // Delta Dental is deleted meanwhile, without this page hearing
     await page.evaluate(() => { window.__mock.docs.delete("projects/s2"); });
     await modal(page).getByRole("button", { name: "Move", exact: true }).click();
-    await expect(toast(page)).toHaveText("Someone else deleted this project, so your change wasn't saved.");
+    await expect(toast(page)).toHaveText("No such project. The latest is showing.");
     await page.evaluate(() => window.__mock.notify());
     await lineRow(page, "Nitrile gloves").click();
     await expect(modal(page)).toContainText("There's no open project to move it to.");
     await expect(modal(page).getByRole("button", { name: "Move", exact: true })).toHaveCount(0);
-  });
-
-  test("two first takes at once end on one project: a line another page's set wiped is written again", { tag: ["@J14.1"] }, async ({ page }) => {
-    await open(page);
-    // The storage count waits, so another person's first take can land meanwhile
-    await page.evaluate(() => window.__mock.hold("products/"));
-    await page.getByRole("button", { name: "Quick take" }).click();
-    await typeCode(page, "G1");
-    await modal(page).getByRole("button", { name: "Take 1" }).click();
-    await expect.poll(async () => (await doc(page, "projects/adhoc-1"))?.items?.G1?.out).toBe(1);
-    // Theirs read no project, so its set replaces this one's, line and all, then adds its own line
-    await page.evaluate(() => {
-      window.__mock.docs.set("projects/adhoc-1", { kind: "adhoc", client: "", date: "2026-09-30", status: "open", createdByName: "Sam", items: { SKU1: { code: "SKU1", name: "Paper towels", price: 8.5, out: 2, returned: 0 } } });
-      window.__mock.release();
-    });
-    await expect(toast(page)).toHaveText("Took 1 × Nitrile gloves (General Use)");
-    const items = (await doc(page, "projects/adhoc-1")).items;
-    expect(items.SKU1.out).toBe(2);
-    expect(items.G1.out).toBe(1);
-    // The storage count went down once
-    expect((await doc(page, "products/G1")).stock).toBe(49);
   });
 
   test("a take onto a General Use project someone finished meanwhile starts the next one", { tag: ["@J14.1"] }, async ({ page }) => {

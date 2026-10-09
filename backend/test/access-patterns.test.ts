@@ -16,8 +16,13 @@ import {
   clearTotpOn,
   recordTotpOn,
   totpOnAt,
+  passwordResetAt,
+  recordPasswordReset,
+  deleteUserRows,
   getPreferences,
   setPreferences,
+  setChecklist,
+  checklistOf,
   startAccountDeletion,
   claimEmailChangeNotice,
   releaseEmailChangeNotice,
@@ -83,6 +88,7 @@ import {
   revokeInvite,
   setMemberRole,
   setOwnMemberEmail,
+  setOwnMemberName,
   setProjectLine,
   closeTeam,
   TeamClosedError,
@@ -143,6 +149,22 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(owner.homeRegion).toBe(REGION);
       expect(await rawItem(db, `TEAM#${t.teamId}`, "META")).toMatchObject({ type: "team", name: "Echo Cleaning", homeRegion: REGION, version: 1 });
       expect(await getTeam(db, owner)).toMatchObject({ teamId: t.teamId, homeRegion: REGION, status: "trialing" });
+    });
+
+    // supply-checkout-fs56
+    it("keeps the first-run checklist's progress on the team's META item, owners only, and never once it's closed", async () => {
+      const { team: t, owner, contributor } = await team();
+      expect(checklistOf(await getTeam(db, owner))).toEqual({ receipt: false, done: false });
+      const at = new Date("2026-10-08T14:00:00.000Z");
+      expect(await setChecklist(db, owner, { receipt: true }, at)).toEqual({ receipt: true, done: false });
+      expect(await setChecklist(db, owner, { done: true }, at)).toEqual({ receipt: true, done: true });
+      expect(await rawItem(db, `TEAM#${t.teamId}`, "META")).toMatchObject({ type: "team", version: 1, checklistStartedAt: t.createdAt, checklistReceipt: true, checklistDone: true });
+      await expect(setChecklist(db, contributor, { done: true }, at)).rejects.toThrow(ForbiddenError);
+      // Closed meanwhile: the owner's context still says open, the condition refuses it
+      const other = await team();
+      await closeTeam(db, other.owner, { confirmName: "Echo Cleaning" });
+      await expect(setChecklist(db, other.owner, { done: true }, at)).rejects.toThrow(TeamClosedError);
+      expect((await rawItem(db, `TEAM#${other.team.teamId}`, "META"))?.checklistDone).toBeUndefined();
     });
 
     it("counts a user's email verification codes per UTC day, up to the limit", async () => {
@@ -234,6 +256,22 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(await clearTotpOn(db, userId, at)).toBe(false);
       expect(await clearTotpOn(db, userId, new Date(at.getTime() + 1000))).toBe(true);
       expect(await totpOnAt(db, userId)).toBeUndefined();
+    });
+
+    // supply-checkout-6uw.33
+    it("keeps when the password was last reset in the user's own partition, only ever moving it later", async () => {
+      db = table.db;
+      const userId = newUser();
+      const at = new Date("2026-10-08T14:05:09.123Z");
+      expect(await passwordResetAt(db, userId)).toBeUndefined();
+      expect(await recordPasswordReset(db, userId, at)).toBe(true);
+      expect(await recordPasswordReset(db, userId, new Date(at.getTime() - 1000))).toBe(false);
+      expect(await rawItem(db, `USER#${userId}`, "PASSWORD_RESET")).toEqual({ PK: `USER#${userId}`, SK: "PASSWORD_RESET", passwordResetAt: at.toISOString() });
+      expect(await recordPasswordReset(db, userId, new Date(at.getTime() + 300), { timeoutMs: 5_000 })).toBe(true);
+      expect(await passwordResetAt(db, userId)).toBe(at.getTime() + 300);
+      // Deleting the account removes it with the user's other rows
+      await deleteUserRows(db, userId);
+      expect(await passwordResetAt(db, userId)).toBeUndefined();
     });
 
     // supply-checkout-005.17
@@ -381,6 +419,35 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await closeTeam(db, owner, { confirmName: "Echo Cleaning" });
       const closed = await authorizeTeam(db, contributor.userId, owner.teamId);
       await expect(setOwnMemberEmail(db, closed, "contributor.newer@example.com")).rejects.toThrow(TeamClosedError);
+    });
+
+    // supply-checkout-lx7
+    it("keeps the member's own display name, removes it when cleared, and not in a closed team", async () => {
+      const { owner, contributor, viewer } = await team();
+      expect(await setOwnMemberName(db, viewer, "Vic Viewer")).toBe(true);
+      expect(await getMember(db, owner, viewer.userId)).toMatchObject({ displayName: "Vic Viewer", role: "viewer", email: expect.any(String) });
+      // Already current, or already none: no write
+      expect(await setOwnMemberName(db, viewer, "Vic Viewer")).toBe(false);
+      expect(await setOwnMemberName(db, contributor, undefined)).toBe(false);
+      expect(await setOwnMemberName(db, viewer, "Victoria Viewer")).toBe(true);
+      expect((await getMember(db, owner, viewer.userId))?.displayName).toBe("Victoria Viewer");
+      expect(await setOwnMemberName(db, viewer, undefined)).toBe(true);
+      expect(await getMember(db, owner, viewer.userId)).not.toHaveProperty("displayName");
+      // Only a name memberName() made: never one with hidden characters, or too long
+      await expect(setOwnMemberName(db, viewer, "Vic\u202E")).rejects.toThrow(InvalidInputError);
+      await expect(setOwnMemberName(db, viewer, " Vic")).rejects.toThrow(InvalidInputError);
+      await expect(setOwnMemberName(db, viewer, "v".repeat(101))).rejects.toThrow(InvalidInputError);
+      // An owner's operators' index entry never carries it
+      const ownerItem = await rawItem(db, `TEAM#${owner.teamId}`, `MEMBER#${owner.userId}`);
+      expect(await setOwnMemberName(db, owner, "Olive Owner")).toBe(true);
+      expect(await rawItem(db, `TEAM#${owner.teamId}`, `MEMBER#${owner.userId}`)).toEqual({ ...ownerItem, displayName: "Olive Owner" });
+      // Gone meanwhile (left the team): nothing is recreated
+      await removeMember(db, viewer, viewer.userId);
+      expect(await setOwnMemberName(db, viewer, "Vic Viewer")).toBe(false);
+      expect(await rawItem(db, `TEAM#${owner.teamId}`, `MEMBER#${viewer.userId}`)).toBeUndefined();
+      await closeTeam(db, owner, { confirmName: "Echo Cleaning" });
+      const closed = await authorizeTeam(db, contributor.userId, owner.teamId);
+      await expect(setOwnMemberName(db, closed, "Cora Contributor")).rejects.toThrow(TeamClosedError);
     });
 
     // supply-checkout-u0vv
@@ -856,12 +923,18 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(updateProduct(db, contributor, "missing", { code: "", name: "x", price: 5 }, 1)).rejects.toThrow(ConflictError);
       await expect(updateProduct(db, viewer, "0123456789", { code: "", name: "x", price: 5 }, 2)).rejects.toThrow(ForbiddenError);
       await expect(createProduct(db, contributor, "bad", { code: "", name: "x", price: -1 })).rejects.toThrow(InvalidInputError);
+      await expect(createProduct(db, contributor, "bad", { code: "", name: "x", price: 1_000_001 })).rejects.toThrow(InvalidInputError);
+      await expect(updateProduct(db, contributor, "0123456789", { code: "", name: "x", price: 4.999 }, 2)).rejects.toThrow(InvalidInputError);
+      // Floating-point noise counts as the cents the person saw (ADR 0014)
+      expect(await createProduct(db, contributor, "noise", { code: "", name: "x", price: 0.1 + 0.2 })).toMatchObject({ price: 0.3 });
+      expect((await getProduct(db, viewer, "noise"))?.price).toBe(0.3);
       await expect(createProduct(db, contributor, "bad", { code: "1".repeat(257), name: "x", price: 1 })).rejects.toThrow(InvalidInputError);
       await expect(createProduct(db, contributor, "bad", { code: 123 as unknown as string, name: "x", price: 1 })).rejects.toThrow(InvalidInputError);
 
       await expect(deleteProduct(db, contributor, "0123456789", 1)).rejects.toThrow(ConflictError);
       await deleteProduct(db, contributor, "0123456789", 2);
       await deleteProduct(db, contributor, "no-barcode-sponge");
+      await deleteProduct(db, contributor, "noise");
       expect(await getProduct(db, viewer, "0123456789")).toBeUndefined();
     });
 

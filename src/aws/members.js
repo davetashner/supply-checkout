@@ -63,16 +63,22 @@ const failure = (e, what) =>
     : e.code === "permission_denied" ? "Only the team's owners can manage members."
     : `Couldn't ${what}. Check your connection and try again.`;
 
+// Who a member is, in a sentence: their name (from their account, supply-checkout-lx7), else
+// their email. A member chooses their own name, so the row also shows the email under it.
+const who = (m) => m.name || m.email;
+
 // `fixed`: roles can't change (a closed team, or one read-only for billing)
 function rowHTML(m, me, owners, closed, fixed) {
   const you = m.userId === me;
-  const name = esc(m.email || "A member without an email address") + (you ? ` <span class="muted">(you)</span>` : "");
+  const name = (m.name
+    ? `${esc(m.name)}${you ? ` <span class="muted">(you)</span>` : ""}<br><span class="muted member-email">${esc(m.email || "No email address")}</span>`
+    : esc(m.email || "A member without an email address") + (you ? ` <span class="muted">(you)</span>` : ""));
   // The only owner can't step down or leave: a team always keeps an owner, until it's closed
   const last = m.role === "owner" && owners === 1 && !closed;
   const options = ROLES.map(([id, label]) => `<option value="${id}"${id === m.role ? " selected" : ""}>${label}</option>`).join("");
   return `<li class="member" data-user="${esc(m.userId)}">
     <span class="member-name">${name}</span>
-    <select aria-label="Role for ${esc(m.email || "this member")}"${last || fixed ? " disabled" : ""}>${options}</select>
+    <select aria-label="Role for ${esc(who(m) || "this member")}"${last || fixed ? " disabled" : ""}>${options}</select>
     <button type="button" class="btn danger" data-remove${last ? " disabled" : ""}>${you ? "Leave" : "Remove"}</button>
   </li>`;
 }
@@ -362,8 +368,10 @@ export function openMembers(api, team, me, leave, invited) {
       if (invites) invites.setFull(!!cap && members.length + waiting >= cap);
     }
 
-    // How many seats are used, once the members have loaded
+    // How many seats are used, once the members have loaded. Not once the screen is gone: /me
+    // or the members can answer after it closed (or the session ended and closed it)
     function seats() {
+      if (!list.isConnected) return;
       const el = m.querySelector("#seats");
       el.hidden = !(cap && loaded);
       if (!el.hidden) el.textContent = `${members.length} of ${cap} members`;
@@ -401,7 +409,7 @@ export function openMembers(api, team, me, leave, invited) {
         if (member.userId === me) { closeModal(); leave(`You're now ${AS[role]} in ${team.name}.`); return; }
         members = members.map((x) => (x.userId === member.userId ? res.member : x));
         draw();
-        toast(`${member.email || "The member"} is now ${AS[role]}`);
+        toast(`${who(member) || "The member"} is now ${AS[role]}`);
       } catch (e) {
         select.value = member.role;
         select.disabled = false;
@@ -419,7 +427,7 @@ export function openMembers(api, team, me, leave, invited) {
         draw();
         // The server revoked their other invites to the team too (a closed team has none)
         if (member.email && invites) invites.dropFor(member.email);
-        toast(`Removed ${member.email || "the member"} from the team`);
+        toast(`Removed ${who(member) || "the member"} from the team`);
       } catch (e) {
         button.disabled = false;
         say(failure(e, "remove them"));

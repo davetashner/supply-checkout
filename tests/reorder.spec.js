@@ -168,8 +168,8 @@ test.describe("low-stock alerts", { tag: ["@J15"] }, () => {
   });
 });
 
-test.describe("a restock in the app's own storage (src/moves.js)", { tag: ["@J15.3"] }, () => {
-  // The mock runtime's writes end an acknowledgment as the server's commands do
+test.describe("a restock ends an acknowledgment", { tag: ["@J15.3"] }, () => {
+  // The mock runtime's commands end it as the server's do
   test("a return above the reorder level ends it, and one at or below keeps it", async ({ page }) => {
     const project = usedState.seed["projects/s1"];
     await openApp(page, {

@@ -173,6 +173,7 @@ const DATA_CASES: Record<string, Omit<Case, "minRole">> = {
   "POST /teams/{teamId}/projects/{projectId}/lost": { method: "POST", path: "/teams/team-a/projects/s1/lost", body: { operationId: randomUUID(), productKey: "ladder", quantity: 1, charge: 50 } },
   "GET /teams/{teamId}/settings": { method: "GET", path: "/teams/team-a/settings" },
   "PUT /teams/{teamId}/settings": { method: "PUT", path: "/teams/team-a/settings", body: { equipmentMarkup: 25, expectedVersion: 0 } },
+  "PATCH /teams/{teamId}/checklist": { method: "PATCH", path: "/teams/team-a/checklist", body: { done: true } },
   "POST /teams/{teamId}/products/{key}/stock": { method: "POST", path: "/teams/team-a/products/0123/stock", body: { operationId: randomUUID(), reason: "count", count: 4 } },
   "GET /teams/{teamId}/products/{key}/movements": { method: "GET", path: "/teams/team-a/products/0123/movements" },
   "POST /teams/{teamId}/imports": { method: "POST", path: "/teams/team-a/imports", body: { importId: randomUUID(), csv: "name,price\nRags,1.5\n" } },

@@ -8,6 +8,9 @@
 .account form{display:grid;gap:14px}
 .account .actions{display:flex;gap:8px;flex-wrap:wrap}
 .account .error{color:var(--danger)}
+/* Resetting a password (reset-password.js) */
+.account input[type=email],.account input[type=password]{background:var(--ground);border:1px solid var(--line);border-radius:9px;padding:9px 12px;width:100%}
+.account input.reset-code{max-width:8em;font-family:var(--mono);font-size:20px;letter-spacing:.2em}
 .account [hidden]{display:none}
 .account .invite{background:var(--sunk);border-radius:10px;padding:10px 14px}
 .account .whoami{font-size:14px;color:var(--muted);border-top:1px solid var(--line);padding-top:12px}
@@ -45,6 +48,7 @@
 .member{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:8px}
 .member:first-child{border-top:0;padding-top:0}
 .member-name{flex:1 1 180px;min-width:0;overflow-wrap:anywhere}
+.member-email{font-size:14px}
 .member select{flex:0 1 160px}
 #membersList{display:grid;gap:10px}
 #membersList p{margin:0}

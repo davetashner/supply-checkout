@@ -11,6 +11,7 @@ import { billingScopedDbs } from "./billing-db.js";
 import { createBillingHandler } from "./billing-handler.js";
 import { cognitoUserInfo } from "./cognito-user.js";
 import { API_ENV } from "./routes.js";
+import { sessionCheckFromEnv } from "./session-reset.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -38,5 +39,6 @@ export const handler = withObservability(
     userInfo: cognitoUserInfo(issuerUrl),
     appUrl: required(API_ENV.appUrl),
     obs,
+    sessionCheck: sessionCheckFromEnv(),
   }),
 );
