@@ -20,7 +20,7 @@ import {
   lambda,
 } from "./metrics.js";
 import { bedrockSpend } from "./journey-alarms.js";
-import { cloudFront, routerFailures, SITE_DOWN_MIN_REQUESTS, siteErrorRate } from "./web-alarms.js";
+import { cloudFront, OPS_DOWN_MIN_REQUESTS, routerFailures, SITE_DOWN_MIN_REQUESTS, siteErrorRate } from "./web-alarms.js";
 
 export interface OpsDashboardProps {
   readonly envName: string;
@@ -33,7 +33,12 @@ export interface OpsDashboardProps {
    * The web distribution and its router, when this stack has their alarms
    * (the primary region is GLOBAL_SERVICES_REGION): a row of CloudFront graphs.
    */
-  readonly web?: { readonly distributionId: string; readonly routerFunctionName: string };
+  readonly web?: {
+    readonly distributionId: string;
+    readonly routerFunctionName: string;
+    readonly opsDistributionId: string;
+    readonly opsRouterFunctionName: string;
+  };
 }
 
 const WIDTH = 24;
@@ -102,11 +107,17 @@ export class OpsDashboard extends Construct {
 
     // The web app on CloudFront (GLOBAL_SERVICES_REGION only): Site down and Web router failing
     if (props.web) {
-      const { distributionId, routerFunctionName } = props.web;
+      const { distributionId, routerFunctionName, opsDistributionId, opsRouterFunctionName } = props.web;
       this.dashboard.addWidgets(
         graph("Web: CloudFront requests", [cloudFront("Requests", { DistributionId: distributionId }, "Sum", "Requests (CloudFront)")]),
         graph(`Web: CloudFront 5xx rate % (at least ${SITE_DOWN_MIN_REQUESTS} requests)`, [siteErrorRate(distributionId)]),
         graph("Web: router errors and throttles", [routerFailures(routerFunctionName)]),
+      );
+      // The operator page (ops.): Operator page down and Operator page router failing
+      this.dashboard.addWidgets(
+        graph("Operator page: CloudFront requests", [cloudFront("Requests", { DistributionId: opsDistributionId }, "Sum", "Operator page requests (CloudFront)")]),
+        graph(`Operator page: 5xx rate % (at least ${OPS_DOWN_MIN_REQUESTS} requests)`, [siteErrorRate(opsDistributionId, OPS_DOWN_MIN_REQUESTS, "Operator page 5xx rate % (CloudFront)")]),
+        graph("Operator page: router errors and throttles", [routerFailures(opsRouterFunctionName, "Operator page router errors and throttles")]),
       );
     }
 

@@ -23,7 +23,16 @@ import {
   DEFAULT_MONTHLY_BUDGET_USD,
 } from "../lib/observability/cost-alerts.js";
 import { BEDROCK_SPEND_ALARM_USD_PER_DAY, journeyAlarmSpecs, SET_ASIDE_INCIDENT_AT, WELCOME_REFUSALS_ALARM_PER_HOUR } from "../lib/observability/journey-alarms.js";
-import { ROUTER_FAILING_ABOVE, RUM_EVENTS_FLOOD_PER_HOUR, RUM_EVENTS_SURGE_PER_HOUR, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
+import {
+  OPS_DOWN_MIN_REQUESTS,
+  OPS_DOWN_PERCENT,
+  OPS_ROUTER_FAILING_ABOVE,
+  ROUTER_FAILING_ABOVE,
+  RUM_EVENTS_FLOOD_PER_HOUR,
+  RUM_EVENTS_SURGE_PER_HOUR,
+  SITE_DOWN_MIN_REQUESTS,
+  SITE_DOWN_PERCENT,
+} from "../lib/observability/web-alarms.js";
 import { rumAppMonitorName } from "../lib/web/rum.js";
 import { webOutputParameters } from "../lib/stacks/web-stack.js";
 import { LAPSE_LIST_ATTRIBUTES, LAPSE_READ_ATTRIBUTES, LAPSE_RECORD_ATTRIBUTES, OPERATOR_AUDIT_HEARTBEAT } from "../../backend/src/data/schema.js";
@@ -624,7 +633,7 @@ describe("journey alarms (docs/journeys.md)", () => {
       // The purge's own alarm is with the purge, and the operator audit and group watches' are with the watches, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
-        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running", "supply-checkout-prod-p2-lapse-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|support-smtp|site-down|web-router|rum-events/.test(String(a.AlarmName)));
+        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running", "supply-checkout-prod-p2-lapse-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|support-smtp|site-down|web-router|ops-page-down|ops-router|rum-events/.test(String(a.AlarmName)));
       const specs = journeyAlarmSpecs(r, "t", "api", "prod").filter((s) => r === config.primaryRegion || !s.primaryOnly);
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -730,8 +739,8 @@ describe("journey alarms (docs/journeys.md)", () => {
 });
 
 describe("web app down alarms (supply-checkout-3sv.2)", () => {
-  const webAlarm = (t: Template, id: string) => {
-    const [alarm] = Object.values(t.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: `supply-checkout-prod-p1-${id}` } }));
+  const webAlarm = (t: Template, id: string, severity = "p1") => {
+    const [alarm] = Object.values(t.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: `supply-checkout-prod-${severity}-${id}` } }));
     return alarm?.Properties;
   };
   const ssmRef = (t: Template, name: string) => {
@@ -753,9 +762,21 @@ describe("web app down alarms (supply-checkout-3sv.2)", () => {
       expect(a.EvaluationPeriods).toBe(1);
       expect(a.AlarmDescription).toContain("docs/observability.md, When the web app is down");
     }
+    for (const id of ["ops-page-down", "ops-router-failing"]) {
+      const a = webAlarm(east, id, "p2");
+      expect(a).toBeDefined();
+      expect(a.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
+      expect(a.OKActions).toEqual(a.AlarmActions);
+      expect(a.TreatMissingData).toBe("notBreaching");
+      expect(a.EvaluationPeriods).toBe(1);
+      expect(a.AlarmDescription).toMatch(/^P2 Operator page .*\(Operators, CloudFront\)\./);
+      expect(a.AlarmDescription).toContain("docs/observability.md, When the web app is down");
+    }
     const west = Template.fromStack(region(WEST).observability);
     expect(webAlarm(west, "site-down")).toBeUndefined();
     expect(webAlarm(west, "web-router-failing")).toBeUndefined();
+    expect(webAlarm(west, "ops-page-down", "p2")).toBeUndefined();
+    expect(webAlarm(west, "ops-router-failing", "p2")).toBeUndefined();
     expect(stacks.regions[EAST]?.observability.dependencies).toContain(stacks.web);
     // A deployment without the global services region has no stack there to hold them
     const solo = Template.fromStack(build({}, { regions: [WEST], primaryRegion: WEST }).region(WEST).observability);
@@ -799,6 +820,46 @@ describe("web app down alarms (supply-checkout-3sv.2)", () => {
       expect(m.MetricStat).toMatchObject({ Stat: "Sum", Period: 300 });
       expect(m.MetricStat.Metric).toMatchObject({ Namespace: "AWS/CloudFront", Dimensions: [{ Name: "FunctionName", Value: fn }, { Name: "Region", Value: "Global" }] });
     }
+  });
+});
+
+describe("operator page down alarms (supply-checkout-8jc.47)", () => {
+  const opsAlarm = (t: Template, id: string) => {
+    const [alarm] = Object.values(t.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: `supply-checkout-prod-p2-${id}` } }));
+    return alarm?.Properties;
+  };
+  const ssmRef = (t: Template, name: string) => {
+    const [id] = Object.entries(t.findParameters("*", { Type: "AWS::SSM::Parameter::Value<String>", Default: name })).map(([k]) => k);
+    expect(id).toBeDefined();
+    return { Ref: id };
+  };
+
+  it("Operator page down: the ops distribution's 5xx rate, from a few requests", () => {
+    const t = observability(EAST);
+    const distribution = ssmRef(t, webOutputParameters("prod").opsDistributionId);
+    expect(distribution).not.toEqual(ssmRef(t, webOutputParameters("prod").distributionId));
+    const a = opsAlarm(t, "ops-page-down");
+    expect(a.Threshold).toBe(OPS_DOWN_PERCENT);
+    expect(a.ComparisonOperator).toBe("GreaterThanThreshold");
+    const [expr, ...metrics] = a.Metrics;
+    expect(expr).toMatchObject({ Expression: `IF(r >= ${OPS_DOWN_MIN_REQUESTS}, FILL(e, 0), 0)`, ReturnData: true });
+    // A handful of operators: far fewer requests than the web app's threshold
+    expect(OPS_DOWN_MIN_REQUESTS).toBeLessThan(SITE_DOWN_MIN_REQUESTS);
+    const byId = Object.fromEntries(metrics.map((m: { Id: string }) => [m.Id, m]));
+    expect(byId.e.MetricStat.Metric).toEqual({ Namespace: "AWS/CloudFront", MetricName: "5xxErrorRate", Dimensions: [{ Name: "DistributionId", Value: distribution }, { Name: "Region", Value: "Global" }] });
+    expect(byId.r.MetricStat.Metric).toEqual({ Namespace: "AWS/CloudFront", MetricName: "Requests", Dimensions: [{ Name: "DistributionId", Value: distribution }, { Name: "Region", Value: "Global" }] });
+  });
+
+  it("Operator page router failing: any error or throttle of the ops router", () => {
+    const t = observability(EAST);
+    const fn = ssmRef(t, webOutputParameters("prod").opsRouterFunctionName);
+    const a = opsAlarm(t, "ops-router-failing");
+    expect(a.Threshold).toBe(OPS_ROUTER_FAILING_ABOVE);
+    expect(OPS_ROUTER_FAILING_ABOVE).toBe(0);
+    const [expr, ...metrics] = a.Metrics;
+    expect(expr.Expression).toBe("FILL(x, 0) + FILL(v, 0) + FILL(t, 0)");
+    expect(metrics).toHaveLength(3);
+    for (const m of metrics) expect(m.MetricStat.Metric).toMatchObject({ Namespace: "AWS/CloudFront", Dimensions: [{ Name: "FunctionName", Value: fn }, { Name: "Region", Value: "Global" }] });
   });
 });
 
@@ -1764,9 +1825,11 @@ describe("dashboard", () => {
     const t = observability();
     const [dash] = Object.values(t.findResources("AWS::CloudWatch::Dashboard"));
     const all = JSON.stringify(dash.Properties.DashboardBody);
-    for (const id of ["sitedown", "webrouterfailing"]) expect(all).toMatch(new RegExp(`"WebAlarms${id}[0-9A-F]{8}","Arn"`));
+    for (const id of ["sitedown", "webrouterfailing", "opspagedown", "opsrouterfailing"]) expect(all).toMatch(new RegExp(`"WebAlarms${id}[0-9A-F]{8}","Arn"`));
     const text = body(t);
-    for (const title of ["Web: CloudFront requests", "Web: CloudFront 5xx rate %", "Web: router errors and throttles"]) expect(text).toContain(title);
+    for (const title of ["Web: CloudFront requests", "Web: CloudFront 5xx rate %", "Web: router errors and throttles", "Operator page: CloudFront requests", "Operator page: 5xx rate %", "Operator page: router errors and throttles"]) {
+      expect(text).toContain(title);
+    }
     expect(text).toContain('"AWS/CloudFront","5xxErrorRate","DistributionId"');
     expect(text).toContain('"AWS/CloudFront","FunctionExecutionErrors","FunctionName"');
   });

@@ -398,7 +398,8 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  *   `topics.notify(alarm, severity)`.
  * - `web`: GLOBAL_SERVICES_REGION only, where CloudFront's metrics are: the
  *   P1 alarms on the web distribution's 5xx rate and the router function's
- *   errors (web-alarms.ts), from the web stack's SSM outputs.
+ *   errors, and P2 ones on the operator page's distribution and router
+ *   (web-alarms.ts), from the web stack's SSM outputs.
  * - `costs`: GLOBAL_SERVICES_REGION only, the account's monthly cost budget
  *   and its Cost Anomaly Detection monitor and subscription, to the P2 topic
  *   (cost-alerts.ts, supply-checkout-jxq). Both services are account-wide,
@@ -461,6 +462,8 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       ? {
           distributionId: StringParameter.valueForStringParameter(this, webOutputParameters(config.envName).distributionId),
           routerFunctionName: StringParameter.valueForStringParameter(this, webOutputParameters(config.envName).routerFunctionName),
+          opsDistributionId: StringParameter.valueForStringParameter(this, webOutputParameters(config.envName).opsDistributionId),
+          opsRouterFunctionName: StringParameter.valueForStringParameter(this, webOutputParameters(config.envName).opsRouterFunctionName),
         }
       : undefined;
     if (webIds) this.web = new WebAlarms(this, "WebAlarms", { envName: config.envName, ...webIds, topics: this.topics });
