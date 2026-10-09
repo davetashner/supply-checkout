@@ -7,17 +7,16 @@
 // - `reorderQty`: how many the team usually orders. Only shown.
 // - `ackedAtStock`: someone acknowledged the alert when stock was this. It's the team's, kept
 //   on the item. The alert stays quiet while stock is at or above it, and comes back when stock
-//   falls below it. A restock above `reorderAt` ends it (marksEnd): the server removes it then
-//   (a return, a receipt, a count or an import, and an uncount, since an uncounted item is never
-//   low), the artifact runtime's writes in src/moves.js do the same, and so does saving a new
-//   reorder level (productModal). One at or above `reorderAt` is out of date, and doesn't quiet
-//   anything.
+//   falls below it. A restock above `reorderAt` ends it: the server removes it then (marksEnd
+//   in backend/src/data/reorder.ts: a return, a receipt, a count or an import, and an uncount,
+//   since an uncounted item is never low), and so does saving a new reorder level
+//   (productModal). One at or above `reorderAt` is out of date, and doesn't quiet anything.
 // - `orderedQty` and `orderedOn` (supply-checkout-005.14): someone marked the item ordered, this
 //   many on this date. Also the team's, on the item. While it's on order the alert stays quiet
 //   however far stock falls, and the reorder list says "On order: 24 since Oct 7". Marking it
 //   ordered removes the acknowledgment (the order says more), and cancelling the order brings
-//   the alert back. A restock above the level ends the order as it ends an acknowledgment
-//   (marksEnd), as does no longer counting the item. A new reorder level keeps the order.
+//   the alert back. A restock above the level ends the order as it ends an acknowledgment,
+//   as does no longer counting the item. A new reorder level keeps the order.
 import { hasStock, brandOf, fmtDate } from "./format.js";
 import { toCsv } from "./export.js";
 
@@ -34,12 +33,6 @@ export const isOnOrder = p => Number.isInteger(p.orderedQty) && p.orderedQty >= 
 export const onOrderText = p => `On order: ${p.orderedQty} since ${fmtDate(p.orderedOn)}`;
 /** The team's marks on an item's alert, which a restock removes together (MARK_FIELDS in backend/src/data/reorder.ts). */
 const MARKS = ["ackedAtStock", "orderedQty", "orderedOn"];
-/**
- * True when stock going to `stock` ends the item's marks (marksEnd in
- * backend/src/data/reorder.ts): it has some, and the new stock is above its reorder level, or it
- * has no level. null for `stock`: no longer counted, which ends them too.
- */
-export const marksEnd = (p, stock) => MARKS.some(f => Object.hasOwn(p, f)) && (stock === null || typeof p.reorderAt !== "number" || stock > p.reorderAt);
 /** The item without its marks. */
 export const withoutMarks = p => Object.fromEntries(Object.entries(p).filter(([k]) => !MARKS.includes(k)));
 /** Low, and nobody has acknowledged it or ordered it yet: what the alert counts. */

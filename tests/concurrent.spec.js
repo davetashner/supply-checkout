@@ -34,7 +34,7 @@ test("a return saved after someone else removed the line says so, and doesn't ma
   await elsewhere(page, (docs) => { delete docs.get("projects/s1").items.SKU1; });
   await expect(lineRow(page, "Paper towels")).toHaveCount(0);
   await saveReturn(page);
-  await expect(page.locator("#toast")).toHaveText("Someone else removed this item from the project, so the return wasn't saved.");
+  await expect(page.locator("#toast")).toHaveText("This item isn't on this project. The latest is showing.");
   await expect(page.locator("#overlay")).toBeHidden();
   const [line, stock] = await page.evaluate(() => [window.__mock.docs.get("projects/s1").items.SKU1, window.__mock.docs.get("products/SKU1").stock]);
   expect(line).toBeUndefined();
@@ -43,9 +43,10 @@ test("a return saved after someone else removed the line says so, and doesn't ma
 });
 
 const DELETED = "Someone else deleted this project, so your change wasn't saved.";
-// The project stays deleted, and the page can still make changes
-const stillDeleted = async (page) => {
-  await expect(page.locator("#toast")).toHaveText(DELETED);
+// The project stays deleted, and the page can still make changes. A checkout or return is
+// refused with the command's own message.
+const stillDeleted = async (page, message = DELETED) => {
+  await expect(page.locator("#toast")).toHaveText(message);
   await expect(page.locator("#overlay")).toBeHidden();
   await expect(page.locator("#notice")).toBeHidden();
   await expect(page.getByRole("button", { name: "+ New project" })).toBeVisible();
@@ -80,31 +81,18 @@ test("removing a line keeps what someone else changed on the project meanwhile",
   await expect(page.locator("#toast")).toHaveText("Removed");
   const doc = await page.evaluate(() => window.__mock.docs.get("projects/s1"));
   expect(doc.client).toBe("Echo Studio West");
-  // Removed as a null line, in one update (removeLine in src/main.js)
-  expect(Object.keys(doc.items)).toEqual(["SKU1", "nb-bins"]);
-  expect(doc.items["nb-bins"]).toBeNull();
+  expect(Object.keys(doc.items)).toEqual(["SKU1"]);
   await expect(lineRow(page, "Storage bins")).toHaveCount(0);
   await expect(lineRow(page, "Paper towels")).toHaveCount(1);
 });
 
-// claude.ai's db has no conditional writes, so a read and then a write could save a project
-// deleted in between. Removing a line writes without reading first.
-test("removing a line from a project deleted as it saves doesn't make the project again", { tag: ["@J4"] }, async ({ page }) => {
-  await openEcho(page);
-  await lineRow(page, "Storage bins").click();
-  await page.evaluate(() => window.__mock.hold("projects/"));
-  await modal(page).getByRole("button", { name: "Remove" }).click();
-  await modal(page).getByRole("button", { name: "Tap to remove" }).click();
-  await expect.poll(() => page.evaluate(() => window.__mock.writes)).toBe(1);
-  // Deleted after the page asked to remove the line, before the write arrives
-  await elsewhere(page, (docs) => docs.delete("projects/s1"));
-  await page.evaluate(() => window.__mock.release());
-  await stillDeleted(page);
-});
-
-test("a line removed as a null line doesn't show or count", { tag: ["@J4"] }, async ({ page }) => {
+// Data saved by the retired claude.ai artifact (imported) can hold a removed line as null, and
+// the marker of a line moved off the General Use project
+test("a line removed as a null line, or a moved line's marker, doesn't show or count", { tag: ["@J4"] }, async ({ page }) => {
   const seed = structuredClone(usedState.seed);
   seed["projects/s1"].items["nb-bins"] = null;
+  // ...and the marker of a line it moved to another project
+  seed["projects/s1"].items.gone = { moved: "s2", out: 0, returned: 0, lost: 0 };
   await openApp(page, { ...usedState, seed });
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toContainText("1 item · 3 taken");
   await openProject(page, "Echo Studio");
@@ -118,17 +106,6 @@ test("a line removed as a null line doesn't show or count", { tag: ["@J4"] }, as
   expect(await page.evaluate(() => window.__mock.docs.get("projects/s1").items["nb-bins"])).toMatchObject({ out: 1, returned: 0 });
 });
 
-test("where the runtime refuses a null value, removing a line saves the project without it", { tag: ["@J4"] }, async ({ page }) => {
-  await openApp(page, { ...usedState, rejectsNull: true });
-  await openProject(page, "Echo Studio");
-  await lineRow(page, "Storage bins").click();
-  await modal(page).getByRole("button", { name: "Remove" }).click();
-  await modal(page).getByRole("button", { name: "Tap to remove" }).click();
-  await expect(page.locator("#toast")).toHaveText("Removed");
-  expect(Object.keys(await page.evaluate(() => window.__mock.docs.get("projects/s1").items))).toEqual(["SKU1"]);
-  await expect(lineRow(page, "Storage bins")).toHaveCount(0);
-});
-
 test("removing a line that fails for the connection keeps it", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Storage bins").click();
@@ -139,8 +116,8 @@ test("removing a line that fails for the connection keeps it", { tag: ["@J4"] },
   expect(await page.evaluate(() => window.__mock.docs.get("projects/s1").items["nb-bins"])).toMatchObject({ out: 2 });
 });
 
-// The artifact adds a checkout or return to the line as it's saved now, even before this page
-// hears of someone else's change (src/moves.js). The web build's commands add on the server.
+// A checkout or return adds to the line as it's saved now, even before this page hears of
+// someone else's change: the commands add on the server.
 test("a checkout adds to the saved line when this page hasn't heard of a change yet", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
@@ -179,8 +156,8 @@ test("a checkout on a project someone else deleted doesn't bring it back or move
   await elsewhere(page, (docs) => docs.delete("projects/s1"));
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
   await addToProject(page);
-  // It says the project was deleted, and the page stays writable
-  await stillDeleted(page);
+  // It says the project is gone, and the page stays writable
+  await stillDeleted(page, "No such project. The latest is showing.");
   expect(await page.evaluate(() => [window.__mock.docs.has("projects/s1"), window.__mock.docs.get("products/SKU1").stock])).toEqual([false, stock]);
 });
 
@@ -192,13 +169,13 @@ test("a return on a project someone else deleted doesn't bring it back or move s
   await elsewhere(page, (docs) => docs.delete("projects/s1"));
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
   await saveReturn(page);
-  // It says the project was deleted, and the page stays writable
-  await stillDeleted(page);
+  // It says the project is gone, and the page stays writable
+  await stillDeleted(page, "No such project. The latest is showing.");
   expect(await page.evaluate(() => [window.__mock.docs.has("projects/s1"), window.__mock.docs.get("products/SKU1").stock])).toEqual([false, stock]);
 });
 
 // The inventory form while someone else changes the item's stock: the form keeps the count it
-// opened with, and only a count the person changed is saved (src/moves.js setItem)
+// opened with, and only a count the person changed is saved (saveItem in src/aws/db.js)
 test.describe("an item's count changed while its form is open", { tag: ["@J4"] }, () => {
   const STOCK = "Single items in storage now";
   const openItem = async (page) => {
@@ -218,19 +195,6 @@ test.describe("an item's count changed while its form is open", { tag: ["@J4"] }
     await save(page);
     await expect(page.locator("#toast")).toHaveText("Saved");
     expect(await saved(page)).toMatchObject({ price: 9, stock: 8 });
-  });
-
-  test("a form save keeps the mark of a checkout made elsewhere meanwhile, so its retry takes nothing more", async ({ page }) => {
-    await openItem(page);
-    // Another device's checkout of 2 saved its storage count with its mark, but its answer was
-    // lost, so that device will try the storage count again
-    await elsewhere(page, (docs) => { Object.assign(docs.get("products/SKU1"), { stock: 8, ops: ["other-device-mark"] }); });
-    await modal(page).getByLabel("Price each ($)").fill("9");
-    await save(page);
-    await expect(page.locator("#toast")).toHaveText("Saved");
-    // The mark is still there, so that device's retry (addStock in src/moves.js) finds it and
-    // takes nothing more
-    expect(await saved(page)).toMatchObject({ price: 9, stock: 8, ops: ["other-device-mark"] });
   });
 
   test("an edit that doesn't touch the count keeps a change this page hasn't heard of yet", async ({ page }) => {

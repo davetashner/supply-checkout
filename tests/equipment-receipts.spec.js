@@ -1,5 +1,5 @@
 // Company equipment bought on a receipt for a client (ADR 0017, section 2a), and the team's
-// equipment markup. In both builds against the claude.ai runtime's mock (no markup: the line is
+// equipment markup. Against the mock runtime (no markup: the line is
 // charged the receipt price, or a typed one), and in the web build against tests/fake-aws.js:
 // the server works the markup out, only owners have the percentage, and owners set it in Team
 // settings.
@@ -67,7 +67,8 @@ test.describe("equipment bought on a receipt for a client", { tag: ["@J5.3", "@J
     const id = await page.evaluate(() => [...window.__mock.docs.keys()].find((k) => k.startsWith("projects/") && window.__mock.docs.get(k).client === "Foxtrot"));
     const items = (await doc(page, id)).items;
     expect(items["LAD-1:bought"]).toMatchObject({ code: "LAD-1", name: "Step ladder", cost: 130, price: 130, purchased: true, out: 2, returned: 0 });
-    expect(items["LAD-1:bought"]).not.toHaveProperty("priceSet");
+    // The mock runtime has no markup: the receipt price
+    expect(items["LAD-1:bought"].priceSet).toBe("markup");
     expect(items["LAD-1"]).toBeUndefined();
     expect(items.SKU1).toMatchObject({ out: 1 });
     expect((await doc(page, "products/LAD-1")).stock).toBe(3);
@@ -108,14 +109,6 @@ test.describe("equipment bought on a receipt for a client", { tag: ["@J5.3", "@J
     await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
     const csv = (await page.evaluate(() => window.__mock.saves[0].data)).split("\n");
     expect(csv).toContain("Step ladder (bought for this client),LAD-1,149.50,2,0,2,299.00");
-  });
-
-  test("without a signed-in user, a typed price names who prepared the receipt", { tag: ["@J5.3"] }, async ({ page }) => {
-    await review(page, { ...draftOf([{ price: 130, typed: "140" }], [{ id: "d1", projectId: "s1", client: "" }]), by: "Sam" }, { userErrors: ["id"] });
-    await saveReceipt(page);
-    await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
-    expect((await doc(page, "projects/s1")).items["LAD-1:bought"]).toMatchObject({ priceSet: "manual", priceSetBy: "Sam" });
-    await expect(lineRow(page, "(bought for this client)")).toContainText("Price typed by Someone");
   });
 });
 

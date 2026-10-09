@@ -32,27 +32,23 @@ working:
 
 ## Why
 
-The artifact saves a checkout as two writes: the project line (`PATCH` with the
-line's new absolute `out`), then the stock (`addStock` in `src/moves.js`, a
-read-then-write). Marks on the line and the item keep a retry from counting twice
-there, but two people
-checking out the same line at once can lose a count, and nothing records why
-stock changed.
+The retired claude.ai artifact saved a checkout as two writes: the project line
+(`PATCH` with the line's new absolute `out`), then the stock (a read-then-write).
+Marks on the line and the item kept a retry from counting twice there, but two
+people checking out the same line at once could lose a count, and nothing
+recorded why stock changed.
 
 Each command here is **one DynamoDB transaction**: the line, the stock and a
 movement record change together or not at all. Counts are added on the server,
 so concurrent checkouts can't lose one. Every command carries an **operation
 ID**, so a retry returns the first result instead of applying it again.
 
-The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-runtime-adapter.md)).
-
 ## What the adapter switches
 
-`src/moves.js` sends every checkout and return: through the commands when the
-db has `command` (the web build's adapter, `src/aws/db.js`), otherwise as the
-artifact's two writes. It saves an item whose stock changes outside a project
-(`saveItem`) through the adapter's `saveItem` when there is one, otherwise as
-the artifact's document write.
+`src/moves.js` sends every checkout and return through the commands (the web
+build's adapter, `src/aws/db.js`), and saves an item whose stock changes outside
+a project through the adapter's `saveItem`. The demo and the tests' mock runtime
+(`tests/mock-claude.js`) have the same commands, run in the page.
 
 | App action (src/main.js) | Artifact build | Web build (AWS adapter) |
 | --- | --- | --- |
