@@ -30,10 +30,33 @@ const MIN_LIFE_S = 300;
 /** The API's refresh-token cookie (backend/src/api/routes.ts REFRESH_COOKIE). */
 export const REFRESH_COOKIE = "__Secure-sc_refresh";
 
-/** The one cookie a session keeps, from a context's cookies: the API's refresh cookie. */
+/** The cookie's path (backend/src/api/routes.ts REFRESH_COOKIE_PATH). */
+export const REFRESH_COOKIE_PATH = "/auth";
+
+/**
+ * The URL whose cookies hold the session: where the app sends its refresh. A context's
+ * cookies(url) returns only the cookies a request to that URL would carry, path included, so
+ * cookies(apiOrigin) (path "/") never has the refresh cookie (Path=/auth), and nothing was put
+ * back in the pool (supply-checkout-o60.7).
+ */
+export const sessionUrl = (apiOrigin) => `${new URL(apiOrigin).origin}${REFRESH_COOKIE_PATH}/refresh`;
+
+/**
+ * The one cookie a session keeps, from a context's cookies: the API's refresh cookie, with only
+ * the fields addCookies needs in any browser (no partition key or browser-specific field).
+ */
 export function sessionCookie(cookies, apiOrigin) {
   const host = new URL(apiOrigin).hostname;
-  return (cookies ?? []).find((c) => c && c.name === REFRESH_COOKIE && c.httpOnly && c.secure && (c.domain === host || c.domain === `.${host}`) && /^\/auth(\/|$)/.test(c.path) && typeof c.value === "string" && c.value.length > 0) ?? null;
+  const c = (cookies ?? []).find((c) => c && c.name === REFRESH_COOKIE && c.httpOnly && c.secure && (c.domain === host || c.domain === `.${host}`) && /^\/auth(\/|$)/.test(c.path) && typeof c.value === "string" && c.value.length > 0);
+  if (!c) return null;
+  const out = { name: c.name, value: c.value, domain: c.domain, path: c.path, expires: c.expires, httpOnly: true, secure: true };
+  if (["Strict", "Lax", "None"].includes(c.sameSite)) out.sameSite = c.sameSite;
+  return out;
+}
+
+/** A browser context's session as it is now (the app's refresh rotates it), or null. */
+export async function readSession(context, apiOrigin) {
+  return sessionCookie(await context.cookies(sessionUrl(apiOrigin)), apiOrigin);
 }
 
 /**

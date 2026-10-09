@@ -1,13 +1,13 @@
 // node --test scripts/journeys/test/ (part of npm run test:scripts): the long-lived accounts'
 // saved sessions (lib/sessions.mjs), leased one test at a time and never uploaded.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { PROD } from "../lib/config.mjs";
 import { createMasker } from "../lib/mask.mjs";
-import { SESSIONS_DIR, createSessionPool, sessionCookie } from "../lib/sessions.mjs";
+import { REFRESH_COOKIE_PATH, SESSIONS_DIR, createSessionPool, readSession, sessionCookie, sessionUrl } from "../lib/sessions.mjs";
 import { NOT_UPLOADED, filesToUpload } from "../upload-results.mjs";
 
 const NOW = 1_800_000_000;
@@ -22,6 +22,48 @@ test("sessionCookie takes only the API's HttpOnly, Secure refresh cookie under /
   assert.equal(sessionCookie([{ ...good, path: "/authx" }], PROD.api), null);
   assert.equal(sessionCookie([], PROD.api), null);
   assert.equal(sessionCookie(undefined, PROD.api), null);
+});
+
+test("sessionCookie keeps only the fields addCookies takes in every browser", () => {
+  const got = sessionCookie([{ ...cookie("refresh-token-value"), partitionKey: "https://app.example.com", _crHasCrossSiteAncestor: false }], PROD.api);
+  assert.deepEqual(got, cookie("refresh-token-value"));
+  assert.equal("sameSite" in sessionCookie([{ ...cookie("v-aaaa"), sameSite: "bogus" }], PROD.api), false);
+});
+
+// A browser context's cookies(urls), as Playwright filters them (filterCookies in
+// playwright-core): a cookie whose domain matches the URL's host and whose path is a prefix of
+// the URL's path; Secure ones only for https
+const fakeContext = (jar) => ({
+  async cookies(urls) {
+    const list = urls === undefined ? [] : [urls].flat().map((u) => new URL(u));
+    return jar.filter((c) => !list.length || list.some((u) => {
+      const domain = c.domain.startsWith(".") ? c.domain : `.${c.domain}`;
+      return `.${u.hostname}`.endsWith(domain) && u.pathname.startsWith(c.path) && (u.protocol === "https:" || !c.secure);
+    }));
+  },
+});
+
+test("readSession finds the refresh cookie under its path, which the API's origin alone never shows", async () => {
+  const jar = [cookie("refresh-token-zzzz"), { ...cookie("app-cookie"), name: "other", domain: new URL(PROD.app).hostname, path: "/" }];
+  const ctx = fakeContext(jar);
+  // The bug: cookies(PROD.api) asks for path "/", which a Path=/auth cookie doesn't match
+  assert.equal(sessionCookie(await ctx.cookies(PROD.api), PROD.api), null);
+  assert.equal(sessionUrl(PROD.api), `${PROD.api}${REFRESH_COOKIE_PATH}/refresh`);
+  assert.equal(sessionUrl(`${PROD.api}/`), `${PROD.api}/auth/refresh`);
+  assert.deepEqual(await readSession(ctx, PROD.api), cookie("refresh-token-zzzz"));
+  assert.equal(await readSession(fakeContext([]), PROD.api), null, "a signed-out context has none");
+});
+
+test("a session read from a test's context goes back in the pool and out to the next test", async () => {
+  const { sessions } = pool();
+  assert.equal(sessions.put("crew", await readSession(fakeContext([cookie("rotated-token-yyyy")]), PROD.api)), true);
+  assert.equal(sessions.take("crew").value, "rotated-token-yyyy");
+});
+
+test("the fixtures read the session with readSession, never the API's origin alone", () => {
+  const fixtures = readFileSync(new URL("../../../tests/prod/fixtures.mjs", import.meta.url), "utf8");
+  assert.match(fixtures, /readSession\(ctx, PROD\.api\)/);
+  assert.doesNotMatch(fixtures, /\.cookies\(PROD\.api\)/);
 });
 
 test("a session is leased: take() removes it, so two takers never get the same one", () => {

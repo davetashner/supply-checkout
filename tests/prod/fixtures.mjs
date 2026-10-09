@@ -27,7 +27,7 @@ import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
 import { freshTotp } from "../../scripts/journeys/lib/totp.mjs";
 import { PASSWORD_CHOICE, formatScreen } from "../../scripts/journeys/lib/screen.mjs";
-import { SIGN_IN, createSessionPool, sessionCookie } from "../../scripts/journeys/lib/sessions.mjs";
+import { SIGN_IN, createSessionPool, readSession } from "../../scripts/journeys/lib/sessions.mjs";
 import { assertNotTracing, markTracing, secretFill } from "../../scripts/journeys/lib/tracing.mjs";
 import { waitUntilConnected } from "../ui/app.js";
 
@@ -138,8 +138,10 @@ export const test = base.extend({
       for (const h of mine) held.splice(held.indexOf(h), 1);
       if (!mine.length) return;
       let cookie;
-      try { cookie = sessionCookie(await ctx.cookies(PROD.api), PROD.api); } catch { return; }
-      for (const h of mine) harness.sessions.put(h.role, cookie);
+      try { cookie = await readSession(ctx, PROD.api); } catch { return; }
+      // One cookie per context: a second role signed in in the same context has replaced the first's
+      const role = mine[mine.length - 1].role;
+      if (!harness.sessions.put(role, cookie)) testInfo.annotations.push({ type: "journeys-warning", description: `${role}: no session to save after the test, so the next test signs in through Managed Login again` });
     };
     const signIn = async (page, role, { fresh = false } = {}) => {
       const account = harness.config.accounts[role];
