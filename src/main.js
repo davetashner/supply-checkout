@@ -191,7 +191,7 @@ window.addEventListener("online", () => {
 // meanwhile, the page is read-only (canWrite) and it hides, as for a team that opens closed.
 function draw() {
   drawView();
-  if (firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, projects.length || Number(olderExist));
+  if (firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, projects.length || Number(olderExist), receiptOK);
 }
 function drawView() {
   $("#tab-projects").setAttribute("aria-pressed", ui.tab === "projects");
@@ -1621,6 +1621,7 @@ async function saveReceipt() {
     }
   }
   rSaving = false; draft = null; saveDraft(); ui.receipt = false;
+  if (firstRun) firstRun.receiptSaved();
   if (savedIds.length === 1) ui.projectId = savedIds[0];
   ui.tab = "projects"; draw(); window.scrollTo(0, 0);
   const nStock = toStock.reduce((a, l) => a + eaches(l), 0);
