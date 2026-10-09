@@ -26,8 +26,8 @@
 //    (entitlementDrift). Any difference is drift, and so is a `past_due` or
 //    ended team without the date its access rules count from (`accessDates`:
 //    applied before those were kept).
-//    A live one (LIVE_REPLACEMENT; not `paused`) that replaces an `unpaid`
-//    recorded one first clears the unpaid one (cancels it, voids its open invoices: replaced.ts,
+//    Only a paid one (isPaidReplacement: never a trial) replaces an
+//    `unpaid` recorded one, and first clears the unpaid one (cancels it, voids its open invoices: replaced.ts,
 //    supply-checkout-8jc.44), as the event would have.
 // 3. Fix it: apply Stripe's state with applySubscription, conditioned on the
 //    team's version being the one read (`asRead`, supply-checkout-8jc.27).
@@ -55,7 +55,7 @@
 import { type BillingAsRead, type BillingTeam, applySubscription, getBillingTeam, hasEnded, hasStopped, stripeCustomerTeam, type SubscriptionState, teamContextForStripeCustomer } from "../data/index.js";
 import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import { customerOf } from "./closing.js";
-import { clearReplacedUnpaid, LIVE_REPLACEMENT, type ReplacedStripe, unpaidToClear } from "./replaced.js";
+import { clearReplacedUnpaid, isPaidReplacement, type ReplacedStripe, unpaidToClear } from "./replaced.js";
 import type { SeatSyncMessage } from "./seats.js";
 import { type SubscriptionLike, subscriptionState } from "./subscription.js";
 import type { DbForWorker } from "./worker-db.js";
@@ -182,7 +182,7 @@ export function createEntitlementCheck(deps: EntitlementCheckDeps) {
       }
       // An unpaid one stays the team's until a live one replaces it, as for an event (worker.ts)
       const clears = sub !== undefined && unpaidToClear(sub, team.status);
-      if (newer && (!clears || LIVE_REPLACEMENT.includes(newer.status))) {
+      if (newer && (!clears || (await isPaidReplacement(stripe, newer)))) {
         replaces = sub ? team.stripeSubscriptionId : undefined;
         if (clears) unpaid = sub;
         sub = newer;
@@ -196,8 +196,8 @@ export function createEntitlementCheck(deps: EntitlementCheckDeps) {
     const asRead: BillingAsRead = { version: team.version };
     // Before the team takes the new one, as the event does (worker.ts): a failure retries, and finds the unpaid one again
     if (unpaid) {
-      const cleared = await clearReplacedUnpaid(stripe, unpaid, customer);
-      obs.logger.info("Replaced unpaid subscription cleared", { teamId, messageId: id, subscriptionId: unpaid.id, status: unpaid.status, canceled: cleared.canceled, voided: cleared.voided, by: sub.id });
+      const cleared = await clearReplacedUnpaid(stripe, unpaid, customer, obs.logger, { teamId, messageId: id });
+      obs.logger.info("Replaced unpaid subscription cleared", { teamId, messageId: id, subscriptionId: unpaid.id, status: unpaid.status, canceled: cleared.canceled, voided: cleared.voided, refused: cleared.refused.length, by: sub.id });
     }
     // Counted once the fix is written: a team an event changed meanwhile throws here, and the retry finds it in sync
     if ((await applySubscription(db, ctx, state, now, asRead)) === "ignored") return "team_closed";

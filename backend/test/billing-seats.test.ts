@@ -146,8 +146,10 @@ beforeEach(() => {
       },
     },
     invoices: {
-      async list({ subscription }) {
-        return { data: [...openInvoices].filter(([, sub]) => sub === subscription).map(([id]) => ({ id, customer: CUSTOMER })), has_more: false };
+      async list({ subscription, status }) {
+        // Only open ones here: no subscription in these tests has a paid invoice
+        const open = status === "open" ? [...openInvoices].filter(([, sub]) => sub === subscription) : [];
+        return { data: open.map(([id]) => ({ id, customer: CUSTOMER })), has_more: false };
       },
       async voidInvoice(id) {
         voids.push(id);
@@ -510,11 +512,18 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     expect(await nightly()).toBe("subscription_ended");
     expect(cancels).toEqual([]);
     expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "unpaid" });
+    // Nor is a trial, or a past_due one that never took money: the old debt is written off only for a paid one
+    for (const status of ["trialing", "past_due"]) {
+      subs.set("sub_test_2", subscription(3, { id: "sub_test_2", status, created: OLD }));
+      expect(await nightly()).toBe("subscription_ended");
+      expect(cancels).toEqual([]);
+      expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "unpaid" });
+    }
     subs.set("sub_test_2", subscription(3, { id: "sub_test_2", created: OLD }));
     expect(await worker(seats("reconcile", "reconcile-2026-09-29-cus_test_1"))).toBe("in_sync");
     expect(cancels).toEqual([SUB]);
     expect(voids).toEqual(["in_test_overdue"]);
-    expect(logs).toContainEqual(["info", "Replaced unpaid subscription cleared", { teamId: TEAM, messageId: "reconcile-2026-09-29-cus_test_1", subscriptionId: SUB, status: "unpaid", canceled: true, voided: 1, by: "sub_test_2" }]);
+    expect(logs).toContainEqual(["info", "Replaced unpaid subscription cleared", { teamId: TEAM, messageId: "reconcile-2026-09-29-cus_test_1", subscriptionId: SUB, status: "unpaid", canceled: true, voided: 1, refused: 0, by: "sub_test_2" }]);
     expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_2", status: "active" });
     expect(denied).toEqual([]);
   });

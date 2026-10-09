@@ -5,7 +5,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import type { BillingScope, DbForBilling } from "../src/api/billing-db.js";
-import { type BillingStripe, type CheckoutSessionParams, createBillingHandler, idempotencyKey, INVOICE_PAGE, type InvoiceLike, type PortalSessionParams, trialEnd } from "../src/api/billing-handler.js";
+import { type BillingStripe, type CheckoutSessionParams, createBillingHandler, idempotencyKey, INVOICE_PAGE, type InvoiceLike, type PortalSessionParams, trialAllowed, trialEnd } from "../src/api/billing-handler.js";
 import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
@@ -363,6 +363,63 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
     patchTeam({ trialEndsAt: undefined, createdAt: new Date(now - 2 * DAY).toISOString() });
     await checkout();
     expect(stripe.state.sessions[0]?.params.subscription_data.trial_end).toBe(Math.floor((now + (TRIAL_DAYS - 2) * DAY) / 1000));
+  });
+
+  describe("never a trial for a team that is or was unpaid (supply-checkout-8jc.44)", () => {
+    const owed = (status: string, amount_due: number, amount_paid = 0) => ({ id: `in_test_${status}`, number: null, status, created: 0, currency: "usd", total: amount_due, amount_due, amount_paid, customer: "cus_test_9" });
+    const noTrial = async () => {
+      const { status, body } = await checkout();
+      expect(status).toBe(201);
+      expect(body.checkout.trialEndsAt).toBeNull();
+      const params = stripe.state.sessions[0]?.params as CheckoutSessionParams;
+      expect(params.payment_method_collection).toBe("always");
+      expect(params.subscription_data).toEqual({ metadata: { teamId: TEAM, plan: "starter" } });
+    };
+
+    it("gives none to an unpaid team still in its app trial, and reads no invoices for it", async () => {
+      // Trying to game it: unpaid, with days of the app trial left, then a trial to have the debt written off
+      patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "unpaid" });
+      await noTrial();
+      expect(stripe.state.invoiceLists).toEqual([]);
+    });
+
+    it("gives none when any of the customer's subscriptions is unpaid, though the team hasn't heard", async () => {
+      patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "canceled" });
+      stripe.state.subscriptions = [{ status: "canceled" }, { status: "unpaid" }];
+      await noTrial();
+    });
+
+    it.each([
+      ["written off (void)", owed("void", 900)],
+      ["still owed", owed("open", 900)],
+      ["uncollectible", owed("uncollectible", 900)],
+      ["paid", owed("paid", 900, 900)],
+    ])("gives none to a customer with an invoice %s", async (_, invoice) => {
+      patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "canceled" });
+      stripe.state.invoices = [owed("paid", 0), invoice];
+      await noTrial();
+      expect(stripe.state.invoiceLists).toEqual([{ customer: "cus_test_9", limit: 100 }]);
+    });
+
+    it("still gives one to a customer only ever invoiced $0, or with only a draft", async () => {
+      patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "canceled" });
+      stripe.state.invoices = [owed("paid", 0), owed("draft", 900)];
+      const { body } = await checkout();
+      expect(body.checkout.trialEndsAt).toBe(new Date(now + 13 * DAY).toISOString());
+      expect(stripe.state.sessions[0]?.params.payment_method_collection).toBe("if_required");
+    });
+
+    it("decides each rule on its own", () => {
+      const team = { status: "canceled", trialEndsAt: new Date(now + 13 * DAY).toISOString() };
+      expect(trialAllowed(team, now, [], [])).toBe(true);
+      expect(trialAllowed({ ...team, trialEndsAt: new Date(now - DAY).toISOString() }, now, [], [])).toBe(false);
+      expect(trialAllowed({ ...team, status: "unpaid" }, now, [], [])).toBe(false);
+      expect(trialAllowed(team, now, [{ status: "unpaid" }], [])).toBe(false);
+      expect(trialAllowed(team, now, [], [{ status: "void", amount_due: 1, amount_paid: 0 }])).toBe(false);
+      expect(trialAllowed(team, now, [], [{ status: "paid", amount_due: 0, amount_paid: 1 }])).toBe(false);
+      expect(trialAllowed(team, now, [], [{ status: "draft", amount_due: 1, amount_paid: 0 }])).toBe(true);
+      expect(trialAllowed({ ...team, trialEndsAt: "never" }, now, [], [])).toBe(false);
+    });
   });
 
   it("works out the trial's end", () => {

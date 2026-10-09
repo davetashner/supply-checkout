@@ -18,7 +18,7 @@
 //    seats, status, interval, period end) with applySubscription, whose
 //    conditions never recreate a purged team or touch a closed one. A new
 //    subscription replaces the team's once that has ended; an unpaid one only
-//    once the new one is live, and is then cancelled and its open invoices
+//    once the new one is paid (never a trial), and is then cancelled and its open invoices
 //    voided first (replaced.ts, supply-checkout-8jc.44). Applying
 //    the latest state is harmless to repeat and doesn't depend on the order
 //    events arrive in; the queue also hands a customer's events over one at a
@@ -88,9 +88,9 @@ import type { TeamNoticeInput } from "../email/templates.js";
 import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import { BILLING_EVENTS, type BillingEventType } from "./names.js";
 import type { BillingMessage } from "./webhook-handler.js";
-import { createEntitlementCheck, type EntitlementOutcome, type EntitlementStripe } from "./entitlements.js";
+import { createEntitlementCheck, type EntitlementOutcome, type EntitlementStripe, SUBSCRIPTIONS_LISTED } from "./entitlements.js";
 import { createReopenResync } from "./reopening.js";
-import { clearReplacedUnpaid, LIVE_REPLACEMENT, type ReplacedStripe, unpaidToClear } from "./replaced.js";
+import { clearReplacedUnpaid, isPaidReplacement, type ReplacedStripe, unpaidToClear } from "./replaced.js";
 import { createSeatSync, findSeatTeam, parseSeatSync, readSeatTeamAgain, type SeatOutcome, type SeatStripe, type SeatSyncMessage, type SeatTeam, type SeatTeamMissing } from "./seats.js";
 import { iso, type SubscriptionLike, subscriptionState } from "./subscription.js";
 import type { DbForWorker } from "./worker-db.js";
@@ -231,10 +231,10 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
    * finished before the first webhook landed), and the worker cancels it
    * (`second`). The team's subscription is read from Stripe unless the team
    * records it as over (canceled, incomplete_expired). An unpaid one
-   * (replaced.ts, supply-checkout-8jc.44) is replaced only by a live one
-   * (LIVE_REPLACEMENT), and comes back as `unpaid` to be cleared first; for
-   * any other (an `incomplete` checkout, say) the team keeps it (`wait`), and
-   * the new one's later event applies it once it's paid.
+   * (replaced.ts, supply-checkout-8jc.44) is replaced only by a paid one
+   * (isPaidReplacement: never a trial), and comes back as `unpaid` to be
+   * cleared first; for any other (a trial, an `incomplete` checkout) the team
+   * keeps it (`wait`), and the new one's later event applies it once it's paid.
    */
   async function choose(stripe: WorkerStripe, sub: SubscriptionLike, stored: string | undefined, storedStatus: string): Promise<{ replaces?: string; unpaid?: SubscriptionLike } | "second" | "wait"> {
     if (!stored || stored === sub.id) return {};
@@ -242,7 +242,16 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     const current = await stripe.subscriptions.retrieve(stored);
     if (!hasEnded(current.status)) return "second";
     if (!unpaidToClear(current, storedStatus)) return { replaces: stored };
-    return LIVE_REPLACEMENT.includes(sub.status) ? { replaces: stored, unpaid: current } : "wait";
+    return (await isPaidReplacement(stripe, sub)) ? { replaces: stored, unpaid: current } : "wait";
+  }
+
+  /** The customer's newest paid subscription other than `ended` (isPaidReplacement), if any: what replaced it. */
+  async function paidReplacementFor(stripe: WorkerStripe & EntitlementStripe, customer: string, ended: string): Promise<SubscriptionLike | undefined> {
+    const { data } = await stripe.subscriptions.list({ customer, status: "all", limit: SUBSCRIPTIONS_LISTED });
+    for (const candidate of data) {
+      if (candidate.id !== ended && customerOf(candidate) === customer && (await isPaidReplacement(stripe, candidate))) return candidate;
+    }
+    return undefined;
   }
 
   /** Emails each owner about the event, once each whatever the retries (claimBillingNotice first). */
@@ -461,8 +470,12 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     }
     if (!message.subscription) return done("ignored");
     const stripe = await deps.stripe();
-    const sub = await stripe.subscriptions.retrieve(message.subscription);
+    let sub = await stripe.subscriptions.retrieve(message.subscription);
     if (customerOf(sub) !== customer) return done("ignored");
+    // The team's own subscription has ended (or gone unpaid): if a paid one has replaced it whose own events
+    // failed (clearing an unpaid one kept failing, say), the team takes that one instead, so no deletion date
+    // starts while a paid subscription exists (replaced.ts)
+    if (sub.id === team.stripeSubscriptionId && hasEnded(sub.status)) sub = (await paidReplacementFor(stripe, customer, sub.id)) ?? sub;
     // An older ended subscription (a replayed or late event) never replaces the team's unpaid one, or an ended
     // one that ended later: it would give the team a deletion date, or pull it in (billingAccess)
     if (endedEarlier(sub, team)) return done("ignored");
@@ -478,7 +491,8 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
         await stripe.subscriptions.cancel(sub.id, {}, { idempotencyKey: `cancel-second-${sub.id}` });
         obs.logger.warn("Second subscription canceled", { teamId, eventId, subscriptionId: sub.id, status: sub.status, kept: team.stripeSubscriptionId ?? "" });
       }
-      return done("second_subscription_canceled");
+      // An ended one (a replaced subscription's own end, say) changes nothing
+      return done(hasEnded(sub.status) ? "ignored" : "second_subscription_canceled");
     }
     // A stamp that no longer means anything goes (closing.ts): with no resync pending, any; while one is, one on a renewed
     // subscription. So an owner's later cancellation is never taken for a closure's, or stamped again at the next closing
@@ -486,8 +500,8 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     // The unpaid one it replaces is cleared before the team takes the new one: a failure retries the event, and
     // the team still names the old one, so the retry clears what's left (replaced.ts)
     if (chosen.unpaid) {
-      const cleared = await clearReplacedUnpaid(stripe, chosen.unpaid, customer);
-      obs.logger.info("Replaced unpaid subscription cleared", { teamId, eventId, subscriptionId: chosen.unpaid.id, status: chosen.unpaid.status, canceled: cleared.canceled, voided: cleared.voided, by: sub.id });
+      const cleared = await clearReplacedUnpaid(stripe, chosen.unpaid, customer, obs.logger, { teamId, eventId });
+      obs.logger.info("Replaced unpaid subscription cleared", { teamId, eventId, subscriptionId: chosen.unpaid.id, status: chosen.unpaid.status, canceled: cleared.canceled, voided: cleared.voided, refused: cleared.refused.length, by: sub.id });
     }
     const result = await applySubscription(db, ctx, subscriptionState(sub, customer, chosen.replaces), now());
     if (result === "ignored") {

@@ -5,6 +5,7 @@
 
 import type { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import type { SQSEvent } from "aws-lambda";
+import Stripe from "stripe";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BillingMessage } from "../src/billing/webhook-handler.js";
 import { CLOSED_AT_METADATA, closingAction, closingKey, resumeKey } from "../src/billing/closing.js";
@@ -37,13 +38,17 @@ let subs: Map<string, SubscriptionLike>;
 let retrieves: string[];
 let cancels: { id: string; key: string }[];
 /** Stripe's invoices: subscription, customer and status. */
-let invoices: Map<string, { subscription: string; customer: string; status: string }>;
+let invoices: Map<string, { subscription: string; customer: string; status: string; amount_paid?: number }>;
+/** Stripe can't list subscriptions (as when it's down). */
+let listFails: boolean;
 let voids: { id: string; key: string }[];
 let invoiceListings: { subscription: string; status: string; limit: number; starting_after?: string }[];
 /** How many invoices Stripe lists on a page (OPEN_INVOICES_LISTED in production). */
 let invoicePage: number;
 /** Stripe fails voiding an invoice. */
 let voidFails: boolean;
+/** Invoices Stripe refuses to void for good (an invalid-request error). */
+let refuseVoid: Set<string>;
 let updates: { id: string; params: Record<string, unknown>; key: string }[];
 let seatUpdates: { item: string; quantity: number; proration: string; key: string }[];
 let stripeDown: boolean;
@@ -114,6 +119,8 @@ beforeEach(() => {
   invoiceListings = [];
   invoicePage = 100;
   voidFails = false;
+  refuseVoid = new Set();
+  listFails = false;
   updates = [];
   onRetrieve = undefined;
   onUpdate = undefined;
@@ -145,8 +152,10 @@ function build(nowMs = NOW) {
       },
     },
     subscriptions: {
-      async list() {
-        throw new Error("not used");
+      async list({ limit }) {
+        if (listFails) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
+        // Every customer's, newest first: the worker must pick out the customer's own itself
+        return { data: [...subs.values()].sort((a, b) => (b.created ?? 0) - (a.created ?? 0)).slice(0, limit) };
       },
       async retrieve(id: string) {
         retrieves.push(id);
@@ -179,13 +188,14 @@ function build(nowMs = NOW) {
     invoices: {
       async list(params) {
         invoiceListings.push(params);
-        const open = [...invoices].filter(([, i]) => i.subscription === params.subscription && i.status === params.status).map(([id, i]) => ({ id, customer: i.customer }));
+        const open = [...invoices].filter(([, i]) => i.subscription === params.subscription && i.status === params.status).map(([id, i]) => ({ id, customer: i.customer, amount_paid: i.amount_paid ?? 0 }));
         const from = params.starting_after ? open.findIndex((i) => i.id === params.starting_after) + 1 : 0;
         const size = Math.min(params.limit, invoicePage);
         return { data: open.slice(from, from + size), has_more: open.length > from + size };
       },
       async voidInvoice(id, _params, options) {
         if (voidFails) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
+        if (refuseVoid.has(id)) throw new Stripe.errors.StripeInvalidRequestError({ type: "invalid_request_error", message: `Invoice ${id} can't be voided`, code: "invoice_not_editable", statusCode: 400, requestId: "req_test_1" } as never);
         if (stripeKeys.has(options.idempotencyKey)) return;
         stripeKeys.add(options.idempotencyKey);
         const found = invoices.get(id);
@@ -497,7 +507,7 @@ describe("applying a subscription", () => {
     expect(cancels).toEqual([{ id: "sub_test_2", key: `cancel-second-${"sub_test_2"}` }]);
     expect(logs.find((l) => l[0] === "Second subscription canceled")?.[1]).toMatchObject({ teamId: TEAM, subscriptionId: "sub_test_2", kept: "sub_test_1" });
     // Its own deletion event: already ended, so nothing more to cancel, no email, and the team keeps the first
-    expect(await worker(message("customer.subscription.deleted", { eventId: "evt_test_2b", subscription: "sub_test_2", status: "canceled" }))).toBe("second_subscription_canceled");
+    expect(await worker(message("customer.subscription.deleted", { eventId: "evt_test_2b", subscription: "sub_test_2", status: "canceled" }))).toBe("ignored");
     expect(cancels).toHaveLength(1);
     expect(mails.sent).toEqual([]);
     expect(meta().status).toBe("trialing");
@@ -1249,7 +1259,7 @@ describe("resubscribing an unpaid team (supply-checkout-8jc.44)", () => {
     expect(invoiceListings).toEqual([{ subscription: "sub_test_2", status: "open", limit: 100 }]);
     expect(meta()).toMatchObject({ status: "active", stripeSubscriptionId: "sub_test_3" });
     expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ subscriptionEnded: false });
-    expect(cleared()).toEqual([{ teamId: TEAM, eventId: "evt_test_2", subscriptionId: "sub_test_2", status: "unpaid", canceled: true, voided: 1, by: "sub_test_3" }]);
+    expect(cleared()).toEqual([{ teamId: TEAM, eventId: "evt_test_2", subscriptionId: "sub_test_2", status: "unpaid", canceled: true, voided: 1, refused: 0, by: "sub_test_3" }]);
     expect(denied).toEqual([]);
     // A replay, and the new subscription's other events, clear nothing again
     expect(await resubscribe()).toBe("duplicate");
@@ -1348,6 +1358,80 @@ describe("resubscribing an unpaid team (supply-checkout-8jc.44)", () => {
     expect(cancels).toHaveLength(1);
     expect(invoices.get("in_test_5")?.status).toBe("open");
     expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_3" });
+  });
+
+  it("never writes the old debt off for a trial: the team stays on its unpaid subscription until the new one is paid", async () => {
+    unpaidTeam();
+    // Trying to game it: a trial (Checkout gives such a team none, but one made another way) is not a payment
+    subs.set("sub_test_3", subscription({ id: "sub_test_3", status: "trialing" }));
+    expect(await resubscribe()).toBe("ignored");
+    // Its trial's $0 invoice is paid, and then the first real one fails: still nothing paid
+    invoices.set("in_test_trial", { subscription: "sub_test_3", customer: CUSTOMER, status: "paid", amount_paid: 0 });
+    subs.set("sub_test_3", subscription({ id: "sub_test_3", status: "past_due" }));
+    expect(await resubscribe("evt_test_3", "customer.subscription.updated")).toBe("ignored");
+    expect(cancels).toEqual([]);
+    expect(voids).toEqual([]);
+    expect(invoices.get("in_test_overdue")?.status).toBe("open");
+    expect(meta()).toMatchObject({ status: "unpaid", stripeSubscriptionId: "sub_test_2" });
+    expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ subscriptionEnded: true, readOnlyReason: "payment_overdue" });
+    // Once one of its invoices takes money, past_due is a paid subscription, and the old debt is written off
+    invoices.set("in_test_first", { subscription: "sub_test_3", customer: CUSTOMER, status: "paid", amount_paid: 900 });
+    expect(await resubscribe("evt_test_4", "invoice.paid")).toBe("applied");
+    expect(cancels.map((c) => c.id)).toEqual(["sub_test_2"]);
+    expect(voids.map((v) => v.id)).toEqual(["in_test_overdue"]);
+    expect(meta()).toMatchObject({ status: "past_due", stripeSubscriptionId: "sub_test_3" });
+  });
+
+  it("takes the paid replacement, not the old one's end, when clearing failed and the old one's end arrives", async () => {
+    unpaidTeam();
+    subs.set("sub_test_3", subscription({ id: "sub_test_3", status: "active", created: NOW / 1000 }));
+    voidFails = true;
+    // The resubscription's event fails after the cancel (and, retried, goes to the dead-letter queue)
+    await expect(resubscribe()).rejects.toThrow("Stripe is down");
+    expect(subs.get("sub_test_2")?.status).toBe("canceled");
+    expect(meta()).toMatchObject({ status: "unpaid", stripeSubscriptionId: "sub_test_2" });
+    // The old one's end, for the subscription the team still names: while Stripe still fails, it fails too, starting nothing
+    subs.set("sub_test_2", { ...(subs.get("sub_test_2") as SubscriptionLike), ended_at: NOW / 1000 });
+    const ended = () => worker(message("customer.subscription.deleted", { eventId: "evt_test_9", subscription: "sub_test_2", status: "canceled" }));
+    await expect(ended()).rejects.toThrow("Stripe is down");
+    expect(meta()).toMatchObject({ status: "unpaid", stripeSubscriptionId: "sub_test_2" });
+    voidFails = false;
+    expect(await ended()).toBe("applied");
+    expect(meta()).toMatchObject({ status: "active", stripeSubscriptionId: "sub_test_3" });
+    expect(meta().subscriptionEndedAt).toBeUndefined();
+    expect(voids.map((v) => v.id)).toEqual(["in_test_overdue"]);
+    expect(cancels).toHaveLength(1);
+    // No read-only email: the team isn't
+    expect(mails.sent).toEqual([]);
+  });
+
+  it("applies the team's own subscription's end as before when nothing paid replaced it, and retries when Stripe can't list", async () => {
+    unpaidTeam();
+    // A trial isn't a paid replacement, and another customer's never counts
+    subs.set("sub_test_3", subscription({ id: "sub_test_3", status: "trialing" }));
+    subs.set("sub_test_4", subscription({ id: "sub_test_4", status: "active", customer: { id: "cus_test_other" } }));
+    subs.set("sub_test_2", subscription({ id: "sub_test_2", status: "canceled", ended_at: NOW / 1000 }));
+    listFails = true;
+    const ended = () => worker(message("customer.subscription.deleted", { eventId: "evt_test_9", subscription: "sub_test_2", status: "canceled" }));
+    await expect(ended()).rejects.toThrow("Stripe is down");
+    listFails = false;
+    expect(await ended()).toBe("applied");
+    expect(meta()).toMatchObject({ status: "canceled", stripeSubscriptionId: "sub_test_2", subscriptionEndedAt: new Date(NOW).toISOString() });
+  });
+
+  it("logs an invoice Stripe refuses to void, for a person, and carries on", async () => {
+    unpaidTeam();
+    invoices.set("in_test_overdue_2", { subscription: "sub_test_2", customer: CUSTOMER, status: "open" });
+    refuseVoid.add("in_test_overdue");
+    subs.set("sub_test_3", subscription({ id: "sub_test_3", status: "active" }));
+    expect(await resubscribe()).toBe("applied");
+    expect(voids.map((v) => v.id)).toEqual(["in_test_overdue_2"]);
+    expect(logs).toContainEqual([
+      "Replaced unpaid subscription's invoice not voided: void it by hand",
+      { teamId: TEAM, eventId: "evt_test_2", subscriptionId: "sub_test_2", invoiceId: "in_test_overdue", type: "StripeInvalidRequestError", code: "invoice_not_editable", status: 400, requestId: "req_test_1" },
+    ]);
+    expect(cleared()).toEqual([expect.objectContaining({ voided: 1, refused: 1 })]);
+    expect(meta()).toMatchObject({ status: "active", stripeSubscriptionId: "sub_test_3" });
   });
 
   it("decides which old subscriptions to clear", () => {
