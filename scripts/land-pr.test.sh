@@ -30,6 +30,9 @@
 #                    one then sticks
 #   export_stale     if present, `node scripts/export-beads.mjs --check` exits 1
 #   export_error     if present, it exits 2 (bd failed)
+#   export_recent    if present, `node scripts/export-beads.mjs --due` exits 1
+#                    (the committed export is less than a day old); otherwise
+#                    it exits 0 (a refresh is due)
 #   page_fails       if present, `node scripts/backlog-page.mjs` fails
 #   beads_pr_rc      exit code of `npm run -s beads:pr` (default 0)
 #   hold             while present, `gh pr checks --watch` blocks (it touches
@@ -38,7 +41,7 @@
 #   ln_lost_race     if present, the next `ln` fails once without creating
 #                    anything, as if another land's lock was released just
 #                    after `ln` found it
-#   calls            every gh, bd, sleep, backlog-page and npm call, appended by
+#   calls            every gh, bd, sleep, backlog-page, export --due and npm call, appended by
 #                    the fakes; npm's line also says whether the land lock was
 #                    held and whether LAND_SKIP_BACKLOG was set
 set -euo pipefail
@@ -156,6 +159,7 @@ cat > "$tmp/bin/node" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
   scripts/export-beads.mjs)
+    if [ "${2:-}" = --due ]; then echo "node $*" >> "$FAKE/calls"; [ ! -e "$FAKE/export_recent" ]; exit; fi
     [ ! -e "$FAKE/export_error" ] || exit 2
     [ ! -e "$FAKE/export_stale" ] ;;
   scripts/backlog-page.mjs)
@@ -361,11 +365,12 @@ check "says how to rebuild it" says "Rebuild it with npm run backlog:page."
 check "doesn't ask to publish it" not_says "publish"
 done_case
 
-echo "beads export is stale"
+echo "beads export is stale and the committed one is a day old: refreshes it"
 scenario export-stale
 touch "$FAKE/export_stale"
 land
 check "exits 0" exits 0
+check "asks whether a refresh is due" called "node scripts/export-beads.mjs --due"
 check "says it's refreshing it" says "The beads export is stale: refreshing it with npm run beads:pr"
 check "runs beads:pr after releasing the land lock" called "npm run -s beads:pr (lock free"
 check "tells the export's land to skip the backlog" called "npm run -s beads:pr (lock free, skip=1)"
@@ -373,6 +378,25 @@ check "runs it once" [ "$(count "beads:pr")" -eq 1 ]
 check "rebuilds the page after" [ "$(grep -n -e beads:pr -e backlog-page "$FAKE/calls" | tail -1 | grep -c backlog-page)" -eq 1 ]
 check "ends with where it wrote the page" last_says "Wrote the backlog page"
 check "releases the lock" unlocked
+done_case
+
+echo "beads export is stale, but the committed one is less than a day old"
+scenario export-recent
+touch "$FAKE/export_stale" "$FAKE/export_recent"
+land
+check "exits 0" exits 0
+check "asks whether a refresh is due" called "node scripts/export-beads.mjs --due"
+check "doesn't run beads:pr" not_called "beads:pr"
+check "says it's left for later" says "The beads export is stale, but the committed one is less than a day old"
+check "still rebuilds the page" called "node scripts/backlog-page.mjs"
+check "ends with where it wrote the page" last_says "Wrote the backlog page"
+done_case
+
+echo "beads export is current: doesn't ask whether a refresh is due"
+scenario export-current
+land
+check "exits 0" exits 0
+check "doesn't ask" not_called "export-beads.mjs --due"
 done_case
 
 echo "beads export is stale, and its PR doesn't land"

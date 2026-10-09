@@ -6,8 +6,10 @@
 //   - silently rebuilds dist/backlog/index.html (the page people open
 //     locally) when the beads' data differs from the page last built (its
 //     .hash), and
-//   - checks whether the committed .beads/issues.jsonl is stale, and if so
-//     blocks the stop with a reason telling Claude to run `npm run beads:pr`.
+//   - checks whether the committed .beads/issues.jsonl is stale and a refresh
+//     is due (the export committed on origin/main is a day old or more, see
+//     export-beads.mjs --due), and if so blocks the stop with a reason telling
+//     Claude to run `npm run beads:pr`. So there's at most one export PR a day.
 // Otherwise it prints nothing.
 //
 // It must never get in the way on its own account: any error (bd missing, a
@@ -39,6 +41,10 @@ export function stopHook(input) {
   const exportStale = spawnSync(process.execPath, [join(here, "export-beads.mjs"), "--check"],
     { cwd: main, timeout: TIMEOUT, stdio: "ignore" }).status === 1;
   if (!exportStale) return null;
+  // 0 means due; a recent export (1) or an error waits for a later stop
+  const exportDue = spawnSync(process.execPath, [join(here, "export-beads.mjs"), "--due"],
+    { cwd: main, timeout: TIMEOUT, stdio: "ignore" }).status === 0;
+  if (!exportDue) return null;
   return {
     decision: "block",
     reason: "The committed beads export (.beads/issues.jsonl) is stale: run `npm run beads:pr` from the main checkout " +
