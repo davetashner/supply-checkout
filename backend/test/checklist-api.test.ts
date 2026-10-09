@@ -7,6 +7,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
+import { PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { connection } from "../src/data/client.js";
 import { InvalidInputError } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
 import { MemoryTable } from "./memory-table.js";
@@ -37,7 +39,7 @@ beforeEach(() => {
   handler = createDataHandler({
     dbForTeam: (teamId) => {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(teamId)) throw new InvalidInputError("Invalid team ID");
-      return table.db(teamId);
+      return table.dataDb(teamId);
     },
     obs,
     now: () => clock,
@@ -119,6 +121,22 @@ describe("PATCH /teams/{teamId}/checklist", () => {
     }
     expect((await call("PATCH", CHECKLIST, undefined, OWNER)).status).toBe(400);
     expect(meta()).toEqual(before);
+  });
+
+  it("stays inside the data role's deny on a team's billing attributes, which refuses a write naming one (supply-checkout-3sv.25)", async () => {
+    start();
+    const denied: { command: string; input: Record<string, unknown> }[] = [];
+    const guarded = createDataHandler({ dbForTeam: (teamId) => table.dataDb(teamId, denied), obs: { logger: { info: () => {}, warn: () => {}, error: () => {}, addContext: () => {} }, count: () => {}, flush: () => {} } as unknown as Observability, now: () => clock });
+    expect((await guarded(event("PATCH", CHECKLIST, OWNER, { started: true, receipt: true, done: true }))).statusCode).toBe(200);
+    expect(denied).toEqual([]);
+    // What the policy refuses: the checklist's own update with a billing attribute added, alone or in a transaction
+    const db = table.dataDb("team-a", denied);
+    const update = { TableName: db.tableName, Key: { PK: "TEAM#team-a", SK: "META" }, UpdateExpression: "SET checklistDone = :t, #s = :s", ExpressionAttributeNames: { "#s": "seats" }, ExpressionAttributeValues: { ":t": true, ":s": 99 } };
+    await expect(connection(db).doc.send(new UpdateCommand(update))).rejects.toMatchObject({ name: "AccessDeniedException" });
+    await expect(connection(db).doc.send(new TransactWriteCommand({ TransactItems: [{ Update: update }] }))).rejects.toMatchObject({ name: "AccessDeniedException" });
+    await expect(connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...meta(), plan: "pro" } }))).rejects.toMatchObject({ name: "AccessDeniedException" });
+    expect(denied.map((d) => d.command)).toEqual(["UpdateCommand", "TransactWriteCommand", "PutCommand"]);
+    expect(meta()).not.toHaveProperty("seats", 99);
   });
 
   it("is owners only: contributors, viewers and outsiders change nothing", async () => {

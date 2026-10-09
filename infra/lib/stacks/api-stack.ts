@@ -50,6 +50,7 @@ import {
   BILLING_UPDATE_ATTRIBUTES,
   COMP_ATTRIBUTES,
   CUSTOMER_LINK_TEAM_ATTRIBUTES,
+  DATA_ROLE_DENIED_ATTRIBUTES,
   GSI1,
   GSI2,
   GSI3,
@@ -325,6 +326,23 @@ export class ApiStack extends SupplyCheckoutStack {
               resources: [tableArn, `${tableArn}/index/${GSI1}`],
               conditions: {
                 "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`TEAM#${teamTag}`, `TEAM#${teamTag}#PROJECTS`, `TEAM#${teamTag}#SHEETS`] },
+              },
+            }),
+            // A team's billing, Stripe, comp, closure and purge attributes on
+            // its META item belong to the billing, account, ops and purge
+            // functions' roles (supply-checkout-3sv.25). IAM can't condition
+            // on the sort key, so this refuses any write naming one of them
+            // (in the item, update or condition) on every item in the team's
+            // partitions; no item the data routes write uses those names
+            // (documents refuse them). ConditionCheckItem only reads, so a
+            // transaction may still check them.
+            new PolicyStatement({
+              sid: "NoTeamBillingWrites",
+              effect: Effect.DENY,
+              actions: ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAnyValue:StringEquals": { "dynamodb:Attributes": [...DATA_ROLE_DENIED_ATTRIBUTES] },
               },
             }),
             // Owners read what operators did to their team (ADR 0015): read

@@ -8,6 +8,7 @@
 import { convertToAttr, convertToNative } from "@aws-sdk/util-dynamodb";
 import type { Db } from "../src/data/index.js";
 import { GSI3, OPS_INDEX_ATTRIBUTES } from "../src/data/schema.js";
+import { dataPolicy } from "./data-policy.js";
 import { fakeDb, REGION } from "./helpers.js";
 
 /** Indexes that don't project every attribute, and what they do project besides the keys (data-stack.ts). */
@@ -114,12 +115,35 @@ export class MemoryTable {
    * `OPAUDIT#<team>`, is read-only there; tests check that separately).
    */
   db(team?: string): Db {
-    return this.scoped(team === undefined ? undefined : [`TEAM#${team}`, `TEAM#${team}#PROJECTS`, `TEAM#${team}#SHEETS`, `OPAUDIT#${team}`]);
+    return this.scoped(team === undefined ? undefined : MemoryTable.teamPartitions(team));
   }
 
-  /** A Db allowed only the given partitions (PK, or the index partition for a query), like a LeadingKeys policy. */
-  scoped(partitions: string[] | undefined): Db {
-    return fakeDb(async (command) => this.send(command as { constructor: { name: string }; input: Input }, partitions && new Set(partitions)));
+  /**
+   * What the data-access role allows a session tagged with `team`: its
+   * partitions (LeadingKeys), and no write naming a team's billing, comp or
+   * closure attributes (its NoTeamBillingWrites deny, test/data-policy.ts).
+   */
+  dataDb(team: string, denied: { command: string; input: Record<string, unknown> }[] = []): Db {
+    return this.scoped(MemoryTable.teamPartitions(team), dataPolicy(denied));
+  }
+
+  private static teamPartitions(team: string): string[] {
+    return [`TEAM#${team}`, `TEAM#${team}#PROJECTS`, `TEAM#${team}#SHEETS`, `OPAUDIT#${team}`];
+  }
+
+  /**
+   * A Db allowed only the given partitions (PK, or the index partition for a
+   * query), like a LeadingKeys policy, and, with `check`, only the calls it
+   * passes (as guarded does).
+   */
+  scoped(partitions: string[] | undefined, check?: (command: string, input: Record<string, unknown>) => boolean): Db {
+    return fakeDb(async (command) => {
+      const c = command as { constructor: { name: string }; input: Input };
+      if (check && !check(c.constructor.name, MemoryTable.onWire(c.input))) {
+        throw Object.assign(new Error(`not authorized to perform ${c.constructor.name} (policy)`), { name: "AccessDeniedException" });
+      }
+      return this.send(c, partitions && new Set(partitions));
+    });
   }
 
   /**

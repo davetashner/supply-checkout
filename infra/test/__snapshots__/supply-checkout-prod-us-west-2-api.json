@@ -1263,6 +1263,64 @@
                   "Sid": "TeamItemsOnly"
                 },
                 {
+                  "Action": [
+                    "dynamodb:DeleteItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:UpdateItem"
+                  ],
+                  "Condition": {
+                    "ForAnyValue:StringEquals": {
+                      "dynamodb:Attributes": [
+                        "plan",
+                        "seats",
+                        "owners",
+                        "members",
+                        "homeRegion",
+                        "trialEndsAt",
+                        "test",
+                        "stripeCustomerId",
+                        "stripeSubscriptionId",
+                        "billingInterval",
+                        "currentPeriodEnd",
+                        "cancelAtPeriodEnd",
+                        "stripeSyncedAt",
+                        "pastDueSince",
+                        "subscriptionEndedAt",
+                        "stripeCheckoutAt",
+                        "stripeCancelledFor",
+                        "stripeSetAsideFor",
+                        "stripeSetAsideReason",
+                        "stripeResyncFor",
+                        "stripeReopenedAt",
+                        "closedBy",
+                        "purgeAfter",
+                        "purging",
+                        "compPlan",
+                        "compSeats",
+                        "compUntil",
+                        "compReason",
+                        "compBy",
+                        "compAt",
+                        "compMonths"
+                      ]
+                    }
+                  },
+                  "Effect": "Deny",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "NoTeamBillingWrites"
+                },
+                {
                   "Action": "dynamodb:Query",
                   "Condition": {
                     "ForAllValues:StringEquals": {

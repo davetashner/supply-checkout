@@ -182,7 +182,7 @@ beforeEach(() => {
     testMailDomain: DOMAIN,
     now: () => now,
   });
-  data = createDataHandler({ dbForTeam: (teamId) => table.db(teamId), obs, now: () => now });
+  data = createDataHandler({ dbForTeam: (teamId) => table.dataDb(teamId), obs, now: () => now });
 });
 
 function apiEvent(routes: readonly { method: string; path: string }[], method: string, path: string, user: string, body?: unknown, headers: Record<string, string> = {}): DataEvent {

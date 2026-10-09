@@ -40,7 +40,7 @@ beforeEach(() => {
   handler = createDataHandler({
     dbForTeam: (teamId) => {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(teamId)) throw new InvalidInputError("Invalid team ID");
-      return table.db(teamId);
+      return table.dataDb(teamId);
     },
     obs,
     now: () => clock,
@@ -198,6 +198,18 @@ describe("checkout", () => {
     expect((await call("POST", "/teams/team-a/projects/nope/checkout", { operationId: op(), productKey: "0123", quantity: 1 })).status).toBe(404);
     expect(stock()).toBe(10);
     expect(operations()).toEqual([]);
+  });
+});
+
+describe("a product keyed like a team's billing attribute (supply-checkout-3sv.25)", () => {
+  it("checks out and returns under the data role's deny: the key is a nested path, not a top-level name", async () => {
+    for (const key of ["test", "seats"]) {
+      table.put({ PK: "TEAM#team-a", SK: `PRODUCT#${key}`, type: "product", key, version: 1, ...gloves, code: key });
+      table.put({ PK: "TEAM#team-a", SK: `PROJECT#p-${key}`, type: "project", id: `p-${key}`, version: 1, client: "Echo", date: "2026-09-26", status: "open", items: {} });
+      expect((await call("POST", `/teams/team-a/projects/p-${key}/checkout`, { operationId: op(), productKey: key, quantity: 2 })).status, key).toBe(200);
+      expect((await call("POST", `/teams/team-a/projects/p-${key}/return`, { operationId: op(), productKey: key, quantity: 2 })).status, key).toBe(200);
+      expect(table.get("TEAM#team-a", `PRODUCT#${key}`)?.stock, key).toBe(10);
+    }
   });
 });
 

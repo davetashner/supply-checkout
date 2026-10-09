@@ -63,7 +63,12 @@ info:
     - A document is any JSON object up to 350,000 bytes (UTF-8 JSON), nested
       at most 16 levels, with numbers DynamoDB can store. These top-level
       fields are the server's and are refused in a body: `PK`, `SK`, `GSI1PK`,
-      `GSI1SK`, `GSI2PK`, `GSI2SK`, `GSI3PK`, `GSI3SK` (and any `GSI<n>PK` or `GSI<n>SK`), `type`, `id`, `key`, `version`, `teamId`. For projects, `date` must be a string
+      `GSI1SK`, `GSI2PK`, `GSI2SK`, `GSI3PK`, `GSI3SK` (and any `GSI<n>PK` or `GSI<n>SK`), `type`, `id`, `key`, `version`, `teamId`. So are a team's billing,
+      comp and closure attributes (`DATA_ROLE_DENIED_ATTRIBUTES` in
+      `backend/src/data/schema.ts`, such as `plan`, `seats`, `stripeCustomerId`,
+      `purgeAfter` and `compPlan`), which the data API's role may not write
+      on any item; a stored document's field with one of those names is left
+      out of what's read. For projects, `date` must be a string
       and `items` an object. A barcode (`code`, on a product and on each line
       in a project's `items`) must be a string of at most 256 characters, the
       product key limit; it's empty for an item without a barcode. A

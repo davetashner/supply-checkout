@@ -34,7 +34,7 @@ import type { Movement } from "./commands.js";
 import { type ProjectFilter, type ProjectLayout, layoutOf, projectAttributes, projectItemsByDatePage, projectItemsPage, projectKeyFor, readProjectItem } from "./project-items.js";
 import { type Page, queryPage } from "./query.js";
 import { checkReorderFields } from "./reorder.js";
-import { PK } from "./schema.js";
+import { DATA_ROLE_DENIED_ATTRIBUTES, PK } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
 export type Collection = "products" | "projects";
@@ -113,12 +113,19 @@ export function recentFilter(since: string): ProjectFilter {
  */
 export const RESERVED_FIELDS: readonly string[] = ["PK", "SK", "GSI1PK", "GSI1SK", "GSI2PK", "GSI2SK", "GSI3PK", "GSI3SK", "type", "id", "key", "version", "teamId"];
 const RESERVED = new Set(RESERVED_FIELDS);
+/**
+ * A team's billing, closure and comp attributes, which the data-access role
+ * may never write (DATA_ROLE_DENIED_ATTRIBUTES, supply-checkout-3sv.25): a
+ * document with one would be refused by IAM, so it's refused here first, as
+ * a 400 rather than a failed write.
+ */
+const TEAM_ONLY = new Set<string>(DATA_ROLE_DENIED_ATTRIBUTES);
 /** Every index key, including indexes not added yet: a document must never put itself in an index (ADR 0015's GSI3 is the operators'). */
 const INDEX_KEY = /^GSI\d+(PK|SK)$/;
 
-/** True for a field only the server may set: RESERVED_FIELDS, and any GSI<n>PK or GSI<n>SK. */
+/** True for a field only the server may set: RESERVED_FIELDS, a team's DATA_ROLE_DENIED_ATTRIBUTES, and any GSI<n>PK or GSI<n>SK. */
 export function isReservedField(field: string): boolean {
-  return RESERVED.has(field) || INDEX_KEY.test(field);
+  return RESERVED.has(field) || TEAM_ONLY.has(field) || INDEX_KEY.test(field);
 }
 
 /**

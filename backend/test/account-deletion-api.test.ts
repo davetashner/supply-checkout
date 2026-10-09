@@ -168,7 +168,7 @@ beforeEach(() => {
     if (queueFails) throw Object.assign(new Error("SQS is down"), { name: "ServiceUnavailable" });
     queued.push([customer, reason]);
   } });
-  dataHandler = createDataHandler({ dbForTeam: (teamId) => table.db(teamId), obs, now: () => now });
+  dataHandler = createDataHandler({ dbForTeam: (teamId) => table.dataDb(teamId), obs, now: () => now });
 });
 
 function event(routes: readonly { method: string; path: string }[], method: string, path: string, user: string, body?: unknown, query?: Record<string, string>): DataEvent {
