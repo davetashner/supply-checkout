@@ -504,6 +504,7 @@ The `api` stack (`lib/stacks/api-stack.ts`, [ADR 0006](adr/0006-api-and-realtime
 | `POST /teams/{teamId}/projects/{projectId}/checkout`, `.../return`, `POST /teams/{teamId}/products/{key}/stock`, `GET /teams/{teamId}/products/{key}/movements` (the inventory commands and stock history, [docs/api/commands.md](api/commands.md)) | Cognito access token | `data` |
 | The same project routes under their old name, `/teams/{teamId}/sheets...`, deprecated through the projects rename's window (`supply-checkout-005.6`; counted in `LegacySheetsRouteCalls`, [docs/api/commands.md](api/commands.md)) | Cognito access token | `data` |
 | `POST /teams/{teamId}/imports` (CSV inventory import, owners only, all or nothing; [backend.md](backend.md)) | Cognito access token | `data` |
+| `PATCH /teams/{teamId}/checklist` (the first-run checklist's progress, owners only, each field only ever `true`; `GET /me` carries it with each team, to owners only; [backend.md](backend.md)) | Cognito access token | `data` |
 | `POST /teams/{teamId}/receipts/read` (read a receipt photo for the review screen; contributors and owners; see [Receipt reading](#receipt-reading)) | Cognito access token | `receipts` |
 | `GET /teams/{teamId}/receipts/usage` (the team's receipt reads against its allowance; contributors and owners) | Cognito access token | `receipts` |
 | `GET /me`, `POST /teams`, `POST /invites/{inviteId}/accept` | Cognito access token | `account` |

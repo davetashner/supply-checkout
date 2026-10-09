@@ -228,9 +228,11 @@ describe("POST /teams", () => {
       cancelsAt: null,
       members: 1,
       memberCap: MEMBERS_PER_TRIAL_TEAM,
+      // A new team starts its first-run checklist (supply-checkout-fs56)
+      checklist: { receipt: false, done: false },
     });
     const id = body.team.id as string;
-    expect(table.get(`TEAM#${id}`, "META")).toMatchObject({ owners: 1, homeRegion: REGION, createdAt: new Date(now).toISOString() });
+    expect(table.get(`TEAM#${id}`, "META")).toMatchObject({ owners: 1, homeRegion: REGION, createdAt: new Date(now).toISOString(), checklistStartedAt: new Date(now).toISOString() });
     expect(table.get(`TEAM#${id}`, `MEMBER#${MALLORY}`)).toMatchObject({ role: "owner", email: "mallory@example.com" });
     expect(table.get(`USER#${MALLORY}`, `TEAM#${id}`)).toMatchObject({ role: "owner", teamName: "Mallory Cleaning" });
     expect(counts.SignUps).toBe(1);
@@ -289,9 +291,25 @@ describe("GET /me", () => {
     expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null } });
     expect(body.teams).toEqual([
       created,
-      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, reopenBy: null, comp: null, subscriptionEnded: false, readOnlyReason: null, readOnlyDeletesAt: null, readOnlyLastDay: null, paymentGraceEndsAt: null, billingAccount: false, cancelsAt: null, members: 2, memberCap: MEMBERS_PER_TRIAL_TEAM },
+      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, reopenBy: null, comp: null, subscriptionEnded: false, readOnlyReason: null, readOnlyDeletesAt: null, readOnlyLastDay: null, paymentGraceEndsAt: null, billingAccount: false, cancelsAt: null, members: 2, memberCap: MEMBERS_PER_TRIAL_TEAM, checklist: null },
     ].map((t) => JSON.parse(JSON.stringify(t))));
     expect(body.invites).toEqual([]);
+  });
+
+  it("shows the first-run checklist's progress to owners only, and none for a team that never had one", async () => {
+    const created = (await create(MALLORY, "Mallory Cleaning", "mallory-checklist")).body.team;
+    const id = created.id as string;
+    const teamOf = async (user: string, teamId: string) => ((await call("GET", "/me", { user })).body.teams as { id: string; checklist: unknown }[]).find((t) => t.id === teamId)?.checklist;
+    expect(await teamOf(MALLORY, id)).toEqual({ receipt: false, done: false });
+    table.put({ ...table.get(`TEAM#${id}`, "META"), checklistReceipt: true, checklistDone: "yes" });
+    // Anything stored that isn't true is not done
+    expect(await teamOf(MALLORY, id)).toEqual({ receipt: true, done: false });
+    // A team from before the checklist was kept on the server
+    expect(await teamOf(OWNER, "team-a")).toBeNull();
+    // Contributors and viewers never get it, even when the team has one
+    table.put({ ...table.get("TEAM#team-a", "META"), checklistStartedAt: new Date(now).toISOString(), checklistDone: true });
+    expect(await teamOf(OWNER, "team-a")).toEqual({ receipt: false, done: true });
+    expect(await teamOf(PAT, "team-a")).toBeNull();
   });
 
   it("shows a live comp from support (ADR 0015), but not one that has run out", async () => {

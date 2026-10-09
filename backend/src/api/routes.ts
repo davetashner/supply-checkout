@@ -27,7 +27,8 @@ export type Operation =
   | "importProducts"
   | "supportActions"
   | "getSettings"
-  | "setSettings";
+  | "setSettings"
+  | "setChecklist";
 export type HttpMethod = "GET" | "PUT" | "PATCH" | "DELETE" | "POST";
 
 /**
@@ -107,6 +108,9 @@ const commandRoutes: DataRoute[] = [
   // equipment markup back, and only owners change it
   { method: "GET", path: "/teams/{teamId}/settings", collection: "team", operation: "getSettings", minRole: "viewer" },
   { method: "PUT", path: "/teams/{teamId}/settings", collection: "team", operation: "setSettings", minRole: "owner" },
+  // The first-run checklist's progress (supply-checkout-fs56): owners mark a step or the whole of it done.
+  // GET /me carries it with each team, to owners only
+  { method: "PATCH", path: "/teams/{teamId}/checklist", collection: "team", operation: "setChecklist", minRole: "owner", throttle: { rate: 10, burst: 20 } },
   // What platform operators did to the team (ADR 0015), attributed to "Supply Checkout support". Owners only.
   { method: "GET", path: "/teams/{teamId}/support-actions", collection: "team", operation: "supportActions", minRole: "owner" },
 ];

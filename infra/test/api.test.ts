@@ -141,6 +141,7 @@ describe("HTTP API routes", () => {
     const [[, stage]] = resources(template, "AWS::ApiGatewayV2::Stage") as [[string, Resource]];
     expect(stage.Properties.RouteSettings).toEqual({
       "POST /teams/{teamId}/imports": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "PATCH /teams/{teamId}/checklist": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "POST /teams/{teamId}/receipts/read": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /teams/{teamId}/receipts/usage": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "GET /me": { ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100 },

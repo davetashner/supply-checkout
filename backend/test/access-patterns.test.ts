@@ -21,6 +21,8 @@ import {
   deleteUserRows,
   getPreferences,
   setPreferences,
+  setChecklist,
+  checklistOf,
   startAccountDeletion,
   claimEmailChangeNotice,
   releaseEmailChangeNotice,
@@ -147,6 +149,22 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(owner.homeRegion).toBe(REGION);
       expect(await rawItem(db, `TEAM#${t.teamId}`, "META")).toMatchObject({ type: "team", name: "Echo Cleaning", homeRegion: REGION, version: 1 });
       expect(await getTeam(db, owner)).toMatchObject({ teamId: t.teamId, homeRegion: REGION, status: "trialing" });
+    });
+
+    // supply-checkout-fs56
+    it("keeps the first-run checklist's progress on the team's META item, owners only, and never once it's closed", async () => {
+      const { team: t, owner, contributor } = await team();
+      expect(checklistOf(await getTeam(db, owner))).toEqual({ receipt: false, done: false });
+      const at = new Date("2026-10-08T14:00:00.000Z");
+      expect(await setChecklist(db, owner, { receipt: true }, at)).toEqual({ receipt: true, done: false });
+      expect(await setChecklist(db, owner, { done: true }, at)).toEqual({ receipt: true, done: true });
+      expect(await rawItem(db, `TEAM#${t.teamId}`, "META")).toMatchObject({ type: "team", version: 1, checklistStartedAt: t.createdAt, checklistReceipt: true, checklistDone: true });
+      await expect(setChecklist(db, contributor, { done: true }, at)).rejects.toThrow(ForbiddenError);
+      // Closed meanwhile: the owner's context still says open, the condition refuses it
+      const other = await team();
+      await closeTeam(db, other.owner, { confirmName: "Echo Cleaning" });
+      await expect(setChecklist(db, other.owner, { done: true }, at)).rejects.toThrow(TeamClosedError);
+      expect((await rawItem(db, `TEAM#${other.team.teamId}`, "META"))?.checklistDone).toBeUndefined();
     });
 
     it("counts a user's email verification codes per UTC day, up to the limit", async () => {

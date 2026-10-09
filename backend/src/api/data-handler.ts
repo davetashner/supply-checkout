@@ -63,6 +63,9 @@ import {
   StockChangedError,
   setDocument,
   setTeamSettings,
+  setChecklist,
+  checklistChange,
+  CHECKLIST_FIELDS,
   type StoredDocument,
   SubscriptionEndedError,
   TeamClosedError,
@@ -295,6 +298,14 @@ async function settings(deps: DataHandlerDeps, route: DataRoute, event: DataEven
   deps.obs.count(BusinessMetric.Writes, 1, teamMetadata(ctx));
   return json(200, view);
 }
+/**
+ * The first-run checklist's progress (data/checklist.ts): owners only (the
+ * route's minRole, and setChecklist checks again), each field only ever true.
+ */
+async function checklist(deps: DataHandlerDeps, event: DataEvent, ctx: TeamContext): Promise<APIGatewayProxyStructuredResultV2> {
+  const change = checklistChange(jsonBody(event, CHECKLIST_FIELDS));
+  return json(200, { checklist: await setChecklist(deps.dbForTeam(ctx.teamId), ctx, change, new Date((deps.now ?? Date.now)())) });
+}
 const IMPORT_FIELDS = ["importId", "csv", "dryRun"];
 
 /**
@@ -336,6 +347,7 @@ async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ct
   if (route.operation === "importProducts") return runImport(deps, event, ctx);
   if (route.operation === "supportActions") return supportActions(deps, event, ctx);
   if (route.operation === "getSettings" || route.operation === "setSettings") return settings(deps, route, event, ctx);
+  if (route.operation === "setChecklist") return checklist(deps, event, ctx);
   if (COMMANDS.has(route.operation)) return runCommand(deps, route, event, ctx);
   const db = deps.dbForTeam(ctx.teamId);
   const collection = route.collection as Collection;

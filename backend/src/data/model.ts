@@ -90,6 +90,15 @@ export interface Team {
    */
   readonly test?: true;
   /**
+   * The first-run checklist's progress (checklist.ts, supply-checkout-fs56):
+   * when it started (createTeam writes it for every new team; a team without
+   * it never had one), and whether an owner saved a scanned receipt and
+   * finished or dismissed it. Owners set them, only ever to true.
+   */
+  readonly checklistStartedAt?: string;
+  readonly checklistReceipt?: boolean;
+  readonly checklistDone?: boolean;
+  /**
    * A comp (ADR 0015): a plan an operator granted until `compUntil` (ISO
    * 8601), at most 12 months ahead. While it's live (liveComp) the team is
    * active on it whatever its Stripe status says. Only the ops function writes

@@ -182,6 +182,7 @@ import {
   countEmailCode,
   createInvite,
   createTeam,
+  checklistOf,
   deleteInviteForEmail,
   deleteUserRows,
   findInviteForEmail,
@@ -368,6 +369,8 @@ export function teamBody(team: Team, role: Role, now = new Date()) {
     cancelsAt: team.cancelAtPeriodEnd === true && !hasEnded(team.status) && typeof team.currentPeriodEnd === "string" ? team.currentPeriodEnd : null,
     members: typeof team.members === "number" ? team.members : null,
     memberCap: memberCap(team, now),
+    // The first-run checklist's progress (supply-checkout-fs56): owners only, as only they see it
+    checklist: role === "owner" ? checklistOf(team) : null,
   };
 }
 
