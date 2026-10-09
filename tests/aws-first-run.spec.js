@@ -12,6 +12,20 @@ const checklist = (page) => page.locator("#firstRun");
 const modal = (page) => page.locator("#modal");
 const stored = (page, team) => page.evaluate((k) => JSON.parse(localStorage.getItem(k)), `supplyCheckout.firstRun.${team}`);
 const KEY = "supplyCheckout.firstRun.t1";
+// A JPEG's first bytes, which the browser can't decode, so src/photo.js sends it as it is
+const photo = { name: "IMG_0001.jpg", mimeType: "image/jpeg", buffer: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("receipt photo")]) };
+const receipt = { store: "Hardware Co", date: "2026-09-20", items: [{ raw: "PTR TAPE", name: "Painter's tape", qty: 2, price: 6.25, match: null }], subtotal: 12.5, tax: 0, total: 12.5 };
+
+// Scans a receipt from the checklist's step, and saves its one line to storage
+async function scanReceipt(page) {
+  const chooser = page.waitForEvent("filechooser");
+  await checklist(page).locator("label[for=receiptFile]").click();
+  await (await chooser).setFiles(photo);
+  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+  await page.locator(".rline").first().getByLabel("For").selectOption("stock");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.locator("#toast")).toHaveText("2 added to storage");
+}
 
 async function expectAccessible(page) {
   const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
@@ -43,12 +57,12 @@ test("a pasted team name loses its invisible direction and zero-width characters
 });
 
 test("a new owner is guided through the checklist to a team ready to use", { tag: ["@J1.3"] }, async ({ page }) => {
-  const backend = new FakeBackend({ teams: [] });
+  const backend = new FakeBackend({ teams: [], receipt });
   const team = await createTeam(page, backend);
   const list = checklist(page);
   await expect(list.getByRole("heading", { name: "Get your team started" })).toBeVisible();
-  await expect(list).toContainText("0 of 3 done");
-  await expect(list.getByRole("listitem")).toHaveCount(3);
+  await expect(list).toContainText("0 of 4 done");
+  await expect(list.getByRole("listitem")).toHaveCount(4);
   await expectAccessible(page);
   expect(await stored(page, team)).toEqual({});
 
@@ -59,7 +73,7 @@ test("a new owner is guided through the checklist to a team ready to use", { tag
   await modal(page).getByLabel("Price each ($)").fill("13");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(page.locator("#overlay")).toBeHidden();
-  await expect(list).toContainText("1 of 3 done");
+  await expect(list).toContainText("1 of 4 done");
   await expect(list.getByRole("heading", { name: "Done: Add your supplies" })).toBeVisible();
   await expect(list.getByRole("button", { name: "Add an item" })).toHaveCount(0);
 
@@ -69,8 +83,15 @@ test("a new owner is guided through the checklist to a team ready to use", { tag
   await modal(page).getByRole("button", { name: "Send invite" }).click();
   await expect(page.locator("#toast")).toHaveText("Invite sent to sam@example.com");
   await modal(page).getByRole("button", { name: "Close", exact: true }).click();
-  await expect(list).toContainText("2 of 3 done");
+  await expect(list).toContainText("2 of 4 done");
   expect(await stored(page, team)).toEqual({ invited: true });
+
+  // A receipt, saved to storage: the inventory shows, with the checklist above it
+  await scanReceipt(page);
+  await expect(page.locator("#tab-prices")).toHaveAttribute("aria-pressed", "true");
+  await expect(list).toContainText("3 of 4 done");
+  await expect(list.getByRole("heading", { name: "Done: Scan a receipt" })).toBeVisible();
+  expect(await stored(page, team)).toEqual({ invited: true, receipt: true });
 
   // A first project: it opens, and the checklist waits behind it
   await list.getByRole("button", { name: "Create a project" }).click();
@@ -78,7 +99,7 @@ test("a new owner is guided through the checklist to a team ready to use", { tag
   await page.getByRole("button", { name: "Create project" }).click();
   await expect(page.locator("#projectView")).toBeVisible();
   await expect(list).toBeHidden();
-  expect(await stored(page, team)).toEqual({ invited: true, done: true });
+  expect(await stored(page, team)).toEqual({ invited: true, receipt: true, done: true });
   await page.getByRole("button", { name: "← All projects" }).click();
   await expect(list.getByRole("heading", { name: "You're all set" })).toBeVisible();
   await expectAccessible(page);
@@ -108,7 +129,7 @@ test("the checklist offers the CSV import with its template, and fits a phone in
   await modal(page).getByRole("button", { name: "Download a template" }).click();
   expect((await download).suggestedFilename()).toBe("inventory-template.csv");
   await modal(page).getByRole("button", { name: "Cancel" }).click();
-  await expect(list).toContainText("0 of 3 done");
+  await expect(list).toContainText("0 of 4 done");
 });
 
 test("a team with only older projects, not loaded at start, has its first project", { tag: ["@J1"] }, async ({ page }) => {
@@ -116,7 +137,7 @@ test("a team with only older projects, not loaded at start, has its first projec
   const backend = new FakeBackend({ docs: { "t1/projects/old": { client: "Oldfield Co", date: "2019-05-01", status: "closed", items: {} } } });
   await openAws(page, backend, { storage: { local: { [KEY]: "{}" } } });
   await connected(page);
-  await expect(checklist(page)).toContainText("1 of 3 done");
+  await expect(checklist(page)).toContainText("1 of 4 done");
   await expect(checklist(page).getByRole("heading", { name: "Done: Create your first project" })).toBeVisible();
   expect(backend.requests("GET", "/teams/t1/projects").some((r) => r.query.limit === "1")).toBe(true);
 });
@@ -126,7 +147,7 @@ test("dismissing it is remembered for the team", { tag: ["@J1"] }, async ({ page
   await openAws(page, backend, { storage: { local: { [KEY]: "{}" } } });
   await connected(page);
   const list = checklist(page);
-  await expect(list).toContainText("0 of 3 done");
+  await expect(list).toContainText("0 of 4 done");
   // A tap on its text does nothing
   await list.getByText("Invite the people who take supplies to jobs.").click();
   await expect(page.locator("#overlay")).toBeHidden();
@@ -149,7 +170,7 @@ test("an invite sent from the team bar's Members ticks the step too", { tag: ["@
   await modal(page).getByRole("button", { name: "Send invite" }).click();
   await expect(page.locator("#toast")).toHaveText("Invite sent to sam@example.com");
   await modal(page).getByRole("button", { name: "Close", exact: true }).click();
-  await expect(checklist(page)).toContainText("1 of 3 done");
+  await expect(checklist(page)).toContainText("1 of 4 done");
   await expect(checklist(page).getByRole("heading", { name: "Done: Invite your crew" })).toBeVisible();
 });
 
@@ -205,5 +226,5 @@ test("a new team gets the checklist even when storage is blocked", { tag: ["@J1"
   });
   const backend = new FakeBackend({ teams: [] });
   await createTeam(page, backend);
-  await expect(checklist(page)).toContainText("0 of 3 done");
+  await expect(checklist(page)).toContainText("0 of 4 done");
 });
