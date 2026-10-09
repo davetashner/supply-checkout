@@ -3,3 +3,6 @@
 
 # A Stripe idempotency key in a test assertion ("cancel-…" for a duplicate subscription), not a credential
 b3c6ff6f665407e3919a017e13b409a66d490ebb:backend/test/billing-worker.test.ts:generic-api-key:228
+
+# A made-up test key for scripts/assembly-seal.test.mjs (it seals and opens a fake assembly), not a credential; the next commit spells it so gitleaks doesn't match
+abc5933a19f73b804d430ff7c53cfd42df2ad81f:scripts/assembly-seal.test.mjs:generic-api-key:15
