@@ -999,12 +999,66 @@ describe("GET /teams/{teamId}/billing/invoices (supply-checkout-eja)", () => {
     expect(stripe.state.invoiceLists).toHaveLength(0);
   });
 
-  it("refuses a closed team", async () => {
-    patchTeam({ closedAt: new Date(now - DAY).toISOString(), purgeAfter: new Date(now + 29 * DAY).toISOString() });
-    const { status, body } = await invoices();
-    expect(status).toBe(403);
-    expect(body.error.reason).toBe("team_closed");
-    expect(stripe.state.invoiceLists).toHaveLength(0);
+  describe("a closed team, until it's deleted (supply-checkout-8jc.24)", () => {
+    const closed = (fields: Record<string, unknown> = {}) => patchTeam({ closedAt: new Date(now - DAY).toISOString(), purgeAfter: new Date(now + 29 * DAY).toISOString(), ...fields });
+
+    it.each([
+      ["an owner", { closedBy: OWNER }],
+      ["the lapsed-team job", { closedBy: "system:lapsed", status: "canceled" }],
+    ])("lists them for its owners when %s closed it", async (_, fields) => {
+      closed(fields);
+      stripe.state.invoices = [invoice(2), invoice(1)];
+      const { status, body } = await invoices();
+      expect(status).toBe(200);
+      expect(body.invoices.map((i: { id: string }) => i.id)).toEqual(["in_test_2", "in_test_1"]);
+      expect(stripe.state.invoiceLists).toEqual([{ customer: "cus_test_9", limit: INVOICE_PAGE }]);
+    });
+
+    it("still needs two-step sign-in, before Stripe is called", async () => {
+      closed();
+      cognito[OWNER] = { totp: false, federated: false };
+      expect((await invoices()).body.error).toMatchObject({ code: "permission_denied", reason: "mfa_required" });
+      expect(stripe.state.invoiceLists).toHaveLength(0);
+    });
+
+    it("still refuses the portal", async () => {
+      closed();
+      const { status, body } = await checkout({ routeKey: routeKey(BILLING_ROUTES.find((r) => r.action === "createPortalSession") as (typeof BILLING_ROUTES)[number]), rawBody: "" });
+      expect(status).toBe(403);
+      expect(body.error.reason).toBe("team_closed");
+    });
+
+    it.each([
+      [CONTRIBUTOR, "owners_only"],
+      [VIEWER, "owners_only"],
+      [OUTSIDER, "not_member"],
+    ])("still refuses %s (%s) before calling Stripe", async (user, reason) => {
+      closed();
+      const { status, body } = await invoices({ user });
+      expect(status).toBe(403);
+      expect(body.error).toMatchObject({ code: "permission_denied", reason });
+      expect(stripe.state.invoiceLists).toHaveLength(0);
+    });
+
+    it.each([
+      ["its purgeAfter has passed", () => ({ purgeAfter: new Date(now - 1000).toISOString() })],
+      ["its purgeAfter is now", () => ({ purgeAfter: new Date(now).toISOString() })],
+      ["it has no purgeAfter", () => ({ purgeAfter: undefined })],
+      ["its purgeAfter isn't a date", () => ({ purgeAfter: "soon" })],
+      ["the purge has marked it", () => ({ purging: new Date(now - 1000).toISOString() })],
+    ])("answers 409 team_deleting, without calling Stripe, once %s", async (_, fields) => {
+      closed(fields());
+      const { status, body } = await invoices();
+      expect(status).toBe(409);
+      expect(body.error).toMatchObject({ code: "aborted", reason: "team_deleting" });
+      expect(stripe.state.invoiceLists).toHaveLength(0);
+    });
+
+    it("answers no_billing_account for a closed team with no Stripe customer", async () => {
+      closed({ stripeCustomerId: undefined, stripeSubscriptionId: undefined, status: "trialing" });
+      expect((await invoices()).body.error.reason).toBe("no_billing_account");
+      expect(stripe.state.invoiceLists).toHaveLength(0);
+    });
   });
 
   it("fails with 500, counts it apart from the portal and logs no Stripe message when Stripe fails", async () => {
