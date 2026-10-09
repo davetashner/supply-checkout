@@ -8,6 +8,9 @@ import {
   BILLING_UPDATE_ATTRIBUTES,
   COMP_ATTRIBUTES,
   CUSTOMER_LINK_TEAM_ATTRIBUTES,
+  DATA_ROLE_DENIED_ATTRIBUTES,
+  LAPSE_CLOSE_ATTRIBUTES,
+  TEAM_PURGE_MARK_ATTRIBUTES,
   TOTP_RECORD_ATTRIBUTES,
   IMPORT_INDEX_ATTRIBUTES,
   INVITE_LIMIT_ATTRIBUTES,
@@ -348,7 +351,15 @@ describe("data-access role (LeadingKeys)", () => {
 
   it("reaches only items in the session team's partitions, and only through the item and query actions", () => {
     const [policy] = role().Policies;
-    const [items, opsAudit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [items, billingDeny, opsAudit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    // No write naming a team's billing, comp or closure attributes, on any item (supply-checkout-3sv.25)
+    expect(billingDeny).toEqual({
+      Sid: "NoTeamBillingWrites",
+      Effect: "Deny",
+      Action: ["dynamodb:DeleteItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
+      Resource: expect.anything(),
+      Condition: { "ForAnyValue:StringEquals": { "dynamodb:Attributes": [...DATA_ROLE_DENIED_ATTRIBUTES] } },
+    });
     // Owners read what operators did to their team: read only, without the operator's identity (ADR 0015)
     expect(opsAudit).toEqual({
       Sid: "OwnOperatorAuditReadOnly",
@@ -376,6 +387,17 @@ describe("data-access role (LeadingKeys)", () => {
     expect(resourcesJson).toContain("/index/GSI1");
     expect(resourcesJson).not.toContain("*");
     expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
+  });
+
+  it("denies the data role every META attribute the billing, ops, lapse and purge writers own, and none the data routes write", () => {
+    const sharedWithData = ["PK", "SK", "GSI1PK", "GSI1SK", "name", "status", "closedAt", "createdAt", "type", "version", "teamId"];
+    const owned = [...BILLING_UPDATE_ATTRIBUTES, ...COMP_ATTRIBUTES, ...CUSTOMER_LINK_TEAM_ATTRIBUTES, ...LAPSE_CLOSE_ATTRIBUTES, ...TEAM_PURGE_MARK_ATTRIBUTES, ...REOPEN_ATTRIBUTES];
+    for (const attribute of owned) if (!sharedWithData.includes(attribute)) expect(DATA_ROLE_DENIED_ATTRIBUTES).toContain(attribute);
+    for (const attribute of ["plan", "seats", "owners", "members", "homeRegion", "trialEndsAt", "test"]) expect(DATA_ROLE_DENIED_ATTRIBUTES).toContain(attribute);
+    // The checklist (data/checklist.ts) and the projects, products and settings items
+    for (const attribute of [...sharedWithData, "checklistStartedAt", "checklistReceipt", "checklistDone", "equipmentMarkup", "updatedAt", "updatedBy", "stock", "date", "items"]) {
+      expect(DATA_ROLE_DENIED_ATTRIBUTES).not.toContain(attribute);
+    }
   });
 
   it("is the only thing the data function may assume", () => {

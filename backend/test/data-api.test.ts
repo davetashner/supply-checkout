@@ -8,6 +8,7 @@ import { createDataHandler, type DataEvent, projectMovement } from "../src/api/d
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
 import type { DbForTeam } from "../src/api/team-db.js";
 import { deleteDocument, InvalidInputError, MAX_BRAND_LENGTH, MAX_DOCUMENT_BYTES } from "../src/data/index.js";
+import { DATA_ROLE_DENIED_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
 import { contextFor, REGION } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -44,7 +45,7 @@ beforeEach(() => {
   // Like teamScopedDbs: one handle per team, allowed only that team's partitions
   const dbForTeam: DbForTeam = (teamId) => {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(teamId)) throw new InvalidInputError("Invalid team ID");
-    return table.db(teamId);
+    return table.dataDb(teamId);
   };
   clock = NOW;
   handler = createDataHandler({ dbForTeam, obs: fakeObservability(), now: () => clock });
@@ -808,6 +809,22 @@ describe("documents (the app's db contract)", () => {
     expect([...table.items.values()].filter((i) => Object.keys(i).some((k) => /^GSI([3-9]|\d{2,})/.test(k)))).toEqual([]);
     // Names that merely start like one are still document fields
     expect((await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { GSI3PKnote: "fine", gsi3pk: "fine" }, expectedVersion: 1 } })).status).toBe(200);
+  });
+
+  it("refuses a document field named like a team's billing, comp or closure attribute, which the data role can't write (supply-checkout-3sv.25)", async () => {
+    await call("PUT", "/teams/team-a/projects/s1", { body: { data: project("2026-09-01"), expectedVersion: 0 } });
+    for (const field of DATA_ROLE_DENIED_ATTRIBUTES) {
+      expect((await call("PUT", "/teams/team-a/projects/s2", { body: { data: { ...project("2026-09-02"), [field]: "x" }, expectedVersion: 0 } })), field).toMatchObject({ status: 400, body: { error: { code: "bad_request" } } });
+      expect((await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { [field]: "x" }, expectedVersion: 1 } })).status, field).toBe(400);
+      expect((await call("PUT", "/teams/team-a/products/p1", { body: { data: { code: "p1", name: "P", price: 1, [field]: "x" }, expectedVersion: 0 } })).status, field).toBe(400);
+    }
+    // The project fields the app does use, and a nested one with a denied name
+    expect((await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { status: "closed", closedAt: "2026-09-02T00:00:00.000Z", name: "n", notes: { plan: "x" } }, expectedVersion: 1 } })).status).toBe(200);
+    // One stored before the deny is dropped from what's read, so the next write leaves it out
+    table.put({ ...table.get("TEAM#team-a", "PROJECT#s1"), seats: 3 });
+    expect((await call("GET", "/teams/team-a/projects/s1")).body.data).not.toHaveProperty("seats");
+    expect((await call("PATCH", "/teams/team-a/projects/s1", { body: { data: { client: "Echo" }, expectedVersion: 2 } })).status).toBe(200);
+    expect(table.get("TEAM#team-a", "PROJECT#s1")).not.toHaveProperty("seats");
   });
 
   it("refuses documents over the size limit with quota_exceeded, the app's \"storage is full\"", async () => {

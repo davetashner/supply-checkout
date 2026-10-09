@@ -94,7 +94,7 @@ function seed() {
   dataHandler = createDataHandler({
     dbForTeam: (teamId) => {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(teamId)) throw new InvalidInputError("Invalid team ID");
-      return table.db(teamId);
+      return table.dataDb(teamId);
     },
     obs,
     now: () => NOW,

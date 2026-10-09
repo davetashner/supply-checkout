@@ -315,6 +315,52 @@ export const COMP_ATTRIBUTES = [PK, SK, "type", "version", ...COMP_FIELDS, "comp
 export const COMP_MONTHS = "compMonths";
 
 /**
+ * Attributes of a team's META item the data-access role may never write
+ * (supply-checkout-3sv.25): its billing, Stripe links, membership counts,
+ * comps, closure and purge marks, home region and test mark. The role's
+ * policy denies PutItem, UpdateItem and DeleteItem naming any of them
+ * anywhere in the request (dynamodb:Attributes, ForAnyValue), on every item
+ * in the team's partition, since IAM can't condition on the sort key. So the
+ * data routes can't change a team's entitlement even through a bug; the
+ * billing, account, ops and purge functions write these with their own roles.
+ *
+ * Only names no item the data role writes uses are here: documents (top-level
+ * fields, which documents.ts refuses with these names), movements, imports,
+ * settings and the checklist. So the META item's `name`, `status`, `closedAt`,
+ * `createdAt`, `type`, `version`, `teamId` and GSI keys aren't, because
+ * projects and other items use them too, and the checklist's update conditions
+ * on `closedAt`. Those stay protected by the data layer alone.
+ */
+export const DATA_ROLE_DENIED_ATTRIBUTES = [
+  "plan",
+  "seats",
+  "owners",
+  "members",
+  "homeRegion",
+  "trialEndsAt",
+  "test",
+  "stripeCustomerId",
+  "stripeSubscriptionId",
+  "billingInterval",
+  "currentPeriodEnd",
+  "cancelAtPeriodEnd",
+  "stripeSyncedAt",
+  "pastDueSince",
+  "subscriptionEndedAt",
+  "stripeCheckoutAt",
+  "stripeCancelledFor",
+  "stripeSetAsideFor",
+  "stripeSetAsideReason",
+  "stripeResyncFor",
+  "stripeReopenedAt",
+  "closedBy",
+  "purgeAfter",
+  "purging",
+  ...COMP_FIELDS,
+  COMP_MONTHS,
+] as const;
+
+/**
  * The only attributes the billing worker may name when it writes an
  * operator audit item in its team's `OPAUDIT#` partition: the outcome of a
  * comp's Stripe discount (`ops.comp.discount`, billing/comp-discount.ts).
