@@ -119,7 +119,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     await modal(page).locator("[data-k=vac]").click();
     await addToProject(page);
     await expect(equipmentRow(page, "Shop vacuum")).toBeVisible();
-    expect((await doc(page, "projects/s1")).items.vac).toEqual({ code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 0, takenBy: "u_test", takenAt: expect.any(String), ops: expect.any(Array) });
+    expect((await doc(page, "projects/s1")).items.vac).toEqual({ code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 0, takenBy: "u_test", takenAt: expect.any(String) });
   });
 
   test("returning equipment counts what's still out, not what's used", { tag: ["@J13.3"] }, async ({ page }) => {
@@ -226,19 +226,6 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     await expect(rows.nth(1).locator("td")).toHaveText(["Shop vacuumNo barcode", "1", "EchoSep 24, 2026", "—", "—"]);
     // A line or project without a name, as older data may have
     await expect(rows.nth(2).locator("td")).toHaveText(["Unnamed itemNo barcode", "1", "UntitledSep 25, 2026", "—", "—"]);
-  });
-
-  test("without a signed-in user, equipment names who prepared the project, or no one", { tag: ["@J13.2"] }, async ({ page }) => {
-    await open(page, { userErrors: ["id"], seed: { ...seed, "projects/s4": { client: "Golf", date: "2026-09-25", status: "open", items: {} } } });
-    for (const [client, project, taker] of [["Delta Dental", "s2", "Sam"], ["Golf", "s4", ""]]) {
-      await page.getByRole("button", { name: "Projects", exact: true }).click();
-      await openProject(page, client);
-      await page.getByRole("button", { name: "Add item without a barcode" }).click();
-      await modal(page).locator("[data-k=vac]").click();
-      await addToProject(page);
-      await expect(equipmentRow(page, "Shop vacuum")).toBeVisible();
-      expect((await doc(page, `projects/${project}`)).items.vac.takenBy).toBe(taker);
-    }
   });
 
   test("Inventory says when there's no equipment, none out, or no supplies", { tag: ["@J13.5"] }, async ({ page }) => {

@@ -102,22 +102,17 @@ test("a checkout that didn't save keeps what was entered, says so, and saves onc
   expect((await doc(page, "projects/s1")).items.NEW1).toMatchObject({ name: "Wax", price: 4.25, out: 3 });
 });
 
-// A save whose answer was lost: the artifact's write carries a mark for the action, which Try
-// again finds, so it counts once (src/moves.js). The web build's commands do this with operation
-// IDs (tests/aws-save-states.spec.js).
+// A save whose answer was lost: Try again sends the same operation, which was applied already, so
+// it counts once (the mock runtime's commands, as the web build's in tests/aws-save-states.spec.js)
 const loseWrites = (page, prefix) => mock(page, (p) => { window.__mock.loseWrites = p; }, prefix);
 test("a checkout whose answer was lost counts once on Try again, on the line and in storage", { tag: ["@J4.2"] }, async ({ page }) => {
-  // The line already has as many marks as it keeps: the oldest goes
-  const old = Array.from({ length: 10 }, (_, i) => `o${i}`);
-  const s1 = usedState.seed["projects/s1"];
-  await openEcho(page, { ...usedState, seed: { ...usedState.seed, "projects/s1": { ...s1, items: { ...s1.items, SKU1: { ...s1.items.SKU1, ops: old } } } } });
+  await openEcho(page);
   await enterBarcode(page, "SKU1");
   await loseWrites(page, "projects/");
   await addToProject(page);
   await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
   const lost = (await doc(page, "projects/s1")).items.SKU1;
   expect(lost.out).toBe(4);
-  expect(lost.ops).toEqual([...old.slice(1), expect.any(String)]);
   await loseWrites(page, null);
   await hideToast(page);
   await modal(page).getByRole("button", { name: "Try again" }).click();
@@ -140,108 +135,6 @@ test("a return whose answer was lost counts once on Try again", { tag: ["@J4.3"]
   await modal(page).getByRole("button", { name: "Try again" }).click();
   await expect(toast(page)).toHaveText("1 returned · 2 of 3 back");
   await expect.poll(() => doc(page, "products/SKU1").then((p) => p.stock)).toBe(11);
-  expect((await doc(page, "projects/s1")).items.SKU1.returned).toBe(2);
-});
-
-// The artifact writes the project line, then the storage count. If the storage count fails, the
-// form stays open with its quantity fixed, and Try again writes only the storage count, with a
-// mark on the item so it counts once (src/moves.js). (In the web build's mock runtime too.)
-const OWING = "Saved on the project, but the storage count didn't save. Tap Try again to finish; nothing is counted twice. Cancel leaves storage as it is.";
-const qtyLocked = async (page, id) => {
-  await expect(modal(page).locator("#" + id)).toBeDisabled();
-  await expect(modal(page).getByRole("button", { name: "More" })).toBeDisabled();
-  await expect(modal(page).getByRole("button", { name: "Fewer" })).toBeDisabled();
-};
-test("a checkout whose storage count didn't save keeps the form open, and Try again counts storage once", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openEcho(page);
-  await enterBarcode(page, "SKU1");
-  await failWrites(page, { prefix: "products/", code: "unavailable" });
-  await addToProject(page);
-  await expect(failedNote(page)).toHaveText(OWING);
-  await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
-  await qtyLocked(page, "fQty");
-  const line = (await doc(page, "projects/s1")).items.SKU1;
-  expect(line.out).toBe(4);
-  expect((await doc(page, "products/SKU1")).stock).toBe(10);
-  await failWrites(page, null);
-  await hideToast(page);
-  const before = await writes(page);
-  await modal(page).getByRole("button", { name: "Try again" }).click();
-  await expect(toast(page)).toHaveText("Checked out 1 × Paper towels, 6 roll");
-  await expect(modal(page)).toBeEmpty();
-  const item = await doc(page, "products/SKU1");
-  expect(item.stock).toBe(9);
-  expect(item.ops).toEqual([line.ops.at(-1)]);
-  // Only the storage count was written again; the line is as it was
-  expect(await writes(page)).toBe(before + 1);
-  expect((await doc(page, "projects/s1")).items.SKU1).toEqual(line);
-});
-
-// Closing the form then would leave storage uncounted, so only Cancel closes it, on a second tap
-test("a checkout whose storage count is owed warns before Cancel closes it", { tag: ["@J4.2"] }, async ({ page }) => {
-  await openEcho(page);
-  await enterBarcode(page, "SKU1");
-  await failWrites(page, { prefix: "products/", code: "unavailable" });
-  await addToProject(page);
-  await expect(failedNote(page)).toHaveText(OWING);
-  // Escape and a tap outside don't close it
-  await page.keyboard.press("Escape");
-  await page.locator("#overlay").click({ position: { x: 5, y: 5 } });
-  await expect(failedNote(page)).toBeVisible();
-  const cancel = modal(page).locator("#cancel");
-  await cancel.click();
-  await expect(cancel).toHaveText("Tap again to leave storage as it is");
-  await expect(failedNote(page)).toBeVisible();
-  await cancel.click();
-  await expect(page.locator("#overlay")).toBeHidden();
-  // On the project, and storage as it was
-  expect((await doc(page, "projects/s1")).items.SKU1.out).toBe(4);
-  expect((await doc(page, "products/SKU1")).stock).toBe(10);
-});
-
-test("a return whose storage count is owed can still be finished after Cancel warns", { tag: ["@J4.3"] }, async ({ page }) => {
-  await openEcho(page);
-  await startReturn(page);
-  await enterBarcode(page, "SKU1");
-  await failWrites(page, { prefix: "products/", code: "unavailable" });
-  await saveReturn(page);
-  await expect(failedNote(page)).toHaveText(OWING);
-  const cancel = modal(page).locator("#cancel");
-  await cancel.click();
-  await expect(cancel).toHaveText("Tap again to leave storage as it is");
-  await failWrites(page, null);
-  await modal(page).getByRole("button", { name: "Try again" }).click();
-  await expect(toast(page)).toHaveText("1 returned · 2 of 3 back");
-  await expect(page.locator("#overlay")).toBeHidden();
-  expect((await doc(page, "products/SKU1")).stock).toBe(11);
-});
-
-test("a return whose storage count was refused or lost is finished once by trying again", { tag: ["@J4.3"] }, async ({ page }) => {
-  await openEcho(page);
-  await startReturn(page);
-  await enterBarcode(page, "SKU1");
-  // Refused for a reason trying again won't fix: no Try again note, but the quantity is fixed
-  await failWrites(page, { prefix: "products/", code: "quota_exceeded" });
-  await saveReturn(page);
-  await expect(toast(page)).toHaveText("Storage is full. Delete old projects or items to make room.");
-  await expect(failedNote(page)).toHaveCount(0);
-  await qtyLocked(page, "fRet");
-  expect((await doc(page, "projects/s1")).items.SKU1.returned).toBe(2);
-  // Saved, but the answer is lost
-  await failWrites(page, null);
-  await loseWrites(page, "products/");
-  await saveReturn(page);
-  await expect(failedNote(page)).toHaveText(OWING);
-  expect((await doc(page, "products/SKU1")).stock).toBe(11);
-  await loseWrites(page, null);
-  await hideToast(page);
-  const before = await writes(page);
-  await modal(page).getByRole("button", { name: "Try again" }).click();
-  await expect(toast(page)).toHaveText("1 returned · 2 of 3 back");
-  await expect(modal(page)).toBeEmpty();
-  // Found the mark: nothing written again
-  expect(await writes(page)).toBe(before);
-  expect((await doc(page, "products/SKU1")).stock).toBe(11);
   expect((await doc(page, "projects/s1")).items.SKU1.returned).toBe(2);
 });
 

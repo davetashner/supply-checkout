@@ -69,7 +69,8 @@ test("owners export every project and the inventory as CSV, and everything as JS
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-// The artifact build's marks of recent saves only guard retries (src/moves.js): they aren't data
+// The retired claude.ai artifact's marks of recent saves, which data imported from it can still
+// hold, only guarded its retries: they aren't data
 test("the JSON export leaves out the marks of recent saves", { tag: ["@J6"] }, async ({ page }) => {
   await openOwner(page, { seed: {
     "products/a": { name: "A", price: 1, stock: 3, ops: ["m1"] },

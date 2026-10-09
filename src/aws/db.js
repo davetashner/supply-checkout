@@ -430,7 +430,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     }
   });
 
-  // An item saved from the inventory form or a receipt (src/moves.js saveItem). Stock moves only
+  // An item saved from the inventory form or a receipt (saveItem in src/moves.js). Stock moves only
   // through the stock command (the document routes keep the stored stock and refuse another), so
   // the PUT leaves it out and the new stock goes through the command, after the item exists. The
   // form sends a count only when the person changed it, with the count it opened with

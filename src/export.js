@@ -85,8 +85,8 @@ export function inventoryCsv(products) {
   ]);
 }
 
-// A document without the artifact build's marks of recent saves (`ops` on lines and items,
-// src/moves.js; `savedReceipts` on projects from before them), which only guard retries
+// A document without the retired claude.ai artifact's marks of recent saves (`ops` on lines and
+// items; `savedReceipts` on projects from before them), which only guarded its retries
 const unmarked = doc => { const copy = { ...doc }; delete copy.ops; delete copy.savedReceipts; return copy; };
 const unmarkedItems = items => Object.fromEntries(Object.entries(items).map(([k, it]) => [k, unmarked(it)]));
 

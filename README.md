@@ -20,7 +20,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `src/main.js` | App state, screens, modals, receipt review, and startup. |
 | `src/runtime.js` | `use()`, the one place the app reaches its runtime (`window.claude`). |
 | `src/aws/` | The web build's runtime ([ADR 0004](docs/adr/0004-runtime-adapter.md)): `window.claude` on the AWS backend. `main.js` loads `config.json` and installs it; `session.js` is sign-in (Managed Login, PKCE, tokens in memory); `account.js` is first sign-in, invites, the team bar and the `user` and `downloads` capabilities; `db.js` maps the app's `db` calls onto the data API; `live.js` is live updates over AppSync Events, with the polling fallback. See [The web app on AWS](docs/web-app.md#the-web-app-on-aws). |
-| `src/moves.js` | Checkout and return writes, in one place so the web build can switch to atomic commands (`supply-checkout-1dg.1`). |
+| `src/moves.js` | Checkout, return and the other stock-moving changes, sent to the runtime's atomic commands (`docs/api/commands.md`). |
 | `src/format.js`, `src/project-math.js` | Formatting helpers and project totals, with no app state. |
 | `src/dom.js` | `$`, toast, modals, two-tap confirm buttons and number steppers. |
 | `src/live-scan.js` | The live barcode scanner: a Scan button opens the camera, each frame is read (the browser's detector, then ZXing on the aiming box and on spots that look like a code), and a code is taken once separate frames agree. **Take a photo instead**, or a browser without a camera, uses the photo picker. |
