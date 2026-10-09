@@ -19,12 +19,17 @@ name: Deploy
 #   trust           no environment: the deploy role must REFUSE this job (docs/infrastructure.md)
 #   build           no environment, no id-token, no AWS: builds the web app and the demo once
 #                   from the release commit and keeps them as the run's artifact, with a hash
-#   plan            `production` (approval 1): deploys nothing, but runs the release commit's
-#                   code in a job that holds the deploy role until it drops to CDK's read-only
-#                   lookup role (the job can still request the production OIDC token);
-#                   synthesizes, prints a hash of the assembly, posts each group's
-#                   diff to the job summary, and fails if the stateful stacks' diff replaces or
-#                   deletes what holds data (scripts/check-replacements.mjs) unless allowed
+#   synth           no environment, no id-token, no AWS: synthesizes the stacks from the release
+#                   commit, with and without the backup copy, and keeps both assemblies as the
+#                   run's artifact, the account ID swapped for a placeholder
+#                   (scripts/assembly-pack.sh) and the whole encrypted (scripts/assembly-seal.mjs),
+#                   with their hashes inside
+#   plan            `production` (approval 1): deploys nothing and runs no release code (only
+#                   main's tooling and main's locked CDK CLI, on the synth job's files as data);
+#                   signs in, drops to CDK's read-only lookup role, picks and unpacks the synth
+#                   job's assembly, checks its hash, posts each group's diff to the job summary,
+#                   and fails if the stateful stacks' diff replaces or deletes what holds data
+#                   (scripts/check-replacements.mjs) unless allowed
 #   apply-stateful  `production-stateful` (approval 2), only if the stateful stacks differ:
 #                   synthesizes again, refuses a template hash that isn't the plan's, checks the
 #                   diff again, deploys them
@@ -43,14 +48,32 @@ name: Deploy
 #                   GitHub Release, and marks a failed release as a pre-release, which the release
 #                   job refuses to deploy again unless the run says allow-bad-release
 #
+# Release code and the production OIDC token (supply-checkout-pbp.39): no job that runs the
+# release commit's code (npm ci, the CDK synth, the web build) can request the production OIDC
+# token before an apply approval. build and synth run it with no environment and no id-token
+# permission, and hand over only files (artifacts, by ID) and outputs that must look like a hash or
+# an ID. plan, which can request the token, checks out nothing from the release commit and runs
+# only main's scripts and main's locked CDK CLI, which reads the assembly as data (cdk diff
+# --method template runs no app and builds no assets). Blanking ACTIONS_ID_TOKEN_REQUEST_* for one
+# step wouldn't do: a step can reach the later ones through $GITHUB_ENV, $GITHUB_PATH, BASH_ENV or
+# a process left running. Only apply-stateful and apply (approvals 2 and 3) run release code with
+# the deploy role, which deploying it needs anyway. scripts/check-deploy-workflow.mjs keeps it so.
+#
 # No AWS credentials exist before a job's sign-in step, and those jobs run only code from a
 # release commit on main; the deploy tooling (scripts/) comes from main's own commit, so an older
 # release deploys with today's checks. Every third-party action is pinned by commit SHA. The
 # deploy role's ARN is a secret (AWS_DEPLOY_ROLE_ARN: an environment secret, or the repository's,
-# which the trust job uses), so neither it nor the account ID reaches the public log, and every
-# diff has its account IDs scrubbed (scripts/scrub-account-ids.sed). The cloud assembly isn't
-# uploaded (its asset manifests name the account): each apply job synthesizes again from the
-# same commit and must reach the plan's hash.
+# which the trust and synth jobs use), so neither it nor the account ID reaches the public log,
+# and every diff has its account IDs scrubbed (scripts/scrub-account-ids.sed). The uploaded
+# assembly has the account ID swapped for a placeholder and is encrypted with the repository
+# secret DEPLOY_ASSEMBLY_KEY (artifacts of a public repository are public, and its asset hashes
+# were computed over templates that named the account); plan opens it and puts the account back,
+# and each apply job synthesizes again from the same commit and must reach the plan's hash. No
+# raw template hash goes into a job output, a step's env or with, or the log: GitHub prints a
+# step's env in its header and masks only secrets, and the source is public and the synth
+# deterministic, so anyone could brute-force the 12-digit account from one. synth seals its
+# hashes into the artifact, and plan hands the apply jobs only HMAC-SHA256(DEPLOY_ASSEMBLY_KEY,
+# hash) (assembly-seal.mjs hmac). scripts/check-deploy-workflow.mjs keeps it so.
 on:
   workflow_dispatch:
     inputs:
@@ -262,13 +285,19 @@ jobs:
       hash: ${{ steps.hash.outputs.hash }}
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The release's commit (not the tag name, so a tag moved since can't swap it)
+      - &checkout-release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.release.outputs.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # No dependency cache in a deploy job, not even the one setup-node turns on by itself when
+      # package.json names a packageManager (scripts/check-deploy-workflow.mjs)
+      - &setup-node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+          package-manager-cache: false
       - name: Build
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
@@ -292,41 +321,48 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  plan:
-    name: Plan (deploys nothing)
-    needs: [release, trust, build]
+  synth:
+    # The CDK synth (supply-checkout-pbp.39): it runs the release commit's CDK app, its
+    # dependencies and the Lambda bundling from backend/, so it runs here, with no environment, no
+    # id-token permission and no AWS access, never in a job that can request the production OIDC
+    # token. Twice, with and without the backup copy (-c backupCopy=false until the copy vault's
+    # parameter exists, like scripts/deploy.sh), since only plan can read which applies. Both
+    # assemblies go to the run's artifact, by this upload's ID, the account ID swapped for a
+    # placeholder (scripts/assembly-pack.sh) and the whole encrypted with the repository secret
+    # DEPLOY_ASSEMBLY_KEY (scripts/assembly-seal.mjs): artifacts of a public repository are
+    # public, and the asset hashes inside were computed over templates that named the account, so
+    # the account could be brute-forced from them. Each assembly's hash goes inside the sealed
+    # file (expected-hash/), never into an output or the log, for the same reason, and plan
+    # checks the one it uses against it. The CDK app needs the account
+    # (the stacks name it, and an apply job's synth gets it from its credentials), so it gets it
+    # from the repository secret AWS_DEPLOY_ROLE_ARN, which the trust job uses too: the account ID
+    # isn't secret from the release commit, which deploys into it.
+    # CodeQL's untrusted-checkout and cache-poisoning queries flag a job like this, as for build:
+    # it checks out the commit the release job proved, and restores and saves no cache.
+    name: Synthesize the stacks
+    needs: release
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # Waits for the owner's approval. Approving it runs the release commit's code (the CDK
-    # synth) in a job that can request the production OIDC token (id-token: write) and so the
-    # deploy role, even though the synth runs after the drop to the read-only lookup role:
-    # approving the plan can amount to approving deploy-role power. Treat it as trusting the
-    # release commit. Treat approving
-    # it as trusting that code: the real control is that only a reviewed, released commit on
-    # main gets here. The production environment's rules (main only, required
-    # reviewer, no admin bypass) are what give a job the OIDC subject the deploy role trusts.
-    environment: production
+    timeout-minutes: 20
     permissions:
       contents: read
-      id-token: write
     outputs:
-      hash: ${{ steps.synth.outputs.hash }}
-      copy: ${{ steps.backup.outputs.copy }}
-      stateless-changed: ${{ steps.stateless.outputs.changed }}
-      stateful-changed: ${{ steps.stateful.outputs.changed }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     env:
       ENV_NAME: prod
-      TAG: ${{ needs.release.outputs.tag }}
-      SHA: ${{ needs.release.outputs.sha }}
       AWS_REGION: ${{ needs.release.outputs.region }}
     steps:
-      # The release's commit (not the tag name, so a tag moved since can't swap it)
-      - &checkout-release
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.release.outputs.sha }}
-          persist-credentials: false
+      # Before any release code runs, so a missing key fails fast
+      - &check-assembly-key
+        name: Check the assembly key is set
+        env:
+          DEPLOY_ASSEMBLY_KEY: ${{ secrets.DEPLOY_ASSEMBLY_KEY }}
+        run: |
+          if (( ${#DEPLOY_ASSEMBLY_KEY} < 32 )); then
+            echo "::error::Set the repository secret DEPLOY_ASSEMBLY_KEY (openssl rand -base64 32 | gh secret set DEPLOY_ASSEMBLY_KEY): the synth job encrypts the assembly with it, and plan opens it"
+            exit 1
+          fi
+      - *checkout-release
       # The deploy tooling from main's commit, this workflow's own
       - &checkout-tools
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -335,21 +371,136 @@ jobs:
           path: .deploy-tools
           sparse-checkout: scripts
           persist-credentials: false
-      # No dependency cache in a job that holds prod credentials
-      - &setup-node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-      # Before any credentials exist, and without install scripts (esbuild finds its binary in
-      # its platform package without its postinstall). Defence in depth: the real control is
-      # that only a reviewed, released commit on main gets here. The synth bundles the Lambda
-      # code from backend/. Every cdk and tsx below is the locked local copy, never something
-      # npx could fetch.
+      - *setup-node
+      # Without install scripts (esbuild finds its binary in its platform package without its
+      # postinstall). The synth bundles the Lambda code from backend/. Every cdk and tsx below is
+      # the locked local copy, never something npx could fetch.
       - &install
         name: Install dependencies
         run: |
           (cd backend && npm ci --ignore-scripts --no-audit --no-fund)
           (cd infra && npm ci --ignore-scripts --no-audit --no-fund)
+      # Into infra/cdk.out each time, the folder an apply job synthesizes into: the Lambda source
+      # maps hold paths relative to it, so the hashes only match from the same place
+      - name: Synthesize, with and without the backup copy
+        id: synth
+        working-directory: infra
+        env:
+          # A secret, so the ARN (and the account ID in it) is masked in the log
+          ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          # No credentials here: don't wait on an instance metadata service for them
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          if [[ ! "$ROLE_ARN" =~ ^arn:aws:iam::([0-9]{12}):role/supply-checkout-prod-github-deploy$ ]]; then
+            echo "::error::Set the repository secret AWS_DEPLOY_ROLE_ARN to the prod deploy role's ARN: the synth takes the account ID from it"
+            exit 1
+          fi
+          account="${BASH_REMATCH[1]}"
+          echo "::add-mask::$account"
+          unset ROLE_ARN
+          for copy in true false; do
+            rm -rf cdk.out
+            context=(-c "envName=$ENV_NAME")
+            if [[ "$copy" == false ]]; then context+=(-c backupCopy=false); fi
+            CDK_DEFAULT_ACCOUNT="$account" ./node_modules/.bin/cdk synth --app "./node_modules/.bin/tsx bin/app.ts" --quiet --no-notices "${context[@]}"
+            # Sealed with the assembly, never an output or printed: it could be brute-forced back
+            # to the account
+            mkdir -p "$RUNNER_TEMP/assembly/expected-hash"
+            bash ../.deploy-tools/scripts/assembly-hash.sh cdk.out > "$RUNNER_TEMP/assembly/expected-hash/backup-copy-$copy"
+            bash ../.deploy-tools/scripts/assembly-pack.sh pack cdk.out "$RUNNER_TEMP/assembly/backup-copy-$copy" "$account"
+          done
+      # Both packed assemblies in one file, encrypted (AES-256-GCM, main's script), so the
+      # artifact shows neither the account nor a hash computed over it, nor even the file names
+      - name: Seal the assemblies
+        env:
+          DEPLOY_ASSEMBLY_KEY: ${{ secrets.DEPLOY_ASSEMBLY_KEY }}
+        run: |
+          mkdir "$RUNNER_TEMP/sealed"
+          node .deploy-tools/scripts/assembly-seal.mjs seal "$RUNNER_TEMP/assembly" "$RUNNER_TEMP/sealed/cloud-assembly.sealed"
+      # Kept 30 days, longer than any approval wait; plan downloads it by this upload's ID
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cloud-assembly
+          path: ${{ runner.temp }}/sealed/cloud-assembly.sealed
+          if-no-files-found: error
+          retention-days: 30
+
+  plan:
+    name: Plan (deploys nothing)
+    needs: [release, trust, build, synth]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Waits for the owner's approval. This job can request the production OIDC token (id-token:
+    # write) and so the deploy role, so it runs no code from the release commit
+    # (supply-checkout-pbp.39): it checks out only main's tooling, installs main's locked CDK CLI,
+    # and treats the synth and build jobs' artifacts and outputs as data. Approving it shows the
+    # diff and deploys nothing. The production environment's rules (main only, required reviewer,
+    # no admin bypass) are what give a job the OIDC subject the deploy role trusts.
+    # scripts/check-deploy-workflow.mjs fails CI if this job checks out anything but main's commit.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      hash-hmac: ${{ steps.unpack.outputs.hash-hmac }}
+      copy: ${{ steps.backup.outputs.copy }}
+      stateless-changed: ${{ steps.stateless.outputs.changed }}
+      stateful-changed: ${{ steps.stateful.outputs.changed }}
+    env:
+      ENV_NAME: prod
+      TAG: ${{ needs.release.outputs.tag }}
+      AWS_REGION: ${{ needs.release.outputs.region }}
+    steps:
+      # main's tooling and main's infra/ (for its CDK CLI and cdk.json), nothing of the release's
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .deploy-tools
+          sparse-checkout: |
+            scripts
+            infra
+          persist-credentials: false
+      - *setup-node
+      # main's locked CDK CLI, before any credentials exist and without install scripts. Only its
+      # cdk runs, on the synth job's assembly with --app <folder>, which runs no app.
+      - name: Install main's CDK CLI
+        working-directory: .deploy-tools/infra
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      # The synth and build jobs ran release code: take only real hashes and IDs from them, so
+      # they can't put their own text into a command or the summary the approver reads. The
+      # build's hash is of the public web build, so it may show; synth's hashes are sealed.
+      - name: Check the synth and build jobs' outputs
+        env:
+          ASSEMBLY_ARTIFACT_ID: ${{ needs.synth.outputs.artifact-id }}
+          BUILD_HASH: ${{ needs.build.outputs.hash }}
+          BUILD_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
+        run: |
+          if [[ ! "$BUILD_HASH" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::The build job's hash isn't one (a 64-character hex hash)"
+            exit 1
+          fi
+          for id in "$ASSEMBLY_ARTIFACT_ID" "$BUILD_ARTIFACT_ID"; do
+            if [[ ! "$id" =~ ^[0-9]+$ ]]; then
+              echo "::error::A synth or build job's artifact ID isn't one (a number)"
+              exit 1
+            fi
+          done
+      - name: Download the synth job's assemblies
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.synth.outputs.artifact-id }}
+          path: ${{ runner.temp }}/assembly
+          merge-multiple: true
+      # Before any credentials exist, with main's script: GCM's tag must check out (the right key,
+      # every byte as sealed) before anything is read, and it takes only folders of plain files.
+      # The hash check after the unpack is still what proves the assembly is the synth job's.
+      - *check-assembly-key
+      - name: Open the sealed assemblies
+        env:
+          DEPLOY_ASSEMBLY_KEY: ${{ secrets.DEPLOY_ASSEMBLY_KEY }}
+        run: node .deploy-tools/scripts/assembly-seal.mjs open "$RUNNER_TEMP/assembly/cloud-assembly.sealed" "$RUNNER_TEMP/packed"
       - name: Sign in to AWS with the deploy role
         # Our own step, not aws-actions/configure-aws-credentials, which always logs the role's
         # unique ID (AROA…), which can be mapped to the account, in this public log
@@ -372,13 +523,15 @@ jobs:
           fi
           echo "Signed in as the deploy role supply-checkout-${ENV_NAME}-github-deploy, in the $GITHUB_JOB job's environment"
       # From here on the job can only read: CDK's lookup role has ReadOnlyAccess (and no
-      # kms:Decrypt). cdk diff --method template reads the deployed templates with it.
+      # kms:Decrypt). cdk diff --method template reads the deployed templates with it. The
+      # bootstrap qualifier is main's (the account's bootstrap doesn't change with a release).
       - name: Find the lookup role
         id: lookup
         run: |
           account="$(aws sts get-caller-identity --query Account --output text)"
-          qualifier="$(jq -r '.context["@aws-cdk/core:bootstrapQualifier"] // "hnb659fds"' infra/cdk.json)"
+          qualifier="$(jq -r '.context["@aws-cdk/core:bootstrapQualifier"] // "hnb659fds"' .deploy-tools/infra/cdk.json)"
           echo "arn=arn:aws:iam::$account:role/cdk-$qualifier-lookup-role-$account-$AWS_REGION" >> "$GITHUB_OUTPUT"
+          echo "qualifier=$qualifier" >> "$GITHUB_OUTPUT"
       - name: Drop to the read-only lookup role
         # With the deploy role's credentials (role chaining), no session tags, and as quiet
         env:
@@ -395,7 +548,7 @@ jobs:
           echo "Now the read-only lookup role"
       # Like scripts/deploy.sh: -c backupCopy=false until the backup copy vault's parameter
       # exists (docs/backups.md). Any error but "not found" stops the plan. The apply jobs use
-      # this answer, so they synthesize what the plan did.
+      # this answer, so they synthesize what the plan showed.
       - name: Check for the backup copy vault
         id: backup
         run: |
@@ -412,30 +565,55 @@ jobs:
             exit 1
           fi
           echo "copy=$copy" >> "$GITHUB_OUTPUT"
-          echo "BACKUP_COPY=$copy" >> "$GITHUB_ENV"
-      # One synth per job; the apply jobs must reach the plan's hash of the templates, asset
-      # manifests (the Lambda code's hashes are in them) and manifest.json (assembly-hash.sh)
-      - &synth
-        name: Synthesize
-        id: synth
-        working-directory: infra
+      # The assembly for that answer, with this account's ID put back: byte for byte what the
+      # synth job wrote, so it must reach the hash sealed with it, and each apply job's own synth
+      # must reach it too. The hash is never printed or passed on raw: only its HMAC under
+      # DEPLOY_ASSEMBLY_KEY goes to the apply jobs, since a raw one could be brute-forced back to
+      # the account.
+      - name: Unpack the assembly
+        id: unpack
+        env:
+          COPY: ${{ steps.backup.outputs.copy }}
+          QUALIFIER: ${{ steps.lookup.outputs.qualifier }}
+          DEPLOY_ASSEMBLY_KEY: ${{ secrets.DEPLOY_ASSEMBLY_KEY }}
         run: |
-          context=(-c "envName=$ENV_NAME")
-          if [[ "${BACKUP_COPY:?}" == false ]]; then context+=(-c backupCopy=false); fi
-          ./node_modules/.bin/cdk synth --app "./node_modules/.bin/tsx bin/app.ts" --quiet --no-notices "${context[@]}"
-          hash="$(bash ../.deploy-tools/scripts/assembly-hash.sh cdk.out)"
-          echo "Template hash: $hash"
-          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          expected="$(cat "$RUNNER_TEMP/packed/expected-hash/backup-copy-$COPY")"
+          if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::The sealed assembly has no hash for backupCopy=$COPY. Run the deploy again."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/plan"
+          bash .deploy-tools/scripts/assembly-pack.sh unpack "$RUNNER_TEMP/packed/backup-copy-$COPY" "$RUNNER_TEMP/plan/cdk.out" "$account"
+          # cdk.out isn't inert to the CLI: its manifest names the files cdk reads, the context
+          # lookups it makes and the roles it assumes. Only files in the folder, no lookups (the
+          # diff has --no-lookups too), and only this account's and region's stacks, each with its
+          # own name and the CDK bootstrap's roles
+          node .deploy-tools/scripts/check-assembly.mjs "$RUNNER_TEMP/plan/cdk.out" --account "$account" --region "$AWS_REGION" --qualifier "$QUALIFIER"
+          hash="$(bash .deploy-tools/scripts/assembly-hash.sh "$RUNNER_TEMP/plan/cdk.out")"
+          if [[ "$hash" != "$expected" ]]; then
+            echo "::error::The unpacked assembly's hash isn't the synth job's. Run the deploy again."
+            exit 1
+          fi
+          echo "The unpacked assembly's hash is the synth job's"
+          hmac="$(node .deploy-tools/scripts/assembly-seal.mjs hmac <<< "$hash")"
+          echo "hash-hmac=$hmac" >> "$GITHUB_OUTPUT"
+      # From a folder with nothing but the assembly (no cdk.json, so no app or plugin of the
+      # release's), with main's cdk
       - name: Diff the stateful stacks
         id: stateful
-        working-directory: infra
-        run: >-
-          bash ../.deploy-tools/scripts/deploy-diff.sh stateful "Stateful stacks: diff for $TAG (approval 2, production-stateful)"
+        env:
+          CDK: ${{ github.workspace }}/.deploy-tools/infra/node_modules/.bin/cdk
+        run: |
+          cd "$RUNNER_TEMP/plan"
+          bash "$GITHUB_WORKSPACE/.deploy-tools/scripts/deploy-diff.sh" stateful "Stateful stacks: diff for $TAG (approval 2, production-stateful)"
       - name: Diff the stateless stacks
         id: stateless
-        working-directory: infra
-        run: >-
-          bash ../.deploy-tools/scripts/deploy-diff.sh stateless "Stateless stacks: diff for $TAG (approval 3, production)"
+        env:
+          CDK: ${{ github.workspace }}/.deploy-tools/infra/node_modules/.bin/cdk
+        run: |
+          cd "$RUNNER_TEMP/plan"
+          bash "$GITHUB_WORKSPACE/.deploy-tools/scripts/deploy-diff.sh" stateless "Stateless stacks: diff for $TAG (approval 3, production)"
       - name: Check the stateful stacks replace or delete nothing that holds data
         env:
           ALLOW: ${{ inputs.allow-replacement }}
@@ -514,17 +692,35 @@ jobs:
           DURATION: "3600"
         run: bash .deploy-tools/scripts/assume-aws-role.sh web-identity
       - *prove
-      - *synth
-      - name: Check it's what the plan showed
-        env:
-          PLAN_HASH: ${{ needs.plan.outputs.hash }}
-          HASH: ${{ steps.synth.outputs.hash }}
+      # One synth per apply job, with the deploy role's credentials (which give the CDK app the
+      # account): it must reach the plan's hash of the templates, asset manifests (the Lambda
+      # code's hashes are in them) and manifest.json (assembly-hash.sh)
+      - &synth
+        name: Synthesize
+        id: synth
+        working-directory: infra
         run: |
-          if [[ -z "$PLAN_HASH" || "$HASH" != "$PLAN_HASH" ]]; then
-            echo "::error::This synth's template hash ($HASH) isn't the plan's ($PLAN_HASH): what would deploy isn't what was approved. Run the deploy again."
+          context=(-c "envName=$ENV_NAME")
+          if [[ "${BACKUP_COPY:?}" == false ]]; then context+=(-c backupCopy=false); fi
+          ./node_modules/.bin/cdk synth --app "./node_modules/.bin/tsx bin/app.ts" --quiet --no-notices "${context[@]}"
+      # The plan passes on only the HMAC of its hash under DEPLOY_ASSEMBLY_KEY: this step hashes
+      # its own synth and compares HMACs, and the raw hash never leaves the step
+      - &check-plan-hash
+        name: Check it's what the plan showed
+        env:
+          PLAN_HASH_HMAC: ${{ needs.plan.outputs.hash-hmac }}
+          DEPLOY_ASSEMBLY_KEY: ${{ secrets.DEPLOY_ASSEMBLY_KEY }}
+        run: |
+          if [[ ! "$PLAN_HASH_HMAC" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::The plan's hash HMAC isn't one (64 hex characters). Run the deploy again."
             exit 1
           fi
-          echo "Same templates as the plan ($HASH)"
+          mine="$(bash .deploy-tools/scripts/assembly-hash.sh infra/cdk.out | node .deploy-tools/scripts/assembly-seal.mjs hmac)"
+          if [[ "$mine" != "$PLAN_HASH_HMAC" ]]; then
+            echo "::error::This synth's template hash isn't the plan's: what would deploy isn't what was approved. Run the deploy again."
+            exit 1
+          fi
+          echo "Same templates as the plan"
       # Again just before deploying, in case prod changed since the plan
       - name: Diff the stateful stacks again
         id: stateful
@@ -581,16 +777,7 @@ jobs:
       - *sign-in
       - *prove
       - *synth
-      - name: Check it's what the plan showed
-        env:
-          PLAN_HASH: ${{ needs.plan.outputs.hash }}
-          HASH: ${{ steps.synth.outputs.hash }}
-        run: |
-          if [[ -z "$PLAN_HASH" || "$HASH" != "$PLAN_HASH" ]]; then
-            echo "::error::This synth's template hash ($HASH) isn't the plan's ($PLAN_HASH): what would deploy isn't what was approved. Run the deploy again."
-            exit 1
-          fi
-          echo "Same templates as the plan ($HASH)"
+      - *check-plan-hash
       # The build job's web build, by its upload's ID, checked against that job's hash before
       # anything deploys, so a missing or changed build stops the job with nothing changed. That
       # job ran release code, so its outputs must look like a hash and an ID first.
