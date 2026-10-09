@@ -40,7 +40,10 @@
 // on every invoice; owners change them in the portal. Stripe itself emails the
 // invoices and receipts (its Dashboard's customer email settings), so nothing
 // here sends mail. The invoice list is read-only, for the same customer as the
-// portal, and passes on only Stripe's own https links.
+// portal, and passes on only Stripe's own https links. Unlike the portal, it
+// stays open to a closed team's owners until the purge is due
+// (supply-checkout-8jc.24), so they can save their invoices before the team
+// and its Stripe customer are deleted.
 //
 // Isolation, in order:
 // 1. API Gateway's JWT authorizer checks the Cognito access token; this
@@ -98,6 +101,7 @@ import {
   type Team,
   TeamClosedError,
   type TeamContext,
+  TeamDeletingError,
   totpOnAt,
   trialEnd,
 } from "../data/index.js";
@@ -270,6 +274,7 @@ export function trialAllowed(
 /** The data layer's and Stripe's errors, as this route answers them. */
 export function errorFor(error: unknown): ApiError {
   if (error instanceof TeamClosedError) return new ApiError(403, "permission_denied", error.message, "team_closed");
+  if (error instanceof TeamDeletingError) return new ApiError(409, "aborted", error.message, "team_deleting");
   return dataErrorFor(error);
 }
 
@@ -462,13 +467,17 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
 
   /**
    * The team's latest invoices, newest first, as Stripe has them for the
-   * team's own customer: the same owners-only checks and refusals as the
-   * portal. Drafts (not sent yet, no page) are left out; `hasMore` says older
+   * team's own customer: the same owners-only and two-step checks as the
+   * portal. Unlike the portal, a closed team's owners (closed by an owner or
+   * by the lapsed-team job) still get them, read-only, until the purge
+   * deletes the team and its Stripe customer (supply-checkout-8jc.24): 409
+   * `team_deleting` once its `purgeAfter` has passed or the purge has marked
+   * it. Drafts (not sent yet, no page) are left out; `hasMore` says older
    * ones are in the portal. Nothing from the request reaches Stripe.
    */
   async function listInvoices(event: DataEvent, userId: string, route: BillingRoute): Promise<APIGatewayProxyStructuredResultV2> {
     const ctx = await ownerContext(event, userId, route);
-    const customer = await linkedCustomer(ctx);
+    const customer = (await linkedTeam(ctx, { whileClosed: true })).stripeCustomerId;
     const stripe = await deps.stripe();
     const page = await stripe.invoices.list({ customer, limit: INVOICE_PAGE });
     const invoices = page.data
@@ -489,17 +498,20 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     return json(200, { invoices, hasMore: page.has_more });
   }
 
-  /** The Stripe customer linked to the caller's team: 403 `team_closed` for a closed team, 409 `no_billing_account` for none. */
-  async function linkedTeam(ctx: TeamContext): Promise<Awaited<ReturnType<typeof getTeam>> & { readonly stripeCustomerId: string }> {
-    if (ctx.closed) throw new TeamClosedError("This team was closed. Reopen it before managing billing.");
+  /**
+   * The Stripe customer linked to the caller's team: 403 `team_closed` for a closed team (unless `whileClosed`: then
+   * 409 `team_deleting` only once the purge is due or has started), 409 `no_billing_account` for none.
+   */
+  async function linkedTeam(ctx: TeamContext, options: { readonly whileClosed?: boolean } = {}): Promise<Awaited<ReturnType<typeof getTeam>> & { readonly stripeCustomerId: string }> {
+    if (ctx.closed && !options.whileClosed) throw new TeamClosedError("This team was closed. Reopen it before managing billing.");
     const team = await getTeam(dbFor({ teamId: ctx.teamId }), ctx);
+    // A closed team's invoices only until its deletion is due: the purge then deletes its Stripe customer too
+    if (isClosed(team) && (team.purging !== undefined || !(typeof team.purgeAfter === "string" && Date.parse(team.purgeAfter) > now()))) {
+      throw new TeamDeletingError("This team is being deleted, and its invoices with it.");
+    }
     const customer = team.stripeCustomerId;
     if (!customer || !ID.test(customer)) throw new ApiError(409, "aborted", "This team has no billing account yet. Subscribe first.", "no_billing_account");
     return { ...team, stripeCustomerId: customer };
-  }
-
-  async function linkedCustomer(ctx: TeamContext): Promise<string> {
-    return (await linkedTeam(ctx)).stripeCustomerId;
   }
 
   const actions: Record<BillingRoute["action"], (event: DataEvent, userId: string, route: BillingRoute) => Promise<APIGatewayProxyStructuredResultV2>> = {

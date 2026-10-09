@@ -1998,7 +1998,9 @@ paths:
         and tax ID on the customer (collected by Checkout, changed in the
         portal). A link is null unless it's an https page on stripe.com.
         Stripe emails invoices and receipts itself. A team whose subscription
-        ended still lists its invoices.
+        ended still lists its invoices, and so does a closed team (closed by
+        an owner or for lapsed billing), read-only, until its deletion is due
+        (`deletesAt`): the purge deletes the team's Stripe customer with it.
       responses:
         "200":
           description: The team's latest invoices.
@@ -2027,10 +2029,10 @@ paths:
                   hasMore: { type: boolean, description: "There are older invoices; the Customer Portal lists them all." }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403":
-          description: "`permission_denied`: `owners_only`, `not_member`, `mfa_required` or `mfa_sign_in_again` (checked after membership and role, as for `createPortalSession`), or `team_closed` (reopen the team first)."
+          description: "`permission_denied`: `owners_only`, `not_member`, `mfa_required` or `mfa_sign_in_again` (checked after membership and role, as for `createPortalSession`, and for a closed team too)."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "409":
-          description: "`aborted` with `reason: \"no_billing_account\"`: the team has no Stripe customer yet, so no invoices."
+          description: "`aborted` with `reason: \"no_billing_account\"`: the team has no Stripe customer yet, so no invoices; or with `reason: \"team_deleting\"`: the team is closed and its deletion is due or under way."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "500":
           description: "`internal`: Stripe couldn't be reached or refused the request. Try again."
@@ -3354,7 +3356,7 @@ components:
                 without an owner. `team_full`: the team is at its member cap.
                 `team_closed`: the team was closed and is read-only.
                 `team_deleting`: the closed team is about to be deleted and
-                can't be reopened.
+                can't be reopened (nor its invoices listed).
                 `stock_changed`: a stock count sent with `expectedStock` found
                 the stock already changed from it (the message says what it is now).
                 `equipment_out`: Finished Return (closing a project), or removing

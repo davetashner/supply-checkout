@@ -8,7 +8,8 @@
 // whose subscription ended (its trial ended without a card, or payments stopped), with a
 // notice, and for its owners a way to subscribe again on Stripe Checkout. Owners of a team
 // with a Stripe customer get Billing, the Stripe Customer Portal (a card, plan changes,
-// invoices, cancelling) and Invoices (the latest ones, invoices.js), and a canceled
+// invoices, cancelling) and Invoices (the latest ones, invoices.js; a closed team's owners
+// keep Invoices until it's deleted), and a canceled
 // subscription says when it ends. Billing needs
 // two-step sign-in (an authenticator app, mfa.js), which Account sets up; when the server
 // refuses billing for want of it, the setup opens. Account also changes the password
@@ -463,7 +464,10 @@ export async function start(config) {
     const ended = !team.closedAt && team.subscriptionEnded;
     // The Customer Portal: owners of an open team that has a Stripe customer
     const billing = owner && !team.closedAt && team.billingAccount;
-    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button><button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}${identity(who, team)}<button type="button" class="btn ghost" id="signOut">Sign out</button>`
+    // Invoices: owners of a team with a Stripe customer, closed or not, so a closed team's owners can save them
+    // before it's deleted (the server refuses once the deletion is due)
+    const invoices = owner && team.billingAccount;
+    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button>` : ""}${invoices ? `<button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}${identity(who, team)}<button type="button" class="btn ghost" id="signOut">Sign out</button>`
       + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "")
       + (!team.closedAt && !ended && team.cancelsAt ? `<p class="closed-note" role="status" id="cancelNote">This team's subscription was canceled. Everything works until ${esc(day(team.cancelsAt))}; then the team becomes read-only.${billing ? " To keep it, renew it from Billing." : " Ask an owner to renew it to keep it."}</p>` : "")
       + (!team.closedAt && !ended && team.paymentGraceEndsAt ? `<p class="closed-note" role="status" id="graceNote">A payment for this team didn't go through. Everything works until ${esc(moment(team.paymentGraceEndsAt))}; then the team becomes read-only until it's paid.${owner ? " Update the payment method in Billing to keep it working." : " Ask an owner to update the payment method."}</p>` : "")
@@ -478,10 +482,8 @@ export async function start(config) {
     if (verify) verify.addEventListener("click", () => openVerifyEmail(session, me.user.email, (fresh) => { me.user = fresh.user; verify.remove(); }));
     if (owner) {
       bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed, invited(fr)));
-      if (billing) {
-        bar.querySelector("#manageBilling").addEventListener("click", (e) => manageBilling(me, team, e.currentTarget));
-        bar.querySelector("#invoices").addEventListener("click", () => openInvoices(session.api, team, (e) => needsTwoStep(me, e)));
-      }
+      if (billing) bar.querySelector("#manageBilling").addEventListener("click", (e) => manageBilling(me, team, e.currentTarget));
+      if (invoices) bar.querySelector("#invoices").addEventListener("click", () => openInvoices(session.api, team, (e) => needsTwoStep(me, e)));
       if (ended) {
         const subscribeButton = bar.querySelector("#subscribe"), pay = bar.querySelector("#payBilling");
         if (subscribeButton) subscribeButton.addEventListener("click", (e) => subscribe(me, team, e.currentTarget));
