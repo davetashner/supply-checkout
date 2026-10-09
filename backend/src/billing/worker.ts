@@ -16,7 +16,10 @@
 //    ended"). Either way the event is retried, and applies to the open team.
 // 3. Fetch the subscription's latest state from Stripe and apply it (plan,
 //    seats, status, interval, period end) with applySubscription, whose
-//    conditions never recreate a purged team or touch a closed one. Applying
+//    conditions never recreate a purged team or touch a closed one. A new
+//    subscription replaces the team's once that has ended; an unpaid one only
+//    once the new one is live, and is then cancelled and its open invoices
+//    voided first (replaced.ts, supply-checkout-8jc.44). Applying
 //    the latest state is harmless to repeat and doesn't depend on the order
 //    events arrive in; the queue also hands a customer's events over one at a
 //    time (FIFO, grouped by customer).
@@ -87,14 +90,18 @@ import { BILLING_EVENTS, type BillingEventType } from "./names.js";
 import type { BillingMessage } from "./webhook-handler.js";
 import { createEntitlementCheck, type EntitlementOutcome, type EntitlementStripe } from "./entitlements.js";
 import { createReopenResync } from "./reopening.js";
+import { clearReplacedUnpaid, LIVE_REPLACEMENT, type ReplacedStripe, unpaidToClear } from "./replaced.js";
 import { createSeatSync, findSeatTeam, parseSeatSync, readSeatTeamAgain, type SeatOutcome, type SeatStripe, type SeatSyncMessage, type SeatTeam, type SeatTeamMissing } from "./seats.js";
 import { iso, type SubscriptionLike, subscriptionState } from "./subscription.js";
 import type { DbForWorker } from "./worker-db.js";
 
 export { type SubscriptionLike, subscriptionState } from "./subscription.js";
 
-/** What the worker needs from the Stripe client: reading a subscription, cancelling a second one, and ending a closed team's (closing.ts). */
-export type WorkerStripe = ClosingStripe;
+/**
+ * What the worker needs from the Stripe client: reading a subscription, cancelling a second one, ending a closed
+ * team's (closing.ts), and clearing an unpaid one a resubscription replaced (replaced.ts).
+ */
+export type WorkerStripe = ClosingStripe & ReplacedStripe;
 
 export interface BillingWorkerDeps {
   readonly dbFor: DbForWorker;
@@ -221,13 +228,21 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
    * The subscription to apply, and the one it replaces: the team's own, or a
    * new one once the team's has ended. A second live subscription for a team
    * that has one isn't applied: it's a duplicate checkout (two Checkout pages
- * finished before the first webhook landed), and the worker cancels it.
+   * finished before the first webhook landed), and the worker cancels it
+   * (`second`). The team's subscription is read from Stripe unless the team
+   * records it as over (canceled, incomplete_expired). An unpaid one
+   * (replaced.ts, supply-checkout-8jc.44) is replaced only by a live one
+   * (LIVE_REPLACEMENT), and comes back as `unpaid` to be cleared first; for
+   * any other (an `incomplete` checkout, say) the team keeps it (`wait`), and
+   * the new one's later event applies it once it's paid.
    */
-  async function choose(stripe: WorkerStripe, sub: SubscriptionLike, stored: string | undefined, storedStatus: string): Promise<{ replaces?: string } | undefined> {
+  async function choose(stripe: WorkerStripe, sub: SubscriptionLike, stored: string | undefined, storedStatus: string): Promise<{ replaces?: string; unpaid?: SubscriptionLike } | "second" | "wait"> {
     if (!stored || stored === sub.id) return {};
-    if (hasEnded(storedStatus)) return { replaces: stored };
+    if (hasStopped(storedStatus)) return { replaces: stored };
     const current = await stripe.subscriptions.retrieve(stored);
-    return hasEnded(current.status) ? { replaces: stored } : undefined;
+    if (!hasEnded(current.status)) return "second";
+    if (!unpaidToClear(current, storedStatus)) return { replaces: stored };
+    return LIVE_REPLACEMENT.includes(sub.status) ? { replaces: stored, unpaid: current } : "wait";
   }
 
   /** Emails each owner about the event, once each whatever the retries (claimBillingNotice first). */
@@ -452,7 +467,11 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     // one that ended later: it would give the team a deletion date, or pull it in (billingAccess)
     if (endedEarlier(sub, team)) return done("ignored");
     const chosen = await choose(stripe, sub, team.stripeSubscriptionId, team.status);
-    if (!chosen) {
+    if (chosen === "wait") {
+      obs.logger.info("Resubscription not live yet: the team keeps its unpaid subscription", { teamId, eventId, subscriptionId: sub.id, status: sub.status, kept: team.stripeSubscriptionId ?? "" });
+      return done("ignored");
+    }
+    if (chosen === "second") {
       // One subscription per team: cancel the second at once, so its trial never turns
       // into a charge. One that was already paid is logged for a refund by hand
       if (!hasEnded(sub.status)) {
@@ -464,6 +483,12 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     // A stamp that no longer means anything goes (closing.ts): with no resync pending, any; while one is, one on a renewed
     // subscription. So an owner's later cancellation is never taken for a closure's, or stamped again at the next closing
     if (staleStamp(sub, team.resyncFor !== undefined)) await removeStamp(stripe, sub, teamId, eventId);
+    // The unpaid one it replaces is cleared before the team takes the new one: a failure retries the event, and
+    // the team still names the old one, so the retry clears what's left (replaced.ts)
+    if (chosen.unpaid) {
+      const cleared = await clearReplacedUnpaid(stripe, chosen.unpaid, customer);
+      obs.logger.info("Replaced unpaid subscription cleared", { teamId, eventId, subscriptionId: chosen.unpaid.id, status: chosen.unpaid.status, canceled: cleared.canceled, voided: cleared.voided, by: sub.id });
+    }
     const result = await applySubscription(db, ctx, subscriptionState(sub, customer, chosen.replaces), now());
     if (result === "ignored") {
       // Closed (or gone) since it was read: a subscription it never recorded is ended here, or it would renew
