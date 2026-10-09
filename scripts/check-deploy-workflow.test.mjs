@@ -65,9 +65,12 @@ ${checkout(main)}      - uses: actions/download-artifact@abc
       - *release
   journeys:
     needs: [release, apply]
+    runs-on: x
     permissions:
-      id-token: write
-    uses: ./.github/workflows/journeys.yml
+      contents: read
+      actions: write
+    steps:
+${checkout(main)}      - run: gh workflow run journeys.yml --ref main
 `;
 
 test("passes deploy.yml's shape", () => {
@@ -76,7 +79,7 @@ test("passes deploy.yml's shape", () => {
 
 test("the repository's deploy.yml passes", () => {
   const out = execFileSync("node", [script], { encoding: "utf8" });
-  assert.match(out, /check-deploy-workflow: only apply-stateful, apply, journeys run release code/);
+  assert.match(out, /check-deploy-workflow: only apply-stateful, apply run release code/);
 });
 
 test("rule 1: the workflow's permissions don't grant id-token", () => {
@@ -131,9 +134,18 @@ test("rule 2: a job that inherits the workflow's permissions is checked too", ()
   assert.match(deployTextProblems(inherit).join("\n"), /job release, step 1 .*not the default ref/);
 });
 
-test("rule 2: no reusable workflow call from a job that can request the token, but for the apply-approved ones", () => {
+test("rule 7: no job calls a reusable workflow or passes it secrets, whatever its permissions", () => {
   const call = good.replace("  trust:\n    needs: release\n    runs-on: x\n    permissions:\n      id-token: write\n    steps:\n      - run: echo refuse\n", "  trust:\n    needs: release\n    permissions:\n      id-token: write\n    uses: ./.github/workflows/other.yml\n");
-  assert.deepEqual(deployTextProblems(call), ["job trust can request the OIDC token, so it may not call a reusable workflow (./.github/workflows/other.yml)"]);
+  assert.deepEqual(deployTextProblems(call), ["job trust calls a reusable workflow (./.github/workflows/other.yml); a deploy job may call none: dispatch it instead, as the journeys job does"]);
+  // The old journeys call: no id-token, but still refused, and so is secrets: inherit
+  const called = good.replace(/ {2}journeys:\n[\s\S]*$/, "  journeys:\n    needs: [release, apply]\n    permissions:\n      contents: read\n      actions: read\n    uses: ./.github/workflows/journeys.yml\n    secrets: inherit\n");
+  assert.deepEqual(deployTextProblems(called), [
+    "job journeys calls a reusable workflow (./.github/workflows/journeys.yml); a deploy job may call none: dispatch it instead, as the journeys job does",
+    "job journeys passes secrets to a called workflow (secrets: inherit); a deploy job may pass none",
+  ]);
+  assert.match(deployTextProblems(called.replace("secrets: inherit", "secrets:\n      X: ${{ secrets.X }}")).join("\n"), /passes secrets to a called workflow \(secrets: …\)/);
+  // An apply job may not either
+  assert.match(deployTextProblems(good.replace("    steps:\n      - *release\n  journeys:", "    uses: ./.github/workflows/apply.yml\n  journeys:")).join("\n"), /job apply calls a reusable workflow/);
 });
 
 test("rule 3: no cache in a job that can request the token, the apply jobs included", () => {
@@ -152,8 +164,9 @@ test("rule 4: the jobs that run the release with the token are past an apply app
   // apply without its environment, or not after plan
   assert.match(deployTextProblems(good.replace("    environment: production-stateful\n", "")).join("\n"), /job apply-stateful runs the release with the deploy role, so it must be past an apply approval/);
   assert.match(deployTextProblems(good.replace("  apply:\n    needs: [release, plan, apply-stateful]", "  apply:\n    needs: [release]")).join("\n"), /job apply runs the release/);
-  // journeys only after apply
-  assert.match(deployTextProblems(good.replace("    needs: [release, apply]\n", "    needs: [release]\n")).join("\n"), /job journeys runs the release/);
+  // journeys isn't one of them: given the token, it's held to rule 2 like any other job
+  const journeysToken = good.replace("      contents: read\n      actions: write\n", "      actions: write\n      id-token: write\n").replace("      - run: gh workflow run journeys.yml --ref main", `${checkout(release)}`);
+  assert.match(deployTextProblems(journeysToken).join("\n"), /job journeys, step 2 .*may check out only main's commit/);
 });
 
 test("rule 5: every setup-node says package-manager-cache: false, in every job", () => {

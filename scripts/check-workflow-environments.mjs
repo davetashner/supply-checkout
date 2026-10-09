@@ -10,10 +10,15 @@
 //   1. Only .github/workflows/journeys.yml may name `production-journeys`, in any letter case
 //      (GitHub's environment names ignore case): not in any key or value once YAML's escapes are
 //      decoded, and not anywhere in the raw text either, comments included (an extra tripwire).
-//   2. A workflow that names it, or calls one that does (`jobs.<id>.uses: ./.github/workflows/…`,
-//      followed through every caller), may only be started by ALLOWED_TRIGGERS: never by
-//      `pull_request`, `pull_request_target` or any other event someone without write access
-//      can cause. Its `on:` may be a name, a list or a map; anything else fails.
+//   2. A workflow that names it, dispatches journeys.yml (any string in its jobs mentions
+//      `journeys.yml`, as `gh workflow run journeys.yml` and the API's
+//      `workflows/journeys.yml/dispatches` do), or calls one that does either
+//      (`jobs.<id>.uses: ./.github/workflows/…`, followed through every caller), may only be
+//      started by ALLOWED_TRIGGERS: never by `pull_request`, `pull_request_target` or any other
+//      event someone without write access can cause. Its `on:` may be a name, a list or a map;
+//      anything else fails. (A dispatched run is main's journeys.yml, whatever the dispatcher
+//      runs, but it still tests prod on demand, so only a trusted event may start it. The file
+//      name is a tripwire: a run step could dispatch it by its name or ID instead.)
 //   3. No job sets its `environment` (or `environment.name`) from an expression (`${{ … }}`),
 //      since then nothing here can tell which environment it names.
 //   4. A job calls a reusable workflow only as `./.github/workflows/<file>.yml` (no other
@@ -22,6 +27,11 @@
 //      this repository's OIDC subject and secrets, and rule 2 couldn't follow it. Steps don't call
 //      into this repository by a remote reference (`<owner>/<repo>/…@<ref>`, any letter case).
 //   5. No YAML merge key (`<<`) anywhere, which could hide keys.
+//   6. journeys.yml has no `workflow_call` trigger, so no workflow can call it: it's dispatched
+//      (supply-checkout-o60.15). A called workflow's environment job gets that environment's
+//      secrets only when the caller passes `secrets: inherit` (actions/runner#4453), which would
+//      also hand it every secret of the caller (the deploy's AWS_DEPLOY_ROLE_ARN and
+//      DEPLOY_ASSEMBLY_KEY), and the call would run under the caller's permissions.
 //
 // journeys.yml doesn't have to exist (it comes with supply-checkout-o60.6).
 //
@@ -40,6 +50,8 @@ export const JOURNEYS_WORKFLOW = "journeys.yml";
 export const ALLOWED_TRIGGERS = ["workflow_call", "workflow_dispatch", "push", "schedule"];
 
 const NAMES = new RegExp(ENVIRONMENT.replace("-", "\\-"), "i");
+/** A mention of the journeys workflow's file, as a dispatch of it has. */
+const DISPATCHES = /\bjourneys\.ya?ml\b/i;
 /** The only job-level `uses:` allowed: a workflow file in this repository, by its local path. */
 export const LOCAL_CALL = /^\.\/\.github\/workflows\/([A-Za-z0-9._-]+\.ya?ml)$/;
 const isMap = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -110,6 +122,12 @@ export function remoteCalls(workflow, repo = DEFAULT_REPO) {
   return uses(workflow).filter((u) => u.trim().toLowerCase().startsWith(prefix));
 }
 
+/** Whether a parsed workflow's jobs mention journeys.yml (dispatch it), comments and job-level `uses:` (calls, rule 2's other half) aside. */
+export function dispatchesJourneys(workflow) {
+  const jobs = Object.values(isMap(workflow.jobs) ? workflow.jobs : {});
+  return jobs.some((job) => strings(isMap(job) ? Object.fromEntries(Object.entries(job).filter(([k]) => k !== "uses")) : job).some((s) => DISPATCHES.test(s)));
+}
+
 /** Problems with the jobs' `environment`: from an expression, or not a name or a map with one. */
 export function environmentProblems(workflow) {
   const problems = [];
@@ -143,9 +161,16 @@ export function workflowProblems(workflows, repo = DEFAULT_REPO) {
       if (!LOCAL_CALL.test(u)) problems.push(`${file}: job ${id} calls ${u}; a job may only call a workflow in this repository as ./.github/workflows/<file>.yml (no other repository, no @ref, no ..)`);
     }
     for (const u of remoteCalls(value, repo)) problems.push(`${file}: calls ${u} by a remote reference; call this repository's workflows as ./.github/workflows/<file>`);
+    if (file === JOURNEYS_WORKFLOW && (triggers(value) ?? []).includes("workflow_call")) {
+      problems.push(`${file}: has a workflow_call trigger; it's only ever dispatched (gh workflow run), since a called workflow's environment secrets need secrets: inherit from the caller (actions/runner#4453)`);
+    }
   }
-  // The workflows that name the environment, and every workflow that calls one of them.
+  // The workflows that name the environment or dispatch journeys.yml, and every workflow that
+  // calls one of them.
   const reach = new Map([...names].map((f) => [f, `names ${ENVIRONMENT}`]));
+  for (const file of Object.keys(parsed)) {
+    if (!reach.has(file) && dispatchesJourneys(parsed[file])) reach.set(file, `dispatches ${JOURNEYS_WORKFLOW}`);
+  }
   for (let grew = true; grew; ) {
     grew = false;
     for (const file of Object.keys(parsed)) {
