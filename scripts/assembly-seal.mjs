@@ -22,7 +22,7 @@
 // it too, so it hides the assembly from the public, not from the release's code (which knows the
 // account anyway: it deploys into it).
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -49,6 +49,31 @@ export function secretFrom(env) {
 
 const keyFor = (secret, salt) => scryptSync(secret, salt, 32, SCRYPT);
 
+/** A regular file's bytes, or undefined if it's anything else (a link isn't followed, a FIFO doesn't block). One open, so nothing can swap it between the check and the read. */
+function readPlainFile(file) {
+  let fd;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    return fstatSync(fd).isFile() ? readFileSync(fd) : undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Writes a new file or folder, refusing one that's already there (EEXIST) rather than checking first. */
+function create(target, make) {
+  try {
+    make();
+  } catch (e) {
+    if (e?.code === "EEXIST") fail(`${target} already exists`);
+    throw e;
+  }
+}
+
 /** Every file in a packed folder, as [relative path, bytes], refusing anything but folders of plain files. */
 export function packedFiles(dir) {
   if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) fail(`no folder ${dir}`);
@@ -59,8 +84,9 @@ export function packedFiles(dir) {
     for (const name of readdirSync(path.join(dir, sub)).sort()) {
       const file = path.join(dir, sub, name);
       if (!PLAIN.test(name)) fail(`unexpected name in ${sub}: ${JSON.stringify(name)}`);
-      if (!lstatSync(file).isFile()) fail(`${sub}/${name} isn't a plain file`);
-      files.push([`${sub}/${name}`, readFileSync(file)]);
+      const bytes = readPlainFile(file);
+      if (!bytes) fail(`${sub}/${name} isn't a plain file`);
+      files.push([`${sub}/${name}`, bytes]);
     }
   }
   if (!files.length) fail(`nothing to seal in ${dir}`);
@@ -115,12 +141,13 @@ export function open(bytes, secret) {
 
 /** Writes opened files into `dir`, which mustn't exist yet. */
 export function writeFiles(files, dir) {
-  if (lstatSync(dir, { throwIfNoEntry: false })) fail(`${dir} already exists`);
-  mkdirSync(dir);
+  create(dir, () => mkdirSync(dir));
+  const made = new Set();
   for (const [name, bytes] of files) {
     const [sub] = name.split("/");
-    if (!lstatSync(path.join(dir, sub), { throwIfNoEntry: false })) mkdirSync(path.join(dir, sub));
-    writeFileSync(path.join(dir, name), bytes, { flag: "wx" });
+    if (!made.has(sub)) create(path.join(dir, sub), () => mkdirSync(path.join(dir, sub)));
+    made.add(sub);
+    create(path.join(dir, name), () => writeFileSync(path.join(dir, name), bytes, { flag: "wx" }));
   }
 }
 
@@ -131,12 +158,13 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     const secret = secretFrom(process.env);
     if (mode === "seal") {
       const files = packedFiles(from);
-      if (lstatSync(to, { throwIfNoEntry: false })) fail(`${to} already exists`);
-      writeFileSync(to, seal(files, secret), { flag: "wx" });
+      const sealed = seal(files, secret);
+      create(to, () => writeFileSync(to, sealed, { flag: "wx" }));
       console.log(`Sealed ${files.length} files`);
     } else {
-      if (!lstatSync(from, { throwIfNoEntry: false })?.isFile()) fail(`no sealed file ${from}`);
-      const files = open(readFileSync(from), secret);
+      const bytes = readPlainFile(from);
+      if (!bytes) fail(`no sealed file ${from}`);
+      const files = open(bytes, secret);
       writeFiles(files, to);
       console.log(`Opened ${files.length} files`);
     }

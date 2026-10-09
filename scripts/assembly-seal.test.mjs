@@ -108,6 +108,9 @@ test("won't write over anything", () => {
   assert.equal(run(["open", file, path.join(root, "once.out")]).status, 0);
   assert.match(run(["open", file, path.join(root, "once.out")]).stderr, /already exists/);
   assert.match(run(["open", path.join(root, "nowhere.sealed"), path.join(root, "x.out")]).stderr, /no sealed file/);
+  // A link to a sealed file isn't followed
+  symlinkSync(file, path.join(root, "link.sealed"));
+  assert.match(run(["open", path.join(root, "link.sealed"), path.join(root, "link.out")]).stderr, /no sealed file/);
 });
 
 test("refuses a missing or short key, naming the secret, and bad usage", () => {
