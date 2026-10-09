@@ -2,8 +2,59 @@
   "releases": [
     {
       "version": "1.10.0",
-      "date": "2026-10-08",
+      "date": "2026-10-09",
       "notes": [
+        {
+          "title": "Names on the members screen",
+          "text": "Owners now see each member's name next to their email on the members screen.",
+          "prs": [
+            666
+          ]
+        },
+        {
+          "title": "A receipt step in the first-run checklist",
+          "text": "The first-run checklist now includes scanning a receipt. Its progress is kept for the whole team, so every owner sees the same checklist on any device.",
+          "prs": [
+            703,
+            705
+          ]
+        },
+        {
+          "title": "Faster start for teams with many projects",
+          "text": "The app opens with your open and recent projects. Older finished projects load when you ask for them.",
+          "prs": [
+            625
+          ]
+        },
+        {
+          "title": "Safer password resets",
+          "text": "Resetting your password now signs you out everywhere and sends you a notice, so nobody can keep using an old session.",
+          "prs": [
+            640,
+            652
+          ]
+        },
+        {
+          "title": "Help when a reset finds no account",
+          "text": "If you ask to reset a password for an address that can't sign in with one, the screen now explains what to do next.",
+          "prs": [
+            628
+          ]
+        },
+        {
+          "title": "Clearer security emails",
+          "text": "Security emails now give the support address and the steps to take if you didn't make the change.",
+          "prs": [
+            651
+          ]
+        },
+        {
+          "title": "Invoices after a team is closed",
+          "text": "Owners of a closed team can still see and download its invoices until the team is deleted.",
+          "prs": [
+            704
+          ]
+        },
         {
           "title": "What's new, right here",
           "text": "When there's something new, a short summary like this one shows once a day. You can turn it off in Account.",
@@ -92,7 +143,9 @@
         "564": "Behind the scenes: test infrastructure",
         "567": "Behind the scenes: test accounts",
         "576": "Behind the scenes: metrics",
-        "580": "Marketing site"
+        "580": "Marketing site",
+        "645": "Behind the scenes: cost alerts",
+        "708": "Behind the scenes: alarms for the operator page"
       }
     },
     {
