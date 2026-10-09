@@ -825,7 +825,7 @@ Teams created before GSI3 existed have no `GSI3PK`, so the ops routes don't list
 5. Publish the page: `npm run publish:ops` (builds it, writes `ops-config.json` from SSM, uploads `ops-<time>-<commit>` and makes it live). Roll back with `npm run publish:web -- activate --channel ops --version <an earlier ops-*>`.
 6. Check it: `curl -sI https://ops.supplycheckout.com/` shows `cache-control: no-store` and the strict `content-security-policy`; `curl -sI https://ops.supplycheckout.com/x` is a 404; then sign in as an operator, open a team and read the audit.
 
-Using it, and what its messages mean: [the operator page runbook](runbooks/operator-page.md). The page isn't in the deploy workflow yet, and the web alarms (Site down, router failing) watch the web app's distribution only; both are follow-ups.
+Using it, and what its messages mean: [the operator page runbook](runbooks/operator-page.md). After the first time, each release's deploy publishes the page ([Deploying a release](releases.md#deploying-a-release)). The web alarms (Site down, router failing) watch the web app's distribution only; that's a follow-up.
 
 ### Backfills
 

@@ -5,12 +5,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { FETCH_TIMEOUT_MS, checkWeb, main, parseArgs, problemsWith, webChecks } from "./check-web.mjs";
-import { DOMAIN, configParameterNames } from "./publish-web.mjs";
+import { DOMAIN, configParameterNames, opsConfigParameterNames } from "./publish-web.mjs";
 
 const APP = "<!doctype html><title>app</title>";
 const DEMO = "<!doctype html><title>demo</title>";
 const CONFIG = Object.fromEntries(Object.keys(configParameterNames("prod")).map((k) => [k, `${k}-value`]));
 const SECURITY = { "content-security-policy": "default-src 'self'", "strict-transport-security": "max-age=63072000" };
+const OPS = "<!doctype html><title>ops</title>";
+const OPS_CONFIG = Object.fromEntries(Object.keys(opsConfigParameterNames("prod")).map((k) => [k, `${k}-value`]));
+const OPS_HEADERS = { "content-security-policy": "default-src 'none'; script-src 'self'", "strict-transport-security": "max-age=63072000", "cache-control": "no-store" };
 
 const response = (status, body, headers = {}) => ({
   status,
@@ -33,6 +36,12 @@ const good = () => ({
   [`https://app.${DOMAIN}/`]: response(200, APP, SECURITY),
   [`https://app.${DOMAIN}/config.json`]: response(200, JSON.stringify(CONFIG)),
   [`https://${DOMAIN}/demo/`]: response(200, DEMO),
+});
+const goodWithOps = () => ({
+  ...good(),
+  [`https://ops.${DOMAIN}/`]: response(200, OPS, OPS_HEADERS),
+  [`https://ops.${DOMAIN}/ops-config.json`]: response(200, JSON.stringify(OPS_CONFIG), { "cache-control": "no-store" }),
+  [`https://ops.${DOMAIN}/config.json`]: response(404, "", { "cache-control": "no-store" }),
 });
 const quiet = { log: () => {}, wait: async () => {} };
 
@@ -99,6 +108,33 @@ test("each check's problems", async () => {
   assert.deepEqual(await problemsWith(config, response(200, "null")), [`https://app.${DOMAIN}/config.json is missing ${Object.keys(CONFIG).join(", ")}`]);
 });
 
+test("with the operator page's index.html, checks its page, config and a 404, never cached", async () => {
+  const checks = webChecks("prod", APP, DEMO, OPS);
+  assert.deepEqual(checks.slice(3).map((c) => c.url), [`https://ops.${DOMAIN}/`, `https://ops.${DOMAIN}/ops-config.json`, `https://ops.${DOMAIN}/config.json`]);
+  assert.equal(webChecks("staging", APP, DEMO, OPS)[3].url, `https://ops.staging.${DOMAIN}/`);
+  const { fetch, calls } = fakeFetch(goodWithOps());
+  assert.deepEqual(await checkWeb(checks, { fetch, ...quiet }), []);
+  assert.equal(calls.length, 6);
+});
+
+test("each operator page check's problems", async () => {
+  const [, , , ops, config, missing] = webChecks("prod", APP, DEMO, OPS);
+  assert.deepEqual(await problemsWith(ops, response(200, OPS, OPS_HEADERS)), []);
+  assert.deepEqual(await problemsWith(ops, response(200, OPS, { ...SECURITY, "cache-control": "max-age=60" })), [
+    `https://ops.${DOMAIN}/ has no no-store in its cache-control header`,
+    `https://ops.${DOMAIN}/ has no default-src 'none' in its content-security-policy header`,
+  ]);
+  assert.deepEqual(await problemsWith(ops, response(200, "<old>", OPS_HEADERS)), [`https://ops.${DOMAIN}/ isn't the index.html just published (yet)`]);
+  assert.deepEqual(await problemsWith(config, response(200, JSON.stringify(OPS_CONFIG), { "cache-control": "no-store" })), []);
+  assert.deepEqual(await problemsWith(config, response(200, JSON.stringify({ ...OPS_CONFIG, rumRegion: "x" }))), [
+    `https://ops.${DOMAIN}/ops-config.json has no no-store in its cache-control header`,
+    `https://ops.${DOMAIN}/ops-config.json has keys publish-web doesn't write: rumRegion`,
+  ]);
+  assert.deepEqual(await problemsWith(missing, response(404, "", { "cache-control": "no-store" })), []);
+  assert.deepEqual(await problemsWith(missing, response(404, "")), [`https://ops.${DOMAIN}/config.json has no no-store in its cache-control header`]);
+  assert.deepEqual(await problemsWith(missing, response(200, "{}", { "cache-control": "no-store" })), [`https://ops.${DOMAIN}/config.json answered 200, not 404`]);
+});
+
 test("options, and main reads the published index.html files", async () => {
   assert.throws(() => parseArgs([]), /--app-index and --demo-index are required/);
   assert.throws(() => parseArgs(["--app-index", "a", "--demo-index", "d", "--tries", "0"]), /--tries/);
@@ -112,4 +148,10 @@ test("options, and main reads the published index.html files", async () => {
   const { fetch } = fakeFetch(good());
   const problems = await main(["--app-index", path.join(dir, "app.html"), "--demo-index", path.join(dir, "demo.html"), "--tries", "1", "--wait", "0"], { fetch, log: () => {} });
   assert.deepEqual(problems, []);
+  assert.deepEqual(parseArgs(["--app-index", "a", "--demo-index", "d", "--ops-index", "o"]).opsIndex, "o");
+  writeFileSync(path.join(dir, "ops.html"), OPS);
+  const withOps = fakeFetch(goodWithOps());
+  const args = ["--app-index", path.join(dir, "app.html"), "--demo-index", path.join(dir, "demo.html"), "--ops-index", path.join(dir, "ops.html"), "--tries", "1"];
+  assert.deepEqual(await main(args, { fetch: withOps.fetch, log: () => {} }), []);
+  assert.equal(withOps.calls.length, 6);
 });
