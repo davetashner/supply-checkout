@@ -18,10 +18,14 @@ async function expectAccessible(page) {
   expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`)).toEqual([]);
 }
 
+// Names the team with Enter in the field, not a click on Create team: in Firefox, a click right
+// after typing on a page that just opened sometimes loses its mousedown (the page gets the
+// mousemove and mouseup, so no click and no POST /teams). Clicking the button is covered by
+// "a new user names their team" in aws-account.spec.js.
 async function createTeam(page, backend, name = "Bravo Co") {
   await openAws(page, backend);
   await page.getByLabel("Team name").fill(name);
-  await page.getByRole("button", { name: "Create team" }).click();
+  await page.getByLabel("Team name").press("Enter");
   await connected(page);
   return backend.teams[0].id;
 }
@@ -32,7 +36,8 @@ test("a pasted team name loses its invisible direction and zero-width characters
   await openAws(page, backend);
   await page.getByLabel("Team name").focus();
   await page.keyboard.insertText("Bravo \u202eoC\u202c\u200b");
-  await page.getByRole("button", { name: "Create team" }).click();
+  // Enter, as in createTeam
+  await page.keyboard.press("Enter");
   await connected(page);
   expect(backend.teams[0].name).toBe("Bravo oC");
 });

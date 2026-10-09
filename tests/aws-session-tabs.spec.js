@@ -115,7 +115,8 @@ test.describe("another tab", { tag: ["@J0"] }, () => {
     await openAws(page, backend);
     const release = backend.hold("POST", "/teams");
     await page.getByLabel("Team name").fill("Pat's team");
-    await page.getByRole("button", { name: "Create team" }).click();
+    // Enter, not a click: see createTeam in aws-first-run.spec.js
+    await page.getByLabel("Team name").press("Enter");
     await expect.poll(() => backend.requests("POST", "/teams").length).toBe(1);
 
     backend.user = SAM;
@@ -138,7 +139,8 @@ test.describe("another tab", { tag: ["@J0"] }, () => {
     const wait = new Promise((r) => { release = r; });
     backend.on("POST", "/teams", { wait, abort: true });
     await page.getByLabel("Team name").fill("Pat's team");
-    await page.getByRole("button", { name: "Create team" }).click();
+    // Enter, not a click: see createTeam in aws-first-run.spec.js
+    await page.getByLabel("Team name").press("Enter");
     await expect.poll(() => backend.requests("POST", "/teams").length).toBe(1);
 
     backend.user = SAM;
