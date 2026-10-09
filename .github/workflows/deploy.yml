@@ -41,11 +41,16 @@ name: Deploy
 #                   publisher role, checks the live routers and the live sites
 #                   (scripts/check-web.mjs), and rolls every channel back to what was live
 #                   before if any of that fails
-#   journeys        after apply succeeded: calls ./.github/workflows/journeys.yml, which walks the
-#                   customer journeys against prod as test accounts (supply-checkout-o60.6) in the
-#                   journey tests' own environment, which only that file names
-#                   (scripts/check-workflow-environments.mjs). A failure fails the deploy. Skipped
-#                   until the owner switches the journey tests on (JOURNEYS_ENABLED, docs/releases.md)
+#   journeys        after apply succeeded; no environment, no id-token, no secrets: dispatches
+#                   .github/workflows/journeys.yml on main (gh workflow run, as the release
+#                   workflow starts this one), which walks the customer journeys against prod as
+#                   test accounts (supply-checkout-o60.6) in the journey tests' own environment,
+#                   which only that file names (scripts/check-workflow-environments.mjs), finds
+#                   that run by its title and waits for it. A failure fails the deploy. Dispatched,
+#                   not called: a called workflow's environment job gets no environment secrets
+#                   without `secrets: inherit` (actions/runner#4453), which would hand it this
+#                   workflow's secrets too (supply-checkout-o60.15). Nothing is dispatched until
+#                   the owner switches the journey tests on (JOURNEYS_ENABLED, docs/releases.md)
 #   verdict         no environment, no AWS, contents: write: notes the journey tests' result on the
 #                   GitHub Release, and marks a failed release as a pre-release, which the release
 #                   job refuses to deploy again unless the run says allow-bad-release
@@ -988,28 +993,109 @@ jobs:
 
   # The customer journeys against prod (supply-checkout-o60.6), after the stacks, the web publish
   # and the post-deploy checks all succeeded: there's no point signing in if the API doesn't
-  # answer. No approval of its own: the owner approved apply, and it deploys nothing. Its job
-  # names the journey tests' environment, whose secrets it gets there, so nothing is passed
-  # down (no `secrets: inherit`). A failure fails this run.
+  # answer. No approval of its own: the owner approved apply, and it deploys nothing.
+  #
+  # It dispatches journeys.yml rather than calling it (supply-checkout-o60.15): GitHub gives a
+  # called workflow's environment job that environment's secrets only when the caller passes
+  # `secrets: inherit` (actions/runner#4453, github/docs#44458), so called from here every
+  # JOURNEYS_* secret was empty (the v1.10.0 deploy), and `secrets: inherit` would hand journeys.yml
+  # AWS_DEPLOY_ROLE_ARN and DEPLOY_ASSEMBLY_KEY too. A dispatched run is a run of its own, on main,
+  # with the journey tests' environment secrets and nothing of this run's; a dispatch made with
+  # GITHUB_TOKEN starts a run (workflow_dispatch is one of the documented exceptions, as
+  # release.yml relies on to start this workflow). scripts/check-deploy-workflow.mjs refuses any
+  # job-level `uses:` or `secrets:` here.
+  #
+  # The run is found by its title, which names this run and attempt (journeys.yml's run-name;
+  # never "the latest run", since two can start close together), followed to the end (up to 95
+  # minutes, then cancelled), and its suite step's outcome read from its jobs; on a failure, the
+  # failed steps come from its journeys-verdict artifact. Everything read from that run is checked
+  # against a fixed shape (scripts/journeys/workflow.mjs follow, outputs). A failure, or a run that
+  # didn't succeed, fails this job and so this run. Until the owner switches the journey tests on,
+  # it dispatches nothing and the verdict job leaves the release as it is.
   journeys:
     name: Journeys
     needs: [release, apply]
     if: >-
       !cancelled() && github.ref == 'refs/heads/main' && !inputs.dry-run
       && needs.apply.result == 'success'
+    runs-on: ubuntu-latest
+    # The dispatched run: up to 40 minutes in its check job, 45 in its suite, and queueing
+    timeout-minutes: 110
     permissions:
       contents: read
-      # journeys.yml's check job lists runs, so two journey runs never test prod at once
-      actions: read
-      id-token: write
-    uses: ./.github/workflows/journeys.yml
-    with:
-      tag: ${{ needs.release.outputs.tag }}
+      # To dispatch journeys.yml, list its runs, read its jobs and artifact, and cancel it
+      actions: write
+    outputs:
+      suite: ${{ steps.follow.outputs.suite }}
+      run-url: ${{ steps.follow.outputs.run-url }}
+      failed: ${{ steps.lists.outputs.failed }}
+      critical: ${{ steps.lists.outputs.critical }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release.outputs.tag }}
+      DEPLOY_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts
+          persist-credentials: false
+      - name: Start the journey tests
+        id: start
+        env:
+          ENABLED: ${{ vars.JOURNEYS_ENABLED }}
+        run: |
+          if [[ "$ENABLED" != true ]]; then
+            echo "::warning::The journey tests are switched off (the repository variable JOURNEYS_ENABLED isn't true): not run. docs/releases.md says how to switch them on (step 9 of setting up the journey tests' environment)."
+            echo "Journey tests: switched off (JOURNEYS_ENABLED isn't true), so they didn't run." >> "$GITHUB_STEP_SUMMARY"
+            echo "started=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh workflow run journeys.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$TAG" -f deploy-run="$DEPLOY_RUN"
+          echo "started=true" >> "$GITHUB_OUTPUT"
+      - name: Wait for the journey tests
+        id: follow
+        if: steps.start.outputs.started == 'true'
+        run: |
+          node scripts/journeys/workflow.mjs follow --repo "$GITHUB_REPOSITORY" --tag "$TAG" --deploy-run "$DEPLOY_RUN" --wait-seconds 5700
+      # The failed steps, from the dispatched run's results job; missing, the verdict says the suite
+      # failed before any test finished
+      - name: Download the failed steps
+        if: >-
+          !cancelled() && steps.follow.outputs.suite == 'failure'
+          && steps.follow.outputs.run-id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: journeys-verdict
+          path: ${{ runner.temp }}/journeys-verdict
+          run-id: ${{ steps.follow.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - name: Read the failed steps
+        id: lists
+        if: "!cancelled() && steps.follow.outputs.suite == 'failure'"
+        run: node scripts/journeys/workflow.mjs outputs "$RUNNER_TEMP/journeys-verdict/verdict.json"
+      - name: Summary
+        if: "!cancelled() && steps.follow.outputs.run-url != ''"
+        env:
+          SUITE: ${{ steps.follow.outputs.suite }}
+          RUN_URL: ${{ steps.follow.outputs.run-url }}
+        run: |
+          {
+            echo "## Journey tests after deploying $TAG"
+            echo
+            echo "The suite step: ${SUITE:-not run}. Results: $RUN_URL"
+          } >> "$GITHUB_STEP_SUMMARY"
+      # This job cancelled (by hand, or its timeout): don't leave the dispatched run testing prod
+      - name: Cancel the journey tests
+        if: cancelled() && steps.start.outputs.started == 'true'
+        run: node scripts/journeys/workflow.mjs cancel --repo "$GITHUB_REPOSITORY" --tag "$TAG" --deploy-run "$DEPLOY_RUN"
 
   # Notes the journey tests' result on the GitHub Release: on a pass, "Journey tests passed in
   # prod"; on a failure, the failed steps, and the release becomes a pre-release, which the release
   # job above refuses unless allow-bad-release. When the suite didn't run or didn't finish (switched
-  # off, set-up failure, cancelled), the release is left as it is. No AWS, no environment.
+  # off, set-up failure, cancelled, the dispatched run not found or timed out), the release is left
+  # as it is. The note links the dispatched journeys run. No AWS, no environment.
   verdict:
     name: Note the journey tests on the release
     needs: [release, journeys]
@@ -1033,7 +1119,8 @@ jobs:
           SUITE: ${{ needs.journeys.outputs.suite }}
           FAILED: ${{ needs.journeys.outputs.failed }}
           CRITICAL: ${{ needs.journeys.outputs.critical }}
+          # The dispatched journeys run, or this run when none was found
+          RUN_URL: ${{ needs.journeys.outputs.run-url || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: >-
           node scripts/release-verdict.mjs --repo "$GITHUB_REPOSITORY" --tag "$TAG" --suite "$SUITE"
-          --failed "$FAILED" --critical "$CRITICAL"
-          --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          --failed "$FAILED" --critical "$CRITICAL" --run-url "$RUN_URL"

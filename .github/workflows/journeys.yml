@@ -2,58 +2,75 @@ name: Journeys
 
 # The customer journeys walked against prod as test accounts in test teams (supply-checkout-o60.6;
 # docs/journey-tests-plan.md, docs/testing.md "Journey tests against prod"). The deploy workflow
-# calls it after `apply` and the post-deploy checks; the owner or the lead can also run it by hand
-# from main (Actions, Journeys, Run workflow) to check prod after a spec change, an incident, or a
-# Stripe or AWS change outside a deploy.
+# dispatches it after `apply` and the post-deploy checks (gh workflow run journeys.yml -f tag=…
+# -f deploy-run=…) and waits for it; the owner or the lead can also run it by hand from main
+# (Actions, Journeys, Run workflow, leaving both inputs empty) to check prod after a spec change,
+# an incident, or a Stripe or AWS change outside a deploy.
+#
+# Only ever dispatched, never called (no workflow_call; supply-checkout-o60.15): GitHub gives a
+# called workflow's job its environment's secrets only when the caller passes `secrets: inherit`
+# (actions/runner#4453), so called from the deploy every JOURNEYS_* secret was empty, and
+# `secrets: inherit` would also hand this workflow the deploy's own (AWS_DEPLOY_ROLE_ARN,
+# DEPLOY_ASSEMBLY_KEY). A dispatched run is a run of its own, with this environment's secrets
+# and nothing of the deploy's. scripts/check-workflow-environments.mjs refuses a workflow_call
+# trigger here.
 #
 # This is the only workflow that may name the production-journeys environment
 # (scripts/check-workflow-environments.mjs, in CI): the journeys role trusts any job in it, and
 # its secrets reach any job that names it. So it has no pull request trigger, and nothing that a
-# pull request starts may call it. The deploy workflow calls it as ./.github/workflows/journeys.yml.
+# pull request starts may dispatch it.
 #
 # Jobs:
-#   check     no environment, no credentials: skips everything until the owner switches the
-#             journey tests on (the repository variable JOURNEYS_ENABLED = true, docs/releases.md
-#             "The production-journeys environment"), then refuses unless the environment is locked
-#             down (scripts/check-environments.mjs), since GitHub creates an environment with no
-#             protection the first time a job names one that doesn't exist
+#   check     no environment, no credentials: checks the inputs' shapes, skips everything until
+#             the owner switches the journey tests on (the repository variable JOURNEYS_ENABLED =
+#             true, docs/releases.md "The production-journeys environment"), then refuses unless
+#             the environment is locked down (scripts/check-environments.mjs), since GitHub
+#             creates an environment with no protection the first time a job names one that
+#             doesn't exist, and keeps two journey runs from testing prod at once
 #   suite     production-journeys (main only, no reviewer: the deploy's approvals came first, and
 #             this deploys nothing): the suite, then cleanup, the summary and the upload of the
 #             results to the private results bucket, each with `if: always()`, in one job, so
 #             cleanup shares the run directory (TOTP step claims, masked values) with the tests
+#   results   only in a deploy's run; no environment, no permissions, no secrets: uploads the
+#             failed steps (the suite job's outputs, already only "J4.2 (desktop-chrome)" entries)
+#             as the journeys-verdict artifact, which the deploy's journeys job downloads for its
+#             verdict job, since another run's job outputs can't be read
 #
-# Nothing from the run is an Actions artifact (traces hold tokens; artifacts are public here). The
-# job summary is the masked table from scripts/journeys/prod-summary.mjs.
+# Nothing else from the run is an Actions artifact (traces hold tokens; artifacts are public
+# here), and that one holds only what the release notes, also public, will say. The job summary is
+# the masked table from scripts/journeys/prod-summary.mjs.
+#
+# The deploy finds its run by the run-name, which names the deploy run and attempt
+# (scripts/journeys/workflow.mjs follow), and reads the suite's outcome from the suite job's
+# "Run the journey tests" step: keep those names, the results job's artifact name, and
+# workflow.mjs's SUITE_JOB, SUITE_STEP and VERDICT_ARTIFACT in step (scripts/journeys/test/
+# workflow.test.mjs checks them).
+run-name: ${{ inputs.deploy-run && format('Journeys after deploying {0} (deploy run {1})', inputs.tag, inputs.deploy-run) || 'Journeys' }}
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       tag:
-        description: The release just deployed (vX.Y.Z), for the summary
-        required: true
+        description: Leave empty when running by hand. The deploy sets it to the release it deployed (vX.Y.Z), for the summary
+        required: false
         type: string
-    outputs:
-      suite:
-        description: The suite step's outcome (success, failure, cancelled, skipped), or empty when the journey tests are switched off
-        value: ${{ jobs.suite.outputs.suite }}
-      failed:
-        description: The failed steps, "J4.2 (desktop-chrome)", comma-separated
-        value: ${{ jobs.suite.outputs.failed }}
-      critical:
-        description: The failed steps of critical journeys, the same way
-        value: ${{ jobs.suite.outputs.critical }}
-  workflow_dispatch:
+        default: ""
+      deploy-run:
+        description: Leave empty when running by hand. The deploy sets it to its own run ID and attempt (<id>-<attempt>), to find this run
+        required: false
+        type: string
+        default: ""
 
 permissions: {}
 
-# By hand, one run at a time in a group of its own (not the deploy's: a run waiting in a group
-# replaces an older waiting one, so a manual run there could cancel a deploy waiting to start, or
-# the reverse). Called from a deploy, the deploy's run already holds its group, and a called
-# workflow in the same group would deadlock, so it takes one of its own per run. Two runs against
+# By hand, one run at a time in a group of its own; a deploy's run in a group of its own per
+# deploy run and attempt (a run waiting in a group replaces an older waiting one, so sharing one
+# group, a run by hand could cancel a deploy's waiting to start, or the reverse). Two runs against
 # prod at once would break each other (each signs the test accounts out everywhere when it ends),
 # so the check job keeps them apart: by hand refuses while a deploy is queued, waiting or running;
-# from a deploy waits for a run by hand to finish (scripts/journeys/workflow.mjs wait-for-prod).
+# a deploy's waits for any other journeys run to finish (scripts/journeys/workflow.mjs
+# wait-for-prod), after checking that the deploy run it names is a deploy of main still going.
 concurrency:
-  group: ${{ inputs.tag && format('journeys-in-deploy-{0}', github.run_id) || 'journeys-manual' }}
+  group: ${{ inputs.deploy-run && format('journeys-deploy-{0}', inputs.deploy-run) || 'journeys-manual' }}
   cancel-in-progress: false
 
 defaults:
@@ -66,7 +83,7 @@ jobs:
     name: Check the journey tests are set up
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # Up to 30 minutes waiting for a run by hand to finish, from a deploy
+    # Up to 30 minutes waiting for another journeys run to finish, in a deploy's run
     timeout-minutes: 40
     permissions:
       contents: read
@@ -74,12 +91,29 @@ jobs:
       actions: read
     outputs:
       ready: ${{ steps.check.outputs.ready }}
+      tag: ${{ steps.args.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           sparse-checkout: scripts
           persist-credentials: false
+      # Anyone with write access can dispatch this with any inputs: only these shapes go further
+      - name: Check the inputs
+        id: args
+        env:
+          TAG: ${{ inputs.tag }}
+          DEPLOY_RUN: ${{ inputs.deploy-run }}
+        run: |
+          if [[ -z "$TAG$DEPLOY_RUN" ]]; then
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || ! "$DEPLOY_RUN" =~ ^[0-9]{1,20}-[0-9]{1,4}$ ]]; then
+            echo "::error::tag and deploy-run are for the deploy, which sets both (vX.Y.Z and <run id>-<attempt>); leave both empty to run the journey tests by hand"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - name: Check the environment
         id: check
         env:
@@ -98,11 +132,11 @@ jobs:
         if: steps.check.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+          DEPLOY_RUN: ${{ inputs.deploy-run }}
         run: |
-          mode=--manual
-          if [[ -n "$TAG" ]]; then mode=--deploy; fi
-          node scripts/journeys/workflow.mjs wait-for-prod --repo "$GITHUB_REPOSITORY" --run "$GITHUB_RUN_ID" "$mode"
+          mode=(--manual)
+          if [[ -n "$DEPLOY_RUN" ]]; then mode=(--deploy --deploy-run "$DEPLOY_RUN"); fi
+          node scripts/journeys/workflow.mjs wait-for-prod --repo "$GITHUB_REPOSITORY" --run "$GITHUB_RUN_ID" "${mode[@]}"
 
   suite:
     name: Journey tests against prod
@@ -120,12 +154,13 @@ jobs:
       failed: ${{ steps.verdict.outputs.failed }}
       critical: ${{ steps.verdict.outputs.critical }}
     env:
-      TAG: ${{ inputs.tag }}
+      # The checked tag (empty by hand)
+      TAG: ${{ needs.check.outputs.tag }}
       # A failed test's trace keeps no WebSocket frames: the live-updates subscribe frame carries
       # the access token (upload-results.mjs drops them anyway, and refuses a token it finds)
       PLAYWRIGHT_TRACING_NO_WEBSOCKET_FRAMES: "1"
     steps:
-      # main's commit: this run's own (the deploy's, when it calls this), never a pull request's
+      # main's commit: this run's own (main's head when it was dispatched), never a pull request's
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -249,9 +284,38 @@ jobs:
             exit 0
           fi
           node scripts/journeys/upload-results.mjs
-      # The failed steps for the deploy's verdict job, which notes them on the release (public):
-      # only entries shaped like "J4.2 (desktop-chrome)" (scripts/release-verdict.mjs checks again)
+      # The failed steps for the results job, then the deploy's verdict job, which notes them on
+      # the release (public): only entries shaped like "J4.2 (desktop-chrome)" (the deploy and
+      # scripts/release-verdict.mjs check again)
       - name: Results for the release
         id: verdict
         if: always()
         run: node scripts/journeys/workflow.mjs outputs "$RUNNER_TEMP/journeys-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/verdict.json"
+
+  # Only in a deploy's run, whatever the suite did: the failed steps, for the deploy (another run's
+  # job outputs can't be read, an artifact can). No environment, no permissions, no checkout.
+  results:
+    name: Results for the deploy
+    needs: suite
+    if: >-
+      always() && github.ref == 'refs/heads/main' && inputs.deploy-run != ''
+      && (needs.suite.result == 'success' || needs.suite.result == 'failure' || needs.suite.result == 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Write the failed steps
+        env:
+          FAILED: ${{ needs.suite.outputs.failed }}
+          CRITICAL: ${{ needs.suite.outputs.critical }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/journeys-verdict"
+          jq -n --arg failed "$FAILED" --arg critical "$CRITICAL" \
+            '{failed: ($failed | split(", ") | map(select(. != ""))), critical: ($critical | split(", ") | map(select(. != "")))}' \
+            > "$RUNNER_TEMP/journeys-verdict/verdict.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: journeys-verdict
+          path: ${{ runner.temp }}/journeys-verdict/verdict.json
+          retention-days: 7
+          if-no-files-found: error

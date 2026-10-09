@@ -5,13 +5,13 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ALLOWED_TRIGGERS, calls, parseWorkflow, readWorkflows, remoteCalls, triggers, uses, workflowProblems } from "./check-workflow-environments.mjs";
+import { ALLOWED_TRIGGERS, calls, dispatchesJourneys, parseWorkflow, readWorkflows, remoteCalls, triggers, uses, workflowProblems } from "./check-workflow-environments.mjs";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const script = path.join(root, "scripts", "check-workflow-environments.mjs");
 
-const journeys = (on = "  workflow_call:\n  workflow_dispatch:\n") => `name: Journeys\non:\n${on}jobs:\n  run:\n    runs-on: ubuntu-latest\n    environment: production-journeys\n    steps:\n      - run: echo hi\n`;
-const deploy = `name: Deploy\non:\n  workflow_dispatch:\njobs:\n  journeys:\n    uses: ./.github/workflows/journeys.yml\n    secrets: inherit\n`;
+const journeys = (on = "  workflow_dispatch:\n") => `name: Journeys\non:\n${on}jobs:\n  run:\n    runs-on: ubuntu-latest\n    environment: production-journeys\n    steps:\n      - run: echo hi\n`;
+const deploy = `name: Deploy\non:\n  workflow_dispatch:\njobs:\n  journeys:\n    runs-on: ubuntu-latest\n    permissions:\n      actions: write\n    steps:\n      - run: gh workflow run journeys.yml --ref main -f tag="$TAG"\n`;
 const ci = `name: CI\non:\n  pull_request:\n  push:\n    branches: [main]\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    environment: production\n    steps:\n      - run: npm run lint\n`;
 const parsed = (text) => parseWorkflow(text).value;
 
@@ -57,8 +57,8 @@ test("rule 2: no pull request trigger in a workflow that names it, in any form o
   for (const [on, has] of [
     ["  pull_request:\n  workflow_dispatch:\n", "pull_request"],
     ["  pull_request_target:\n    types: [opened]\n", "pull_request_target"],
-    ["  workflow_call:\n  pull_request_review:\n", "pull_request_review"],
-    ["  [workflow_call,\n   pull_request]\n", "pull_request"],
+    ["  workflow_dispatch:\n  pull_request_review:\n", "pull_request_review"],
+    ["  [workflow_dispatch,\n   pull_request]\n", "pull_request"],
     ["  - push\n  - pull_request_target\n", "pull_request_target"],
     ['  "pull_request": {}\n', "pull_request"],
   ]) {
@@ -95,10 +95,38 @@ test("rule 2: nor in any workflow that calls it, however indirectly", () => {
   assert.deepEqual(workflowProblems({ "journeys.yml": journeys(), "ci.yml": ci.replace("    runs-on: ubuntu-latest\n    environment: production\n    steps:\n      - run: npm run lint\n", "    uses: ./.github/workflows/other.yml\n"), "other.yml": "on: workflow_call\n" }), []);
 });
 
+test("rule 2: nor in any workflow that dispatches journeys.yml, or calls one that does", () => {
+  const prDispatcher = deploy.replace("on:\n  workflow_dispatch:\n", "on:\n  pull_request_target:\n");
+  assert.deepEqual(workflowProblems({ "journeys.yml": journeys(), "deploy.yml": prDispatcher }), [
+    "deploy.yml: dispatches journeys.yml, so it must have no pull request trigger (has pull_request_target)",
+  ]);
+  // By the API too, in any step field, and a workflow calling a dispatcher is held to it
+  const api = `on: workflow_call\njobs:\n  j:\n    runs-on: x\n    steps:\n      - env:\n          W: Journeys.YAML\n        run: gh api -X POST "repos/o/r/actions/workflows/$W/dispatches"\n`;
+  const top = `on: [issue_comment]\njobs:\n  j:\n    uses: ./.github/workflows/api.yml\n`;
+  assert.deepEqual(workflowProblems({ "journeys.yml": journeys(), "api.yml": api, "top.yml": top }), [
+    "top.yml: calls api.yml, which dispatches journeys.yml, so it may only be started by workflow_call, workflow_dispatch, push, schedule (has issue_comment)",
+  ]);
+  // A comment isn't a dispatch
+  assert.equal(dispatchesJourneys(parsed("on: pull_request\n# starts journeys.yml\njobs:\n  j:\n    steps:\n      - run: echo hi\n")), false);
+  assert.equal(dispatchesJourneys(parsed(deploy)), true);
+  assert.equal(dispatchesJourneys(parsed("on: push\n")), false);
+});
+
+test("rule 6: journeys.yml can't be called (no workflow_call trigger), only dispatched", () => {
+  const problem = "journeys.yml: has a workflow_call trigger; it's only ever dispatched (gh workflow run), since a called workflow's environment secrets need secrets: inherit from the caller (actions/runner#4453)";
+  for (const on of ["  workflow_call:\n  workflow_dispatch:\n", "  workflow_call:\n    inputs:\n      tag:\n        type: string\n"]) {
+    assert.deepEqual(workflowProblems({ "journeys.yml": journeys(on) }), [problem], on);
+  }
+  assert.deepEqual(workflowProblems({ "journeys.yml": journeys().replace(/on:\n[\s\S]*?jobs:/, "on: [workflow_dispatch, workflow_call]\njobs:") }), [problem]);
+  assert.deepEqual(workflowProblems({ "journeys.yml": journeys().replace(/on:\n[\s\S]*?jobs:/, "on: workflow_call\njobs:") }), [problem]);
+  // Other workflows may still be called
+  assert.deepEqual(workflowProblems({ "journeys.yml": journeys(), "other.yml": "on: workflow_call\n" }), []);
+});
+
 test("rule 2: only the allowed triggers, and triggers it can't read fail", () => {
   assert.deepEqual(ALLOWED_TRIGGERS, ["workflow_call", "workflow_dispatch", "push", "schedule"]);
   for (const event of ["issue_comment", "workflow_run", "issues", "release"]) {
-    assert.deepEqual(workflowProblems({ "journeys.yml": journeys(`  workflow_call:\n  ${event}:\n`) }), [
+    assert.deepEqual(workflowProblems({ "journeys.yml": journeys(`  workflow_dispatch:\n  ${event}:\n`) }), [
       `journeys.yml: names production-journeys, so it may only be started by workflow_call, workflow_dispatch, push, schedule (has ${event})`,
     ]);
   }

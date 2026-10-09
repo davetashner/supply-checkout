@@ -10,7 +10,7 @@
 //   1. The workflow's own `permissions` don't grant id-token (`write-all` or `id-token: write`).
 //   2. A job that can request the token (its `permissions`, or the workflow's when it has none)
 //      checks out only main's commit, this workflow's own: every actions/checkout step says
-//      `ref: ${{ github.sha }}` and no other `repository`. It calls no reusable workflow and uses
+//      `ref: ${{ github.sha }}` and no other `repository`. It calls no reusable workflow (no job does: rule 7) and uses
 //      only actions/* actions (no local or composite action, which could come from elsewhere).
 //      Nothing in it (its env, a step's env, with or run) mentions the release commit
 //      (needs.release.outputs.sha), and no run step fetches code with git (checkout, fetch,
@@ -32,6 +32,12 @@
 //      with expressions filled in, masking only secrets; the source is public and the synth
 //      deterministic, so a template hash there could be brute-forced back to the account. The
 //      one exception is the build job's `hash`, of the web build, whose files are public anyway.
+//   7. No job calls a reusable workflow (a job-level `uses:`), whatever its permissions. A called
+//      workflow runs inside this run, under the calling job's permissions, and its environment
+//      jobs get no environment secrets unless the caller passes `secrets: inherit`
+//      (actions/runner#4453), which would hand it this workflow's secrets (AWS_DEPLOY_ROLE_ARN,
+//      DEPLOY_ASSEMBLY_KEY) too. The journey tests are dispatched instead (gh workflow run
+//      journeys.yml, supply-checkout-o60.15), and no job may say `secrets: inherit` either.
 //
 // It's a tripwire, not a proof: a run step could still reach the release's code some other way
 // (a curl of the tarball, say), and files the release's jobs hand over (artifacts, outputs) still
@@ -49,7 +55,7 @@ import { fileURLToPath } from "node:url";
 import { hasMergeKey, parseWorkflow } from "./check-workflow-environments.mjs";
 
 /** Jobs that run the release commit's code with the deploy role, after an apply approval. */
-export const AFTER_APPLY_APPROVAL = ["apply-stateful", "apply", "journeys"];
+export const AFTER_APPLY_APPROVAL = ["apply-stateful", "apply"];
 /** The plan job: an apply job must come after it. */
 export const PLAN_JOB = "plan";
 const MAIN_COMMIT = "${{ github.sha }}";
@@ -115,6 +121,8 @@ export function deployProblems(workflow) {
   const jobs = isMap(workflow.jobs) ? workflow.jobs : {};
   for (const [id, job] of Object.entries(jobs)) {
     if (!isMap(job)) continue;
+    if (job.uses !== undefined) problems.push(`job ${id} calls a reusable workflow (${job.uses}); a deploy job may call none: dispatch it instead, as the journeys job does`);
+    if (job.secrets !== undefined) problems.push(`job ${id} passes secrets to a called workflow (secrets: ${typeof job.secrets === "string" ? job.secrets : "…"}); a deploy job may pass none`);
     for (const name of Object.keys(isMap(job.outputs) ? job.outputs : {})) {
       if (/hash/i.test(name) && !/-hmac$/i.test(name) && !(id === WEB_BUILD_JOB && name === "hash")) {
         problems.push(`job ${id}'s output ${name} names a hash: pass only an HMAC of one, as an output ending in -hmac, since an output reaches the log through any step that uses it`);
@@ -147,7 +155,6 @@ export function deployProblems(workflow) {
       if (!afterApplyApproval(jobs, id)) problems.push(`job ${id} runs the release with the deploy role, so it must be past an apply approval: in an environment and after ${PLAN_JOB}, or after such a job`);
       continue;
     }
-    if (job.uses !== undefined) problems.push(`job ${id} can request the OIDC token, so it may not call a reusable workflow (${job.uses})`);
     if (JSON.stringify(job.env ?? {}).match(RELEASE_SHA)) problems.push(`job ${id} can request the OIDC token, so its env may not name the release commit (needs.release.outputs.sha)`);
     const steps = Array.isArray(job.steps) ? job.steps : [];
     steps.forEach((step, i) => {

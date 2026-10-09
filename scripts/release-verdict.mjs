@@ -1,21 +1,22 @@
 #!/usr/bin/env node
 // Notes the prod journey tests' result on a GitHub Release (supply-checkout-o60.6;
 // docs/journey-tests-plan.md, "When the suite fails"). The deploy workflow's `verdict` job runs it
-// after the journeys workflow, with `contents: write` and no AWS:
+// after its journeys job, which dispatched the journeys workflow and waited for it, with
+// `contents: write` and no AWS:
 //
 //   node scripts/release-verdict.mjs --repo owner/name --tag vX.Y.Z --suite <outcome>
-//        --run-url <this run's URL> [--failed "J4.2 (desktop-chrome),…"] [--critical "…"]
+//        --run-url <the journeys run's URL> [--failed "J4.2 (desktop-chrome),…"] [--critical "…"]
 //
-// --suite is the outcome of the journeys job's suite step: `success` adds "Journey tests passed in
-// prod" to the release's notes; `failure` adds "Journey tests failed in prod: <steps>" and marks
-// the release as a pre-release, which the deploy workflow's release check then refuses unless
-// the run says allow-bad-release. Anything else (skipped, cancelled, empty: the suite never ran or
-// didn't finish) changes nothing. A pass never clears the pre-release mark: the owner does that by
-// hand (docs/releases.md, "When the journey tests fail").
+// --suite is the outcome of the suite step in that journeys run: `success` adds "Journey tests
+// passed in prod" to the release's notes; `failure` adds "Journey tests failed in prod: <steps>"
+// and marks the release as a pre-release, which the deploy workflow's release check then refuses
+// unless the run says allow-bad-release. Anything else (skipped, cancelled, empty: the suite never
+// ran or didn't finish) changes nothing. A pass never clears the pre-release mark: the owner does
+// that by hand (docs/releases.md, "When the journey tests fail").
 //
-// The lists come from another job, and the note is public, so every entry must look like a step
-// and a browser (`J4.2 (desktop-chrome)`), the tag like vX.Y.Z and the URL like a run's; anything
-// else is refused before anything is changed. Appends to $GITHUB_STEP_SUMMARY when it's set.
+// The lists come from another run (its journeys-verdict artifact), and the note is public, so
+// every entry must look like a step and a browser (`J4.2 (desktop-chrome)`), the tag like vX.Y.Z
+// and the URL like a run's; anything else is refused before anything is changed. Appends to $GITHUB_STEP_SUMMARY when it's set.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
