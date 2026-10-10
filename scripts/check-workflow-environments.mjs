@@ -13,12 +13,16 @@
 //   2. A workflow that reaches it may only be started by ALLOWED_TRIGGERS: never by
 //      `pull_request`, `pull_request_target` or any other event someone without write access can
 //      cause. Its `on:` may be a name, a list or a map; anything else fails. A workflow reaches it
-//      when it names it; when it dispatches journeys.yml (any string outside its `on:` mentions
+//      when it names it; when it dispatches journeys.yml (any string in it mentions
 //      `journeys.yml`, as `gh workflow run journeys.yml` and the API's
 //      `workflows/journeys.yml/dispatches` do); when it dispatches a workflow that reaches it (any
-//      string outside its `on:` mentions that workflow's file, as release.yml's `gh workflow run
+//      string in it mentions that workflow's file, as release.yml's `gh workflow run
 //      deploy.yml` does: release.yml → deploy.yml → journeys.yml); or when it calls one that
-//      reaches it (`jobs.<id>.uses: ./.github/workflows/…`). All of it is followed through every
+//      reaches it (`jobs.<id>.uses: ./.github/workflows/…`). "Any string in it" is every key and
+//      value once parsed, `on:` included (an input's default can name the file), except the
+//      event filters under `on.<event>` (paths, paths-ignore, branches, branches-ignore, tags,
+//      tags-ignore, and workflow_run's workflows) and job-level `uses:` (calls, followed as such);
+//      comments don't count. All of it is followed through every
 //      chain, to a fixed point. (A dispatched run is main's copy of the workflow, whatever the
 //      dispatcher runs, but it still tests prod on demand, so only a trusted event may start any
 //      link of the chain. The file name is a tripwire: a run step could dispatch a workflow by its
@@ -126,15 +130,23 @@ export function remoteCalls(workflow, repo = DEFAULT_REPO) {
   return uses(workflow).filter((u) => u.trim().toLowerCase().startsWith(prefix));
 }
 
+/** The keys under `on.<event>` that only filter which events start the run, and so dispatch nothing. */
+export const FILTERS = ["paths", "paths-ignore", "branches", "branches-ignore", "tags", "tags-ignore", "workflows"];
+
 /**
- * Every string a parsed workflow's jobs can use: everything but its triggers (`on:`, whose
- * `paths` filters name workflow files without dispatching them) and its jobs' job-level `uses:`
- * (calls, which rule 2 follows on their own). Top-level `env:`, `defaults:` and the like are
- * included, since a step can read them. Comments are gone once it's parsed.
+ * Every string a parsed workflow can use: the whole workflow (keys included), triggers too, since
+ * a step can read an input's default (`on.workflow_call.inputs.<name>.default`) or the top-level
+ * `env:`, `defaults:` and the like, leaving out only the event filters (`on.<event>.<FILTERS>`,
+ * such as a `paths` list naming workflow files, or workflow_run's `workflows`) and the jobs'
+ * job-level `uses:` (calls, which rule 2 follows on their own). Comments are gone once it's parsed.
  */
 export function jobStrings(workflow) {
   const jobs = isMap(workflow.jobs) ? workflow.jobs : {};
+  const on = isMap(workflow.on)
+    ? Object.fromEntries(Object.entries(workflow.on).map(([event, v]) => [event, isMap(v) ? Object.fromEntries(Object.entries(v).filter(([k]) => !FILTERS.includes(k))) : v]))
+    : workflow.on;
   const rest = Object.fromEntries(Object.entries(workflow).filter(([k]) => k !== "on" && k !== "jobs"));
+  if (on !== undefined) rest.on = on;
   return [
     ...strings(rest),
     ...Object.entries(jobs).flatMap(([id, job]) => [id, ...strings(isMap(job) ? Object.fromEntries(Object.entries(job).filter(([k]) => k !== "uses")) : job)]),

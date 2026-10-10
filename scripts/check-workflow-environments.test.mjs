@@ -140,6 +140,27 @@ test("rule 2: dispatch chains are followed: a workflow that mentions a reaching 
   ));
 });
 
+test("rule 2: an input's default in on: is a mention; the event filters aren't", () => {
+  // The security review's repro: the file name only in a workflow_call input's default
+  const reusable = `on:\n  workflow_call:\n    inputs:\n      wf:\n        type: string\n        default: journeys.yml\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: gh workflow run "\${{ inputs.wf }}"\n`;
+  const pr = `on: pull_request_target\njobs:\n  a:\n    uses: ./.github/workflows/reusable.yml\n`;
+  assert.deepEqual(workflowProblems({ "journeys.yml": journeys(), "reusable.yml": reusable, "pr.yml": pr }), [
+    "pr.yml: calls reusable.yml, which dispatches journeys.yml, so it must have no pull request trigger (has pull_request_target)",
+  ]);
+  assert.equal(dispatchesJourneys(parsed(reusable)), true);
+  // A workflow_dispatch input's default too
+  assert.equal(dispatchesJourneys(parsed("on:\n  workflow_dispatch:\n    inputs:\n      wf:\n        default: Journeys.yaml\n")), true);
+  // Every filter list under an event isn't
+  for (const filter of ["paths", "paths-ignore", "branches", "branches-ignore", "tags", "tags-ignore", "workflows"]) {
+    const text = `on:\n  pull_request:\n    ${filter}: [".github/workflows/journeys.yml"]\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: echo hi\n`;
+    assert.equal(dispatchesJourneys(parsed(text)), false, filter);
+    assert.deepEqual(workflowProblems({ "journeys.yml": journeys(), "lint.yml": text }), [], filter);
+  }
+  // But types, or a filter's name used elsewhere, are scanned
+  assert.equal(dispatchesJourneys(parsed("on:\n  pull_request:\n    types: [journeys.yml]\n")), true);
+  assert.equal(dispatchesJourneys(parsed("on:\n  workflow_call:\n    inputs:\n      paths:\n        default: journeys.yml\n")), true);
+});
+
 test("rule 2: what counts as a mention of a workflow's file", () => {
   const re = mentionOf("deploy.yml");
   for (const s of ["gh workflow run deploy.yml", "workflows/deploy.yml/dispatches", "DEPLOY.YML", "x=deploy.yaml;", "./my-deploy.yml", "'deploy.yml'"]) assert.match(s, re, s);
@@ -147,9 +168,11 @@ test("rule 2: what counts as a mention of a workflow's file", () => {
   assert.match("run a+b.yml", mentionOf("a+b.yaml"));
   assert.doesNotMatch("run aab.yml", mentionOf("a+b.yaml"));
   assert.match("gh workflow run -x.yml", mentionOf("-x.yml"));
-  // Everything but on: and job-level uses:, job IDs and top-level keys included
-  assert.deepEqual(jobStrings(parsed("name: n\non:\n  push:\n    paths: [p]\nenv:\n  E: e\njobs:\n  j:\n    uses: ./.github/workflows/u.yml\n    with:\n      w: v\n")).sort(), ["E", "e", "j", "n", "name", "w", "v", "with", "env"].sort());
-  assert.deepEqual(jobStrings(parsed("on: push\n")), []);
+  // Everything but the event filters and job-level uses:, on: (but its filters), job IDs and top-level keys included
+  assert.deepEqual(jobStrings(parsed("name: n\non:\n  push:\n    paths: [p]\n    tags: [t]\n  workflow_call:\n    inputs:\n      i:\n        default: d\nenv:\n  E: e\njobs:\n  j:\n    uses: ./.github/workflows/u.yml\n    with:\n      w: v\n")).sort(),
+    ["E", "e", "j", "n", "name", "w", "v", "with", "env", "on", "push", "workflow_call", "inputs", "i", "default", "d"].sort());
+  assert.deepEqual(jobStrings(parsed("on: push\n")), ["on", "push"]);
+  assert.deepEqual(jobStrings(parsed("name: x\n")), ["name", "x"]);
 });
 
 test("rule 6: journeys.yml can't be called (no workflow_call trigger), only dispatched", () => {
