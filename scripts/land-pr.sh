@@ -39,7 +39,26 @@
 # reported, left open to land, and flagged again by the Stop hook
 # (scripts/backlog-stop-hook.mjs) while the export stays stale and due.
 #
-# Usage: npm run land -- <pr-number>     (or scripts/land-pr.sh <pr-number>)
+# Two gates come before any merge (supply-checkout-pbp.46, pbp.47), checked
+# once before waiting for the PR's CI and again right before merging:
+#   - The release window. Landing a release-please PR records a release lock
+#     (the tag, its PR and when it merged) next to the land lock. While it's
+#     held, every land refuses, naming the release, until that tag's deploy.yml
+#     run (titled "Deploy <tag>", started after the merge) has completed, with
+#     success or failure; the land that sees it completed clears the lock. The
+#     lead clears it by hand with --release-done (a release whose checks failed
+#     never starts a deploy, say).
+#   - main's CI. A PR is refused while main's latest completed ci.yml push run
+#     didn't succeed, printing its failing jobs and link, unless the lead passes
+#     --fixes-main for the PR that fixes main. If a newer run on main's head is
+#     still going, the land waits for it (up to 45 minutes) first. A release PR
+#     needs more: main's CI passed on main's head, the exact commit the release
+#     will tag, waiting for that run up to 45 minutes; --fixes-main doesn't
+#     apply to it.
+#
+# Usage: npm run land -- <pr-number> [--fixes-main]
+#        npm run land -- --release-done   (clears the release window)
+#        (or scripts/land-pr.sh with the same arguments)
 set -euo pipefail
 
 # Run from a temporary copy: this script removes worktrees and pulls main,
@@ -68,11 +87,25 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-pr="${1:?usage: scripts/land-pr.sh <pr-number>}"
-main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
-cd "$main"
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 fail() { printf '%s\n' "$@"; exit 1; }
+usage="usage: scripts/land-pr.sh <pr-number> [--fixes-main], or scripts/land-pr.sh --release-done"
+pr="" fixes_main="" release_done=""
+for arg in "$@"; do
+  case "$arg" in
+    --fixes-main) fixes_main=1 ;;
+    --release-done) release_done=1 ;;
+    *)
+      if [[ "$arg" =~ ^[0-9]+$ ]] && [ -z "$pr" ]; then pr="$arg"; else fail "$usage"; fi ;;
+  esac
+done
+if [ -n "$release_done" ]; then
+  if [ -n "$pr$fixes_main" ]; then fail "$usage"; fi
+elif [ -z "$pr" ]; then
+  fail "$usage"
+fi
+main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+cd "$main"
 
 # The land lock (see the top). Waits while another land holds it.
 lock="$(git rev-parse --path-format=absolute --git-common-dir)/land-pr.lock"
@@ -114,9 +147,159 @@ release_lock() {
   have_lock=""
 }
 
+# The release lock (see the top), next to the land lock: tag=, pr= and taken=,
+# the release PR's merge time from GitHub (UTC, as deploy runs' createdAt is).
+release_file="$(git rev-parse --path-format=absolute --git-common-dir)/land-pr-release.lock"
+release_field() { { sed -n "s/^$1=//p" "$release_file" 2>/dev/null || true; } | head -1; }
+tag_pattern='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+
+if [ -n "$release_done" ]; then
+  # Nothing to merge on this path, so finish mustn't say a PR wasn't merged
+  merged=1
+  if [ -e "$release_file" ]; then
+    echo "Cleared the release window for $(release_field tag) (#$(release_field pr), merged $(release_field taken))."
+    rm -f "$release_file"
+  else
+    echo "No release window is open."
+  fi
+  exit 0
+fi
+
+# Refuses while a release window is open, and clears it once the release's
+# deploy run has completed. Fails closed: a lock it can't read, or deploy runs
+# it can't list, refuse too.
+check_release_window() {
+  [ -e "$release_file" ] || return 0
+  local tag rpr taken found st concl url
+  tag="$(release_field tag)" rpr="$(release_field pr)" taken="$(release_field taken)"
+  if ! [[ "$tag" =~ $tag_pattern ]] || [ -z "$taken" ]; then
+    fail "The release lock ($release_file) doesn't name a release tag and merge time, so nothing lands until it's cleared." \
+      "Once the release has deployed (or won't), clear it with: npm run land -- --release-done"
+  fi
+  # The deploy runs for the tag that started after the release merged: the
+  # first completed one if any, else the first
+  found="$(TAG="$tag" TAKEN="$taken" gh run list --workflow deploy.yml -L 100 \
+      --json displayTitle,status,conclusion,createdAt,url -q '
+      [.[] | select(.displayTitle == "Deploy " + env.TAG and .createdAt >= env.TAKEN)] | sort_by(.createdAt) |
+      ((map(select(.status == "completed")) | first) // first) // empty |
+      "\(.status) \(if (.conclusion // "") == "" then "-" else .conclusion end) \(.url)"')" ||
+    fail "Release $tag (#$rpr) holds the release window, and its deploy runs couldn't be listed (gh run list --workflow deploy.yml)." \
+      "Nothing lands until its deploy has finished. Run this again, or once the release has deployed clear it with: npm run land -- --release-done"
+  read -r st concl url <<< "$found"
+  if [ "$st" = "completed" ]; then
+    echo "Release $tag's deploy finished ($concl): $url"
+    echo "Its release window is over: clearing the release lock."
+    rm -f "$release_file"
+    return 0
+  fi
+  say "Release $tag (#$rpr, merged $taken) is in its release window: nothing else merges until its deploy finishes."
+  if [ -n "$st" ]; then echo "Its deploy run is $st: $url"
+  else echo "No deploy run for $tag has started yet (the release workflow starts it once the release's checks pass)."; fi
+  fail "Run this again once that deploy has finished. If the release won't deploy (its checks failed, say)," \
+    "the lead clears the window with: npm run land -- --release-done"
+}
+
+# main's CI: its ci.yml push runs (supply-checkout-pbp.46)
+main_ci_poll=30 main_ci_tries=90   # 45 minutes
+# Prints "<status> <conclusion or -> <run id> <url>" for the newest push run of
+# ci.yml on main that matches the extra gh run list arguments, or nothing
+main_run() {
+  gh run list --workflow ci.yml --branch main --event push -L 1 "$@" --json databaseId,status,conclusion,url -q '
+    .[0] // empty | "\(.status) \(if (.conclusion // "") == "" then "-" else .conclusion end) \(.databaseId) \(.url)"'
+}
+main_head() { gh api 'repos/{owner}/{repo}/branches/main' --jq .commit.sha; }
+# Prints a red run's link and the jobs that didn't pass
+show_red_run() { # conclusion run-id url
+  echo "main's CI run ended $1: $3"
+  echo "Jobs that didn't pass:"
+  { gh run view "$2" --json jobs -q '.jobs[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral") | .name' 2>/dev/null ||
+    echo "(couldn't list them: gh run view $2)"; } | sed 's/^/  - /'
+}
+# Waits, up to the bound, for main's run on the given commit to complete, and
+# prints it as main_run does (or nothing if none ever appeared)
+wait_main_run() { # sha
+  local run tries=0
+  while :; do
+    run="$(main_run --commit "$1")" || exit 1
+    if [ "${run%% *}" = "completed" ] || [ "$tries" -ge "$main_ci_tries" ]; then break; fi
+    if [ "$tries" -eq 0 ]; then
+      echo "Waiting up to $(( main_ci_poll * main_ci_tries / 60 )) minutes for main's CI on ${1:0:7}${run:+: ${run##* }}" >&2
+    fi
+    sleep "$main_ci_poll"; tries=$((tries + 1))
+  done
+  printf '%s\n' "$run"
+}
+
+# Any PR but a release PR: main's latest completed push run must have passed
+check_main_green() {
+  local run st concl id url head newest
+  run="$(main_run --status completed)" || fail "Couldn't read main's CI runs (gh run list --workflow ci.yml --branch main)."
+  [ -n "$run" ] || fail "main has no completed CI run to go by (gh run list --workflow ci.yml --branch main --event push)."
+  read -r st concl id url <<< "$run"
+  [ "$concl" != "success" ] || return 0
+  if [ -n "$fixes_main" ]; then
+    say "main is red, and --fixes-main says #$pr is the fix: landing it anyway."
+    show_red_run "$concl" "$id" "$url"
+    return 0
+  fi
+  # A newer run on main's head (the fix, say) may still turn main green
+  head="$(main_head)" || fail "Couldn't read main's head commit."
+  newest="$(main_run --commit "$head")" || exit 1
+  if [ -n "$newest" ] && [ "${newest%% *}" != "completed" ]; then
+    say "main's latest completed CI run failed, and a newer one on ${head:0:7} is still going: waiting for it."
+    newest="$(wait_main_run "$head")"
+    if [ "$(cut -d' ' -f1-2 <<< "$newest")" = "completed success" ]; then
+      echo "main's CI passed on ${head:0:7}."
+      return 0
+    fi
+    if [ "${newest%% *}" = "completed" ]; then read -r st concl id url <<< "$newest"; fi
+  fi
+  say "main is red: #$pr wasn't merged."
+  show_red_run "$concl" "$id" "$url"
+  fail "Land the PR that fixes main first, with: npm run land -- <fix-pr> --fixes-main" \
+    "then land #$pr once main's CI passes."
+}
+
+# A release PR: main's CI must have passed on main's head, the commit the
+# release will tag (the release PR is up to date with it, as main's ruleset
+# requires, so its squash merge sits right on it)
+check_release_base() {
+  local head run st concl id url
+  head="$(main_head)" || fail "Couldn't read main's head commit."
+  run="$(wait_main_run "$head")"
+  [ -n "$run" ] || fail "main's CI hasn't run on ${head:0:7}, the commit release $release_tag would tag, after $(( main_ci_poll * main_ci_tries / 60 )) minutes." \
+    "Release PRs merge only once main's CI passed on that commit. See: gh run list --workflow ci.yml --branch main"
+  read -r st concl id url <<< "$run"
+  if [ "$st" != "completed" ]; then
+    fail "main's CI on ${head:0:7} is still $st after $(( main_ci_poll * main_ci_tries / 60 )) minutes: $url" \
+      "Release PRs merge only once main's CI passed on the commit they release. Run this again when it has."
+  fi
+  if [ "$concl" != "success" ]; then
+    say "main's CI didn't pass on ${head:0:7}, the commit release $release_tag would tag: #$pr wasn't merged."
+    show_red_run "$concl" "$id" "$url"
+    fail "Fix main first (npm run land -- <fix-pr> --fixes-main); release-please then updates this PR."
+  fi
+  echo "main's CI passed on ${head:0:7}, the commit release $release_tag will tag: $url"
+}
+
+# Both gates, before waiting for CI and again right before merging
+check_gates() {
+  check_release_window
+  if [ -n "$is_release" ]; then check_release_base; else check_main_green; fi
+}
+
 view() { gh pr view "$pr" --json "$1" -q ".$1"; }
 branch="$(view headRefName)"
 body="$(view body)"
+title="$(view title)"
+
+# A release-please PR: its branch, or its title. Either counts, so a release
+# PR is never treated as an ordinary one.
+is_release="" release_tag=""
+if [[ "$branch" == release-please--* ]] || [[ "$title" =~ ^chore\(main\):\ release\  ]]; then
+  is_release=1
+  if [[ "$title" =~ ^chore\(main\):\ release\ ([0-9][^ ]*)$ ]]; then release_tag="v${BASH_REMATCH[1]}"; fi
+fi
 
 # How long to keep asking while GitHub reports the merge state as UNKNOWN,
 # which it does for a while after main moves (another PR merging, say).
@@ -351,6 +534,16 @@ case "$state" in
   *) fail "PR #$pr is $state." ;;
 esac
 
+if [ "$state" = "OPEN" ]; then
+  if [ -n "$is_release" ]; then
+    [[ "$release_tag" =~ $tag_pattern ]] ||
+      fail "#$pr looks like a release-please PR, but its title (\"$title\") doesn't name a version like \"chore(main): release 1.2.3\"."
+    [ -z "$fixes_main" ] || fail "#$pr is a release PR: --fixes-main doesn't apply. A release merges only from a green main."
+  fi
+  # Fail fast, before the wait for CI; checked again right before merging
+  check_gates
+fi
+
 if [ "$state" = "OPEN" ] && has_merge_queue; then
   say "main has a merge queue: it tests #$pr on top of main with the full CI, then merges it"
   status="$(merge_state)"
@@ -364,6 +557,7 @@ if [ "$state" = "OPEN" ] && has_merge_queue; then
   if [ "$status" != "MERGED" ]; then
     # The queue only takes a PR whose own checks passed
     wait_for_ci
+    check_gates
     say "Adding #$pr to the merge queue"
     # The queue squash-merges (its ruleset setting). --delete-branch isn't
     # used: the branch is deleted below once the queue has merged it.
@@ -406,6 +600,8 @@ elif [ "$state" = "OPEN" ]; then
   if [ "$status" = "MERGED" ]; then
     echo "PR #$pr was merged by someone else while this was waiting."
   else
+    # Again, under the land lock: main or the release window may have changed while CI ran
+    check_gates
     say "Squash-merging #$pr"
     # gh can report failure after a successful merge (deleting a local branch
     # that a worktree has checked out), so trust the PR's state instead. A
@@ -433,6 +629,16 @@ elif [ "$state" = "OPEN" ]; then
 fi
 merged=1
 echo "Merged as $(gh pr view "$pr" --json mergeCommit -q '.mergeCommit.oid[0:7]')"
+
+# A release PR this land saw open opens the release window (see the top)
+if [ -n "$is_release" ] && [ "$state" = "OPEN" ]; then
+  taken="$(view mergedAt)"
+  [ -n "$taken" ] && [ "$taken" != "null" ] || taken="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  printf 'tag=%s\npr=%s\ntaken=%s\n' "$release_tag" "$pr" "$taken" > "$release_file.$$"
+  mv "$release_file.$$" "$release_file"
+  say "Release window open for $release_tag: no other PR lands until its deploy (deploy.yml, \"Deploy $release_tag\") finishes."
+  echo "If it won't deploy, clear it with: npm run land -- --release-done"
+fi
 
 say "Cleaning up"
 wt="$(git worktree list --porcelain | awk -v b="refs/heads/$branch" '/^worktree /{p=$2} $0=="branch "b{print p}')"
@@ -487,6 +693,9 @@ elif [ "$export_rc" -ne 0 ]; then
   if [[ "$branch" == chore/beads-export-* ]]; then
     # Beads changed while the export's own PR landed: no loop, just say so
     echo "The beads export is stale again; refresh it with: npm run beads:pr"
+  elif [ -e "$release_file" ]; then
+    # Its land would be refused until the release has deployed
+    echo "The beads export is stale, but release $(release_field tag)'s window is open: left for a land after its deploy (or run npm run beads:pr then)"
   elif ! node scripts/export-beads.mjs --due >/dev/null 2>&1; then
     # At most one export PR a day: the committed export is recent enough
     echo "The beads export is stale, but the committed one is less than a day old: left for a later land (or run npm run beads:pr)"
