@@ -2,7 +2,9 @@
 // against the fake backend: shown at most once a day per user and only with notes from the
 // last 14 days, recorded on the server (PATCH /me/preferences) so it follows the user, turned
 // off and on in Account, and never in the way: not a modal, no focus taken, and checkout
-// works with it showing (J4). The notes are src/whats-new.json, so the dates here come from it.
+// works with it showing (J4). The notes are src/whats-new.json, so the dates here come from it,
+// and nothing here assumes which release is newest or that it has notes: the top entry may be
+// "upcoming" (no date, never shown) or a release with no notes.
 import { readFileSync } from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
@@ -10,12 +12,17 @@ import { openProject, enterBarcode, addToProject } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, USER, openAws, connected } from "./fake-aws.js";
 
-const { releases } = JSON.parse(readFileSync(new URL("../src/whats-new.json", import.meta.url), "utf8"));
-const NEWEST = releases[0].date;
+// Released entries only: an "upcoming" entry has no date
+const releases = JSON.parse(readFileSync(new URL("../src/whats-new.json", import.meta.url), "utf8")).releases.filter((r) => r.date);
 const DAY = 864e5;
 const shift = (ymd, days) => new Date(Date.parse(`${ymd}T12:00:00Z`) + days * DAY).toISOString().slice(0, 10);
 // The notes a day shows: releases dated in the 14 days up to it
 const notesOn = (ymd) => releases.filter((r) => r.date >= shift(ymd, -13) && r.date <= ymd).flatMap((r) => r.notes);
+// The newest release that has notes (a newer one may have none)
+const NEWEST = releases.find((r) => r.notes.length).date;
+// A release whose next day shows more than three notes, so "Show all" has something to show.
+// The file keeps every release, so one stays found
+const BUSY = releases.map((r) => r.date).find((d) => notesOn(shift(d, 1)).length > 3);
 
 // Every test runs in one time zone, at noon there on `today`. No motion: the modal's rise
 // animation would still be part-way when axe checks its contrast
@@ -44,7 +51,7 @@ async function expectAccessible(page) {
 
 test.describe("What's New", () => {
   test("shows the last 14 days' notes under the team bar once, records today, and takes no focus", async ({ page }) => {
-    const today = shift(NEWEST, 1), notes = notesOn(today);
+    const today = shift(BUSY, 1), notes = notesOn(today);
     const backend = await open(page, { today });
     await expect(banner(page).getByRole("heading", { name: "What's new" })).toBeVisible();
     // Not a modal, and the focus wasn't moved into it
@@ -196,7 +203,7 @@ test.describe("What's New", () => {
   test("fits a phone, in dark mode too", async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 740 });
     await page.emulateMedia({ colorScheme: "dark" });
-    await open(page);
+    await open(page, { today: shift(BUSY, 1) });
     await expect(banner(page)).toBeVisible();
     await banner(page).locator("summary").click();
     expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);

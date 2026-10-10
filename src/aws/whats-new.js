@@ -25,7 +25,8 @@ export const localDay = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth
 const daysBefore = (ymd, days) => new Date(Date.parse(`${ymd}T12:00:00Z`) - days * 864e5).toISOString().slice(0, 10);
 
 // The notes from releases dated within the window up to today, newest release first (the
-// file's order, which scripts/check-whats-new.mjs keeps)
+// file's order, which scripts/check-whats-new.mjs keeps). The "upcoming" entry, notes for a
+// release that isn't out yet, has no date until the release stamps it, so it's never shown.
 export function recentNotes(today) {
   const from = daysBefore(today, WINDOW_DAYS - 1);
   return notes.releases
