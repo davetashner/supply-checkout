@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Supply Checkout — Interactive Architecture</title>
+  <style>
+    :root {
+      --bg: #071018;
+      --panel: #0d1923;
+      --panel-2: #122330;
+      --line: #284152;
+      --text: #eef7fb;
+      --muted: #91a9b8;
+      --cyan: #56d6d0;
+      --blue: #6ba7ff;
+      --orange: #ffb45c;
+      --violet: #b497ff;
+      --green: #74d89a;
+      --pink: #fa86ad;
+      --yellow: #e8d672;
+      --danger: #ff7d78;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 10% 0%, rgba(86, 214, 208, .11), transparent 28rem),
+        radial-gradient(circle at 90% 100%, rgba(107, 167, 255, .09), transparent 34rem),
+        var(--bg);
+    }
+
+    button, input { font: inherit; }
+    button { color: inherit; }
+
+    .app {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      height: 100%;
+    }
+
+    header {
+      position: relative;
+      z-index: 4;
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) auto auto;
+      align-items: center;
+      gap: 20px;
+      min-height: 76px;
+      padding: 14px 20px;
+      border-bottom: 1px solid rgba(145, 169, 184, .17);
+      background: rgba(7, 16, 24, .88);
+      backdrop-filter: blur(18px);
+    }
+
+    .brand { display: flex; align-items: center; gap: 13px; min-width: 0; }
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border: 1px solid rgba(86, 214, 208, .45);
+      border-radius: 13px;
+      color: var(--cyan);
+      background: linear-gradient(145deg, rgba(86, 214, 208, .16), rgba(107, 167, 255, .07));
+      box-shadow: inset 0 0 25px rgba(86, 214, 208, .07);
+    }
+    .mark svg { width: 25px; height: 25px; }
+    h1 { margin: 0; font-size: clamp(17px, 2vw, 22px); letter-spacing: -.03em; }
+    .brand p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+
+    .filters, .controls { display: flex; align-items: center; gap: 7px; }
+    .chip, .icon-button {
+      min-height: 36px;
+      border: 1px solid rgba(145, 169, 184, .2);
+      border-radius: 10px;
+      background: rgba(18, 35, 48, .72);
+      cursor: pointer;
+      transition: border-color .18s, color .18s, background .18s, transform .18s;
+    }
+    .chip { padding: 0 12px; color: var(--muted); font-size: 12px; }
+    .icon-button { display: grid; place-items: center; width: 38px; padding: 0; font-size: 17px; }
+    .chip:hover, .icon-button:hover { border-color: rgba(86, 214, 208, .55); color: var(--text); }
+    .chip[aria-pressed="true"] { border-color: var(--cyan); color: #061215; background: var(--cyan); }
+    .chip:active, .icon-button:active { transform: translateY(1px); }
+
+    .workspace {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      min-height: 0;
+    }
+
+    .canvas-wrap {
+      position: relative;
+      min-width: 0;
+      overflow: hidden;
+      cursor: grab;
+      background-image:
+        linear-gradient(rgba(145, 169, 184, .045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(145, 169, 184, .045) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    .canvas-wrap.dragging { cursor: grabbing; }
+    #diagram { width: 100%; height: 100%; display: block; user-select: none; }
+
+    .search {
+      position: absolute;
+      top: 16px;
+      left: 18px;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: min(310px, calc(100% - 36px));
+      padding: 0 12px;
+      border: 1px solid rgba(145, 169, 184, .22);
+      border-radius: 12px;
+      background: rgba(13, 25, 35, .92);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, .2);
+      backdrop-filter: blur(14px);
+    }
+    .search svg { width: 17px; color: var(--muted); }
+    .search input {
+      width: 100%;
+      height: 42px;
+      border: 0;
+      outline: 0;
+      color: var(--text);
+      background: transparent;
+    }
+    .search input::placeholder { color: #6f8796; }
+
+    .zoom-controls {
+      position: absolute;
+      left: 18px;
+      bottom: 18px;
+      z-index: 3;
+      display: flex;
+      gap: 6px;
+      padding: 6px;
+      border: 1px solid rgba(145, 169, 184, .18);
+      border-radius: 13px;
+      background: rgba(13, 25, 35, .92);
+      backdrop-filter: blur(14px);
+    }
+    .zoom-readout { min-width: 54px; color: var(--muted); font-size: 11px; }
+
+    aside {
+      position: relative;
+      z-index: 3;
+      overflow: auto;
+      border-left: 1px solid rgba(145, 169, 184, .17);
+      background: rgba(9, 20, 29, .94);
+      scrollbar-color: #27404f transparent;
+    }
+    .aside-inner { padding: 20px; }
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--cyan);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    aside h2 { margin: 0; font-size: 22px; letter-spacing: -.035em; }
+    aside h3 { margin: 24px 0 10px; font-size: 13px; }
+    #detail-copy { margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
+
+    .status-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+    .tag {
+      padding: 5px 8px;
+      border: 1px solid rgba(145, 169, 184, .18);
+      border-radius: 7px;
+      color: var(--muted);
+      background: rgba(18, 35, 48, .75);
+      font-size: 10px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .tag.live { border-color: rgba(116, 216, 154, .32); color: var(--green); }
+    .tag.planned { border-style: dashed; border-color: rgba(232, 214, 114, .42); color: var(--yellow); }
+
+    .fact-list, .connection-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+    .fact-list li {
+      position: relative;
+      padding-left: 16px;
+      color: #c7d8e1;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .fact-list li::before { content: ""; position: absolute; top: .6em; left: 1px; width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); }
+    .connection-list button {
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid rgba(145, 169, 184, .14);
+      border-radius: 9px;
+      color: #c7d8e1;
+      text-align: left;
+      background: rgba(18, 35, 48, .55);
+      cursor: pointer;
+    }
+    .connection-list button:hover { border-color: rgba(86, 214, 208, .4); }
+
+    .flow-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .flow-button {
+      min-height: 52px;
+      padding: 8px 9px;
+      border: 1px solid rgba(145, 169, 184, .16);
+      border-radius: 10px;
+      color: var(--muted);
+      text-align: left;
+      background: rgba(18, 35, 48, .55);
+      cursor: pointer;
+    }
+    .flow-button span { display: block; color: var(--text); font-size: 12px; font-weight: 700; }
+    .flow-button small { display: block; margin-top: 3px; font-size: 9px; line-height: 1.25; }
+    .flow-button:hover, .flow-button.active { border-color: var(--cyan); color: #b8cbd5; background: rgba(86, 214, 208, .09); }
+
+    .flow-note {
+      margin-top: 10px;
+      padding: 11px;
+      border-left: 2px solid var(--cyan);
+      border-radius: 0 8px 8px 0;
+      color: #bcd0db;
+      background: rgba(86, 214, 208, .06);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+    .legend div { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; }
+    .swatch { width: 11px; height: 11px; border-radius: 3px; background: var(--swatch); }
+    .line-swatch { width: 19px; border-top: 2px solid var(--muted); }
+    .line-swatch.dotted { border-top-style: dashed; }
+
+    .node { cursor: pointer; outline: none; transition: opacity .2s; }
+    .node .card {
+      fill: #10202b;
+      stroke: #304b5b;
+      stroke-width: 1.2;
+      filter: url(#shadow);
+      transition: fill .18s, stroke .18s, opacity .18s;
+    }
+    .node .accent { fill: var(--node-color); opacity: .92; }
+    .node .node-title { fill: #f1f8fb; font-size: 14px; font-weight: 750; letter-spacing: -.015em; pointer-events: none; }
+    .node .node-subtitle { fill: #8fa7b5; font-size: 10px; pointer-events: none; }
+    .node .node-kicker { fill: var(--node-color); font-size: 8px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; pointer-events: none; }
+    .node:hover .card, .node:focus .card, .node.selected .card { fill: #172d3a; stroke: var(--node-color); stroke-width: 2; }
+    .node.selected .card { filter: url(#selectedShadow); }
+    .node.planned .card { stroke-dasharray: 6 5; fill: #171e24; }
+    .node.dim { opacity: .15; }
+    .node.match .card { stroke: #fff2a9; stroke-width: 2.5; }
+
+    .edge { fill: none; stroke: #466170; stroke-width: 1.5; marker-end: url(#arrow); transition: opacity .18s, stroke .18s, stroke-width .18s; }
+    .edge.async { stroke-dasharray: 6 5; }
+    .edge.active { stroke: var(--cyan); stroke-width: 3; marker-end: url(#arrowActive); filter: url(#lineGlow); stroke-dasharray: 8 7; animation: march .7s linear infinite; }
+    .edge.dim { opacity: .09; }
+    .edge-label { fill: #718b9a; font-size: 8.5px; paint-order: stroke; stroke: #071018; stroke-width: 4px; stroke-linejoin: round; pointer-events: none; }
+    .edge-label.active { fill: #a9fffa; }
+    .edge-label.dim { opacity: .08; }
+    @keyframes march { to { stroke-dashoffset: -15; } }
+
+    .lane-title { fill: #6f8795; font-size: 10px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+    .lane-rule { stroke: rgba(145, 169, 184, .14); stroke-width: 1; stroke-dasharray: 3 7; }
+
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+    @media (max-width: 900px) {
+      header { grid-template-columns: 1fr auto; }
+      .filters { display: none; }
+      .workspace { grid-template-columns: 1fr; }
+      aside {
+        position: absolute;
+        right: 12px;
+        bottom: 12px;
+        width: min(340px, calc(100% - 24px));
+        max-height: 44%;
+        border: 1px solid rgba(145, 169, 184, .2);
+        border-radius: 14px;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, .38);
+      }
+      .aside-inner { padding: 16px; }
+      .brand p { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <div class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+            <path d="M4 7.5 12 3l8 4.5-8 4.5-8-4.5Z"/>
+            <path d="m4 12 8 4.5 8-4.5M4 16.5 12 21l8-4.5"/>
+          </svg>
+        </div>
+        <div>
+          <h1>Supply Checkout architecture</h1>
+          <p>Explore the current production system, one flow at a time.</p>
+        </div>
+      </div>
+      <nav class="filters" aria-label="Architecture layers">
+        <button type="button" class="chip" data-filter="all" aria-pressed="true">Everything</button>
+        <button type="button" class="chip" data-filter="runtime" aria-pressed="false">Runtime</button>
+        <button type="button" class="chip" data-filter="operations" aria-pressed="false">Operations</button>
+        <button type="button" class="chip" data-filter="delivery" aria-pressed="false">Delivery</button>
+        <button type="button" class="chip" data-filter="planned" aria-pressed="false">Phase 2</button>
+      </nav>
+      <div class="controls">
+        <button type="button" id="tour-button" class="chip" aria-pressed="false">Guided tour</button>
+        <button type="button" id="fit-button" class="icon-button" title="Fit diagram" aria-label="Fit diagram">⌗</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="canvas-wrap" aria-label="Interactive architecture canvas">
+        <label class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <span class="sr-only">Search components</span>
+          <input id="search" type="search" autocomplete="off" placeholder="Find a service, store, or integration…">
+        </label>
+        <svg id="diagram" viewBox="0 0 1840 1040" role="img" aria-labelledby="diagram-title diagram-desc">
+          <title id="diagram-title">Supply Checkout current production architecture</title>
+          <desc id="diagram-desc">An interactive map of clients, public edge services, application services, data stores, asynchronous infrastructure, external dependencies, delivery, and planned components.</desc>
+          <defs>
+            <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".22"/></filter>
+            <filter id="selectedShadow" x="-30%" y="-30%" width="160%" height="180%"><feDropShadow dx="0" dy="7" stdDeviation="10" flood-color="#56d6d0" flood-opacity=".22"/></filter>
+            <filter id="lineGlow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.5" result="glow"/><feMerge><feMergeNode in="glow"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#466170"/></marker>
+            <marker id="arrowActive" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#56d6d0"/></marker>
+          </defs>
+          <g id="viewport">
+            <g id="lanes"></g>
+            <g id="edges"></g>
+            <g id="edge-labels"></g>
+            <g id="nodes"></g>
+          </g>
+        </svg>
+        <div class="zoom-controls" role="group" aria-label="Diagram zoom controls">
+          <button type="button" id="zoom-out" class="icon-button" aria-label="Zoom out">−</button>
+          <button type="button" id="zoom-reset" class="icon-button zoom-readout" aria-label="Reset zoom">100%</button>
+          <button type="button" id="zoom-in" class="icon-button" aria-label="Zoom in">+</button>
+        </div>
+      </section>
+
+      <aside aria-live="polite">
+        <div class="aside-inner">
+          <p class="eyebrow" id="detail-eyebrow">Architecture overview</p>
+          <h2 id="detail-title">Choose a component</h2>
+          <p id="detail-copy">Select a card to understand its role and dependencies, or choose a guided flow below to follow a request through the system.</p>
+          <div class="status-row" id="detail-tags"><span class="tag live">Current production</span><span class="tag">us-east-1</span></div>
+
+          <section>
+            <h3>Follow a flow</h3>
+            <div class="flow-grid" id="flow-grid"></div>
+            <div class="flow-note" id="flow-note">Tip: click a flow, then select its highlighted components for more detail.</div>
+          </section>
+
+          <section id="facts-section" hidden>
+            <h3>What to know</h3>
+            <ul class="fact-list" id="fact-list"></ul>
+          </section>
+
+          <section id="connections-section" hidden>
+            <h3>Connected components</h3>
+            <div class="connection-list" id="connection-list"></div>
+          </section>
+
+          <section>
+            <h3>Legend</h3>
+            <div class="legend">
+              <div><span class="swatch" style="--swatch: var(--blue)"></span>Clients</div>
+              <div><span class="swatch" style="--swatch: var(--cyan)"></span>Edge &amp; identity</div>
+              <div><span class="swatch" style="--swatch: var(--orange)"></span>Services</div>
+              <div><span class="swatch" style="--swatch: var(--violet)"></span>Data stores</div>
+              <div><span class="line-swatch"></span>Synchronous</div>
+              <div><span class="line-swatch dotted"></span>Async / external</div>
+            </div>
+          </section>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    const NS = "http://www.w3.org/2000/svg";
+    const colors = {
+      client: "#6ba7ff", gateway: "#56d6d0", service: "#ffb45c",
+      datastore: "#b497ff", external: "#fa86ad", async: "#74d89a", planned: "#e8d672"
+    };
+
+    const nodes = [
+      { id: "customerWeb", lane: "client", x: 40, y: 150, title: "Customer web app", subtitle: "Desktop and mobile browsers", kicker: "Client", domains: ["runtime"], copy: "A static Vite application used by owners, contributors, and viewers. It signs users in, calls the authorized API, and refetches records when realtime change hints arrive.", facts: ["No browser has direct access to DynamoDB, queues, Bedrock, secrets, or private S3 buckets.", "Barcode scanning, project checkout, inventory, receipts, billing, and team management share this client."] },
+      { id: "operatorClient", lane: "client", x: 40, y: 370, title: "Operator page and CLI", subtitle: "Restricted support tools", kicker: "Privileged client", domains: ["runtime", "operations"], copy: "A separate support surface for narrowly scoped platform operations. It uses its own Cognito pool and rejects customer tokens.", facts: ["Operator actions are audited.", "The operator data path is deliberately separate from normal team membership authorization."] },
+      { id: "github", lane: "client", x: 40, y: 710, title: "GitHub Actions", subtitle: "CI, releases, deploys, journeys", kicker: "Delivery", domains: ["delivery"], copy: "The delivery control plane. Pull requests run CI and security gates; release-please versions releases; protected jobs use OIDC for approved production deployment.", facts: ["No long-lived AWS deployment keys.", "Production journey tests run with dedicated test accounts after deploy."] },
+
+      { id: "webEdge", lane: "gateway", x: 340, y: 95, title: "Route 53, WAF, CloudFront", subtitle: "Public web edge", kicker: "Edge", domains: ["runtime"], copy: "DNS and the protected content-delivery layer for the application, public site, demo, and operator page.", facts: ["AWS WAF protects the distributions.", "Security headers and live content are verified after publishing."] },
+      { id: "customerAuth", lane: "gateway", x: 340, y: 270, title: "Customer Cognito", subtitle: "Managed Login and customer tokens", kicker: "Identity", domains: ["runtime"], copy: "The customer identity boundary. Managed Login issues tokens used by the HTTP API and realtime authorizer.", facts: ["Supports password, email-code or passkey, MFA, and configured federated sign-in.", "API authorization still checks team membership for each request."] },
+      { id: "operatorAuth", lane: "gateway", x: 340, y: 445, title: "Operator Cognito", subtitle: "Separate PKCE identity", kicker: "Privileged identity", domains: ["runtime", "operations"], copy: "A distinct identity pool and client for operators, preventing a customer session from being reused for privileged access.", facts: ["Uses Authorization Code with PKCE.", "Customer-pool and ID tokens are refused by the operator client."] },
+      { id: "apiEdge", lane: "gateway", x: 340, y: 620, title: "HTTP API and AppSync", subtitle: "Authorized API and realtime edge", kicker: "API edge", domains: ["runtime"], copy: "The public application API and realtime connection boundary. JWT authorizers validate identity before routing to Lambdas or realtime subscriptions.", facts: ["HTTP API serves account, team, project, inventory, receipt, billing, and operator routes.", "Realtime subscriptions are restricted to each member's own channel."] },
+
+      { id: "releaseRouter", lane: "service", x: 690, y: 65, title: "Release routers", subtitle: "CloudFront Functions and active versions", kicker: "Web delivery", domains: ["runtime", "delivery"], copy: "CloudFront Functions map each host and channel to an immutable release prefix selected from the CloudFront KeyValueStore.", facts: ["App, demo/site, and operator channels can advance independently.", "Switching the active version provides a fast web rollback."] },
+      { id: "appServices", lane: "service", x: 690, y: 245, title: "Application Lambdas", subtitle: "Account, team, inventory, receipts, billing", kicker: "Core services", domains: ["runtime"], copy: "The serverless application layer. It validates requests, authorizes team access, enforces business rules, and coordinates external services.", facts: ["Atomic checkout, return, and stock adjustment use idempotent DynamoDB transactions.", "The data-access module is the only general application layer allowed to talk to DynamoDB.", "Receipt results are reviewed by a person before confirmed data is saved."] },
+      { id: "billingWorker", lane: "service", x: 690, y: 455, title: "Billing worker", subtitle: "Ordered Stripe event processing", kicker: "Async worker", domains: ["runtime"], copy: "Consumes verified Stripe events in customer order, fetches the latest subscription state, and updates team access safely.", facts: ["SQS FIFO serializes events per Stripe customer.", "Failed messages go to a dead-letter queue and alarm."] },
+      { id: "realtimePublisher", lane: "service", x: 690, y: 635, title: "Realtime publisher", subtitle: "DynamoDB change fan-out", kicker: "Async worker", domains: ["runtime"], copy: "Consumes relevant DynamoDB changes and publishes small change hints to current team members' AppSync channels.", facts: ["Events contain collection, ID, operation, and version—not document data.", "The browser refetches through the authorized HTTP API."] },
+      { id: "emailService", lane: "service", x: 690, y: 815, title: "Email services", subtitle: "Transactional and security notices", kicker: "Messaging", domains: ["runtime", "operations"], copy: "Builds and sends account, invite, password-reset, billing, and security notices through SES.", facts: ["Templates avoid logging message contents or addresses.", "Delivery and refusal metrics feed operational alarms."] },
+      { id: "deployControl", lane: "service", x: 690, y: 970, title: "Deployment controls", subtitle: "CDK plan, approval, apply, publish", kicker: "Delivery", domains: ["delivery"], copy: "The guarded release path: immutable builds and sealed CDK assemblies are planned, approved, checked, applied, published, and verified.", facts: ["Stateful changes require a separate approval and replacement checks.", "Versioned web publishing rolls back if publish, router, or site validation fails."] },
+
+      { id: "releaseBucket", lane: "datastore", x: 1060, y: 55, title: "S3 web releases", subtitle: "Private immutable version prefixes", kicker: "Object store", domains: ["runtime", "delivery"], copy: "Stores built web assets under versioned release prefixes. CloudFront reads them through the configured origin; browsers do not access the bucket directly.", facts: ["A release is uploaded once and activated by changing a version pointer.", "Previously published versions remain available for rollback."] },
+      { id: "appTable", lane: "datastore", x: 1060, y: 250, title: "DynamoDB app table", subtitle: "Team-partitioned single-table data", kicker: "Primary data", domains: ["runtime"], copy: "The encrypted multi-tenant system of record for teams, members, inventory, projects, operations, movements, billing state, and audit data.", facts: ["Team-scoped partition keys and IAM conditions enforce tenant isolation.", "PITR protects the table; TTL expires temporary operation records."] },
+      { id: "secretsStore", lane: "datastore", x: 1060, y: 445, title: "Secrets and parameters", subtitle: "Secrets Manager and SSM", kicker: "Configuration", domains: ["runtime", "operations"], copy: "Holds Stripe credentials, runtime endpoints, environment configuration, and operational parameters outside application bundles.", facts: ["The browser receives only an allowlisted public configuration document.", "Sensitive parameter changes are monitored."] },
+      { id: "billingQueue", lane: "async", x: 1060, y: 620, title: "SQS FIFO billing queue", subtitle: "Ordered delivery and DLQ", kicker: "Async", domains: ["runtime"], copy: "Decouples Stripe webhook acknowledgement from durable subscription processing while preserving per-customer order.", facts: ["The webhook returns success only after durable enqueue.", "A dead-letter queue captures repeated processing failures."] },
+      { id: "changeStream", lane: "async", x: 1060, y: 800, title: "DynamoDB change stream", subtitle: "Change trigger and DLQ", kicker: "Async", domains: ["runtime"], copy: "Triggers realtime fan-out when products, projects, membership, or access state changes.", facts: ["Publishing failures are retried and eventually sent to a dead-letter queue.", "Membership changes invalidate the publisher's short cache."] },
+      { id: "backupVaults", lane: "datastore", x: 1060, y: 970, title: "Backup vaults", subtitle: "Local recovery and immutable copy", kicker: "Recovery", domains: ["operations"], copy: "Combines DynamoDB PITR, scheduled AWS Backup recovery points, and an immutable cross-account copy protected by Vault Lock.", facts: ["Deletion records are also versioned and copied with Object Lock.", "The backup account forms a separate credential and trust boundary."] },
+
+      { id: "stripe", lane: "external", x: 1440, y: 185, title: "Stripe", subtitle: "Checkout, Portal, invoices, webhooks", kicker: "External", domains: ["runtime"], copy: "Hosts customer payment experiences and remains the billing source of truth. The worker fetches current subscription state instead of trusting event order alone.", facts: ["Webhook signatures are verified before enqueue.", "The application uses web billing, not app-store billing."] },
+      { id: "bedrock", lane: "external", x: 1440, y: 355, title: "Amazon Bedrock", subtitle: "Claude receipt extraction", kicker: "Managed AI", domains: ["runtime"], copy: "Receives a resized receipt image plus constrained inventory context and returns structured receipt data for review.", facts: ["Usage and rate limits are checked first.", "The result is validated and untrusted text is escaped in the client."] },
+      { id: "realtimeService", lane: "external", x: 1440, y: 535, title: "AppSync Events", subtitle: "Authorized per-member channels", kicker: "Managed realtime", domains: ["runtime"], copy: "Maintains realtime subscriptions on channels scoped to an authenticated member. Only the publisher role can send change hints.", facts: ["Subscriptions do not carry complete records.", "Removed members stop receiving publishes and their next API fetch returns 403."] },
+      { id: "ses", lane: "external", x: 1440, y: 705, title: "Amazon SES", subtitle: "Outbound transactional email", kicker: "Managed email", domains: ["runtime", "operations"], copy: "Delivers transactional and security messages using the product's verified domain and aligned mail configuration.", facts: ["Invite and notice failures are surfaced in the app and observability.", "Sending limits and reputation metrics are monitored."] },
+      { id: "cloudOps", lane: "external", x: 1440, y: 875, title: "Observability and audit", subtitle: "CloudWatch, RUM, CloudTrail, SNS", kicker: "Operations", domains: ["operations"], copy: "Collects logs, metrics, traces, browser telemetry, audit events, alarms, cost signals, and operational notifications.", facts: ["Journey-oriented alarms distinguish P1 and P2 impact.", "EventBridge watches sensitive configuration and operator changes."] },
+      { id: "phaseTwo", lane: "planned", x: 1440, y: 970, title: "Phase 2", subtitle: "Not active in current production", kicker: "Planned", domains: ["planned"], planned: true, copy: "Future work kept visually separate from the current MVP architecture.", facts: ["us-west-2 active-active deployment and DynamoDB Global Table replica.", "Native iOS and Android apps, per-PR preview stacks, Synthetics canaries, and full alarm-driven rollback."] }
+    ];
+
+    const edges = [
+      { id: "webAssets", from: "customerWeb", to: "webEdge", label: "HTTPS assets" },
+      { id: "edgeRoute", from: "webEdge", to: "releaseRouter", label: "Route channel" },
+      { id: "releaseRead", from: "releaseRouter", to: "releaseBucket", label: "Read release" },
+      { id: "signIn", from: "customerWeb", to: "customerAuth", label: "Sign in" },
+      { id: "customerJwt", from: "customerAuth", to: "apiEdge", label: "Access token" },
+      { id: "apiCall", from: "customerWeb", to: "apiEdge", label: "API and realtime" },
+      { id: "operatorSignIn", from: "operatorClient", to: "operatorAuth", label: "PKCE sign in" },
+      { id: "operatorJwt", from: "operatorAuth", to: "apiEdge", label: "Operator token" },
+      { id: "routeApi", from: "apiEdge", to: "appServices", label: "Authorized route" },
+      { id: "dataAccess", from: "appServices", to: "appTable", label: "Scoped read/write" },
+      { id: "runtimeConfig", from: "appServices", to: "secretsStore", label: "Read config" },
+      { id: "receiptModel", from: "appServices", to: "bedrock", label: "Parse receipt", async: true },
+      { id: "stripeSession", from: "appServices", to: "stripe", label: "Sessions/webhooks", async: true },
+      { id: "billingEnqueue", from: "appServices", to: "billingQueue", label: "Enqueue event", async: true },
+      { id: "billingConsume", from: "billingQueue", to: "billingWorker", label: "Consume FIFO", async: true },
+      { id: "billingState", from: "billingWorker", to: "appTable", label: "Update state" },
+      { id: "stripeRefresh", from: "billingWorker", to: "stripe", label: "Fetch latest", async: true },
+      { id: "emitChange", from: "appServices", to: "changeStream", label: "Write emits", async: true },
+      { id: "streamInvoke", from: "changeStream", to: "realtimePublisher", label: "Invoke", async: true },
+      { id: "publishHint", from: "realtimePublisher", to: "realtimeService", label: "Publish hint" },
+      { id: "subscribe", from: "apiEdge", to: "realtimeService", label: "Subscribe" },
+      { id: "memberLookup", from: "realtimeService", to: "appTable", label: "Authorize member" },
+      { id: "requestEmail", from: "appServices", to: "emailService", label: "Request email" },
+      { id: "sendEmail", from: "emailService", to: "ses", label: "Deliver", async: true },
+      { id: "telemetry", from: "appServices", to: "cloudOps", label: "Logs/metrics", async: true },
+      { id: "backupRead", from: "appTable", to: "backupVaults", label: "Backup and copy", async: true },
+      { id: "workflow", from: "github", to: "deployControl", label: "OIDC workflow", async: true },
+      { id: "publish", from: "deployControl", to: "releaseRouter", label: "Publish/activate" },
+      { id: "deploy", from: "deployControl", to: "appServices", label: "Deploy stacks" },
+      { id: "alarms", from: "cloudOps", to: "emailService", label: "Page operators", async: true }
+    ];
+
+    const flows = {
+      web: { name: "Load the app", hint: "CloudFront resolves the active channel, then serves immutable assets from the private release bucket.", edges: ["webAssets", "edgeRoute", "releaseRead"] },
+      receipt: { name: "Read a receipt", hint: "The authorized Lambda checks membership and usage, calls Bedrock, returns a draft for review, then saves only confirmed changes.", edges: ["apiCall", "customerJwt", "routeApi", "dataAccess", "receiptModel", "emitChange", "streamInvoke", "publishHint"] },
+      billing: { name: "Process billing", hint: "Stripe events are verified and durably queued. The FIFO worker fetches current Stripe state and updates team access.", edges: ["apiCall", "routeApi", "stripeSession", "billingEnqueue", "billingConsume", "stripeRefresh", "billingState"] },
+      realtime: { name: "Deliver a live update", hint: "A database write triggers a small change hint. The receiving browser refetches the record through the authorized API.", edges: ["dataAccess", "emitChange", "streamInvoke", "publishHint", "subscribe", "memberLookup", "apiCall"] },
+      release: { name: "Ship a release", hint: "GitHub Actions builds and validates, assumes AWS roles through OIDC after approval, deploys stacks, then activates versioned web assets.", edges: ["workflow", "deploy", "publish", "edgeRoute", "releaseRead"] },
+      recovery: { name: "Protect data", hint: "DynamoDB has PITR and scheduled recovery points; immutable copies cross into a separate backup-account trust boundary.", edges: ["dataAccess", "backupRead", "telemetry", "alarms"] }
+    };
+
+    const byId = Object.fromEntries(nodes.map(node => [node.id, node]));
+    const edgesById = Object.fromEntries(edges.map(edge => [edge.id, edge]));
+    const nodesGroup = document.querySelector("#nodes");
+    const edgesGroup = document.querySelector("#edges");
+    const labelsGroup = document.querySelector("#edge-labels");
+    const lanesGroup = document.querySelector("#lanes");
+    const svg = document.querySelector("#diagram");
+    const viewportGroup = document.querySelector("#viewport");
+    const wrap = document.querySelector(".canvas-wrap");
+    const cardWidth = 260;
+    const cardHeight = 96;
+    let transform = { x: 0, y: 0, scale: 1 };
+    let dragging = null;
+    let tourTimer = null;
+    let tourIndex = 0;
+
+    function el(name, attrs = {}) {
+      const element = document.createElementNS(NS, name);
+      Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, value));
+      return element;
+    }
+
+    function nodeColor(node) { return colors[node.planned ? "planned" : node.lane]; }
+
+    function drawLanes() {
+      const lanes = [
+        [40, "Clients"], [340, "Public edge and identity"], [690, "Production services"],
+        [1060, "Data and async"], [1440, "Managed dependencies"]
+      ];
+      for (const [x, title] of lanes) {
+        const label = el("text", { x, y: 31, class: "lane-title" });
+        label.textContent = title;
+        lanesGroup.append(label);
+        lanesGroup.append(el("line", { x1: x, y1: 43, x2: x + 260, y2: 43, class: "lane-rule" }));
+      }
+    }
+
+    function wrapText(text, limit = 34) {
+      const words = text.split(" ");
+      const lines = [];
+      let line = "";
+      for (const word of words) {
+        if ((line + " " + word).trim().length > limit && line) { lines.push(line); line = word; }
+        else line = (line + " " + word).trim();
+      }
+      if (line) lines.push(line);
+      return lines.slice(0, 2);
+    }
+
+    function drawNodes() {
+      for (const node of nodes) {
+        const group = el("g", {
+          class: `node${node.planned ? " planned" : ""}`,
+          transform: `translate(${node.x} ${node.y})`, tabindex: "0", role: "button",
+          "aria-label": `${node.title}. ${node.subtitle}`, "data-id": node.id,
+          style: `--node-color:${nodeColor(node)}`
+        });
+        group.append(el("rect", { class: "card", width: cardWidth, height: cardHeight, rx: 13 }));
+        group.append(el("rect", { class: "accent", width: 4, height: 58, x: 0, y: 19, rx: 2 }));
+        const kicker = el("text", { class: "node-kicker", x: 19, y: 22 });
+        kicker.textContent = node.kicker;
+        group.append(kicker);
+        const title = el("text", { class: "node-title", x: 19, y: 47 });
+        title.textContent = node.title;
+        group.append(title);
+        const subtitle = el("text", { class: "node-subtitle", x: 19, y: 69 });
+        wrapText(node.subtitle).forEach((line, index) => {
+          const span = el("tspan", { x: 19, dy: index ? 13 : 0 });
+          span.textContent = line;
+          subtitle.append(span);
+        });
+        group.append(subtitle);
+        group.addEventListener("click", event => { event.stopPropagation(); selectNode(node.id); });
+        group.addEventListener("keydown", event => {
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(node.id); }
+        });
+        nodesGroup.append(group);
+      }
+    }
+
+    function anchors(edge) {
+      const from = byId[edge.from];
+      const to = byId[edge.to];
+      const leftToRight = from.x <= to.x;
+      const start = { x: from.x + (leftToRight ? cardWidth : 0), y: from.y + cardHeight / 2 };
+      const finish = { x: to.x + (leftToRight ? 0 : cardWidth), y: to.y + cardHeight / 2 };
+      if (Math.abs(from.x - to.x) < 40) {
+        start.x = from.x + cardWidth / 2;
+        finish.x = to.x + cardWidth / 2;
+        start.y = from.y < to.y ? from.y + cardHeight : from.y;
+        finish.y = from.y < to.y ? to.y : to.y + cardHeight;
+      }
+      return { start, finish };
+    }
+
+    function edgePath(edge) {
+      const { start, finish } = anchors(edge);
+      if (Math.abs(start.x - finish.x) < 25) {
+        const bend = 55 + Math.min(75, Math.abs(start.y - finish.y) * .18);
+        return `M ${start.x} ${start.y} C ${start.x + bend} ${start.y}, ${finish.x + bend} ${finish.y}, ${finish.x} ${finish.y}`;
+      }
+      const bend = Math.max(45, Math.abs(finish.x - start.x) * .42);
+      const direction = finish.x >= start.x ? 1 : -1;
+      return `M ${start.x} ${start.y} C ${start.x + bend * direction} ${start.y}, ${finish.x - bend * direction} ${finish.y}, ${finish.x} ${finish.y}`;
+    }
+
+    function labelPoint(edge) {
+      const { start, finish } = anchors(edge);
+      return { x: (start.x + finish.x) / 2, y: (start.y + finish.y) / 2 - 7 };
+    }
+
+    function drawEdges() {
+      for (const edge of edges) {
+        const path = el("path", { d: edgePath(edge), class: `edge${edge.async ? " async" : ""}`, "data-id": edge.id });
+        edgesGroup.append(path);
+        const point = labelPoint(edge);
+        const label = el("text", { x: point.x, y: point.y, "text-anchor": "middle", class: "edge-label", "data-id": edge.id });
+        label.textContent = edge.label;
+        labelsGroup.append(label);
+      }
+    }
+
+    function connectedEdges(id) { return edges.filter(edge => edge.from === id || edge.to === id); }
+    function connectedNodes(id) { return new Set(connectedEdges(id).flatMap(edge => [edge.from, edge.to])); }
+
+    function selectNode(id, center = false) {
+      stopTour();
+      const node = byId[id];
+      const connections = connectedEdges(id);
+      document.querySelectorAll(".node").forEach(item => {
+        const itemId = item.dataset.id;
+        item.classList.toggle("selected", itemId === id);
+        item.classList.toggle("dim", itemId !== id && !connectedNodes(id).has(itemId));
+      });
+      document.querySelectorAll(".edge").forEach(item => {
+        const active = connections.some(edge => edge.id === item.dataset.id);
+        item.classList.toggle("active", active);
+        item.classList.toggle("dim", !active);
+      });
+      document.querySelectorAll(".edge-label").forEach(item => {
+        const active = connections.some(edge => edge.id === item.dataset.id);
+        item.classList.toggle("active", active);
+        item.classList.toggle("dim", !active);
+      });
+      document.querySelectorAll(".flow-button").forEach(button => button.classList.remove("active"));
+      renderDetails(node, connections);
+      if (center) centerNode(node);
+    }
+
+    function renderDetails(node, connections) {
+      document.querySelector("#detail-eyebrow").textContent = node.kicker;
+      document.querySelector("#detail-title").textContent = node.title;
+      document.querySelector("#detail-copy").textContent = node.copy;
+      document.querySelector("#detail-tags").innerHTML = `<span class="tag ${node.planned ? "planned" : "live"}">${node.planned ? "Planned" : "Current"}</span>${node.domains.map(domain => `<span class="tag">${domain}</span>`).join("")}`;
+      const facts = document.querySelector("#fact-list");
+      facts.innerHTML = node.facts.map(fact => `<li>${fact}</li>`).join("");
+      document.querySelector("#facts-section").hidden = false;
+      const list = document.querySelector("#connection-list");
+      list.innerHTML = "";
+      connections.forEach(edge => {
+        const other = edge.from === node.id ? byId[edge.to] : byId[edge.from];
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = `${edge.from === node.id ? "→" : "←"} ${other.title} · ${edge.label}`;
+        button.addEventListener("click", () => selectNode(other.id, true));
+        list.append(button);
+      });
+      document.querySelector("#connections-section").hidden = !connections.length;
+      document.querySelector("#flow-note").textContent = "Highlighted lines show every direct dependency of this component.";
+    }
+
+    function activateFlow(key, center = false) {
+      const flow = flows[key];
+      const activeEdges = new Set(flow.edges);
+      const activeNodes = new Set(flow.edges.flatMap(id => [edgesById[id].from, edgesById[id].to]));
+      document.querySelectorAll(".node").forEach(item => {
+        item.classList.remove("selected");
+        item.classList.toggle("dim", !activeNodes.has(item.dataset.id));
+      });
+      document.querySelectorAll(".edge").forEach(item => {
+        item.classList.toggle("active", activeEdges.has(item.dataset.id));
+        item.classList.toggle("dim", !activeEdges.has(item.dataset.id));
+      });
+      document.querySelectorAll(".edge-label").forEach(item => {
+        item.classList.toggle("active", activeEdges.has(item.dataset.id));
+        item.classList.toggle("dim", !activeEdges.has(item.dataset.id));
+      });
+      document.querySelectorAll(".flow-button").forEach(button => button.classList.toggle("active", button.dataset.flow === key));
+      document.querySelector("#detail-eyebrow").textContent = "Guided flow";
+      document.querySelector("#detail-title").textContent = flow.name;
+      document.querySelector("#detail-copy").textContent = flow.hint;
+      document.querySelector("#detail-tags").innerHTML = `<span class="tag live">${flow.edges.length} steps</span>`;
+      document.querySelector("#facts-section").hidden = true;
+      document.querySelector("#connections-section").hidden = true;
+      document.querySelector("#flow-note").textContent = flow.hint;
+      if (center) fitNodes(activeNodes);
+    }
+
+    function clearHighlight() {
+      document.querySelectorAll(".node, .edge, .edge-label").forEach(item => item.classList.remove("selected", "active", "dim"));
+      document.querySelectorAll(".flow-button").forEach(button => button.classList.remove("active"));
+    }
+
+    function renderFlows() {
+      const grid = document.querySelector("#flow-grid");
+      Object.entries(flows).forEach(([key, flow]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "flow-button";
+        button.dataset.flow = key;
+        button.innerHTML = `<span>${flow.name}</span><small>${flow.edges.length} connections</small>`;
+        button.addEventListener("click", () => { stopTour(); activateFlow(key, true); });
+        grid.append(button);
+      });
+    }
+
+    function applyTransform() {
+      viewportGroup.setAttribute("transform", `translate(${transform.x} ${transform.y}) scale(${transform.scale})`);
+      document.querySelector("#zoom-reset").textContent = `${Math.round(transform.scale * 100)}%`;
+    }
+
+    function zoomAt(nextScale, clientX, clientY) {
+      const rect = svg.getBoundingClientRect();
+      const x = (clientX - rect.left) * (1840 / rect.width);
+      const y = (clientY - rect.top) * (1040 / rect.height);
+      const old = transform.scale;
+      const next = Math.max(.38, Math.min(2.4, nextScale));
+      transform.x = x - (x - transform.x) * (next / old);
+      transform.y = y - (y - transform.y) * (next / old);
+      transform.scale = next;
+      applyTransform();
+    }
+
+    function fitDiagram() {
+      transform = { x: 8, y: 18, scale: .91 };
+      applyTransform();
+    }
+
+    function centerNode(node) {
+      transform.scale = Math.max(transform.scale, 1.05);
+      transform.x = 920 - (node.x + cardWidth / 2) * transform.scale;
+      transform.y = 520 - (node.y + cardHeight / 2) * transform.scale;
+      applyTransform();
+    }
+
+    function fitNodes(ids) {
+      const picked = [...ids].map(id => byId[id]);
+      const minX = Math.min(...picked.map(n => n.x));
+      const maxX = Math.max(...picked.map(n => n.x + cardWidth));
+      const minY = Math.min(...picked.map(n => n.y));
+      const maxY = Math.max(...picked.map(n => n.y + cardHeight));
+      const scale = Math.min(1.18, 1500 / (maxX - minX + 220), 850 / (maxY - minY + 180));
+      transform.scale = scale;
+      transform.x = 900 - ((minX + maxX) / 2) * scale;
+      transform.y = 500 - ((minY + maxY) / 2) * scale;
+      applyTransform();
+    }
+
+    function applyFilter(next) {
+      stopTour();
+      clearHighlight();
+      document.querySelectorAll("[data-filter]").forEach(button => button.setAttribute("aria-pressed", button.dataset.filter === next));
+      document.querySelectorAll(".node").forEach(item => {
+        const node = byId[item.dataset.id];
+        item.classList.toggle("dim", next !== "all" && !node.domains.includes(next));
+      });
+      document.querySelector("#detail-eyebrow").textContent = "Layer filter";
+      document.querySelector("#detail-title").textContent = next === "all" ? "Complete architecture" : `${next[0].toUpperCase()}${next.slice(1)} layer`;
+      document.querySelector("#detail-copy").textContent = next === "all" ? "All implemented and planned components are visible." : "Components outside this layer are faded. Select any visible card to inspect it.";
+    }
+
+    function startTour() {
+      const button = document.querySelector("#tour-button");
+      if (tourTimer) { stopTour(); return; }
+      button.setAttribute("aria-pressed", "true");
+      button.textContent = "Stop tour";
+      const keys = Object.keys(flows);
+      activateFlow(keys[tourIndex % keys.length], true);
+      tourTimer = setInterval(() => { tourIndex = (tourIndex + 1) % keys.length; activateFlow(keys[tourIndex], true); }, 5000);
+    }
+
+    function stopTour() {
+      if (tourTimer) clearInterval(tourTimer);
+      tourTimer = null;
+      const button = document.querySelector("#tour-button");
+      button.setAttribute("aria-pressed", "false");
+      button.textContent = "Guided tour";
+    }
+
+    drawLanes();
+    drawEdges();
+    drawNodes();
+    renderFlows();
+    fitDiagram();
+
+    document.querySelectorAll("[data-filter]").forEach(button => button.addEventListener("click", () => applyFilter(button.dataset.filter)));
+    document.querySelector("#tour-button").addEventListener("click", startTour);
+    document.querySelector("#fit-button").addEventListener("click", fitDiagram);
+    document.querySelector("#zoom-in").addEventListener("click", () => zoomAt(transform.scale * 1.18, wrap.clientWidth / 2, wrap.clientHeight / 2));
+    document.querySelector("#zoom-out").addEventListener("click", () => zoomAt(transform.scale / 1.18, wrap.clientWidth / 2, wrap.clientHeight / 2));
+    document.querySelector("#zoom-reset").addEventListener("click", fitDiagram);
+
+    document.querySelector("#search").addEventListener("input", event => {
+      stopTour();
+      clearHighlight();
+      const query = event.target.value.trim().toLowerCase();
+      document.querySelectorAll(".node").forEach(item => {
+        const node = byId[item.dataset.id];
+        const matches = !query || `${node.title} ${node.subtitle} ${node.copy} ${node.kicker}`.toLowerCase().includes(query);
+        item.classList.toggle("match", !!query && matches);
+        item.classList.toggle("dim", !!query && !matches);
+      });
+    });
+
+    svg.addEventListener("wheel", event => {
+      event.preventDefault();
+      zoomAt(transform.scale * (event.deltaY < 0 ? 1.1 : .9), event.clientX, event.clientY);
+    }, { passive: false });
+
+    svg.addEventListener("pointerdown", event => {
+      if (event.target.closest(".node")) return;
+      stopTour();
+      dragging = { x: event.clientX, y: event.clientY, tx: transform.x, ty: transform.y };
+      wrap.classList.add("dragging");
+      svg.setPointerCapture(event.pointerId);
+    });
+    svg.addEventListener("pointermove", event => {
+      if (!dragging) return;
+      const rect = svg.getBoundingClientRect();
+      transform.x = dragging.tx + (event.clientX - dragging.x) * (1840 / rect.width);
+      transform.y = dragging.ty + (event.clientY - dragging.y) * (1040 / rect.height);
+      applyTransform();
+    });
+    svg.addEventListener("pointerup", event => {
+      dragging = null;
+      wrap.classList.remove("dragging");
+      if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
+    });
+    svg.addEventListener("click", event => {
+      if (event.target.closest(".node")) return;
+      clearHighlight();
+    });
+
+    window.addEventListener("keydown", event => {
+      if (event.key === "Escape") { stopTour(); clearHighlight(); }
+      if ((event.metaKey || event.ctrlKey) && event.key === "0") { event.preventDefault(); fitDiagram(); }
+    });
+  </script>
+</body>
+</html>
+
