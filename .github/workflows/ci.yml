@@ -406,7 +406,11 @@ jobs:
           if [[ "$CALLED" == "true" ]]; then base=""; fi
           changed=""
           if [[ -n "$base" ]]; then
-            changed=$(git diff --name-only "$base" HEAD)
+            # Every path as is (core.quotePath=false: a non-ASCII name isn't quoted
+            # as "tests/\303\251.js", which the ^tests/ patterns below would miss),
+            # and both sides of a rename (--no-renames: moving a file out of tests/
+            # counts as a change to tests/, not only to where it went)
+            changed=$(git -c core.quotePath=false diff --name-only --no-renames "$base" HEAD)
             echo "$changed"
           fi
           # An empty diff doesn't count
