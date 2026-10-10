@@ -7,13 +7,18 @@
 // - `page`: fails the test on an uncaught error or console error from the app (not from Managed
 //   Login's own pages), aborts requests to the RUM data plane (test sessions add no billed RUM
 //   events), refuses any account deletion or team closure that assertDestructiveAllowed doesn't
-//   allow, and keeps a trace only for a failed test, started after sign-in.
+//   allow, and keeps a trace only for a failed test, started after sign-in. At the end it stops
+//   the trace, then gives the page's session back (below), then checks the errors.
 // - `signIn(page, role, { fresh })`: signs in as a long-lived account, reusing a session an
 //   earlier test left (lib/sessions.mjs, shared by both browser projects) unless `fresh`, waiting
 //   up to 45 seconds for one on lease to come back, and otherwise
 //   through Managed Login (password, and a two-step code for owner), backing off on Managed
-//   Login's "Too many requests"; then checks the app's own GET /me with checkMe. At the end of
-//   the test (or at signIn.release(context)) the session goes back to the pool.
+//   Login's "Too many requests"; then checks the app's own GET /me with checkMe. A pooled
+//   session the app can't refresh (spent) stops the app before going to Managed Login. A context
+//   signs in one role only. At the end of the test (or at signIn.release(context)) the session
+//   goes back to the pool: once tracing has stopped, and after the app is stopped, so it can't
+//   refresh (and spend) the cookie once it's pooled (sessionHolds, lib/sessions.mjs and
+//   lib/app-stop.mjs).
 /* global document, location -- readScreen's function runs in the page */
 import { test as base, expect } from "@playwright/test";
 import path from "node:path";
@@ -27,8 +32,9 @@ import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
 import { freshTotp } from "../../scripts/journeys/lib/totp.mjs";
 import { PASSWORD_CHOICE, formatScreen } from "../../scripts/journeys/lib/screen.mjs";
-import { SIGN_IN, createSessionPool, readSession } from "../../scripts/journeys/lib/sessions.mjs";
-import { assertNotTracing, markTracing, secretFill } from "../../scripts/journeys/lib/tracing.mjs";
+import { REFRESH_COOKIE, SIGN_IN, createSessionHolds, createSessionPool, resumeSession } from "../../scripts/journeys/lib/sessions.mjs";
+import { isAbandonedRequestError, stopApp, trackRequests } from "../../scripts/journeys/lib/app-stop.mjs";
+import { assertNotTracing, markTracing, secretFill, unmarkTracing } from "../../scripts/journeys/lib/tracing.mjs";
 import { waitUntilConnected } from "../ui/app.js";
 
 const RUM = /^https:\/\/dataplane\.rum\.[a-z0-9-]+\.amazonaws\.com\//;
@@ -82,12 +88,36 @@ export const test = base.extend({
   // eslint-disable-next-line no-empty-pattern -- Playwright fixtures take a destructured object
   identity: async ({}, use) => { await use({ account: null }); },
 
-  page: async ({ page, harness, identity }, use, testInfo) => {
+  /**
+   * The long-lived sessions this test's contexts hold (one role per context), and their release
+   * (lib/sessions.mjs createSessionHolds). `context` is a dependency so that it's torn down after
+   * this, and `page` depends on this so that it's torn down before: the page fixture stops the
+   * trace and gives its context's session back, then this gives back any other's still held.
+   */
+  sessionHolds: async ({ harness, context }, use, testInfo) => {
+    const holds = createSessionHolds({
+      pool: harness.sessions,
+      apiOrigin: PROD.api,
+      stopApp: (ctx) => stopApp(ctx, { apiOrigin: PROD.api }),
+      assertNotTracing,
+      warn: (description) => testInfo.annotations.push({ type: "journeys-warning", description }),
+    });
+    await use(holds);
+    for (const ctx of new Set([context, ...holds.contexts()])) await holds.release(ctx);
+  },
+
+  page: async ({ page, harness, identity, sessionHolds }, use, testInfo) => {
     const errors = [];
-    page.on("pageerror", (e) => { if (appOrigins.has(originOf(page.url())) && !isExpectedPageError(e.message)) errors.push(`pageerror: ${e.message}`); });
+    const ctx = page.context();
+    // Before the app loads: which API requests are in flight, for stopApp
+    trackRequests(ctx, PROD.api);
+    // A request stopApp cuts off on purpose (WebKit: "due to access control checks") isn't the
+    // app's error; nothing else is let through (lib/app-stop.mjs)
+    const abandoned = (text) => isAbandonedRequestError(ctx, text);
+    page.on("pageerror", (e) => { if (appOrigins.has(originOf(page.url())) && !isExpectedPageError(e.message) && !abandoned(e.message)) errors.push(`pageerror: ${e.message}`); });
     page.on("console", (m) => {
       const url = m.location()?.url ?? "";
-      if (m.type() !== "error" || !appOrigins.has(originOf(url || page.url())) || isExpectedConsoleError(m.text(), url)) return;
+      if (m.type() !== "error" || !appOrigins.has(originOf(url || page.url())) || isExpectedConsoleError(m.text(), url) || abandoned(m.text())) return;
       // A project or item 404 is counted in the summary, not a failure (lib/console.mjs)
       if (isDocumentNotFound(m.text(), url)) testInfo.annotations.push({ type: NOT_FOUND_WARNING, description: consoleFailure(m.text(), url) });
       else errors.push(consoleFailure(m.text(), url));
@@ -117,10 +147,14 @@ export const test = base.extend({
       tracing = true;
     };
     await use(page);
+    // The trace stops first, so the session read below is never in it; then the session goes
+    // back, after the app is stopped; then the errors, the cut-off of stopping it allowed
     if (tracing) {
       const failed = testInfo.status !== testInfo.expectedStatus;
-      await page.context().tracing.stop(failed ? { path: testInfo.outputPath("trace.zip") } : undefined);
+      await ctx.tracing.stop(failed ? { path: testInfo.outputPath("trace.zip") } : undefined);
+      unmarkTracing(ctx);
     }
+    await sessionHolds.release(ctx);
     expect(errors.map(harness.masker.redact), "page errors").toEqual([]);
   },
 
@@ -129,31 +163,25 @@ export const test = base.extend({
    * Login by password (and the two-step code for owner); then the /me guard on the app's own
    * request. Tracing starts after it. `fresh` always goes through Managed Login (J0.2).
    */
-  signIn: async ({ harness, identity, context }, use, testInfo) => {
-    const held = [];
-    // Puts the context's sessions back in the pool: the refresh cookie as it is now, since the
-    // app's refresh rotated it. A closed context has nothing to give back.
-    const release = async (ctx) => {
-      const mine = held.filter((h) => h.context === ctx);
-      for (const h of mine) held.splice(held.indexOf(h), 1);
-      if (!mine.length) return;
-      let cookie;
-      try { cookie = await readSession(ctx, PROD.api); } catch { return; }
-      // One cookie per context: a second role signed in in the same context has replaced the first's
-      const role = mine[mine.length - 1].role;
-      if (!harness.sessions.put(role, cookie)) testInfo.annotations.push({ type: "journeys-warning", description: `${role}: no session to save after the test, so the next test signs in through Managed Login again` });
-    };
+  signIn: async ({ harness, identity, sessionHolds }, use, testInfo) => {
     const signIn = async (page, role, { fresh = false } = {}) => {
       const account = harness.config.accounts[role];
       if (!account) throw new Error(`No long-lived account ${role}`);
-      // A trace records the password and code typed below: never sign in while tracing
-      assertNotTracing(page.context(), "a sign-in");
-      identity.account = account.email;
       const ctx = page.context();
-      for (let attempt = 0; ; attempt++) {
-        const meResponse = page.waitForResponse((r) => r.url() === `${PROD.api}/me` && r.request().method() === "GET", { timeout: 60_000 });
+      // A context has one refresh cookie: one role per context, or release would misfile it
+      sessionHolds.check(ctx, role);
+      // A trace records the password and code typed below: never sign in while tracing
+      assertNotTracing(ctx, "a sign-in");
+      trackRequests(ctx, PROD.api);
+      identity.account = account.email;
+      const waitForMe = () => {
+        const res = page.waitForResponse((r) => r.url() === `${PROD.api}/me` && r.request().method() === "GET", { timeout: 60_000 });
         // Awaited below; a sign-in that fails first ends the test, and that rejection isn't news
-        meResponse.catch(() => {});
+        res.catch(() => {});
+        return res;
+      };
+      for (let attempt = 0; ; attempt++) {
+        let meResponse = waitForMe();
         let session = fresh ? null : harness.sessions.take(role);
         // Every session out on lease (the other worker has it): wait for it to come back rather
         // than sign in again, if one was ever made
@@ -164,13 +192,17 @@ export const test = base.extend({
             session = harness.sessions.take(role);
           }
         }
-        if (session) await ctx.addCookies([session]);
-        await page.goto("/");
-        // A session the app can't refresh (revoked, or used past its rotation) shows sign-in
-        const reused = session && await Promise.race([
-          meResponse.then(() => true, () => false),
-          page.locator("#signIn").waitFor({ timeout: 30_000 }).then(() => false, () => false),
-        ]);
+        // A session the app can't refresh (revoked, or spent) shows sign-in: then the app is
+        // stopped before Managed Login, so its cut-off requests aren't page errors, and loaded
+        // again signed out (resumeSession)
+        const reused = await resumeSession(page, session, {
+          meResponse,
+          signInShown: () => page.locator("#signIn").waitFor({ timeout: 30_000 }),
+          stopApp: (c) => stopApp(c, { apiOrigin: PROD.api }),
+          dropSession: (c) => c.clearCookies({ name: REFRESH_COOKIE }),
+        });
+        // The GET /me to check is the one after Managed Login, not a stopped app's
+        if (!reused && session) meResponse = waitForMe();
         if (!reused) {
           try {
             await page.locator("#signIn").click();
@@ -196,15 +228,14 @@ export const test = base.extend({
         for (const w of warnings) testInfo.annotations.push({ type: "journeys-warning", description: w });
         break;
       }
-      held.push({ context: ctx, role });
+      sessionHolds.hold(ctx, role);
       await waitUntilConnected(page);
       await page.startTrace();
     };
-    signIn.release = release;
+    // Gives a context's session back before the test closes it (secondPage): stops the app, then
+    // reads the cookie; the rest go back at the end of the test (sessionHolds)
+    signIn.release = (ctx) => sessionHolds.release(ctx);
     await use(signIn);
-    // `context` is a dependency so that it's torn down after this: the test's own context is
-    // still open here
-    for (const ctx of new Set([context, ...held.map((h) => h.context)])) await release(ctx);
   },
 });
 

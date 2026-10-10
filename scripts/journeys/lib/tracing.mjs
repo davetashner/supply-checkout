@@ -2,14 +2,20 @@
 // arguments, an evaluate's included. upload-results.mjs scrubs headers and auth bodies from a
 // trace and checks it for secrets (lib/traces.mjs), but a refused upload loses the run's results,
 // so the fixtures start tracing only after sign-in, mark the
-// context here when they do, and every secret entry (secretFill, and signIn before it starts)
-// refuses to run in a context that's being traced.
+// context here when they do (and unmark it once tracing stops), and every secret entry
+// (secretFill, signIn before it starts, and the session read at release) refuses to run in a
+// context that's being traced.
 
 const traced = new WeakSet();
 
 /** Records that tracing is on for a browser context. */
 export function markTracing(context) {
   traced.add(context);
+}
+
+/** Records that tracing has stopped for a browser context (its trace is saved or dropped). */
+export function unmarkTracing(context) {
+  traced.delete(context);
 }
 
 /** Throws if tracing is on for the context: a secret typed now would be in the trace. */
