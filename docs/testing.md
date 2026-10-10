@@ -37,7 +37,7 @@ A full run starts a browser in every worker, and WebKit workers can each take ov
 - **Fewer workers.** Locally, Playwright uses one worker per 8 GB of RAM, and at most half the CPU cores (`localWorkers` in `playwright.config.js`). That's 2 on a 16 GB laptop. Pass `--workers=N` to change it for one run. CI uses Playwright's default.
 - **One run at a time.** Each run takes a lock in the repo's shared `.git` directory (`tests/run-lock.js`), so a run started in another worktree waits and prints which run it's waiting for. A lock left by a run that was killed is taken over automatically. CI skips the lock.
 
-While working on a change, run just the file and browser you're touching, e.g. `npx playwright test tests/projects.spec.js --project=desktop-chrome`. Save `npm run check` for before you open a PR; CI runs every browser and build anyway (pull requests run desktop Chrome and iPhone Safari, and the merge queue runs the rest).
+While working on a change, run just the file and browser you're touching, e.g. `npx playwright test tests/projects.spec.js --project=desktop-chrome`. Save `npm run check` for before you open a PR; CI runs every browser anyway: a pull request that changes the app, its tests or anything they build or load runs all ten browser jobs, as the merge queue and `main` do, and any other pull request (docs, backend, other infra and scripts) runs desktop Chrome and iPhone Safari only. The paths are listed under CI in the [README](../README.md#ci).
 
 | Suite | What it checks |
 | --- | --- |

@@ -3,9 +3,11 @@ name: CI
 # "CI passed" is the one required status check on main. It succeeds only when
 # every job below succeeded or was skipped because it doesn't apply to the event.
 #
-# Pull requests run the browser tests in desktop Chrome and iPhone Safari only.
-# The merge queue, pushes to main, manual runs and the nightly run use every
-# browser, so the full matrix still gates main.
+# A pull request that changes the app, its tests or anything they build or load
+# (see all_browsers in the changes job) runs the browser tests in every browser,
+# as the merge queue, pushes to main, manual runs and the nightly run do. Other
+# pull requests (docs, backend, infra, scripts) run desktop Chrome and iPhone
+# Safari only.
 #
 # A pull request, merge queue group or push to main that changes only the beads
 # export (.beads/issues.jsonl) runs just the PR title check, the secret scan and
@@ -372,37 +374,6 @@ jobs:
         with:
           # A pull request checks out a merge commit; its first parent is the base
           fetch-depth: 2
-      - name: Choose the browser matrix
-        id: matrix
-        env:
-          EVENT: ${{ github.event_name }}
-        run: |
-          # web: the hashed static bundle for CloudFront, plus the demo build for
-          # supplycheckout.com (tests/demo.spec.js and the CSP tests run with the
-          # web build). Coverage is measured in Chromium, the only browser that
-          # reports it. Pull requests run only these two jobs.
-          core='[
-            {"build": "web", "project": "desktop-chrome", "browser": "chromium", "coverage": "1"},
-            {"build": "web", "project": "iphone-safari", "browser": "webkit", "coverage": ""}
-          ]'
-          # The other supported browsers. Edge is
-          # branded Microsoft Edge (a system package), not Playwright's Chromium.
-          # Samsung Internet shares Android Chrome's engine; see "Supported
-          # browsers" in docs/testing.md.
-          more='[
-            {"build": "web", "project": "desktop-firefox", "browser": "firefox", "coverage": ""},
-            {"build": "web", "project": "desktop-safari", "browser": "webkit", "coverage": ""},
-            {"build": "web", "project": "desktop-edge", "browser": "msedge", "coverage": ""},
-            {"build": "web", "project": "android-chrome", "browser": "chromium", "coverage": ""},
-            {"build": "web", "project": "android-chrome-landscape", "browser": "chromium", "coverage": ""},
-            {"build": "web", "project": "galaxy-chrome", "browser": "chromium", "coverage": ""},
-            {"build": "web", "project": "ipad-safari", "browser": "webkit", "coverage": ""},
-            {"build": "web", "project": "ipad-safari-landscape", "browser": "webkit", "coverage": ""}
-          ]'
-          if [[ "$EVENT" == "pull_request" ]]; then more='[]'; fi
-          matrix="$(jq -cn --argjson core "$core" --argjson more "$more" '{include: ($core + $more)}')"
-          echo "$matrix" | jq -r '.include[] | "\(.project), \(.build) build"'
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
       - id: diff
         env:
           EVENT: ${{ github.event_name }}
@@ -435,7 +406,11 @@ jobs:
           if [[ "$CALLED" == "true" ]]; then base=""; fi
           changed=""
           if [[ -n "$base" ]]; then
-            changed=$(git diff --name-only "$base" HEAD)
+            # Every path as is (core.quotePath=false: a non-ASCII name isn't quoted
+            # as "tests/\303\251.js", which the ^tests/ patterns below would miss),
+            # and both sides of a rename (--no-renames: moving a file out of tests/
+            # counts as a change to tests/, not only to where it went)
+            changed=$(git -c core.quotePath=false diff --name-only --no-renames "$base" HEAD)
             echo "$changed"
           fi
           # An empty diff doesn't count
@@ -444,6 +419,21 @@ jobs:
             echo "beads_only=true" >> "$GITHUB_OUTPUT"
           else
             echo "beads_only=false" >> "$GITHUB_OUTPUT"
+          fi
+          # all_browsers: every run but a pull request uses the whole browser
+          # matrix. A pull request does too when it changes anything the browser
+          # tests build or load: the app (src/), its tests, the demo, the operator
+          # page and home page (ops/, site/), the build and test configs, the
+          # packages, the build and dev-server scripts the tests import, the
+          # Content-Security-Policy and config they read from infra/, or this
+          # workflow. Other pull requests (docs, backend, infra, scripts) run
+          # desktop Chrome and iPhone Safari only. An empty diff runs everything.
+          if [[ "$EVENT" != "pull_request" || -z "$changed" ]] ||
+            grep -Eq '^(src/|tests/|demo/|ops/|site/|playwright\.config\.js$|vite\.config\.js$|package\.json$|package-lock\.json$|scripts/builds\.mjs$|scripts/dev-server\.mjs$|infra/lib/web/|infra/lib/config\.ts$|\.github/workflows/ci\.yml$)' <<< "$changed"; then
+            echo "all_browsers=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nothing the browser tests load changed: desktop Chrome and iPhone Safari only"
+            echo "all_browsers=false" >> "$GITHUB_OUTPUT"
           fi
           if [[ "$full" == "true" ]]; then
             echo "infra=true" >> "$GITHUB_OUTPUT"
@@ -462,6 +452,39 @@ jobs:
           else
             echo "backend=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Choose the browser matrix
+        id: matrix
+        env:
+          ALL_BROWSERS: ${{ steps.diff.outputs.all_browsers }}
+        run: |
+          # web: the hashed static bundle for CloudFront, plus the demo build for
+          # supplycheckout.com (tests/demo.spec.js and the CSP tests run with the
+          # web build). Coverage is measured in Chromium, the only browser that
+          # reports it. A pull request that changes nothing the browser tests
+          # load runs only these two jobs (see all_browsers in the step above).
+          core='[
+            {"build": "web", "project": "desktop-chrome", "browser": "chromium", "coverage": "1"},
+            {"build": "web", "project": "iphone-safari", "browser": "webkit", "coverage": ""}
+          ]'
+          # The other supported browsers. Edge is
+          # branded Microsoft Edge (a system package), not Playwright's Chromium.
+          # Samsung Internet shares Android Chrome's engine; see "Supported
+          # browsers" in docs/testing.md.
+          more='[
+            {"build": "web", "project": "desktop-firefox", "browser": "firefox", "coverage": ""},
+            {"build": "web", "project": "desktop-safari", "browser": "webkit", "coverage": ""},
+            {"build": "web", "project": "desktop-edge", "browser": "msedge", "coverage": ""},
+            {"build": "web", "project": "android-chrome", "browser": "chromium", "coverage": ""},
+            {"build": "web", "project": "android-chrome-landscape", "browser": "chromium", "coverage": ""},
+            {"build": "web", "project": "galaxy-chrome", "browser": "chromium", "coverage": ""},
+            {"build": "web", "project": "ipad-safari", "browser": "webkit", "coverage": ""},
+            {"build": "web", "project": "ipad-safari-landscape", "browser": "webkit", "coverage": ""}
+          ]'
+          # Anything but an explicit "false" runs every browser
+          if [[ "$ALL_BROWSERS" == "false" ]]; then more='[]'; fi
+          matrix="$(jq -cn --argjson core "$core" --argjson more "$more" '{include: ($core + $more)}')"
+          echo "$matrix" | jq -r '.include[] | "\(.project), \(.build) build"'
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   infra:
     name: Infra (lint, test, cdk-nag synth, audit)
