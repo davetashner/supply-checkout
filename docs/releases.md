@@ -169,7 +169,13 @@ Why a job and not release-please's own `extra-files`: release-please can write t
 
 Its tests are in `scripts/check-whats-new.test.mjs`.
 
-Don't push notes to release-please's branch by hand: it rewrites that branch. If a release pull request's check fails anyway, fix the notes on main in a pull request; the `release-notes` job stamps them the next time release-please rebuilds its branch, which it does when the release's changelog changes (any `feat:` or `fix:` merge).
+Don't push notes to release-please's branch by hand while the job works: it rewrites that branch. A pull request that only fixes notes on main doesn't reach the release branch by itself: release-please rebuilds the branch only when the release's changelog changes (a `feat:` or `fix:` merge), or when you re-run the stamp (below).
+
+**If the stamp job fails.** `release-pr-checks` needs `release-notes`, so it's skipped: CI never runs on the release pull request, it has no **CI passed**, and it can't merge. To recover:
+
+1. Read the `release-notes` job's log. If the notes are malformed (`--stamp` refuses them, naming the problem), fix them on main in a pull request and land it.
+2. Re-run the failed jobs of that Release workflow run (**Re-run failed jobs**, or `gh run rerun <run-id> --failed`). The re-run keeps the `release-please` job's output, so `release-notes` stamps the branch again and `release-pr-checks` starts CI. A new Release run doesn't do this when release-please leaves its pull request unchanged ("remained the same"), because then it reports no pull request. If the fix from step 1 changed main, bring the release branch up to date first (`npm run land` does that), so the stamp reads the fixed notes.
+3. If re-running can't work (the run is too old to re-run, say), stamp by hand: check out the release branch, run `node scripts/check-whats-new.mjs --stamp`, commit `src/whats-new.json` (signed off), push it to the release branch, and start CI there (`gh workflow run ci.yml --ref <release branch>`).
 
 If a `feat:` pull request is still open when a release goes out, its note is now under the release's version on main: when you bring the branch up to date, move the note into a new `upcoming` entry, or the check fails.
 
