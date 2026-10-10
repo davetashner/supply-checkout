@@ -345,6 +345,22 @@ test.describe("everyone's photos", () => {
     expect(backend.requests("GET", PHOTOS)).toHaveLength(2);
   });
 
+  test("a photo missing from the bucket is asked for once more, then shows the initials, however often it's drawn", async ({ page }) => {
+    const backend = new FakeBackend({ user: ME_USER, members: { t1: [ME, SAM] }, photos: { "u-sam": PHOTO } });
+    // Every list signs a fresh link to it, and every link fails
+    backend.missingPhotos.add("u-sam");
+    await open(page, backend);
+    const sam = dialog(page).locator(".member", { hasText: "sam@example.com" });
+    for (let i = 0; i < 3; i++) {
+      await page.locator(".teambar").getByRole("button", { name: "Members" }).click();
+      await expect(sam.locator("span.avatar")).toHaveText("SO");
+      await expect(sam.locator(".avatar")).toHaveCount(1);
+      await page.keyboard.press("Escape");
+    }
+    await page.waitForTimeout(500);
+    expect(backend.requests("GET", PHOTOS)).toHaveLength(2);
+  });
+
   test("when the list can't be had again, a broken photo shows the initials", async ({ page }) => {
     const backend = await open(page, new FakeBackend({ user: ME_USER, members: { t1: [ME, SAM] }, photos: { "u-sam": PHOTO } }));
     backend.expirePhotoLinks();

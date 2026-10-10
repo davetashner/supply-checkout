@@ -119,6 +119,8 @@ export class FakeBackend {
     this.photoUploads = photoUploads;
     this.photoIds = 0;
     this.photoGen = 1;
+    // Users whose record names a photo the bucket doesn't have: their links are signed, and 403
+    this.missingPhotos = new Set();
     Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), supportActions: clone(supportActions), settings: clone(settings), user, signedIn, claims, config, expiresIn, receipt: clone(receipt), receiptLimit, receiptPeriod });
     // Receipts read per team, as the API counts them (backend/src/data/usage.ts)
     this.receiptsRead = {};
@@ -188,7 +190,7 @@ export class FakeBackend {
   servePhoto(route) {
     const url = new URL(route.request().url()), user = decodeURIComponent(url.pathname.replace(/^\/photos\/|\.jpg$/g, ""));
     const fresh = (url.searchParams.get("X-Amz-Signature") || "").startsWith(`g${this.photoGen}-`);
-    if (!fresh || !this.photos.has(user)) return route.fulfill({ status: 403, contentType: "application/xml", body: "<Error><Code>AccessDenied</Code></Error>" });
+    if (!fresh || !this.photos.has(user) || this.missingPhotos.has(user)) return route.fulfill({ status: 403, contentType: "application/xml", body: "<Error><Code>AccessDenied</Code></Error>" });
     return route.fulfill({ status: 200, contentType: "image/jpeg", headers: { "x-content-type-options": "nosniff" }, body: this.photos.get(user) });
   }
   requests(method, path) { return this.calls.filter((c) => c.method === method && (typeof path === "string" ? c.path === path : path.test(c.path))); }

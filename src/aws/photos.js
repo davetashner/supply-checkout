@@ -14,8 +14,13 @@ export const PHOTOS_WAIT = 2000;
 // `selfId` and `selfUrl`: the signed-in user, and their photo from /me, shown until the list answers
 export function createPhotos(api, teamId, selfId, selfUrl) {
   let urls = new Map(selfUrl ? [[selfId, selfUrl]] : []), loading = null;
-  // Links that failed to load: one that fails again after a fresh list isn't tried again
-  const failed = new Set();
+  // Failures are kept by the photo (the link without its query string, which S3 signs anew for
+  // every list): `retried` maps a photo whose link failed to that link, while the list is asked
+  // for again; a photo whose fresh link fails too is `dead`, and shows as initials until its
+  // photo changes (a new photo is a new path). A photo that loads is forgotten from `retried`,
+  // so its link expiring again hours later is retried again.
+  const retried = new Map(), dead = new Set();
+  const photoOf = (link) => String(link).split("?")[0];
   const path = `/teams/${encodeURIComponent(teamId)}/photos`;
 
   // Asks for the list, once at a time. A list that doesn't come keeps the links there are.
@@ -27,8 +32,8 @@ export function createPhotos(api, teamId, selfId, selfUrl) {
     return loading;
   }
   const first = load();
-  // A photo's link, or null (none, or its link already failed to load)
-  const current = (userId) => { const link = urls.get(userId); return link && !failed.has(link) ? link : null; };
+  // A photo's link, or null (none, or the photo doesn't load even from a fresh link)
+  const current = (userId) => { const link = urls.get(userId); return link && !dead.has(photoOf(link)) ? link : null; };
   setInterval(load, PHOTOS_EVERY);
 
   // Puts the photo at `link` (or the initials, with none) in the avatar's place, the same size
@@ -45,17 +50,20 @@ export function createPhotos(api, teamId, selfId, selfUrl) {
     });
   }
 
-  // A photo that didn't load: ask for the list again (once per link; another avatar with the
-  // same link waits for that list), then show the new link, or the initials if the list has
-  // nothing newer. A list that answers has already swapped the avatar.
+  // A photo that didn't load: ask for the list again, once per photo (another avatar with the
+  // same link waits for that list), then show the new link. If a later link for the same photo
+  // fails too, the photo is dead: the initials, with no more asking. A list that answers has
+  // already swapped the avatar.
   document.addEventListener("error", async (e) => {
     const img = e.target;
     if (!img.matches("img.avatar[data-user]")) return;
-    const src = img.getAttribute("src"), again = failed.has(src);
-    failed.add(src);
-    await (again ? loading : load());
+    const src = img.getAttribute("src"), photo = photoOf(src), before = retried.get(photo);
+    if (before === undefined) { retried.set(photo, src); await load(); }
+    else if (before === src && loading) await loading;
+    else dead.add(photo);
     if (img.isConnected) swap(img, current(img.dataset.user));
   }, true);
+  document.addEventListener("load", (e) => { retried.delete(photoOf(e.target.src)); }, true);
 
   return {
     url: current,
