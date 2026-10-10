@@ -206,16 +206,19 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged,
     token: () => (tokens ? tokens.accessToken : ""),
     claims: () => (tokens ? claimsOf(tokens.idToken) : null),
 
-    // An API call with the access token. A 401 refreshes the token and tries once more.
+    // An API call with the access token. A 401 refreshes the token (unless a refresh has
+    // already replaced the one the call was sent with) and tries once more.
     // Once the session has ended (signed out, or a refresh found it over) there's no token:
     // a call then, such as a save while the Managed Login sign-out page loads, is refused
     // as unauthenticated without reaching the API.
     // `options` are request()'s: a longer timeout, and the caller's abort signal.
     async api(method, path, body, headers, options) {
       if (!tokens) throw ENDED;
+      let sent;
       const send = () => {
         const init = body ? json(method, body, headers) : { method, headers: { ...headers } };
-        init.headers.authorization = "Bearer " + tokens.accessToken;
+        sent = tokens.accessToken;
+        init.headers.authorization = "Bearer " + sent;
         return request(config.apiUrl + path, init, options).catch((e) => {
           if (e.reason === "password_reset") return passwordWasReset();
           throw e;
@@ -224,6 +227,10 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged,
       try { return await send(); }
       catch (e) {
         if (e.code !== "unauthenticated") throw e;
+        // Sent with a token that a refresh has replaced since (the scheduled one, or another
+        // call's 401 while this one was out, as after the device slept past the token's
+        // expiry): tried once more with the new token, rather than refreshing again
+        if (tokens && tokens.accessToken !== sent) return send();
         // A refresh dropped for a password reset leaves this call unanswered, as the reset's own are
         await refresh().catch((r) => (resetting ? passwordWasReset() : Promise.reject(r)));
         return send();
