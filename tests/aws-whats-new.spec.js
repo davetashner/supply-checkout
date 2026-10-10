@@ -105,11 +105,13 @@ test.describe("What's New", () => {
   });
 
   test("a release dated after today isn't shown yet", async ({ page }) => {
-    // The day of the second-newest release: the newest isn't out yet
-    const today = releases[1].date, notes = notesOn(today);
+    // The day of an earlier release with notes: the newest with notes isn't out yet (a
+    // release may have no notes, and two may share a date)
+    const noted = releases.filter((r) => r.notes.length), newest = noted[0];
+    const today = noted.find((r) => r.date < newest.date).date, notes = notesOn(today);
     await open(page, { today });
     await expect(banner(page)).toBeVisible();
-    await expect(banner(page).getByText(releases[0].notes[0].title, { exact: true })).toHaveCount(0);
+    await expect(banner(page).getByText(newest.notes[0].title, { exact: true })).toHaveCount(0);
     await expect(banner(page).locator("li")).toHaveCount(notes.length);
     await expect(banner(page).locator("summary")).toHaveText(`Show all ${notes.length}`);
   });
