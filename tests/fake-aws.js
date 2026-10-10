@@ -477,10 +477,10 @@ export class FakeBackend {
     return [200, { member: clone(target) }];
   }
 
-  // The user's own photo as the API takes it (the contract in supply-checkout-6uw.30): a
-  // base64 JPEG of exactly 256 × 256, up to 64 KB, 20 a day; the errors are bare codes
+  // The user's own photo as the API takes it (backend/src/api/account-handler.ts): a base64
+  // JPEG of exactly 256 × 256, up to 64 KB, 20 a day
   ownPhoto(method, body) {
-    const no = (status, error) => [status, { error }];
+    const no = (status, reason) => [status, { error: { code: status === 400 ? "bad_request" : "quota_exceeded", message: reason, reason } }];
     if (method === "DELETE") { this.photos.delete(this.user.id); return [204]; }
     if (!body || Object.keys(body).join() !== "image" || typeof body.image !== "string") return no(400, "photo_invalid");
     const bytes = Buffer.from(body.image, "base64");

@@ -17,13 +17,13 @@ export const SIZE = 256, QUALITIES = [0.85, 0.7, 0.5], MAX_SENT = 60 * 1024;
 const ZOOM_MAX = 4, STEP = 8, BIG_STEP = 32, ZOOM_STEP = 0.1;
 
 const PICK = "Choose a JPEG, PNG or WebP photo.";
-// What went wrong, in words. The API's code may be the error itself or its reason.
+// What went wrong, in words, by the API's reason
 const FAILURES = new Map([
   ["photo_invalid", "That photo couldn't be used. Try another JPEG, PNG or WebP photo."],
   ["photo_too_large", "That photo is too large to save. Zoom in a little, or try another photo."],
   ["photo_limit", "You've changed your photo as many times as you can today. Try again tomorrow."],
 ]);
-const failure = (e, what) => FAILURES.get(e.reason) || FAILURES.get(e.code) || `Couldn't ${what} your photo. Check your connection and try again.`;
+const failure = (e, what) => FAILURES.get(e.reason) || `Couldn't ${what} your photo. Check your connection and try again.`;
 
 // `photo.url()` is the user's photo now (null for none), and `photo.set(url)` records a new
 // one, so every avatar on the page follows. `photo.name` is who they are, for the initials.

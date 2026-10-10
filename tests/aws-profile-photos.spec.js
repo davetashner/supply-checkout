@@ -217,9 +217,8 @@ test.describe("your own photo", () => {
     }
 
     const refusals = [
-      // The contract's bare codes, and the API's usual error shape with a reason
-      ["the server finds it isn't a valid photo", { status: 400, body: { error: "photo_invalid" } }, "That photo couldn't be used. Try another JPEG, PNG or WebP photo."],
-      ["it's too large", { status: 413, body: { error: { code: "bad_request", message: "Too large", reason: "photo_too_large" } } }, "That photo is too large to save. Zoom in a little, or try another photo."],
+      ["the server finds it isn't a valid photo", { status: 400, body: { error: { code: "bad_request", message: "That isn't a 256×256 JPEG photo", reason: "photo_invalid" } } }, "That photo couldn't be used. Try another JPEG, PNG or WebP photo."],
+      ["it's too large", { status: 413, body: { error: { code: "quota_exceeded", message: "That photo is too large", reason: "photo_too_large" } } }, "That photo is too large to save. Zoom in a little, or try another photo."],
       ["the photo didn't go", { abort: true }, "Couldn't save your photo. Check your connection and try again."],
     ];
     for (const [what, answer, message] of refusals) {

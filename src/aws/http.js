@@ -24,9 +24,8 @@ export async function request(url, init, { timeout = TIMEOUT, signal } = {}) {
     // The timeout covers the body too: a body that stalls rejects, rather than reading as null
     const body = await res.json().catch(() => { if (abort.signal.aborted) throw gone(); return null; });
     if (res.ok) return body;
-    // API Gateway's own 401 is {"message":"Unauthorized"}, with no error code. A bare code
-    // ({"error":"photo_invalid"}, the profile photo routes) is the code.
-    const raw = body && body.error, err = typeof raw === "string" ? { code: raw } : raw || {};
+    // API Gateway's own 401 is {"message":"Unauthorized"}, with no error code
+    const err = (body && body.error) || {};
     throw { code: err.code || (res.status === 401 ? "unauthenticated" : "internal"), message: err.message || `HTTP ${res.status}`, status: res.status, ...(err.reason ? { reason: err.reason } : {}) };
   } finally { clearTimeout(timer); signal?.removeEventListener("abort", stop); }
 }
