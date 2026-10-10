@@ -1,5 +1,5 @@
 import { test, expect, openApp } from "./helpers.js";
-import { modal, waitUntilConnected, goToInventory, openProject, addToProject, startAddItem, inventoryRow, uploadReceipt, addItem, fillItem, saveItem } from "./ui/index.js";
+import { modal, waitUntilConnected, goToInventory, openProject, addToProject, startAddItem, inventoryRow, openItem, uploadReceipt, addItem, fillItem, saveItem } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 
 const openInventory = async (page, opts = {}) => {
@@ -68,6 +68,30 @@ test("edits an item's name, price and count", { tag: ["@J2.3"] }, async ({ page 
 
   await inventoryRow(page, "Paper towels").click();
   await expect(modal(page)).toContainText("Barcode SKU1");
+  await modal(page).getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator("#overlay")).toBeHidden();
+});
+
+// The journeys' openItem (supply-checkout-o60.21): morph() keeps a row element by its position, so
+// an item added above the row as it's tapped leaves the tapped element showing that item, and the
+// tap opens it. Here the first tap's row is rebound the way morph() does it.
+test("openItem opens the item's own form when its row is rebound to another item under the tap", { tag: ["@J2.3"] }, async ({ page }) => {
+  await openInventory(page);
+  await page.evaluate(() => {
+    window.rowTaps = 0;
+    document.querySelector("#main").addEventListener("click", (e) => {
+      const tr = e.target.closest("tr[data-prod]");
+      if (!tr || window.rowTaps++) return;
+      // Rebound for the first tap, and back to its own item at the next redraw
+      const own = tr.dataset.prod;
+      tr.dataset.prod = "SKU1";
+      setTimeout(() => { tr.dataset.prod = own; }, 0);
+    }, { capture: true });
+  });
+  // The first tap opens Paper towels; it's cancelled, and the row tapped again
+  await openItem(page, "Storage bins, 12 qt");
+  expect(await page.evaluate(() => window.rowTaps)).toBe(2);
+  await expect(modal(page)).toContainText("No barcode");
   await modal(page).getByRole("button", { name: "Cancel" }).click();
   await expect(page.locator("#overlay")).toBeHidden();
 });

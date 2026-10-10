@@ -8,7 +8,7 @@
 // on the page. If the run dies before that, cleanup (scripts/journeys/cleanup.mjs) puts a sentinel
 // markup back to the journey teams' baseline, and so does the next run of this test.
 import { MARKUP_SENTINEL, BASELINE_MARKUP } from "../../scripts/journeys/lib/settings.mjs";
-import { fillItem, goToInventory, inventoryRow, modal, saveItem, startAddItem } from "../ui/index.js";
+import { fillItem, goToInventory, inventoryRow, modal, openItem, saveItem, startAddItem } from "../ui/index.js";
 import { expect, test } from "./fixtures.mjs";
 import { apiCall, openTeam, runData, watchBearer } from "./steps.mjs";
 
@@ -41,13 +41,13 @@ test("the owner adds, edits and deletes an item, imports a CSV, and sets the equ
   });
 
   await test.step("J2.3 Edit the item by tapping its row, then delete it", async () => {
-    await inventoryRow(page, added.name).click();
-    await expect(modal(page).getByRole("heading", { name: "Edit item" })).toBeVisible();
+    // Its own row's form, not another test's item that moved under the tap (openItem)
+    await openItem(page, added.name);
     await modal(page).getByLabel("Item name").fill(added.renamed);
     await modal(page).getByLabel("Price each ($)").fill("5");
     await saveItem(page);
     await expect(inventoryRow(page, added.renamed).locator("td").nth(2)).toHaveText("$5.00");
-    await inventoryRow(page, added.renamed).click();
+    await openItem(page, added.renamed);
     await modal(page).getByRole("button", { name: "Delete", exact: true }).click();
     await modal(page).getByRole("button", { name: "Tap to delete", exact: true }).click();
     await expect(page.locator("#toast")).toHaveText("Item deleted");
