@@ -338,7 +338,7 @@ check_release_base() {
     echo "${head:0:7} only changed the beads export, so its CI skipped the tests: going by main's newest code commit's run."
     while :; do
       verdict="$(main_verdict any)"
-      [ "${verdict%% *}" = "pending" ] && [ "$tries" -lt "$main_ci_tries" ] || break
+      if [ "${verdict%% *}" != "pending" ] || [ "$tries" -ge "$main_ci_tries" ]; then break; fi
       if [ "$tries" -eq 0 ]; then echo "Waiting up to $(( main_ci_poll * main_ci_tries / 60 )) minutes for it: $(cut -d' ' -f4 <<< "$verdict")"; fi
       sleep "$main_ci_poll"; tries=$((tries + 1))
     done
