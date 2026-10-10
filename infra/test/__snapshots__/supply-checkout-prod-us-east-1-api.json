@@ -960,6 +960,31 @@
               "Sid": "PutAccountDeletionRecords"
             },
             {
+              "Action": [
+                "s3:DeleteObject",
+                "s3:GetObject",
+                "s3:PutObject"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":s3:::supply-checkout-prod-photos-us-east-1-",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    "/photos/*"
+                  ]
+                ]
+              },
+              "Sid": "ProfilePhotos"
+            },
+            {
               "Action": "dynamodb:GetItem",
               "Condition": {
                 "ForAllValues:StringLike": {
@@ -1086,6 +1111,18 @@
               "Ref": "SsmParameterValuesupplycheckoutprodidentityissuerurlC96584B6F00A464EAD1953AFF4B05118Parameter"
             },
             "NODE_OPTIONS": "--enable-source-maps",
+            "PHOTOS_BUCKET": {
+              "Fn::Join": [
+                "",
+                [
+                  "supply-checkout-prod-photos-us-east-1-",
+                  {
+                    "Ref": "AWS::AccountId"
+                  }
+                ]
+              ]
+            },
+            "PHOTOS_REGION": "us-east-1",
             "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
             "SEAT_QUEUE_URL": {
               "Ref": "SeatSyncsQueue518F74A6"
@@ -1301,7 +1338,8 @@
                         "compReason",
                         "compBy",
                         "compAt",
-                        "compMonths"
+                        "compMonths",
+                        "photoId"
                       ]
                     }
                   },
@@ -6906,6 +6944,156 @@
         }
       }
     },
+    "HttpApiPUTmephotoAccountIntegrationPermission07295F83": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/me/photo"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPUTmephoto03AAB534": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "PUT /me/photo",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiDELETEmephotoAccountIntegrationPermission74DEDE26": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/me/photo"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiDELETEmephoto641A7BED": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "DELETE /me/photo",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETteamsteamIdphotosAccountIntegrationPermissionDFACA623": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/photos"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETteamsteamIdphotos83217087": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "GET /teams/{teamId}/photos",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegration84D4E72C": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -8023,6 +8211,18 @@
             "ThrottlingRateLimit": 10,
             "ThrottlingBurstLimit": 20
           },
+          "PUT /me/photo": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
+          },
+          "DELETE /me/photo": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
+          "GET /teams/{teamId}/photos": {
+            "ThrottlingRateLimit": 50,
+            "ThrottlingBurstLimit": 100
+          },
           "POST /teams/{teamId}/billing/checkout": {
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
@@ -8094,6 +8294,8 @@
         }
       },
       "DependsOn": [
+        "HttpApiDELETEmephotoAccountIntegrationPermission74DEDE26",
+        "HttpApiDELETEmephoto641A7BED",
         "HttpApiDELETEmeAccountIntegrationPermission5F54C1A0",
         "HttpApiDELETEme4697CF78",
         "HttpApiDELETEopsteamsteamIdcompOpsIntegrationPermission128F81C2",
@@ -8122,6 +8324,8 @@
         "HttpApiGETteamsteamIdinvitesBB2E6828",
         "HttpApiGETteamsteamIdmembersAccountIntegrationPermission8330B349",
         "HttpApiGETteamsteamIdmembersC3ACF5A2",
+        "HttpApiGETteamsteamIdphotosAccountIntegrationPermissionDFACA623",
+        "HttpApiGETteamsteamIdphotos83217087",
         "HttpApiGETteamsteamIdreceiptsusageReceiptsIntegrationPermissionEC7391CE",
         "HttpApiGETteamsteamIdreceiptsusage11D88952",
         "HttpApiPATCHmepreferencesAccountIntegrationPermission3918B86B",
@@ -8176,6 +8380,8 @@
         "HttpApiPOSTteamsteamIdreopen4AB88F46",
         "HttpApiPOSTteamsAccountIntegrationPermission37B4CDE2",
         "HttpApiPOSTteams93EBE9A5",
+        "HttpApiPUTmephotoAccountIntegrationPermission07295F83",
+        "HttpApiPUTmephoto03AAB534",
         "HttpApiPUTopsteamsteamIdcompOpsIntegrationPermissionE8BE1B52",
         "HttpApiPUTopsteamsteamIdcomp5FBD7388"
       ]

@@ -167,6 +167,9 @@ describe("HTTP API routes", () => {
       "POST /me/mfa/totp/verify": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /me/sign-out-everywhere": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "PATCH /me/preferences": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
+      "PUT /me/photo": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "DELETE /me/photo": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "GET /teams/{teamId}/photos": { ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100 },
       "POST /teams/{teamId}/billing/checkout": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /teams/{teamId}/billing/portal": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "GET /teams/{teamId}/billing/invoices": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
@@ -394,6 +397,8 @@ describe("data-access role (LeadingKeys)", () => {
     const owned = [...BILLING_UPDATE_ATTRIBUTES, ...COMP_ATTRIBUTES, ...CUSTOMER_LINK_TEAM_ATTRIBUTES, ...LAPSE_CLOSE_ATTRIBUTES, ...TEAM_PURGE_MARK_ATTRIBUTES, ...REOPEN_ATTRIBUTES];
     for (const attribute of owned) if (!sharedWithData.includes(attribute)) expect(DATA_ROLE_DENIED_ATTRIBUTES).toContain(attribute);
     for (const attribute of ["plan", "seats", "owners", "members", "homeRegion", "trialEndsAt", "test"]) expect(DATA_ROLE_DENIED_ATTRIBUTES).toContain(attribute);
+    // A member's profile photo ID: only the account function sets it (supply-checkout-6uw.30)
+    expect(DATA_ROLE_DENIED_ATTRIBUTES).toContain("photoId");
     // The checklist (data/checklist.ts) and the projects, products and settings items
     for (const attribute of [...sharedWithData, "checklistStartedAt", "checklistReceipt", "checklistDone", "equipmentMarkup", "updatedAt", "updatedBy", "stock", "date", "items"]) {
       expect(DATA_ROLE_DENIED_ATTRIBUTES).not.toContain(attribute);
@@ -502,7 +507,7 @@ describe("account-access role (LeadingKeys)", () => {
     ]);
   });
 
-  it("lets the account function put account deletion records, in the primary region's bucket, and no other function touch S3", () => {
+  it("lets the account function put account deletion records and put, get and delete profile photos, in the primary region's buckets, and no other function touch S3", () => {
     for (const region of [EAST, WEST]) {
       const { template } = api(region);
       const s3 = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>
@@ -519,11 +524,23 @@ describe("account-access role (LeadingKeys)", () => {
             Condition: { Null: { "s3:if-none-match": "false" } },
           },
         ],
+        [
+          expect.stringMatching(/^AccountFunctionRole/),
+          {
+            // Profile photos (supply-checkout-6uw.30): under photos/ only, no ListBucket, no other action
+            Sid: "ProfilePhotos",
+            Effect: "Allow",
+            Action: ["s3:DeleteObject", "s3:GetObject", "s3:PutObject"],
+            Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-photos-${EAST}-`, { Ref: "AWS::AccountId" }, "/photos/*"]] },
+          },
+        ],
       ]);
       const fn = resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("AccountFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> };
       expect(fn.Variables).toMatchObject({
         DELETIONS_BUCKET: { "Fn::Join": ["", [`supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] },
         DELETIONS_REGION: EAST,
+        PHOTOS_BUCKET: { "Fn::Join": ["", [`supply-checkout-prod-photos-${EAST}-`, { Ref: "AWS::AccountId" }]] },
+        PHOTOS_REGION: EAST,
       });
       // Neither the account-access role nor any other role reaches the bucket
       const roles = resources(template, "AWS::IAM::Role").filter(([, r]) => JSON.stringify(r.Properties).includes("s3:"));

@@ -49,6 +49,10 @@ export type ErrorCode =
  * response has Retry-After), `model_busy` (the model
  * service is throttling), `model_timeout` (no answer in time) and
  * `invalid_output` (the model's reply couldn't be used).
+ * Profile photos (supply-checkout-6uw.30): `photo_invalid` (400: not a
+ * 256×256 baseline or progressive JPEG), `photo_too_large` (413: over 64 KB,
+ * or the body over its limit) and `photo_limit` (429: the caller's uploads
+ * for the UTC day are used up).
  */
 export type ErrorReason =
   | "view_only"
@@ -81,7 +85,10 @@ export type ErrorReason =
   | "rate_limited"
   | "model_busy"
   | "model_timeout"
-  | "invalid_output";
+  | "invalid_output"
+  | "photo_invalid"
+  | "photo_too_large"
+  | "photo_limit";
 
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {

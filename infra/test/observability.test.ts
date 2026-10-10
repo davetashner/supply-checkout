@@ -37,6 +37,8 @@ import { rumAppMonitorName } from "../lib/web/rum.js";
 import { webOutputParameters } from "../lib/stacks/web-stack.js";
 import { LAPSE_LIST_ATTRIBUTES, LAPSE_READ_ATTRIBUTES, LAPSE_RECORD_ATTRIBUTES, OPERATOR_AUDIT_HEARTBEAT } from "../../backend/src/data/schema.js";
 import { DELETION_PREFIXES, LIFECYCLE_EXPIRATION } from "../../backend/src/deletions/names.js";
+import { PHOTOS_METRICS_ID } from "../../backend/src/photos/names.js";
+import { PHOTOS_DOWNLOAD_ALARM_BYTES } from "../lib/observability/photos-alarm.js";
 import {
   CHECK_EVERY_MINUTES,
   GROUP_WATCH_EVERY_MINUTES,
@@ -633,7 +635,7 @@ describe("journey alarms (docs/journeys.md)", () => {
       // The purge's own alarm is with the purge, and the operator audit and group watches' are with the watches, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
-        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running", "supply-checkout-prod-p2-lapse-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|support-smtp|site-down|web-router|ops-page-down|ops-router|rum-events/.test(String(a.AlarmName)));
+        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running", "supply-checkout-prod-p2-lapse-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|photo-downloads|support-smtp|site-down|web-router|ops-page-down|ops-router|rum-events/.test(String(a.AlarmName)));
       const specs = journeyAlarmSpecs(r, "t", "api", "prod").filter((s) => r === config.primaryRegion || !s.primaryOnly);
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -3045,6 +3047,37 @@ describe("deletion records watch (supply-checkout-72d.16)", () => {
       Resource: { Ref: expect.stringMatching(/^AlarmTopicsP1/) },
       Condition: { ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": [id, "Arn"] } } },
     });
+  });
+});
+
+describe("profile photo downloads (supply-checkout-6uw.30)", () => {
+  it("alarms P2 on more than 5 GiB downloaded from photos/ in an hour, from the bucket's one request metrics filter, primary region only, on the dashboard", () => {
+    const t = observability();
+    const alarm = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties).find((a) => a.AlarmName === "supply-checkout-prod-p2-photo-downloads-high");
+    expect(alarm).toMatchObject({
+      Namespace: "AWS/S3",
+      MetricName: "BytesDownloaded",
+      Dimensions: [
+        { Name: "BucketName", Value: { "Fn::Join": ["", [`supply-checkout-prod-photos-${EAST}-`, { Ref: "AWS::AccountId" }]] } },
+        { Name: "FilterId", Value: PHOTOS_METRICS_ID },
+      ],
+      Statistic: "Sum",
+      Period: 3600,
+      Threshold: PHOTOS_DOWNLOAD_ALARM_BYTES,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+    });
+    expect(PHOTOS_DOWNLOAD_ALARM_BYTES).toBe(5 * 1024 ** 3);
+    expect(alarm?.AlarmDescription).toContain("docs/observability.md, Profile photo downloads high");
+    expect(alarm?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
+    expect(JSON.stringify(Object.values(t.findResources("AWS::CloudWatch::Dashboard"))[0])).toMatch(/"PhotosDownloadsHigh[0-9A-F]+","Arn"/);
+    const west = Object.values(Template.fromStack(build().region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
+    expect(west.filter((n) => n.includes("photo"))).toEqual([]);
+    // The filter it reads is the bucket's only request metrics configuration
+    const buckets = Object.entries(Template.fromStack(build().region(EAST).data).findResources("AWS::S3::Bucket"));
+    expect(buckets.filter(([, b]) => b.Properties.MetricsConfigurations).map(([id, b]) => [id.replace(/[0-9A-F]{8}$/, ""), b.Properties.MetricsConfigurations])).toEqual([
+      ["PhotosBucket", [{ Id: PHOTOS_METRICS_ID, Prefix: "photos/" }]],
+    ]);
   });
 });
 

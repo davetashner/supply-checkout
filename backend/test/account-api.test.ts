@@ -288,7 +288,7 @@ describe("GET /me", () => {
     const created = (await create(PAT, "Bravo Co", "pat-team-1")).body.team;
     const { status, body } = await call("GET", "/me", { user: PAT });
     expect(status).toBe(200);
-    expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null } });
+    expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null }, photoUrl: null });
     expect(body.teams).toEqual([
       created,
       { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, reopenBy: null, comp: null, subscriptionEnded: false, readOnlyReason: null, readOnlyDeletesAt: null, readOnlyLastDay: null, paymentGraceEndsAt: null, billingAccount: false, cancelsAt: null, members: 2, memberCap: MEMBERS_PER_TRIAL_TEAM, checklist: null },
@@ -323,7 +323,7 @@ describe("GET /me", () => {
   it("shows a new user no teams and no invites", async () => {
     expect(await call("GET", "/me", { user: MALLORY })).toEqual({
       status: 200,
-      body: { user: { id: MALLORY, email: "mallory@example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null } }, teams: [], invites: [] },
+      body: { user: { id: MALLORY, email: "mallory@example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null }, photoUrl: null }, teams: [], invites: [] },
     });
   });
 
@@ -470,7 +470,7 @@ describe("verifying the caller's email address", () => {
       verifiedAt: new Date(now).toISOString(),
     });
     const me = (await call("GET", "/me", { user: UNVERIFIED })).body;
-    expect(me.user).toEqual({ id: UNVERIFIED, email: "pat@example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null } });
+    expect(me.user).toEqual({ id: UNVERIFIED, email: "pat@example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null }, photoUrl: null });
     expect(me.invites).toHaveLength(1);
     // Neither the code nor the token is logged
     expect(JSON.stringify(logs)).not.toMatch(/123456|654321|token-|pat@/);
@@ -1024,7 +1024,7 @@ describe("members' names (supply-checkout-lx7)", () => {
     // Never under `name`, which the operators' index and the billing roles may read
     expect(memberOf(id, MALLORY)).not.toHaveProperty("name");
     const members = (await call("GET", `/teams/${id}/members`, { user: MALLORY })).body.members;
-    expect(members).toEqual([{ userId: MALLORY, name: "Mallory Mop", email: "mallory@example.com", role: "owner", joinedAt: new Date(now).toISOString() }]);
+    expect(members).toEqual([{ userId: MALLORY, name: "Mallory Mop", email: "mallory@example.com", role: "owner", joinedAt: new Date(now).toISOString(), photoUrl: null }]);
   });
 
   it("stores no name for someone without one, and lists theirs as null", async () => {

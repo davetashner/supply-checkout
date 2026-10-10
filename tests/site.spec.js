@@ -11,7 +11,7 @@ import { RUM_REGION } from "./fake-aws.js";
 
 
 const ORIGIN = "https://site.supply-checkout.test";
-const CSP = contentSecurityPolicy({ api: "api.supplycheckout.com", realtime: "realtime.supplycheckout.com", auth: "auth.supplycheckout.com", rumRegion: RUM_REGION });
+const CSP = contentSecurityPolicy({ api: "api.supplycheckout.com", realtime: "realtime.supplycheckout.com", auth: "auth.supplycheckout.com", rumRegion: RUM_REGION, photos: `supply-checkout-prod-photos-${RUM_REGION}-000000000000.s3.${RUM_REGION}.amazonaws.com` });
 const files = builtFiles(SITE);
 const CLIPS = JSON.parse(readFileSync(new URL("../site/clips/clips.json", import.meta.url), "utf8")).clips;
 

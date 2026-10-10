@@ -581,7 +581,7 @@ describe("deleting an account", () => {
     expect(counts).toMatchObject({ [BusinessMetric.AccountsDeleted]: 1, [BusinessMetric.TeamsClosed]: 1 });
     // The deletion record: Pat's ID, when, and the team the deletion closed. No address or name
     expect(deletions.records).toEqual([{ kind: "user", id: PAT, deletedAt: new Date(NOW).toISOString(), teamsClosed: ["team-solo"] }]);
-    expect(logs).toContainEqual(["info", "Account deleted", { userId: PAT, teamsLeft: 3, teamsClosed: 1, invitesDeleted: 2, rowsDeleted: 5 }]);
+    expect(logs).toContainEqual(["info", "Account deleted", { userId: PAT, teamsLeft: 3, teamsClosed: 1, invitesDeleted: 2, photosDeleted: 0, rowsDeleted: 5 }]);
     // No addresses or team names in any log line
     expect(JSON.stringify(logs)).not.toMatch(/@|Team /);
     // Every session was for Pat, and reached only Pat's teams and the teams that invited Pat's verified address

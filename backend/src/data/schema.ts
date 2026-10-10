@@ -330,6 +330,9 @@ export const COMP_MONTHS = "compMonths";
  * `createdAt`, `type`, `version`, `teamId` and GSI keys aren't, because
  * projects and other items use them too, and the checklist's update conditions
  * on `closedAt`. Those stay protected by the data layer alone.
+ *
+ * Also `photoId`, on MEMBER items (supply-checkout-6uw.30): only the account
+ * function sets it, and the team's /photos route presigns what it names.
  */
 export const DATA_ROLE_DENIED_ATTRIBUTES = [
   "plan",
@@ -358,6 +361,7 @@ export const DATA_ROLE_DENIED_ATTRIBUTES = [
   "purging",
   ...COMP_FIELDS,
   COMP_MONTHS,
+  "photoId",
 ] as const;
 
 /**
@@ -640,6 +644,15 @@ export const PASSWORD_RESET_RECORD_ATTRIBUTES = [PK, SK, "passwordResetAt"] as c
  * `LIMIT#` key, so deleting an account removes it.
  */
 export const PREFERENCES_SK = "PREFERENCES";
+
+/**
+ * The sort key of the item in a user's own `USER#<sub>` partition that names
+ * their profile photo (supply-checkout-6uw.30, photos.ts): the current
+ * photo's ID, and the IDs of photos whose objects may still be in the bucket
+ * and are to be deleted. Not a `LIMIT#` key, so deleting an account removes
+ * it (after its photos, api/account-handler.ts).
+ */
+export const PHOTO_SK = "PHOTO";
 
 /**
  * The only attributes the billing-access role may name in the caller's own

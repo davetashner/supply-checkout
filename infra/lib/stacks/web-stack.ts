@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { Annotations, Duration, Validations } from "aws-cdk-lib";
+import { Annotations, Aws, Duration, Validations } from "aws-cdk-lib";
 import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import {
   AllowedMethods,
@@ -29,6 +29,7 @@ import type { Construct } from "constructs";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { contentSecurityPolicy } from "../web/content-security-policy.js";
+import { photosBucketName, photosHost } from "../../../backend/src/photos/names.js";
 import { opsContentSecurityPolicy } from "../web/ops-content-security-policy.js";
 import { WebPublisher } from "../web/publisher.js";
 import { RealUserMonitoring } from "../web/rum.js";
@@ -209,7 +210,7 @@ export class WebStack extends SupplyCheckoutStack {
       comment: "CSP, HSTS and the other security headers for the web app",
       securityHeadersBehavior: {
         contentSecurityPolicy: {
-          contentSecurityPolicy: contentSecurityPolicy({ ...names, rumRegion: this.region }),
+          contentSecurityPolicy: contentSecurityPolicy({ ...names, rumRegion: this.region, photos: photosHost(photosBucketName(config.envName, config.primaryRegion, Aws.ACCOUNT_ID), config.primaryRegion) }),
           override: true,
         },
         strictTransportSecurity: {

@@ -77,6 +77,7 @@ export * from "./two-step.js";
 export * from "./password-reset-time.js";
 export * from "./welcome.js";
 export * from "./preferences.js";
+export * from "./photos.js";
 export { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 export { audienceChangeFromStream, documentChangeFromStream, type DocumentChange } from "./changes.js";
 export { liveUpdateRecipients } from "./live-audience.js";
