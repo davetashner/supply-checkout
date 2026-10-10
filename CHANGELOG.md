@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.11.1](https://github.com/davetashner/supply-checkout/compare/v1.11.0...v1.11.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* remove the sheets aliases after the projects rename window ([#733](https://github.com/davetashner/supply-checkout/issues/733)) ([de77138](https://github.com/davetashner/supply-checkout/commit/de771387a65b86be05e8241e4b5e493dd2abfe0a))
+
+
+### Tests
+
+* give the team's own clock to authorizeTeam in the ops-index and restore tests ([#731](https://github.com/davetashner/supply-checkout/issues/731)) ([2478167](https://github.com/davetashner/supply-checkout/commit/2478167109af917a10cdecedc9b9a2faec367171))
+
 ## [1.11.0](https://github.com/davetashner/supply-checkout/compare/v1.10.0...v1.11.0) (2026-10-10)
 
 
