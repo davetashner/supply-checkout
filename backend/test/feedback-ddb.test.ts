@@ -8,6 +8,10 @@ import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
   acceptInvite,
+  dismissOpsFeedback,
+  getOpsFeedback,
+  listOpsFeedback,
+  recordOpsFeedbackBead,
   CLOSED_TEAM_RETENTION_DAYS,
   closeTeam,
   createInvite,
@@ -211,5 +215,27 @@ describe.skipIf(!endpoint)("reports on DynamoDB Local", () => {
     const other = await team(now);
     await expect(dismissFeedback(table.db, other.teamId, b.reportId)).rejects.toBeInstanceOf(NotFoundError);
     expect(await getFeedback(table.db, other.teamId, b.reportId)).toBeUndefined();
+  });
+
+  it("the operator page's routes: the same reports, each change in one transaction with its audit in the operators' partition (supply-checkout-3sv.26)", async () => {
+    const now = new Date("2026-10-09T10:00:00.000Z");
+    const op = { sub: "ddb-operator" };
+    const t = await team(now);
+    const a = await sendFeedback(table.db, t.viewer, input("Triage me from the page", { contactOk: true }), "ddb-ops-00000001", now);
+    const b = await sendFeedback(table.db, t.owner, input("Dismiss me from the page"), "ddb-ops-00000002", now);
+    const listed = await listOpsFeedback(table.db, op, { limit: 100 }, now);
+    expect(listed.items.map((r) => r.reportId)).toEqual(expect.arrayContaining([a.reportId, b.reportId]));
+    expect(await getOpsFeedback(table.db, op, t.teamId, a.reportId, now)).toMatchObject({ message: "Triage me from the page", contactOk: true });
+    const recorded = await recordOpsFeedbackBead(table.db, op, t.teamId, a.reportId, { beadId: "supply-checkout-abc.9", idempotencyKey: "ddb-ops-record-1" }, now);
+    expect(recorded).toMatchObject({ eventId: expect.any(String), replayed: false, report: { status: "triaged", beadId: "supply-checkout-abc.9" } });
+    // A retry with the same key replays; the CLI's read agrees
+    expect(await recordOpsFeedbackBead(table.db, op, t.teamId, a.reportId, { beadId: "supply-checkout-abc.9", idempotencyKey: "ddb-ops-record-1" }, now)).toMatchObject({ eventId: recorded.eventId, replayed: true });
+    expect(await getFeedback(table.db, t.teamId, a.reportId)).toMatchObject({ status: "triaged", beadId: "supply-checkout-abc.9" });
+    await expect(dismissOpsFeedback(table.db, op, t.teamId, a.reportId, { reason: "Changed my mind", idempotencyKey: "ddb-ops-dismiss-1" }, now)).rejects.toBeInstanceOf(ConflictError);
+    const dismissed = await dismissOpsFeedback(table.db, op, t.teamId, b.reportId, { reason: "Works as designed", idempotencyKey: "ddb-ops-dismiss-2" }, now);
+    expect(dismissed.report).toMatchObject({ status: "dismissed", dismissReason: "Works as designed" });
+    const audits = (await partition("OPAUDIT#PLATFORM")).filter((i) => String(i.target).startsWith(`feedback/${t.teamId}/`));
+    expect(audits.map((i) => i.action).sort()).toEqual(["ops.feedback.dismiss", "ops.feedback.email", "ops.feedback.record"]);
+    expect(await partition(`OPAUDIT#${t.teamId}`)).toEqual([]);
   });
 });

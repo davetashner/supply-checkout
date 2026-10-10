@@ -11,6 +11,7 @@ import { createOpsHandler } from "./ops-handler.js";
 import { opsScopedDbs } from "./ops-db.js";
 import { lambdaReopener } from "./reopen-client.js";
 import { opsStripeClient } from "./stripe-detail.js";
+import { reporterEmailLookup } from "./reporter-email.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -31,6 +32,8 @@ export const handler = withObservability(
     // The ops restricted key, never the billing functions' (stripe-detail.ts): read on first use, so a
     // missing secret only makes a team's Stripe detail unavailable
     stripe: opsStripeClient({ secretId: required(OPS_STRIPE_ENV.secretId), mode: stripeModeFrom(process.env[STRIPE_ENV.mode]), read: secretsManagerReader(process.env.AWS_REGION), create: createStripe }),
+    // The app pool, for a report's sender's verified email (AdminGetUser only)
+    reporterEmail: reporterEmailLookup({ region: required("AWS_REGION"), userPoolId: required(API_ENV.appUserPoolId) }),
     issuerUrl,
     clientId: required(API_ENV.opsClientId),
     obs,

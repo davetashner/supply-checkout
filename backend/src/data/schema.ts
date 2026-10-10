@@ -268,6 +268,23 @@ export const FEEDBACK_ATTRIBUTES = [
   TTL_ATTRIBUTE,
 ] as const;
 
+/**
+ * What the ops function may read of a report (supply-checkout-3sv.26):
+ * GetItem in `FEEDBACK#<tagged team>` and Query of GSI1's
+ * `FEEDBACK#STATUS#*` partitions, naming only these (dynamodb:Attributes,
+ * with a projection required). The report as stored, with its triage fields;
+ * no item in those partitions has anything else.
+ */
+export const FEEDBACK_READ_ATTRIBUTES = [...FEEDBACK_ATTRIBUTES, "statusAt", "dismissReason"] as const;
+
+/**
+ * The only attributes the ops function may name when it triages or dismisses
+ * a report (UpdateItem in `FEEDBACK#<tagged team>`): the keys and type its
+ * condition names, the status and its index partition, and the triage fields.
+ * Never the report's text, its sender or its expiry.
+ */
+export const FEEDBACK_STATUS_ATTRIBUTES = [PK, SK, GSI1PK, "type", "status", "beadId", "statusAt", "dismissReason"] as const;
+
 /** The only attributes a request may name in an `INVITELIMIT#` partition: the keys, the count, its item type and its expiry. */
 export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;
 

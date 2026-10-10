@@ -109,6 +109,10 @@ describe("OpenAPI description", () => {
       { $ref: "#/components/schemas/ReopenRecord" },
       { $ref: "#/components/schemas/TeamsListRecord" },
       { $ref: "#/components/schemas/ReceiptUsageRecord" },
+      { $ref: "#/components/schemas/FeedbackListRecord" },
+      { $ref: "#/components/schemas/FeedbackReadRecord" },
+      { $ref: "#/components/schemas/FeedbackStatusBefore" },
+      { $ref: "#/components/schemas/FeedbackStatusRecord" },
       { type: "null" },
     ]);
     // Each shape is closed and fully required, so exactly one matches any recorded value (backend/test/ops-api.test.ts checks real ones)
@@ -131,4 +135,8 @@ const AUDIT_RECORD_SHAPES: Record<string, string[]> = {
   ReopenRecord: ["closedAt", "purgeAfter"],
   TeamsListRecord: ["q", "cursor", "teams"],
   ReceiptUsageRecord: ["month", "teams"],
+  FeedbackListRecord: ["status", "cursor", "reports"],
+  FeedbackReadRecord: ["status", "emailLookup"],
+  FeedbackStatusBefore: ["status"],
+  FeedbackStatusRecord: ["status", "beadId"],
 };

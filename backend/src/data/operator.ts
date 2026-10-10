@@ -28,6 +28,8 @@ import { gsi3, id, keys, month, operatorAuditPartition, operatorKeys, opsAuditIn
 import { type Comp, MEMBERS_PER_TEAM, liveComp } from "./model.js";
 import { type Page, decodeCursor, encodeCursor, queryPage } from "./query.js";
 import { type StuckImport, listStuckImports } from "./imports.js";
+import { FEEDBACK_STATUSES, type FeedbackReport, type FeedbackStatus } from "./feedback.js";
+import { type ApplyFeedbackUpdate, type FeedbackStatusChange, changeFeedbackStatus, DISMISS_REASON_MAX, dismissReasonProblem, feedbackBeadId, feedbackDismissReason, getFeedback, listFeedback } from "./feedback-owner.js";
 import { COMMITTING_IMPORTS_PARTITION, GSI3, GSI3PK, OPERATOR_AUDIT_PREFIX, OPS_TEAMS_PARTITION, PK } from "./schema.js";
 
 /** A signed-in operator, verified by the ops function: their `sub` in the operator pool. */
@@ -88,7 +90,12 @@ export type OperatorAction =
   | "ops.comp.end"
   | "ops.comp.discount"
   | "ops.import.clear"
-  | "ops.team.reopen";
+  | "ops.team.reopen"
+  | "ops.feedback.list"
+  | "ops.feedback.read"
+  | "ops.feedback.email"
+  | "ops.feedback.record"
+  | "ops.feedback.dismiss";
 
 /**
  * Who the audit names for what the billing worker did after an operator's
@@ -385,7 +392,15 @@ async function findTeam(db: Db, teamId: string): Promise<OpsTeam | undefined> {
 export function auditItem(
   operator: Operator,
   teamId: string,
-  input: { readonly action: OperatorAction; readonly reason?: string; readonly before?: Record<string, unknown> | null; readonly after?: Record<string, unknown> | null; readonly idempotencyKey?: string },
+  input: {
+    readonly action: OperatorAction;
+    readonly reason?: string;
+    readonly before?: Record<string, unknown> | null;
+    readonly after?: Record<string, unknown> | null;
+    readonly idempotencyKey?: string;
+    /** What it acted on, when that isn't the team (or the team list): `feedback/<teamId>/<reportId>`. */
+    readonly target?: string;
+  },
   now: Date,
 ): OperatorAuditEvent & Record<string, unknown> {
   const ts = now.toISOString();
@@ -399,7 +414,7 @@ export function auditItem(
     teamId,
     operatorSub: operatorSub(operator),
     action: input.action,
-    target: teamId === PLATFORM_AUDIT ? "teams" : `team/${teamId}`,
+    target: input.target ?? (teamId === PLATFORM_AUDIT ? "teams" : `team/${teamId}`),
     ...(input.reason === undefined ? {} : { reason: input.reason }),
     ...(input.before === undefined ? {} : { before: input.before }),
     ...(input.after === undefined ? {} : { after: input.after }),
@@ -474,6 +489,9 @@ interface OperatorUpdate {
   readonly ExpressionAttributeValues: Record<string, unknown>;
 }
 
+/** An operator change's own condition failed (the item isn't as the change needs it): a ConflictError. */
+class UpdateConditionFailed extends ConflictError {}
+
 /**
  * Runs one operator change: `update` on one item in the team's partition,
  * its audit item and the request's idempotency record, all in one
@@ -495,12 +513,13 @@ async function auditedUpdate<T extends { readonly eventId: string; readonly repl
     readonly update: OperatorUpdate;
     readonly outcome: (eventId: string) => T;
     readonly changed: string;
+    readonly target?: string;
   },
   now: Date,
 ): Promise<T> {
   const request = operatorKeys.request(teamId, keyHash(operator, teamId, input.action, input.key));
   const hash = bodyHash(input.body);
-  const audit = auditItem(operator, teamId, { action: input.action, reason: input.reason, before: input.before, after: input.after, idempotencyKey: input.key }, now);
+  const audit = auditItem(operator, teamId, { action: input.action, reason: input.reason, before: input.before, after: input.after, idempotencyKey: input.key, target: input.target }, now);
   const outcome = input.outcome(audit.eventId);
   const epoch = Math.floor(now.getTime() / 1000);
   try {
@@ -530,7 +549,7 @@ async function auditedUpdate<T extends { readonly eventId: string; readonly repl
       if (done) return done;
       throw new ConflictError("This Idempotency-Key was already used for a different request");
     }
-    if (codes[0] === "ConditionalCheckFailed") throw new ConflictError(input.changed);
+    if (codes[0] === "ConditionalCheckFailed") throw new UpdateConditionFailed(input.changed);
     if (codes.includes("TransactionConflict")) throw new ConflictError("It's changing right now; try again");
     throw error;
   }
@@ -1119,4 +1138,169 @@ export async function listOpsReceiptUsage(
     }),
   );
   return { month: m, teams: ranked, teamsRead: teams.length, complete, estimatedCostPerReceiptUsd: ESTIMATED_COST_PER_RECEIPT_USD };
+}
+
+// ----- Reports from Report an issue (supply-checkout-3sv.26) -----
+//
+// The operator page's side of `npm run feedback`, on the same functions
+// (feedback-owner.ts), so the two agree. Every read and change is audited, in
+// the PLATFORM audit partition, never the team's: the team's owners read
+// their team's partition (support actions), and a member's report is that
+// member's note to us, not the team's. The audit names the report
+// (`feedback/<teamId>/<reportId>`), its status and bead, and a dismissal's
+// reason; never the report's text, its sender's email or name.
+//
+// Reads and changes run on the operator-access role, which may read only
+// FEEDBACK_READ_ATTRIBUTES of reports (GSI1's `FEEDBACK#STATUS#*` partitions,
+// and `FEEDBACK#<tagged team>`) and update only FEEDBACK_STATUS_ATTRIBUTES of
+// a report in `FEEDBACK#<tagged team>`.
+
+/** What an audit item names a report by. */
+const feedbackTarget = (teamId: string, reportId: string) => `feedback/${id(teamId, "team ID")}/${id(reportId, "report ID")}`;
+
+/** The least an operator's dismissal reason holds, in characters (the CLI's may be empty; the page always asks for one). */
+export const OPS_DISMISS_REASON_MIN = 3;
+
+/**
+ * One page of the reports in `status` (default `new`), oldest first, for an
+ * operator: listFeedback, audited (`ops.feedback.list`, with the reports'
+ * IDs) before anything is returned.
+ */
+export async function listOpsFeedback(
+  db: Db,
+  operator: Operator,
+  options: { readonly status?: unknown; readonly cursor?: string; readonly limit?: number },
+  now = new Date(),
+): Promise<Page<FeedbackReport>> {
+  operatorSub(operator);
+  const status = options.status ?? "new";
+  if (typeof status !== "string" || !(FEEDBACK_STATUSES as readonly string[]).includes(status)) throw new InvalidInputError("status must be new, triaged or dismissed");
+  const page = await listFeedback(db, { status: status as FeedbackStatus, cursor: options.cursor, limit: options.limit });
+  await connection(db).doc.send(
+    new PutCommand({
+      TableName: db.tableName,
+      Item: auditItem(operator, PLATFORM_AUDIT, { action: "ops.feedback.list", before: null, after: { status, cursor: options.cursor ?? null, reports: page.items.map((r) => `${r.teamId}/${r.reportId}`) }, target: "feedback" }, now),
+      ConditionExpression: "attribute_not_exists(PK)",
+    }),
+  );
+  return page;
+}
+
+/**
+ * One report, for an operator: getFeedback, audited before it's returned. A
+ * report whose sender agreed to be contacted (`contactOk`) is audited as
+ * `ops.feedback.email`, a personal-data read: the ops function then looks up
+ * the sender's verified email, and only after this audit item is written.
+ * Otherwise `ops.feedback.read`. NotFoundError for no such report.
+ */
+export async function getOpsFeedback(db: Db, operator: Operator, teamId: string, reportId: string, now = new Date()): Promise<FeedbackReport> {
+  operatorSub(operator);
+  const target = feedbackTarget(teamId, reportId);
+  const report = await getFeedback(db, teamId, reportId);
+  if (!report) throw new NotFoundError("No such report");
+  const contact = report.contactOk === true;
+  await connection(db).doc.send(
+    new PutCommand({
+      TableName: db.tableName,
+      Item: auditItem(operator, PLATFORM_AUDIT, { action: contact ? "ops.feedback.email" : "ops.feedback.read", before: null, after: { status: report.status, emailLookup: contact }, target }, now),
+      ConditionExpression: "attribute_not_exists(PK)",
+    }),
+  );
+  return report;
+}
+
+/** The result of an operator's triage or dismissal. `eventId` is null when the report was already exactly so, and nothing changed. */
+export interface FeedbackOutcome {
+  readonly eventId: string | null;
+  readonly replayed: boolean;
+  readonly report: FeedbackReport;
+}
+
+async function changeOpsFeedback(
+  db: Db,
+  operator: Operator,
+  teamId: string,
+  reportId: string,
+  input: { readonly action: "ops.feedback.record" | "ops.feedback.dismiss"; readonly key: string; readonly change: FeedbackStatusChange; readonly reason: string },
+  now: Date,
+): Promise<FeedbackOutcome> {
+  const target = feedbackTarget(teamId, reportId);
+  let done: { eventId: string; replayed: boolean } | undefined;
+  // The status change, its audit item and the Idempotency-Key's record, in one transaction
+  const apply: ApplyFeedbackUpdate = async (update) => {
+    try {
+      done = await auditedUpdate<{ eventId: string; replayed: boolean }>(
+        db,
+        operator,
+        PLATFORM_AUDIT,
+        {
+          action: input.action,
+          key: input.key,
+          body: { teamId, reportId, status: input.change.status, beadId: input.change.beadId, reason: input.change.reason },
+          reason: input.reason,
+          before: { status: "new" },
+          after: { status: input.change.status, beadId: input.change.beadId },
+          target,
+          update,
+          outcome: (eventId) => ({ eventId, replayed: false }),
+          changed: "This report isn't new any more",
+        },
+        now,
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof UpdateConditionFailed) return false;
+      throw error;
+    }
+  };
+  const { report, replayed } = await changeFeedbackStatus(db, teamId, reportId, input.change, now, apply);
+  return { eventId: done?.eventId ?? null, replayed: replayed || done?.replayed === true, report };
+}
+
+/**
+ * Records the bead a `new` report became (`triaged`), for an operator, with
+ * the request's Idempotency-Key: the change, its audit (`ops.feedback.record`)
+ * and the key's record in one transaction. The bead must be one of this
+ * project's (BEAD_ID). The report must still be `new` (its status is the
+ * version the change expects): ConflictError naming its status otherwise,
+ * unless it's already triaged with this bead.
+ */
+export async function recordOpsFeedbackBead(
+  db: Db,
+  operator: Operator,
+  teamId: string,
+  reportId: string,
+  input: { readonly beadId: unknown; readonly idempotencyKey: unknown },
+  now = new Date(),
+): Promise<FeedbackOutcome> {
+  operatorSub(operator);
+  const key = requestKey(input.idempotencyKey);
+  const beadId = feedbackBeadId(input.beadId);
+  return changeOpsFeedback(db, operator, teamId, reportId, { action: "ops.feedback.record", key, change: { status: "triaged", beadId, reason: "" }, reason: `bead ${beadId}` }, now);
+}
+
+/**
+ * Dismisses a `new` report, for an operator, with a reason (3 to
+ * DISMISS_REASON_MAX characters on one line, kept on the report as
+ * `dismissReason` and in the audit) and the request's Idempotency-Key, as
+ * recordOpsFeedbackBead does. The reason may not hold an email address or the
+ * report's own words or IDs (dismissReasonProblem), as the CLI refuses.
+ */
+export async function dismissOpsFeedback(
+  db: Db,
+  operator: Operator,
+  teamId: string,
+  reportId: string,
+  input: { readonly reason: unknown; readonly idempotencyKey: unknown },
+  now = new Date(),
+): Promise<FeedbackOutcome> {
+  operatorSub(operator);
+  const key = requestKey(input.idempotencyKey);
+  const reason = feedbackDismissReason(typeof input.reason === "string" ? input.reason.trim() : input.reason);
+  if (Array.from(reason).length < OPS_DISMISS_REASON_MIN) throw new InvalidInputError(`Give a reason: ${OPS_DISMISS_REASON_MIN} to ${DISMISS_REASON_MAX} characters, on one line`);
+  const report = await getFeedback(db, teamId, reportId);
+  if (!report) throw new NotFoundError("No such report");
+  const problem = dismissReasonProblem(reason, report);
+  if (problem) throw new InvalidInputError(problem);
+  return changeOpsFeedback(db, operator, teamId, reportId, { action: "ops.feedback.dismiss", key, change: { status: "dismissed", beadId: "", reason }, reason }, now);
 }

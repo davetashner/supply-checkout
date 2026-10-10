@@ -123,6 +123,9 @@ export function auditChange(e) {
   if (e.action === "ops.import.clear" && after) return `import ${text(after.importId)}`;
   if (e.action === "ops.receipts.usage" && after) return `receipts ${text(after.month)}, ${Array.isArray(after.teams) ? after.teams.length : 0} teams`;
   if (e.action === "ops.team.reopen") return `closed ${text(e.before?.closedAt)} -> open`;
+  if (e.action === "ops.feedback.list" && after) return `reports ${text(after.status)}, ${Array.isArray(after.reports) ? after.reports.length : 0} listed`;
+  if ((e.action === "ops.feedback.read" || e.action === "ops.feedback.email") && after) return `${text(e.target)}${after.emailLookup ? ", email looked up" : ""}`;
+  if ((e.action === "ops.feedback.record" || e.action === "ops.feedback.dismiss") && after) return `${text(e.target)} -> ${text(after.status)}${after.beadId ? ` (${after.beadId})` : ""}`;
   if (after && after.plan) return `-> ${after.plan} until ${date(after.until)}${after.months ? ` (${after.months} months)` : ""}`;
   if (e.action === "ops.comp.end") return "-> none";
   return "";
@@ -213,3 +216,82 @@ export const DISCOUNT_OUTCOMES = {
   no_stripe_customer: "Stripe: no customer, so nothing to discount.",
   not_queued: "Stripe: the discount couldn't be queued now; the nightly reconciliation will make it match.",
 };
+
+// Reports from Report an issue (supply-checkout-3sv.26). Their text is the sender's: shown as
+// text only, never in a URL, a title or the console.
+
+export const FEEDBACK_STATUS_LABELS = { new: "New", triaged: "Triaged", dismissed: "Dismissed" };
+/** A bead of this project, as the API takes it. */
+export const BEAD_ID = /^supply-checkout-[a-z0-9.]{1,48}$/;
+export const DISMISS_REASON_MAX = 200;
+const PREVIEW = 80;
+
+/** `value` on one line, at most `max` characters, with an ellipsis if cut. */
+export function preview(value, max = PREVIEW) {
+  const flat = String(value ?? "").replace(/\s+/g, " ").trim();
+  const chars = Array.from(flat);
+  return chars.length > max ? `${chars.slice(0, max).join("")}…` : flat || "-";
+}
+
+/** A report's status, with its bead or why it was dismissed. */
+export function feedbackStatus(r) {
+  if (r.status === "triaged") return `Triaged${r.beadId ? `: ${r.beadId}` : ""}`;
+  if (r.status === "dismissed") return `Dismissed${r.dismissReason ? `: ${r.dismissReason}` : ""}`;
+  return FEEDBACK_STATUS_LABELS[r.status] ?? text(r.status);
+}
+
+/** A report as one row of the list. */
+export function feedbackRow(r) {
+  return {
+    shortId: text(r.shortId),
+    sent: date(r.createdAt),
+    category: text(r.category),
+    teamId: text(r.teamId),
+    role: text(r.role),
+    build: text(r.context?.build),
+    preview: preview(r.message),
+    status: feedbackStatus(r),
+  };
+}
+
+/** A report's details as label/value pairs (its text is shown on its own). */
+export function feedbackFacts(r) {
+  const context = r.context && typeof r.context === "object" ? r.context : {};
+  return [
+    ["Report", text(r.reportId)],
+    ["Team", text(r.teamId)],
+    ["Status", feedbackStatus(r)],
+    ...(r.statusAt ? [["Status changed", text(r.statusAt)]] : []),
+    ["Sent", text(r.createdAt)],
+    ["Category", text(r.category)],
+    ["From", `${text(r.role)} (user ${text(r.userId)})`],
+    ["App build", text(context.build)],
+    ["Screen", text(context.screen)],
+    ["Browser", text(context.browser)],
+    ["May contact", r.contactOk === true ? "Yes" : "No"],
+  ];
+}
+
+/** What to say about the sender's email, from GET /ops/feedback/{teamId}/{reportId}. */
+export function emailLine(detail) {
+  if (detail?.report?.contactOk !== true) return "The sender didn't agree to be contacted: no email was looked up.";
+  if (typeof detail.email === "string" && detail.email) return `Email (verified): ${detail.email}`;
+  if (detail.emailNote === "not_found") return "Email: no account with this user ID was found here (a deleted account, or one that signs in only with Google or Apple). Look it up with npm run feedback -- show.";
+  if (detail.emailNote === "unverified") return "Email: the account has no verified address we trust.";
+  return "Email: the lookup failed. Open the report again to retry.";
+}
+
+/** The POST .../dismiss body: a reason of 3 to 200 characters on one line, as the API requires. */
+export function dismissBody(form) {
+  const reason = String(form.reason ?? "").trim();
+  if (Array.from(reason).length < 3) throw new InputError("Give a reason (at least 3 characters)");
+  if (Array.from(reason).length > DISMISS_REASON_MAX || CONTROL.test(reason)) throw new InputError(`The reason must be at most ${DISMISS_REASON_MAX} characters, on one line`);
+  return { reason };
+}
+
+/** The POST .../record body: a bead of this project. */
+export function recordBody(form) {
+  const beadId = String(form.beadId ?? "").trim();
+  if (!BEAD_ID.test(beadId)) throw new InputError("Give a bead ID of this project, like supply-checkout-abc.1");
+  return { beadId };
+}
