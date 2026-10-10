@@ -81,6 +81,11 @@ name: Deploy
 # deterministic, so anyone could brute-force the 12-digit account from one. synth seals its
 # hashes into the artifact, and plan hands the apply jobs only HMAC-SHA256(DEPLOY_ASSEMBLY_KEY,
 # hash) (assembly-seal.mjs hmac). scripts/check-deploy-workflow.mjs keeps it so.
+
+# The run's title names the tag ("Deploy v1.2.3", or "Deploy v1.2.3 (dry run)"): npm run land
+# (scripts/land-pr.sh) keeps the release window open until the "Deploy <tag>" run of the release
+# it merged has completed (supply-checkout-pbp.47). Display text only; nothing runs it.
+run-name: ${{ inputs.dry-run && format('Deploy {0} (dry run)', inputs.tag) || format('Deploy {0}', inputs.tag) }}
 on:
   workflow_dispatch:
     inputs:
