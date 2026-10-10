@@ -206,6 +206,16 @@ The mock (`tests/mock-claude.js`) has opt-in failure modes, so tests can reach e
 
 Steps that only click and read the UI (create and open a project, enter a barcode, the checkout and return dialogs, **Finished Return**, the Inventory tab and its Add item form, uploading a receipt, the team switcher) are in `tests/ui/`, imported from `tests/ui/index.js`. They import nothing from the fakes, the mock or the fixtures, so the prod journey suite can use them against the deployed app too ([plan](journey-tests-plan.md#reusing-the-local-tests)); add a step there when a spec needs one that a prod journey will too. `tests/helpers.js` keeps what's local-only: the page fixture, `openApp` and `modalViolations`.
 
+## Fake secrets in tests
+
+This repository is public, so two scanners read every change: `scripts/check-public-safety.mjs` (the pre-commit hook and CI; AWS account and SSO identifiers, email addresses, AWS and Stripe keys) and gitleaks (CI's **Secret scan**, on every commit). A test that needs something shaped like a secret, such as a fake AWS access key the code must refuse, has to get past both. In order of preference:
+
+1. **Build it from parts**, so the source never holds the whole string: `` `AKIA${"ABCDEFGHIJKLMNOP"}` ``, `` `cancel-second-${"sub_test_2"}` ``, or `"test key ".repeat(5)`. Neither scanner sees a match, and nothing needs an exception.
+2. **Allow the line inline**, when the test reads better with the literal: end the line with a comment holding both markers, `// public-safety: allow, gitleaks:allow` (each scanner needs its own). gitleaks (v8, the version CI pins) skips any finding whose line contains `gitleaks:allow`, and the comment travels with the line, so it still covers the line after a squash merge, a rebase or a move.
+3. **Never add a fingerprint to `.gitleaksignore` for new code.** A fingerprint names a commit (`commit:file:rule:line`), so the one for a pull request's commit doesn't cover the squash commit on `main`, and `main`'s scan fails after the merge (#742). The fingerprints already in `.gitleaksignore` stay: they cover commits in history that the full scans (merge queue, pushes to `main`, nightly) still read.
+
+Use either exception only for values that are made up, never for a real one.
+
 ## Browsers that go away mid-test
 
 A test whose page or browser goes away fails with only `Target page, context or browser has been closed`, which doesn't say what happened. So the page fixture in `tests/helpers.js` notes a page crash, a page closed before the test ended, and a disconnected browser, with how many seconds into the test, as a `lifecycle` annotation (in the HTML report and the trace) and a line in the CI log. A page a test closes on purpose (`page.close()` on the fixture's page) gets one too; second pages a test opens itself don't.

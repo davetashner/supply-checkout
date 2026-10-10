@@ -89,7 +89,7 @@ The demo's own code lives in `demo/`, outside `src/`, so the web build doesn't i
 
 `npm run lint` runs ESLint on `src/`, `demo/`, the scripts and the tests, checks the Markdown links, then builds all three and validates their HTML. `npm run check` also runs the public-safety check below and every test suite against both builds.
 
-Run `npm run hooks:install` once per clone. It installs a pre-commit hook (`scripts/git-hooks/pre-commit`) that blocks commits containing AWS account or SSO identifiers, personal email addresses, or credentials, because this repository is public, commits that add merge or patch leftovers (`*.orig`, `*.rej`), and commits that name an AWS region outside `infra/lib/config.ts`.
+Run `npm run hooks:install` once per clone. It installs a pre-commit hook (`scripts/git-hooks/pre-commit`) that blocks commits containing AWS account or SSO identifiers, personal email addresses, or credentials, because this repository is public, commits that add merge or patch leftovers (`*.orig`, `*.rej`), and commits that name an AWS region outside `infra/lib/config.ts`. A test that needs a fake key builds it from parts or allows the line inline ([Fake secrets in tests](docs/testing.md#fake-secrets-in-tests)).
 
 ## AWS
 
