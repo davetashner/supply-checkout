@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.14.0](https://github.com/davetashner/supply-checkout/compare/v1.13.0...v1.14.0) (2026-10-10)
+
+
+### Features
+
+* manage Report an issue feedback in the operator page ([#754](https://github.com/davetashner/supply-checkout/issues/754)) ([64d71f4](https://github.com/davetashner/supply-checkout/commit/64d71f478d8a5ae9e4dc68b795020d3f2dc6e0d9))
+
+
+### Bug Fixes
+
+* pull the year filter's arrow in from the pill's edge ([#751](https://github.com/davetashner/supply-checkout/issues/751)) ([665ae5a](https://github.com/davetashner/supply-checkout/commit/665ae5a1513f0dfa7570844d95683d634e4f0dde))
+* say Loading… while the app starts, not Signing in… ([#753](https://github.com/davetashner/supply-checkout/issues/753)) ([ac3b513](https://github.com/davetashner/supply-checkout/commit/ac3b51320c754cc2fe5cdb04a09d590939fcd4d4))
+
 ## [1.13.0](https://github.com/davetashner/supply-checkout/compare/v1.12.0...v1.13.0) (2026-10-10)
 
 
