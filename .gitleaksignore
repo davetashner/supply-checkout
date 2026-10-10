@@ -9,3 +9,5 @@ abc5933a19f73b804d430ff7c53cfd42df2ad81f:scripts/assembly-seal.test.mjs:generic-
 
 # A made-up AWS access key in a test fixture: the feedback CLI must refuse bead text that contains one (supply-checkout-bmsh.3)
 a743348b15ed20ed99986a7a36bb36b8adf1189a:backend/test/feedback-cli.test.ts:aws-access-token:36
+# The same fixture after the squash merge to main (#739): a fingerprint names the commit, so main's needs its own
+f7712a0ce9d816da2c51a408250ad1575ae43f89:backend/test/feedback-cli.test.ts:aws-access-token:36

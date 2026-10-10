@@ -23,7 +23,9 @@ const expected = (page) => dialog(page).getByLabel("What did you expect?");
 const sendButton = (page) => dialog(page).getByRole("button", { name: /^(Send report|Try again)$/ });
 const summary = (page) => dialog(page).locator("#reportError");
 const seeded = () => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`t1/${k}`, v]));
+// The browser family the app should report on this project: Edge runs on Chromium but sends Edg/
 const family = { chromium: "chrome", webkit: "safari", firefox: "firefox" };
+const familyOf = (browserName) => (test.info().project.name.includes("edge") ? "edge" : family[browserName]);
 
 async function open(page, opts = {}) {
   const backend = opts.backend || new FakeBackend({ docs: seeded() });
@@ -89,7 +91,7 @@ test.describe("Report an issue", () => {
       message: "Let me sort the pick list.",
       expected: "A sort button",
       contactOk: true,
-      context: { build: version, screen: "projects", browser: family[browserName] },
+      context: { build: version, screen: "projects", browser: familyOf(browserName) },
     });
     expect(call.headers["idempotency-key"]).toMatch(KEY);
     expect(call.headers.authorization).toMatch(/^Bearer at-/);
@@ -112,7 +114,7 @@ test.describe("Report an issue", () => {
     await sendButton(page).click();
     await expect(dialog(page).locator("#reportRef")).toBeVisible();
     const [call] = backend.requests("POST", FEEDBACK);
-    expect(call.body).toEqual({ category: "bug", message: "The Add button does nothing on the receipt page.", contactOk: false, context: { build: version, screen: "projects", browser: family[browserName] } });
+    expect(call.body).toEqual({ category: "bug", message: "The Add button does nothing on the receipt page.", contactOk: false, context: { build: version, screen: "projects", browser: familyOf(browserName) } });
   });
 
   test("a new report after a sent one gets a new key", async ({ page }) => {
