@@ -1,6 +1,20 @@
 {
   "releases": [
     {
+      "version": "1.11.0",
+      "date": "2026-10-10",
+      "notes": [
+        {
+          "title": "Profile photos",
+          "text": "Add a photo on Account, crop it to fit, or remove it. It shows next to your name in the bar under the header, in Members and on projects you prepared. Only your teammates see it.",
+          "prs": [
+            722,
+            723
+          ]
+        }
+      ]
+    },
+    {
       "version": "1.10.0",
       "date": "2026-10-09",
       "notes": [
