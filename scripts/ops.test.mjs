@@ -4,7 +4,7 @@ import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { CALLBACK_URL, endpoints, jwtClaims, main, monthsLeft, parseArgs, pkce, readCachedToken, signIn, UsageError, waitForCode, writeCachedToken } from "./ops.mjs";
+import { CALLBACK_URL, endpoints, sortTeams, TEAM_HEADER, jwtClaims, main, monthsLeft, parseArgs, pkce, readCachedToken, signIn, UsageError, waitForCode, writeCachedToken } from "./ops.mjs";
 
 const NOW = Date.parse("2026-09-26T12:00:00Z");
 const ISS = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_ops";
@@ -131,6 +131,51 @@ test("lists teams with the cached token", async () => {
   assert.deepEqual(requests[0], { method: "GET", path: "/ops/teams", query: { q: "acme" }, headers: { authorization: `Bearer ${TOKEN}` }, body: undefined, origin: "https://api.supplycheckout.com" });
   assert.match(logs[0], /team-a\s+Acme\s+trial\/trialing\s+created 2026-09-01\s+owners: owner@example.com/);
   assert.match(logs[0], /More: --cursor team-a/);
+});
+
+test("sorts a page of teams by status, closed last, oldest first, then name and ID, under a header row", async () => {
+  const t = (id, status, createdAt, extra = {}) => ({ ...TEAM, id, name: `Team ${id}`, status, createdAt, ...extra });
+  const teams = [
+    t("closed-active", "active", "2026-01-01T00:00:00.000Z", { closedAt: "2026-09-01T00:00:00.000Z" }),
+    t("closed-canceled", "canceled", "2025-01-01T00:00:00.000Z", { closedAt: "2026-09-01T00:00:00.000Z" }),
+    t("weird", "zzz", "2020-01-01T00:00:00.000Z"),
+    t("canceled", "canceled", "2020-01-01T00:00:00.000Z"),
+    t("incomplete", "incomplete", "2020-01-01T00:00:00.000Z"),
+    t("unpaid", "unpaid", "2020-01-01T00:00:00.000Z"),
+    t("past-due", "past_due", "2020-01-01T00:00:00.000Z"),
+    t("trial-new", "trialing", "2026-09-02T00:00:00.000Z"),
+    t("trial-old", "trialing", "2026-01-01T00:00:00.000Z"),
+    t("active-b2", "active", "2026-03-01T00:00:00.000Z", { name: "Same" }),
+    t("active-b1", "active", "2026-03-01T00:00:00.000Z", { name: "Same" }),
+    t("active-a", "active", "2026-03-01T00:00:00.000Z", { name: "Alpha" }),
+    t("active-old", "active", "2025-06-01T00:00:00.000Z"),
+  ];
+  const order = ["active-old", "active-a", "active-b1", "active-b2", "trial-old", "trial-new", "past-due", "unpaid", "incomplete", "canceled", "weird", "closed-active", "closed-canceled"];
+  assert.deepEqual(sortTeams(teams).map((x) => x.id), order);
+  assert.equal(teams[0].id, "closed-active", "the page itself isn't reordered");
+  // Missing fields sort as empty, not as errors
+  assert.deepEqual(sortTeams([{ id: "b", status: "active" }, { id: "a" }]).map((x) => x.id), ["b", "a"]);
+  const { deps, logs } = harness({ routes: { "GET /ops/teams": { status: 200, body: { teams } } } });
+  await main(["teams"], deps);
+  const lines = logs[0].split("\n");
+  assert.equal(lines[0], TEAM_HEADER);
+  assert.match(lines[0], /^TEAM ID\s+NAME\s+PLAN\/STATUS\s+CREATED, CLOSED, COMP, OWNERS$/);
+  assert.deepEqual(lines.slice(1).map((l) => l.split(" ")[0]), order);
+  // The header's columns line up with the rows'
+  for (const col of ["NAME", "PLAN/STATUS", "CREATED"]) {
+    const at = lines[0].indexOf(col);
+    assert.equal(lines[1][at - 1], " ");
+    assert.notEqual(lines[1][at], " ");
+  }
+  assert.equal(lines[0].indexOf("CREATED"), lines[1].indexOf("created"));
+  // --json keeps the API's order, with no header
+  const json = harness({ routes: { "GET /ops/teams": { status: 200, body: { teams } } } });
+  await main(["teams", "--json"], json.deps);
+  assert.deepEqual(JSON.parse(json.logs[0]).teams.map((x) => x.id), teams.map((x) => x.id));
+  // No teams: no header
+  const none = harness({ routes: { "GET /ops/teams": { status: 200, body: { teams: [] } } } });
+  await main(["teams"], none.deps);
+  assert.equal(none.logs[0], "No teams.");
 });
 
 test("follows a search's empty pages until it finds teams or runs out, at most 20 requests (supply-checkout-6uw.8)", async () => {

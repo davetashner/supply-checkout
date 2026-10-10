@@ -48,7 +48,9 @@ const ENV = /^[a-z][a-z0-9-]{0,20}$/;
 
 export const USAGE = `Usage: npm run ops -- <command> [options]
 
-  teams [--q <text>] [--limit N] [--cursor C]   List teams in ID order, or search by name or ID (a page can be short: follow --cursor)
+  teams [--q <text>] [--limit N] [--cursor C]   List teams, or search by name or ID (a page can be short: follow --cursor). Each page
+                                                is sorted by status (active, trialing, past_due, unpaid, incomplete, others; closed
+                                                teams last), then oldest first: the sort is within the page, not across pages
   team <teamId>                                 One team's account record, owners, Stripe subscription and invoices (audited)
   comp <teamId> --plan <plan> --until <date> --reason <text> [--seats N]
                                                 Comp a team or change or extend its comp (at most 12 months)
@@ -265,6 +267,29 @@ class ApiError extends Error {
 const pad = (s, n) => String(s).padEnd(n);
 const date = (iso) => (typeof iso === "string" ? iso.slice(0, 10) : "-");
 
+/** The header above the list's lines, in teamLine's columns. */
+export const TEAM_HEADER = `${pad("TEAM ID", 38)} ${pad("NAME", 28)} ${pad("PLAN/STATUS", 20)} CREATED, CLOSED, COMP, OWNERS`;
+
+const STATUS_ORDER = ["active", "trialing", "past_due", "unpaid", "incomplete"];
+const statusRank = (status) => (STATUS_ORDER.includes(status) ? STATUS_ORDER.indexOf(status) : STATUS_ORDER.length);
+const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * One page of teams in the order the list prints them: open teams, then closed ones; within each, by status
+ * (STATUS_ORDER, then any other status alphabetically), then oldest first, then name, then ID. Doesn't change `teams`.
+ */
+export function sortTeams(teams) {
+  return [...teams].sort(
+    (a, b) =>
+      Number(Boolean(a.closedAt)) - Number(Boolean(b.closedAt)) ||
+      statusRank(a.status) - statusRank(b.status) ||
+      compare(String(a.status ?? ""), String(b.status ?? "")) ||
+      compare(String(a.createdAt ?? ""), String(b.createdAt ?? "")) ||
+      compare(String(a.name ?? ""), String(b.name ?? "")) ||
+      compare(String(a.id ?? ""), String(b.id ?? "")),
+  );
+}
+
 /** A team as one line of the list. */
 export function teamLine(team) {
   const comp = team.comp ? ` comp:${team.comp.plan} until ${date(team.comp.until)}${team.comp.live ? "" : " (ended)"}` : "";
@@ -427,7 +452,7 @@ export async function main(argv, deps) {
       page = await call("GET", "/ops/teams", { query: { q: flags.q, limit: flags.limit, cursor: page.cursor } });
     }
     const none = page.cursor ? "No teams yet (the search isn't finished)." : "No teams.";
-    print(page, (p) => [p.teams.length ? p.teams.map(teamLine).join("\n") : none, ...(p.cursor ? [`More: --cursor ${p.cursor}`] : [])].join("\n"));
+    print(page, (p) => [p.teams.length ? [TEAM_HEADER, ...sortTeams(p.teams).map(teamLine)].join("\n") : none, ...(p.cursor ? [`More: --cursor ${p.cursor}`] : [])].join("\n"));
   } else if (command === "team") {
     print(await call("GET", `/ops/teams/${teamId()}`), (r) => teamDetail(r.team, r.stripe, r.receipts, deps.now()));
   } else if (command === "comp" || command === "uncomp") {
