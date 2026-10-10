@@ -739,7 +739,7 @@ export async function start(config) {
   // Signs in if needed, loads /me and picks a team. Anything that fails shows a screen
   // whose button runs it again; signing in leaves the page.
   for (;;) {
-    show(`<p class="muted" role="status">Signing in…</p>`);
+    show(`<p class="muted" role="status">Loading…</p>`);
     try {
       if (!await session.start()) return signIn();
       let me = await session.api("GET", "/me");
