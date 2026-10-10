@@ -44,6 +44,16 @@ test("the RUM aborts and the refresh's 401 before sign-in stay expected", () => 
   assert.equal(isExpectedConsoleError("TypeError: x is undefined", `${PROD.app}/assets/app.js`), false);
 });
 
+test("J11.2's refused account deletion (409 on /me) is expected, and nothing else on /me or 409 elsewhere", () => {
+  const status = (n) => `Failed to load resource: the server responded with a status of ${n} ()`;
+  assert.equal(isExpectedConsoleError(status(409), `${PROD.api}/me`), true);
+  assert.equal(isExpectedConsoleError(status(4090), `${PROD.api}/me`), false);
+  for (const n of [400, 403, 404, 500]) assert.equal(isExpectedConsoleError(status(n), `${PROD.api}/me`), false, String(n));
+  assert.equal(isExpectedConsoleError(status(409), `${PROD.api}/teams/t1/close`), false);
+  assert.equal(isExpectedConsoleError(status(409), `${PROD.api}/me/preferences`), false);
+  assert.equal(isExpectedConsoleError(status(409), "https://api.example.com/me"), false);
+});
+
 test("a screen is described by its path, headings, alerts, labels and controls, redacted", () => {
   const masker = createMasker({ github: false });
   masker.remember("Journeys desktop secret");

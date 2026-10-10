@@ -8,8 +8,22 @@
 import { randomBytes } from "node:crypto";
 import { PROD } from "./config.mjs";
 
-/** Roles a run makes throwaway accounts for. */
-export const THROWAWAY_ROLES = Object.freeze(["owner", "crew"]);
+/**
+ * Roles a run makes throwaway addresses for: the owner and the crew member of J1, J3, J5 and J11,
+ * and a second pair for that test's retry (an address can sign up once, so a retry needs new
+ * ones). Global setup records all four as `planned`; cleanup acts only on those that started.
+ */
+export const THROWAWAY_ROLES = Object.freeze(["owner", "crew", "ownerretry", "crewretry"]);
+
+/** The throwaway roles for a test's try: `owner` and `crew`, then `ownerretry` and `crewretry`. */
+export function attemptRoles(retry) {
+  if (retry === 0) return { owner: "owner", crew: "crew" };
+  if (retry === 1) return { owner: "ownerretry", crew: "crewretry" };
+  throw new Error("The throwaway journeys have addresses for one try and one retry only");
+}
+
+/** Whether a throwaway role is an owner's (cleanup deletes members before owners). */
+export const isOwnerRole = (role) => role === "owner" || role === "ownerretry";
 
 const ROLE = /^[a-z]{1,12}$/;
 const THROWAWAY = /^run-([A-Za-z0-9]{1,24}(?:-[A-Za-z0-9]{1,8})?)-([a-z]{1,12})-([0-9a-f]{32})$/;

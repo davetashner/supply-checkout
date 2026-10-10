@@ -1,14 +1,16 @@
 // Records of each run's throwaway accounts, under runs/<runId>/accounts/<role>.json in the mail
 // bucket (30-day lifecycle), so the next run's cleanup can delete a crashed run's accounts.
 //
-// A record holds the address, the account's user ID and the teams it created, and where it got
-// to: `planned` (address made, not yet signed up), `started` (sign-up begun: the account may
-// exist), `deleted`. Only those fields: never a password, code, token or anything else, and a
+// A record holds the address, the account's user ID, the teams it created (and, written before
+// POST /teams, the name of the team it's about to create, `E2E <runId> …`), and where it got
+// to: `planned` (address made, not yet signed up), `signup` (SignUp about to be sent: an
+// unconfirmed account may exist), `started` (signed up and confirmed, or, for a run from before
+// `signup`, sign-up begun), `deleted`. Only those fields: never a password, code, token or anything else, and a
 // record with any other field is refused, writing or reading.
-import { parseThrowaway } from "./addresses.mjs";
+import { parseThrowaway, runOf } from "./addresses.mjs";
 
-export const STATES = Object.freeze(["planned", "started", "deleted"]);
-const FIELDS = new Set(["runId", "role", "address", "state", "userId", "teamIds", "updatedAt"]);
+export const STATES = Object.freeze(["planned", "signup", "started", "deleted"]);
+const FIELDS = new Set(["runId", "role", "address", "state", "userId", "teamIds", "teamName", "updatedAt"]);
 const KEY = /^runs\/([A-Za-z0-9-]{1,40})\/accounts\/([a-z]{1,12})\.json$/;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -20,8 +22,9 @@ export function checkRecord(record) {
   if (extra.length) throw new Error(`A run record may not hold ${extra.join(", ")}`);
   const parsed = parseThrowaway(record.address);
   if (!parsed || parsed.runId !== record.runId || parsed.role !== record.role) throw new Error("A run record's address isn't its run's throwaway for its role");
-  if (!STATES.includes(record.state)) throw new Error("A run record's state is planned, started or deleted");
+  if (!STATES.includes(record.state)) throw new Error("A run record's state is planned, signup, started or deleted");
   if (record.userId !== undefined && !ID.test(record.userId)) throw new Error("A run record's userId isn't an ID");
+  if (record.teamName !== undefined && !(typeof record.teamName === "string" && record.teamName.length <= 200 && /^[\x20-\x7e]+$/.test(record.teamName) && runOf({ name: record.teamName }) === record.runId)) throw new Error("A run record's teamName isn't a name of its run");
   if (record.teamIds !== undefined && !(Array.isArray(record.teamIds) && record.teamIds.every((t) => ID.test(t)))) throw new Error("A run record's teamIds aren't IDs");
   return Object.fromEntries(Object.entries(record).filter(([k]) => FIELDS.has(k)));
 }

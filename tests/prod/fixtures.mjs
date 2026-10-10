@@ -22,6 +22,7 @@
 /* global document, location -- readScreen's function runs in the page */
 import { test as base, expect } from "@playwright/test";
 import path from "node:path";
+import { THROWAWAY_ROLES } from "../../scripts/journeys/lib/addresses.mjs";
 import { createCognito } from "../../scripts/journeys/lib/cognito.mjs";
 import { PROD, TEAM_FOR_PROJECT, readConfig, runDir, runId, secretValues } from "../../scripts/journeys/lib/config.mjs";
 import { GuardError, assertDestructiveAllowed, checkMe } from "../../scripts/journeys/lib/guards.mjs";
@@ -58,7 +59,8 @@ export const test = base.extend({
     const dir = runDir(env, id);
     const masker = createMasker({ persist: path.join(dir, MASKED_VALUES_FILE) });
     for (const v of secretValues(config)) masker.remember(v);
-    const throwaways = { owner: env.JOURNEYS_THROWAWAY_OWNER, crew: env.JOURNEYS_THROWAWAY_CREW };
+    // Global setup made them (lib/setup.mjs): an owner and a crew member, and a pair for a retry
+    const throwaways = Object.fromEntries(THROWAWAY_ROLES.map((role) => [role, env[`JOURNEYS_THROWAWAY_${role.toUpperCase()}`]]));
     for (const a of Object.values(throwaways)) masker.add(a);
     const mailS3 = createS3(config.buckets.mail);
     await use({
@@ -124,21 +126,7 @@ export const test = base.extend({
     });
     await page.context().route(RUM, (r) => r.abort());
     // Account deletion and team closure only as the run's throwaway, on a team the run created
-    await page.context().route((url) => url.origin === PROD.api && (url.pathname === "/me" || /^\/teams\/[^/]+\/close$/.test(url.pathname)), async (route) => {
-      const req = route.request();
-      const close = /^\/teams\/([^/]+)\/close$/.exec(new URL(req.url()).pathname);
-      if (!(req.method() === "DELETE" || (close && req.method() === "POST"))) return route.fallback();
-      try {
-        const longLived = { emails: Object.values(harness.config.accounts).map((a) => a.email), teamIds: Object.values(harness.config.teams) };
-        // The server checks the caller owns the team; here, that the run created it
-        const team = close ? { id: decodeURIComponent(close[1]), role: "owner" } : undefined;
-        assertDestructiveAllowed({ action: close ? "closeTeam" : "deleteAccount", account: identity.account, runIds: [harness.runId], longLived, team, createdTeams: [...harness.createdTeams] });
-        return route.fallback();
-      } catch (err) {
-        errors.push(`guard: ${err instanceof GuardError ? err.message : "refused a destructive call"}`);
-        return route.abort("blockedbyclient");
-      }
-    });
+    await guardDestructiveCalls(page.context(), { harness, account: () => identity.account, refused: errors });
     let tracing = false;
     page.startTrace = async () => {
       if (tracing) return;
@@ -247,6 +235,80 @@ export const test = base.extend({
     await use(signIn);
   },
 });
+
+/**
+ * Refuses, in the browser, any account deletion (DELETE /me) or team closure (POST
+ * /teams/{teamId}/close) from `context` that assertDestructiveAllowed doesn't allow: only as a
+ * throwaway of this run (`account()`, the address the context is signed in as), and a team only
+ * if the run created it. A refused call is aborted and noted in `refused`, which fails the test.
+ */
+export function guardDestructiveCalls(context, { harness, account, refused }) {
+  return context.route((url) => url.origin === PROD.api && (url.pathname === "/me" || /^\/teams\/[^/]+\/close$/.test(url.pathname)), async (route) => {
+    const req = route.request();
+    const close = /^\/teams\/([^/]+)\/close$/.exec(new URL(req.url()).pathname);
+    if (!(req.method() === "DELETE" || (close && req.method() === "POST"))) return route.fallback();
+    try {
+      const longLived = { emails: Object.values(harness.config.accounts).map((a) => a.email), teamIds: Object.values(harness.config.teams) };
+      // The server checks the caller owns the team; here, that the run created it
+      const team = close ? { id: decodeURIComponent(close[1]), role: "owner" } : undefined;
+      assertDestructiveAllowed({ action: close ? "closeTeam" : "deleteAccount", account: account(), runIds: [harness.runId], longLived, team, createdTeams: [...harness.createdTeams] });
+      return route.fallback();
+    } catch (err) {
+      refused.push(`guard: ${err instanceof GuardError ? err.message : "refused a destructive call"}`);
+      return route.abort("blockedbyclient");
+    }
+  });
+}
+
+/** A sign-in method that sends a code by email (never the password's: PASSWORD_CHOICE). */
+export const EMAIL_CODE_CHOICE = /^(email (one-time (password|code)|message|code|me a code)|(send|get) (me )?a code( by email)?|sign in with (an )?email code)$/i;
+const CODE_FIELD = /verification code|one-time code|^code$|enter (the )?code/i;
+
+/**
+ * Managed Login by email code, for a throwaway account (no password): the email, then the code
+ * Cognito mails it. Prod shows such an account "Check your email" with a "Verification code"
+ * field at once; if it shows "Choose a sign-in method" instead, this picks the email code
+ * (EMAIL_CODE_CHOICE) and continues. `readCode(since)` returns the code mailed since `since`
+ * (ms, taken just before the email is sent): the fixtures' mail(). The code goes in through
+ * secretFill. If no code field turns up it fails with what the page showed (formatScreen,
+ * redacted), as TooManyRequests for Managed Login's request limit.
+ */
+export async function managedLoginByCode(page, email, readCode, { timeout = 20_000, redact = (s) => s, now = Date.now } = {}) {
+  const submit = () => page.getByRole("button", { name: /^(next|continue|sign in)$/i }).first().click();
+  await secretFill(page.getByLabel(/email/i).first(), email);
+  const since = now();
+  await submit();
+  // A text field, never the "Email one-time password" radio of a choice of methods
+  const field = page.locator("input:not([type=radio]):not([type=checkbox]):not([type=hidden]):not([type=password])").and(page.getByLabel(CODE_FIELD)).first();
+  const radio = page.getByRole("radio", { name: EMAIL_CODE_CHOICE });
+  const button = page.getByRole("button", { name: EMAIL_CODE_CHOICE });
+  const alert = page.getByRole("alert").filter({ hasText: /\S/ });
+  const tried = [];
+  const deadline = Date.now() + timeout;
+  let lastAction = Date.now();
+  while (Date.now() < deadline && !(await field.isVisible())) {
+    const alerted = await alert.first().isVisible();
+    if (!tried.includes("radio") && await radio.first().isVisible()) {
+      tried.push("radio");
+      await radio.first().check();
+      await expect(radio.first(), "the email code option is selected").toBeChecked();
+      await submit();
+      lastAction = Date.now();
+    } else if (!tried.includes("button") && await button.first().isVisible()) {
+      tried.push("button");
+      await button.first().click();
+      lastAction = Date.now();
+    } else if (alerted && Date.now() - lastAction > 2_000) break;
+    await page.waitForTimeout(250);
+  }
+  if (!(await field.isVisible())) {
+    const screen = await readScreen(page);
+    if ((screen.alerts ?? []).some((a) => TOO_MANY_REQUESTS.test(a))) throw new TooManyRequests(`Managed Login refused the sign-in: ${formatScreen(screen, redact)}`);
+    throw new Error(`Managed Login showed no code field after the email (tried: ${tried.join(", ") || "nothing"}): ${formatScreen(screen, redact)}`);
+  }
+  await secretFill(field, await readCode(since));
+  await submit();
+}
 
 /**
  * Managed Login's pages: the email, then the password, then the two-step code when asked. Every
