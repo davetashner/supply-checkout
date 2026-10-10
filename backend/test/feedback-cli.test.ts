@@ -4,14 +4,14 @@
 // bead is made by a fake, never by `bd`.
 
 import { randomUUID } from "node:crypto";
-import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Db } from "../src/data/index.js";
-import { connection } from "../src/data/client.js";
+import { connection, dbFromConnection } from "../src/data/client.js";
 import { createLocalTable, deleteLocalTable } from "../src/data/local-table.js";
-import { getFeedback } from "../src/data/feedback-owner.js";
+import { getFeedback, recordFeedbackBead } from "../src/data/feedback-owner.js";
 import type { PoolUser } from "../src/identity/cognito-admin.js";
-import { type BeadRequest, type Deps, listLine, main, quotesReport, showReport, unsafeText, USAGE, VERBATIM_RUN } from "../scripts/feedback.js";
+import { type BeadRequest, type Deps, listLine, main, parseCreated, quotesReport, showReport, unsafeText, USAGE, VERBATIM_RUN } from "../scripts/feedback.js";
 import { endpoint, rawItem, REGION } from "./helpers.js";
 
 const FULL = "0123456789abcdef0123456789abcdef";
@@ -38,6 +38,18 @@ describe("the text a bead may carry", () => {
     expect(unsafeText(text)).toBe(why);
   });
 
+  it.each([
+    ["an email address", "mail pat\uFF20example.com"],
+    ["an email address", "mail pat@exam\u200Bple.com"],
+    ["an email address", "mail p\u202Eat@example.com"],
+    ["a 12-digit number (an AWS account ID?)", "ID 1234 5678 9012 here"],
+    ["a 12-digit number (an AWS account ID?)", "ID 1234-5678-9012"],
+    ["an ID (32 hex digits or a UUID)", "report 0123456789abcdef0123456789abcdef"],
+    ["an ID (32 hex digits or a UUID)", "user aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"],
+  ])("sees through disguises: %s", (why, text) => {
+    expect(unsafeText(text)).toBe(why);
+  });
+
   it("passes a plain summary", () => {
     expect(unsafeText("Scanner freezes on the receipt screen after the second photo")).toBeUndefined();
   });
@@ -48,8 +60,15 @@ describe("the text a bead may carry", () => {
     expect(quotesReport(`Summary: ${report.message.slice(20, 20 + VERBATIM_RUN)}`, report)).toBe(true);
     expect(quotesReport("Scanner hangs after the second scan", report)).toBe(false);
     expect(quotesReport("it should keep scanning", report)).toBe(true);
-    expect(quotesReport("Title: It should keep scanning, says user", { message: "x", expected: "It should keep scanning" })).toBe(false); // 23 characters, under the whole-message floor
+    expect(quotesReport("Title: Keep it, says user", { message: "Keep it", expected: "" })).toBe(false); // 7 characters, under the whole-message floor
     expect(quotesReport("", report)).toBe(false);
+    // A short message is refused when it's all there (case and spacing ignored), and a one-word one only when equal
+    const short = { message: "Scan   button is BROKEN", expected: "" };
+    expect(quotesReport("The scan button is broken on iPhone", short)).toBe(true);
+    expect(quotesReport("Help", { message: "help", expected: "" })).toBe(true);
+    expect(quotesReport("Help screen is broken", { message: "help", expected: "" })).toBe(false);
+    // Zero-width characters don't hide it
+    expect(quotesReport("The s\u200Bcan butt\u200Don is broken", short)).toBe(true);
     expect(quotesReport("anything", { message: "Hi", expected: "" })).toBe(false);
   });
 });
@@ -83,6 +102,17 @@ describe("what it prints", () => {
   });
 });
 
+describe("bd's answer", () => {
+  it("takes the last line, and only if it's a bead ID of this project", () => {
+    expect(parseCreated("supply-checkout-abc.12\n")).toBe("supply-checkout-abc.12");
+    expect(parseCreated("warning: slow database\nsupply-checkout-abc.12\n")).toBe("supply-checkout-abc.12");
+    expect(() => parseCreated("supply-checkout-abc.12\nwarning: something at the end")).toThrow("isn't a bead ID");
+    expect(() => parseCreated("warning: Dolt is busy\n")).toThrow("A bead may have been made");
+    expect(() => parseCreated("")).toThrow("isn't a bead ID");
+    expect(() => parseCreated("other-abc1")).toThrow("isn't a bead ID");
+  });
+});
+
 describe("arguments", () => {
   const cases: [string, string[], string][] = [
     ["no command", [], "No command given"],
@@ -107,6 +137,13 @@ describe("arguments", () => {
     ["dismiss without a reason", ["dismiss", FULL, ...WHERE], "--reason is required"],
     ["a long reason", ["dismiss", FULL, "--reason", "x".repeat(201), ...WHERE], "at most 200"],
     ["an email in the reason", ["dismiss", FULL, "--reason", "from pat@example.com", ...WHERE], "Refused: --reason has an email address"],
+    ["an endpoint that isn't this machine", ["list", "--table", TABLE, "--region", REGION, "--endpoint", "http://dynamodb.example.com"], "--endpoint must be"],
+    ["an https endpoint", ["list", "--table", TABLE, "--region", REGION, "--endpoint", "https://localhost:8000"], "--endpoint must be"],
+    ["an endpoint with a user", ["list", "--table", TABLE, "--region", REGION, "--endpoint", "http://localhost@evil.example"], "--endpoint must be"], // public-safety: allow
+    ["a bead of another project", ["record", FULL, "--bead", "other-abc.1", ...WHERE], "--bead must be a bead ID of this project"],
+    ["an email split by zero-width characters", ["bead", FULL, "--title", "Fix", "--summary", "mail pat@exa\u200Bmple.com", ...WHERE], "Refused: --summary has an email address"],
+    ["an email split across title and summary", ["bead", FULL, "--title", "Mail pat@", "--summary", "example.com", ...WHERE], "Refused: --title and --summary together has an email address"],
+    ["an ID in the title", ["bead", FULL, "--title", "Report 0123456789abcdef0123456789abcdef", ...WHERE], "Refused: --title has an ID"],
     ["no table", ["list", "--region", REGION, "--endpoint", "http://localhost:1"], "--table and --region are required"],
     ["no profile or endpoint", ["list", "--table", TABLE, "--region", REGION], "--profile is required"],
     ["a table that isn't an app table", ["list", "--table", "other-table", "--region", REGION, "--profile", "p"], "--table must be an app table"],
@@ -118,6 +155,13 @@ describe("arguments", () => {
     expect(code).toBe(2);
     expect(text).toContain(message);
     expect(touched).toBe(false);
+  });
+
+  it("takes localhost, 127.0.0.1 and [::1] as the endpoint", async () => {
+    for (const host of ["localhost:8000", "127.0.0.1:8000", "[::1]:8000"]) {
+      const { code } = await run(["list", "--table", TABLE, "--region", REGION, "--endpoint", `http://${host}`], { connect: () => { throw new Error("stop"); } }).catch(() => ({ code: -1 }));
+      expect([-1, 1]).toContain(code);
+    }
   });
 
   it("prints the usage for --help", async () => {
@@ -176,6 +220,7 @@ describe.skipIf(!endpoint)("the commands on DynamoDB Local", () => {
       return `supply-checkout-t${beads.length}`;
     },
     now: () => new Date("2026-10-10T00:00:00.000Z"),
+    runBd: (args) => (args[0] === "show" && args[1] !== "supply-checkout-missing" ? { status: 0, stdout: JSON.stringify([{ id: args[1] }]), stderr: "" } : { status: 1, stdout: "", stderr: "not found" }),
     ...extra,
   });
   const cli = (argv: string[], extra: Deps = {}) => run([...argv, ...WHERE], deps(extra));
@@ -346,7 +391,7 @@ describe.skipIf(!endpoint)("the commands on DynamoDB Local", () => {
 
   it("says which bead was made, and the command to record it, when bd or the record fails", async () => {
     const r = await put();
-    const noBd = await cli(["bead", r.teamId, r.reportId, "--title", "Scanner freezes"], { createBead: () => { throw new Error("bd create failed (exit 1): no database"); } });
+    const noBd = await cli(["bead", r.teamId, r.reportId, "--title", "Scanner freezes"], { createBead: () => { throw new Error("No bead was created: bd create failed (exit 1): no database"); } });
     expect(noBd.code).toBe(1);
     expect(noBd.err).toEqual(["No bead was created: bd create failed (exit 1): no database"]);
     expect((await getFeedback(db, r.teamId, r.reportId))?.status).toBe("new");
@@ -363,18 +408,88 @@ describe.skipIf(!endpoint)("the commands on DynamoDB Local", () => {
     expect((await getFeedback(db, r.teamId, r.reportId))?.beadId).toBe(id);
   });
 
+  it("takes the bead ID from bd's last line, and records nothing from a warning", async () => {
+    const r = await put();
+    const created: string[][] = [];
+    const bd = (stdout: string): Deps => ({
+      createBead: undefined,
+      runBd: (args) => {
+        created.push([...args]);
+        return { status: 0, stdout, stderr: "" };
+      },
+    });
+    const bad = await cli(["bead", r.teamId, r.reportId, "--title", "Scanner freezes"], bd("warning: stale lock\n"));
+    expect(bad.code).toBe(1);
+    expect(bad.err[0]).toContain("isn't a bead ID, so nothing was recorded");
+    expect((await getFeedback(db, r.teamId, r.reportId))?.status).toBe("new");
+    const good = await cli(["bead", r.teamId, r.reportId, "--title", "Scanner freezes"], bd("warning: stale lock\nsupply-checkout-fake.7\n"));
+    expect(good.code).toBe(0);
+    expect(created.at(-1)).toContain("--silent");
+    expect(created.at(-1)).toContain("--title=Scanner freezes");
+    expect((await getFeedback(db, r.teamId, r.reportId))?.beadId).toBe("supply-checkout-fake.7");
+  });
+
+  it("refuses a quote split across title and summary, and a text that names the report's IDs", async () => {
+    const message = "The receipt scanner shows a spinner forever whenever I photograph a long receipt from the hardware store, and then the page needs a reload to work again.";
+    const r = await put({ message });
+    const before = beads.length;
+    const half = message.length >> 1;
+    const split = await cli(["bead", r.teamId, r.reportId, "--title", message.slice(0, half), "--summary", message.slice(half)]);
+    expect(split.code).toBe(1);
+    expect(split.err.join()).toMatch(/holds the report's own words/);
+    const ids = await cli(["bead", r.teamId, r.reportId, "--title", `Problem for ${r.teamId.toUpperCase()}`]);
+    expect(ids.code).toBe(1);
+    expect(ids.err[0]).toContain("names the report's team, user or report ID");
+    const userId = await cli(["bead", r.teamId, r.reportId, "--title", "Scanner", "--summary", `from ${r.userId}`]);
+    expect(userId.code).toBe(2); // a UUID is refused before anything is read
+    expect(beads).toHaveLength(before);
+  });
+
+  it("says to close the duplicate bead when the report was triaged meanwhile, not to retry the record", async () => {
+    const r = await put();
+    const real = connection(db);
+    let pending = true;
+    const racing = dbFromConnection({
+      ...real,
+      doc: {
+        send: async (command: unknown) => {
+          if (pending && command instanceof UpdateCommand) {
+            pending = false;
+            await recordFeedbackBead(db, r.teamId, r.reportId, "supply-checkout-winner.1");
+          }
+          return real.doc.send(command as never);
+        },
+      } as unknown as typeof real.doc,
+    });
+    const made = beads.length;
+    const result = await cli(["bead", r.teamId, r.reportId, "--title", "Scanner freezes"], { connect: () => racing });
+    expect(result.code).toBe(1);
+    expect(result.err).toEqual([`Report ${r.shortId} is already triaged with bead supply-checkout-winner.1; bead supply-checkout-t${made + 1} you just made is a duplicate: close it.`]);
+    expect(result.text).not.toContain("npm run feedback");
+  });
+
+  it("refuses to record a bead bd can't show", async () => {
+    const r = await put();
+    const result = await cli(["record", r.teamId, r.reportId, "--bead", "supply-checkout-missing"]);
+    expect(result.code).toBe(1);
+    expect(result.err[0]).toContain("bd can't show a bead supply-checkout-missing");
+    expect((await getFeedback(db, r.teamId, r.reportId))?.status).toBe("new");
+    expect((await cli(["record", r.teamId, r.reportId, "--bead", "supply-checkout-x.1"], { runBd: () => ({ status: 0, stdout: "not json", stderr: "" }) })).code).toBe(1);
+    expect((await cli(["record", r.teamId, r.reportId, "--bead", "supply-checkout-x.1"], { runBd: () => ({ status: null, stdout: "", stderr: "", error: new Error("no bd") }) })).code).toBe(1);
+  });
+
   it("records a bead made by hand, once, and dismisses with a reason, once", async () => {
     const r = await put();
-    const rec = await cli(["record", r.teamId, r.reportId, "--bead", "supply-checkout-by-hand.1"]);
-    expect(rec.out.at(-1)).toBe(`Report ${r.shortId} is triaged with bead supply-checkout-by-hand.1.`);
+    const rec = await cli(["record", r.teamId, r.reportId, "--bead", "supply-checkout-byhand.1"]);
+    expect(rec.out.at(-1)).toBe(`Report ${r.shortId} is triaged with bead supply-checkout-byhand.1.`);
     // The same bead again is fine; another bead, or dismissing, is refused and changes nothing
-    expect((await cli(["record", r.teamId, r.reportId, "--bead", "supply-checkout-by-hand.1"])).code).toBe(0);
+    expect((await cli(["record", r.teamId, r.reportId, "--bead", "supply-checkout-byhand.1"])).code).toBe(0);
     const other = await cli(["record", r.teamId, r.reportId, "--bead", "supply-checkout-other"]);
     expect(other.code).toBe(1);
-    expect(other.err[0]).toBe("Failed: ConflictError: This report is already triaged (bead supply-checkout-by-hand.1)");
+    expect(other.err[0]).toBe("Failed: ConflictError: This report is already triaged (bead supply-checkout-byhand.1)");
     const dismiss = await cli(["dismiss", r.teamId, r.reportId, "--reason", "Duplicate"]);
     expect(dismiss.code).toBe(1);
-    expect(await getFeedback(db, r.teamId, r.reportId)).toMatchObject({ status: "triaged", beadId: "supply-checkout-by-hand.1" });
+    expect(await getFeedback(db, r.teamId, r.reportId)).toMatchObject({ status: "triaged", beadId: "supply-checkout-byhand.1" });
 
     const d = await put({ message: "Nothing works at all in the whole app and I am very upset about it, honestly, please look into it right now, thank you very much" });
     const ok = await cli(["dismiss", d.teamId, d.reportId, "--reason", "Not a defect: user error"]);
@@ -384,7 +499,7 @@ describe.skipIf(!endpoint)("the commands on DynamoDB Local", () => {
     const quoting = await put({ message: "Nothing works at all in the whole app and I am very upset about it, honestly, please look into it right now, thank you very much" });
     const q = await cli(["dismiss", quoting.teamId, quoting.reportId, "--reason", "Nothing works at all in the whole app and I am very upset about it, honestly, please look into it right now, thank you very much"]);
     expect(q.code).toBe(1);
-    expect(q.err).toEqual(["Refused: --reason holds the report's own words. Nothing was changed."]);
+    expect(q.err).toEqual(["Refused: --reason holds the report's own words or IDs. Nothing was changed."]);
     expect((await getFeedback(db, quoting.teamId, quoting.reportId))?.status).toBe("new");
   });
 

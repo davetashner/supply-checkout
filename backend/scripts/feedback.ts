@@ -32,7 +32,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
-import { createDb, type Db, type DbOptions, FEEDBACK_STATUSES, type FeedbackReport, type FeedbackStatus } from "../src/data/index.js";
+import { ConflictError, createDb, type Db, type DbOptions, FEEDBACK_STATUSES, type FeedbackReport, type FeedbackStatus } from "../src/data/index.js";
 import { DISMISS_REASON_MAX, dismissFeedback, getFeedback, listFeedback, recordFeedbackBead } from "../src/data/feedback-owner.js";
 import { findUserBySub, type PoolUser } from "../src/identity/cognito-admin.js";
 import { noticeAddressOf } from "../src/identity/notice-address.js";
@@ -66,15 +66,18 @@ type Command = (typeof COMMANDS)[number];
 const TEAM_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const FULL_ID = /^[0-9a-f]{32}$/;
 const SHORT_ID = /^[0-9a-f]{8}$/;
-const BEAD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** A bead of this project, as `bd` prints it. */
+const BEAD_ID = /^supply-checkout-[a-z0-9.]+$/;
+/** Where --endpoint may point: this machine, over http. */
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 /** The longest bead title, and summary, the CLI takes, in characters. */
 export const TITLE_MAX = 200;
 export const SUMMARY_MAX = 1000;
 const PREVIEW = 60;
 /** A run of this many characters of the report in a bead's text is the report's own words. */
 export const VERBATIM_RUN = 100;
-/** A whole report at least this long, inside a bead's text, is the report's own words too. */
-const WHOLE_MESSAGE_MIN = 30;
+/** A whole report at least this long, inside a bead's text, is the report's own words too (shorter ones only when the text equals them). */
+const WHOLE_MESSAGE_MIN = 12;
 
 const BEAD_TYPES = ["bug", "task", "feature"] as const;
 type BeadType = (typeof BEAD_TYPES)[number];
@@ -101,6 +104,8 @@ export interface Deps {
   readonly findUser?: (region: string, userPoolId: string, sub: string, credentials: Credentials | undefined) => Promise<PoolUser | undefined>;
   /** Creates the bead and returns its ID; `bd create` unless given. Throws a plain Error naming why. */
   readonly createBead?: (request: BeadRequest) => string;
+  /** Runs `bd` with an argument array; spawnSync (no shell) unless given. For bd create and bd show. */
+  readonly runBd?: (args: readonly string[]) => { readonly status: number | null; readonly stdout: string; readonly stderr: string; readonly error?: Error };
   readonly now?: () => Date;
 }
 
@@ -110,20 +115,40 @@ const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}
 const ACCOUNT_ID = /(?<![0-9])[0-9]{12}(?![0-9])/;
 const SSO_URL = /awsapps\.com|identitycenter\.amazonaws\.com|\/start\/?#|sso\.[a-z0-9-]+\.amazonaws\.com/i;
 
+/** `text` as the checks see it: NFKC-normalized (a fullwidth `＠` is `@`) and with format characters (zero-width, bidi) removed. */
+export const scrub = (text: string) => text.normalize("NFKC").replace(/\p{Cf}/gu, "");
+
+const HEX32 = /[0-9a-f]{32}/i;
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
 /** Why `text` can't go into a public bead: names a rule, never the text. */
-export function unsafeText(text: string): string | undefined {
+export function unsafeText(raw: string): string | undefined {
+  const text = scrub(raw);
   // Any address, even ones check-public-safety allows (the product's own): a bead is no place for one
   if (EMAIL.test(text)) return "an email address";
-  if (ACCOUNT_ID.test(text)) return "a 12-digit number (an AWS account ID?)";
+  // Digits split by spaces, dots or hyphens count too
+  if (ACCOUNT_ID.test(text) || ACCOUNT_ID.test(text.replace(/(?<=[0-9])[ .-](?=[0-9])/g, ""))) return "a 12-digit number (an AWS account ID?)";
   if (SSO_URL.test(text)) return "an SSO URL";
+  if (HEX32.test(text) || UUID.test(text)) return "an ID (32 hex digits or a UUID)";
   const found = publicSafetyFindings(text)[0];
   if (found) return `something check-public-safety refuses (${found.name})`;
   return undefined;
 }
 
-const normalize = (text: string) => text.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+/** Whether `text` names the report's team, user or report ID (any case). */
+export function namesReportIds(text: string, report: Pick<FeedbackReport, "teamId" | "userId" | "reportId">): boolean {
+  const lower = scrub(text).toLowerCase();
+  return [report.teamId, report.userId, report.reportId].some((value) => value !== "" && lower.includes(value.toLowerCase()));
+}
 
-/** Whether `text` holds the report's own words: all of a message of 30 or more characters, equal to it, or a run of 100 characters. */
+const normalize = (text: string) => scrub(text).toLowerCase().replace(/\s+/g, " ").trim();
+
+/**
+ * Whether `text` holds the report's own words: equal to its message or
+ * expected text, all of one of 12 or more characters (case and spacing
+ * ignored), or a run of 100 characters. A guardrail against accident: a
+ * paraphrase gets through.
+ */
 export function quotesReport(text: string, report: Pick<FeedbackReport, "message" | "expected">): boolean {
   const candidate = normalize(text);
   if (!candidate) return false;
@@ -137,6 +162,9 @@ export function quotesReport(text: string, report: Pick<FeedbackReport, "message
   }
   return false;
 }
+
+/** The title and summary as one text two ways (joined with a space and with nothing), so a quote can't be split across them. */
+const joined = (title: string, summary: string) => (summary ? [`${title} ${summary}`, `${title}${summary}`] : []);
 
 // ----- Output -----
 
@@ -184,8 +212,28 @@ export function showReport(r: FeedbackReport, email?: { readonly line: string })
 
 // ----- bd -----
 
+type RunBd = NonNullable<Deps["runBd"]>;
+const spawnBd: RunBd = (args) => {
+  const run = spawnSync("bd", [...args], { encoding: "utf8", timeout: 60_000, shell: false });
+  return { status: run.status, stdout: run.stdout ?? "", stderr: run.stderr ?? "", ...(run.error ? { error: run.error } : {}) };
+};
+
+/**
+ * The bead ID `bd create --silent` printed: its last non-empty line, which
+ * must be a bead ID of this project. A warning line is never taken for one;
+ * anything else is an error that shows what bd printed (no report text is in it).
+ */
+export function parseCreated(stdout: string): string {
+  const lines = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+  const last = lines.at(-1) ?? "";
+  if (!BEAD_ID.test(last)) {
+    throw new Error(`bd create printed something that isn't a bead ID, so nothing was recorded. A bead may have been made: check bd list. bd printed: ${oneLine(stdout).slice(0, 300)}`);
+  }
+  return last;
+}
+
 /** `bd create`, spawned with an argument array (no shell). Returns the new bead's ID. */
-function bdCreate(request: BeadRequest): string {
+function bdCreate(request: BeadRequest, run: RunBd): string {
   const args = [
     "create",
     `--title=${request.title}`,
@@ -196,12 +244,23 @@ function bdCreate(request: BeadRequest): string {
     ...(request.description ? [`--description=${request.description}`] : []),
     "--silent",
   ];
-  const run = spawnSync("bd", args, { encoding: "utf8", timeout: 60_000, shell: false });
-  if (run.error) throw new Error(`bd couldn't run: ${run.error.message}`);
-  if (run.status !== 0) throw new Error(`bd create failed (exit ${run.status}): ${oneLine(run.stderr ?? "").slice(0, 300)}`);
-  const id = run.stdout.trim().split(/\s+/).at(-1) ?? "";
-  if (!BEAD_ID.test(id)) throw new Error("bd create didn't print a bead ID");
-  return id;
+  const done = run(args);
+  if (done.error) throw new Error(`No bead was created: bd couldn't run: ${done.error.message}`);
+  if (done.status !== 0) throw new Error(`No bead was created: bd create failed (exit ${done.status}): ${oneLine(done.stderr).slice(0, 300)}`);
+  return parseCreated(done.stdout);
+}
+
+/** Whether `bd show <id> --json` finds exactly that bead. */
+function beadExists(id: string, run: RunBd): boolean {
+  const done = run(["show", id, "--json"]);
+  if (done.error || done.status !== 0) return false;
+  try {
+    const parsed: unknown = JSON.parse(done.stdout);
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    return list.some((b) => typeof b === "object" && b !== null && (b as { id?: unknown }).id === id);
+  } catch {
+    return false;
+  }
 }
 
 // ----- Finding a report -----
@@ -348,8 +407,8 @@ export async function main(
   let beadType: BeadType | undefined;
   let priority = 2;
   if (cmd === "bead") {
-    title = oneLine(values.title ?? "");
-    summary = clean(values.summary ?? "", true).trim();
+    title = oneLine(scrub(values.title ?? ""));
+    summary = clean(scrub(values.summary ?? ""), true).trim();
     if (!title) return bad("--title is required");
     if (Array.from(title).length > TITLE_MAX) return bad(`--title can be at most ${TITLE_MAX} characters`);
     if (Array.from(summary).length > SUMMARY_MAX) return bad(`--summary can be at most ${SUMMARY_MAX} characters`);
@@ -361,19 +420,23 @@ export async function main(
       if (!/^[0-4]$/.test(values.priority)) return bad("--priority must be 0 to 4");
       priority = Number(values.priority);
     }
-    for (const [name, text] of [["--title", title], ["--summary", summary]] as const) {
-      const why = unsafeText(text);
+    for (const [name, texts] of [["--title", [title]], ["--summary", [summary]], ["--title and --summary together", joined(title, summary)]] as const) {
+      const why = texts.map(unsafeText).find((w) => w !== undefined);
       if (why) return bad(`Refused: ${name} has ${why}. Nothing was read, created or changed.`);
     }
   }
   let beadId = "";
   if (cmd === "record") {
-    if (!values.bead || !BEAD_ID.test(values.bead)) return bad("--bead must be a bead ID");
+    if (!values.bead || !BEAD_ID.test(values.bead)) return bad("--bead must be a bead ID of this project (supply-checkout-...)");
     beadId = values.bead;
+    if (!beadExists(beadId, deps.runBd ?? spawnBd)) {
+      err(`Refused: bd can't show a bead ${beadId}: nothing was read or changed`);
+      return 1;
+    }
   }
   let reason = "";
   if (cmd === "dismiss") {
-    reason = oneLine(values.reason ?? "");
+    reason = oneLine(scrub(values.reason ?? ""));
     if (!reason) return bad("--reason is required");
     if (Array.from(reason).length > DISMISS_REASON_MAX) return bad(`--reason can be at most ${DISMISS_REASON_MAX} characters`);
     const why = unsafeText(reason);
@@ -382,6 +445,17 @@ export async function main(
 
   // Where
   if (!values.table || !values.region) return bad("--table and --region are required");
+  if (values.endpoint !== undefined) {
+    let url: URL | undefined;
+    try {
+      url = new URL(values.endpoint);
+    } catch {
+      url = undefined;
+    }
+    if (!url || url.protocol !== "http:" || !LOCAL_HOSTS.has(url.hostname) || url.username || url.password) {
+      return bad("--endpoint must be an http URL on localhost, 127.0.0.1 or [::1]");
+    }
+  }
   if (!values.endpoint && !values.profile) return bad("--profile is required (or --endpoint for DynamoDB Local)");
   if (!values.endpoint && !APP_TABLE.test(values.table)) return bad(`--table must be an app table, supply-checkout-<env>-app: ${values.table}`);
   const expectAccount = values["expect-account"];
@@ -441,24 +515,39 @@ export async function main(
         err(`Report ${shortOf(report)} is ${report.status}, not new: no bead was created`);
         return 1;
       }
-      for (const [name, text] of [["--title", title], ["--summary", summary]] as const) {
-        if (quotesReport(text, report)) {
+      for (const [name, texts] of [["--title", [title]], ["--summary", [summary]], ["--title and --summary together", joined(title, summary)]] as const) {
+        if (texts.some((text) => quotesReport(text, report))) {
           err(`Refused: ${name} holds the report's own words. Write it in your own words. No bead was created.`);
           return 1;
         }
+      }
+      if (namesReportIds(`${title}\n${summary}`, report)) {
+        err("Refused: the text names the report's team, user or report ID. No bead was created.");
+        return 1;
       }
       const type = beadType ?? CATEGORY_TYPE[report.category] ?? "task";
       const label = CATEGORY_TYPE[report.category] ?? "task";
       let id: string;
       try {
-        id = (deps.createBead ?? bdCreate)({ title, type, priority, labels: [label, "client"], notes: `Report ${shortOf(report)}`, description: summary });
+        const request = { title, type, priority, labels: [label, "client"], notes: `Report ${shortOf(report)}`, description: summary };
+        id = deps.createBead ? deps.createBead(request) : bdCreate(request, deps.runBd ?? spawnBd);
       } catch (e) {
-        err(`No bead was created: ${(e as Error).message}`);
+        err((e as Error).message);
         return 1;
       }
       try {
         await recordFeedbackBead(db, report.teamId, report.reportId, id, (deps.now ?? (() => new Date()))());
       } catch (e) {
+        if (e instanceof ConflictError) {
+          // Someone triaged or dismissed it between our read and the write: the retry would fail the same way
+          const now = await getFeedback(db, report.teamId, report.reportId).catch(() => undefined);
+          err(
+            now?.status === "triaged" && now.beadId
+              ? `Report ${shortOf(report)} is already triaged with bead ${now.beadId}; bead ${id} you just made is a duplicate: close it.`
+              : `Report ${shortOf(report)} is ${now?.status ?? "no longer new"} now; bead ${id} you just made isn't linked to it: close it, or link it with the record command if it's still wanted.`,
+          );
+          return 1;
+        }
         err(`Bead ${id} was created, but the report wasn't marked triaged (${(e as Error).name}). Record it with:`);
         err(`  ${recordCommand(values, report.teamId, report.reportId, id)}`);
         return 1;
@@ -474,8 +563,8 @@ export async function main(
     }
 
     // dismiss: the reason is the owner's, kept on the report; it must not quote the report either
-    if (quotesReport(reason, report)) {
-      err("Refused: --reason holds the report's own words. Nothing was changed.");
+    if (quotesReport(reason, report) || namesReportIds(reason, report)) {
+      err("Refused: --reason holds the report's own words or IDs. Nothing was changed.");
       return 1;
     }
     const done = await dismissFeedback(db, report.teamId, report.reportId, { reason, at: (deps.now ?? (() => new Date()))() });

@@ -14,6 +14,8 @@ import { fakeDb } from "./helpers.js";
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const TEAM = "team-a";
 const REPORT = "a".repeat(32);
+/** An import of an owner-only module: feedback-owner.ts (the CLI's data code) or owner-aws.ts (the owner's AWS lookups). */
+const IMPORT = /\b(?:from|import|require)\s*\(?\s*["'][^"']*(?:feedback-owner|owner-aws)/;
 
 function sources(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -23,15 +25,17 @@ function sources(dir: string): string[] {
 }
 
 describe("no Lambda bundle can import the owner's report functions", () => {
-  it("is imported by no file under src/ (Lambda entries and what they import all live there)", () => {
+  it("is imported by no file under src/ (Lambda entries and what they import all live there), nor is owner-aws", () => {
     const importers = sources(SRC)
       .filter((file) => !file.endsWith("feedback-owner.ts"))
-      .filter((file) => /(?:from|import\s*\(|require\s*\()\s*["'][^"']*feedback-owner/.test(readFileSync(file, "utf8")));
+      .filter((file) => IMPORT.test(readFileSync(file, "utf8")));
     expect(importers.map((f) => f.slice(SRC.length))).toEqual([]);
   });
 
-  it("looks for static, dynamic and CommonJS imports", () => {
-    const IMPORT = /(?:from|import\s*\(|require\s*\()\s*["'][^"']*feedback-owner/;
+  it("looks for static, side-effect, dynamic and CommonJS imports of either owner-only module", () => {
+    expect(IMPORT.test('import "./feedback-owner.js";')).toBe(true);
+    expect(IMPORT.test('import "../../scripts/owner-aws.js";')).toBe(true);
+    expect(IMPORT.test('export * from "./feedback-owner.js";')).toBe(true);
     expect(IMPORT.test('import { listFeedback } from "./feedback-owner.js";')).toBe(true);
     expect(IMPORT.test('const m = await import("../data/feedback-owner.js");')).toBe(true);
     expect(IMPORT.test('// see feedback-owner.ts')).toBe(false);
