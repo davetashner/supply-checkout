@@ -512,7 +512,7 @@ The `api` stack (`lib/stacks/api-stack.ts`, [ADR 0006](adr/0006-api-and-realtime
 | `PATCH /me/preferences` (the caller's own app preferences: the What's New banner on or off, and the local day it was last shown; [openapi.yaml](api/openapi.yaml)) | Cognito access token | `account` |
 | `GET /teams/{teamId}/members`, `PATCH` and `DELETE` `/teams/{teamId}/members/{userId}` (members and roles: owners only, except leaving) | Cognito access token | `account` |
 | `GET` and `POST /teams/{teamId}/invites`, `DELETE /teams/{teamId}/invites/{inviteId}`, `POST /teams/{teamId}/invites/{inviteId}/resend` (invites: owners only) | Cognito access token | `account` |
-| `POST /teams/{teamId}/feedback` (a member's report from the Report an issue form; any role, a viewer too; stored privately, [Reports](#reports-report-an-issue)) | Cognito access token | `account` |
+| `POST /teams/{teamId}/feedback` (a member's report from the Report an issue form; any role, a viewer too; stored privately, Reports, Report an issue, below) | Cognito access token | `account` |
 | `POST /teams/{teamId}/billing/checkout` (start Stripe Checkout) and `POST /teams/{teamId}/billing/portal` (open the Stripe Customer Portal); owners only; see [Billing](#billing) | Cognito access token | `billing` |
 | `POST /auth/session`, `/auth/refresh`, `/auth/sign-out` | Refresh-token cookie and `Origin` | `auth` |
 | `GET /teams/{teamId}/support-actions` (what Supply Checkout support did to the team; owners only) | Cognito access token | `data` |
