@@ -6,6 +6,8 @@
 //
 // A line containing "public-safety: allow" is skipped. Use it only for
 // deliberate examples, never for real values.
+// gitleaks has its own marker, gitleaks:allow; a fake key
+// on one line needs both (docs/testing.md, "Fake secrets in tests").
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { RULES } from "./public-safety-rules.mjs";

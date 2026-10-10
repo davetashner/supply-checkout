@@ -33,7 +33,7 @@ describe("the text a bead may carry", () => {
     ["an email address", "support@supplycheckout.com is mentioned"],
     ["a 12-digit number (an AWS account ID?)", "Failed in 123456789012"],
     ["an SSO URL", "see https://d-1234567890.awsapps.com/start"], // public-safety: allow
-    ["something check-public-safety refuses (AWS access key)", "key AKIAABCDEFGHIJKLMNOP leaked"], // public-safety: allow
+    ["something check-public-safety refuses (AWS access key)", "key AKIAABCDEFGHIJKLMNOP leaked"], // public-safety: allow, gitleaks:allow
   ])("refuses %s", (why, text) => {
     expect(unsafeText(text)).toBe(why);
   });
