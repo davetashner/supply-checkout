@@ -468,7 +468,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.infra == 'true' && needs.changes.outputs.beads_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # About 7.5 minutes with coverage on; the cap leaves room for a slow runner
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: infra
