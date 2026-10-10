@@ -65,6 +65,11 @@ export interface JourneyAlarmSpec {
    * so the alarm would never see data anywhere else.
    */
   readonly primaryOnly?: boolean;
+  /**
+   * Notify only when it goes into ALARM, not when it recovers: for an alarm
+   * that is a notification (a report arrived), where the OK email is noise.
+   */
+  readonly alarmOnly?: boolean;
 }
 
 export interface JourneyAlarmsProps {
@@ -124,6 +129,12 @@ export const RECEIPT_READS_ALARM_PER_DAY = Math.round(BEDROCK_SPEND_ALARM_USD_PE
  */
 export const NEEDS_ATTENTION_PERIOD = Duration.minutes(15);
 export const NEEDS_ATTENTION_PERIODS = 8;
+
+/**
+ * "Report received" (supply-checkout-bmsh.4): FeedbackReceived summed over 5
+ * minutes, alarming at 1 or more (GREATER_THAN_THRESHOLD, so threshold 0).
+ */
+export const REPORT_RECEIVED_THRESHOLD = 0;
 
 /**
  * Closed teams set aside at once that "Many closed-team subscriptions set
@@ -341,6 +352,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: `InvitesSent above ${INVITE_SURGE_PER_HOUR} in an hour, across every team: far more than crews joining, so a bug resending invites, or free trial teams used to send mail. Per-team, per-address and per-inviter daily limits bound each sender; this is the account-wide watch (SES's own quota is the hard ceiling, see Near the sending limit).`,
       metric: business(BusinessMetric.InvitesSent, region, Duration.hours(1)),
       threshold: INVITE_SURGE_PER_HOUR,
+    },
+    {
+      id: "report-received",
+      title: "Report received",
+      journeys: "Reports",
+      severity: "P2",
+      rule: "A user sent a report. List new reports with: npm run feedback list (see docs/infrastructure.md, Triaging reports). FeedbackReceived summed over 5 minutes is 1 or more. It emails when it goes into ALARM only, once for any number of reports in a period, and again after a period with none; it carries no report content.",
+      metric: business(BusinessMetric.FeedbackReceived, region, FIVE_MINUTES),
+      threshold: REPORT_RECEIVED_THRESHOLD,
+      alarmOnly: true,
     },
     {
       id: "email-bouncing",
@@ -660,7 +681,8 @@ export class JourneyAlarms extends Construct {
         datapointsToAlarm: spec.datapoints ?? spec.periods ?? 1,
         treatMissingData: spec.missingBreaches ? TreatMissingData.BREACHING : TreatMissingData.NOT_BREACHING,
       });
-      props.topics.notify(alarm, spec.severity);
+      if (spec.alarmOnly) props.topics.notifyOnAlarm(alarm, spec.severity);
+      else props.topics.notify(alarm, spec.severity);
       this.alarms.push(alarm);
     }
   }

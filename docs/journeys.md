@@ -361,6 +361,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Imports stuck | J2 | P2 | As below, from the stuck-import check. In the primary region only, where the check runs. |
 | Near the sending limit | J3 | P2 | As below. It reads the SES quota check's gauge, and is in the primary region only, where the check runs. Email verification not saved and Email codes failing alert through Needs attention. |
 | Invite surge | J3 | P2 | As below: `InvitesSent` summed over every team |
+| Report received | Reports | P2 | `FeedbackReceived` summed over 5 minutes, 1 or more, notifying on ALARM only (`supply-checkout-bmsh.4`); not a blocked journey: it tells the owner a user sent a report. [Details](observability.md): the Reports entry |
 | Email bouncing, Email complaints | J3 | P1 | SES reputation metrics, as below |
 | Email events dropped | J3 | P2 | As below |
 | Writes rejected | J4 | P2 | `ConditionalWriteConflicts` ÷ `Writes`, at least 20 writes |
