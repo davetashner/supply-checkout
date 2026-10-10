@@ -22,6 +22,7 @@
 // (GET /teams/{teamId}/support-actions, ADR 0015).
 import { esc } from "../format.js";
 import { armButton, openModal, closeModal, toast } from "../dom.js";
+import { avatarHTML } from "../avatar.js";
 
 const ROLES = [
   ["owner", "Owner", "Everything, including members and billing"],
@@ -67,8 +68,9 @@ const failure = (e, what) =>
 // their email. A member chooses their own name, so the row also shows the email under it.
 const who = (m) => m.name || m.email;
 
-// `fixed`: roles can't change (a closed team, or one read-only for billing)
-function rowHTML(m, me, owners, closed, fixed) {
+// `fixed`: roles can't change (a closed team, or one read-only for billing). `photo` is the
+// member's photo link, or null for their initials.
+function rowHTML(m, me, owners, closed, fixed, photo) {
   const you = m.userId === me;
   const name = (m.name
     ? `${esc(m.name)}${you ? ` <span class="muted">(you)</span>` : ""}<br><span class="muted member-email">${esc(m.email || "No email address")}</span>`
@@ -77,6 +79,7 @@ function rowHTML(m, me, owners, closed, fixed) {
   const last = m.role === "owner" && owners === 1 && !closed;
   const options = ROLES.map(([id, label]) => `<option value="${id}"${id === m.role ? " selected" : ""}>${label}</option>`).join("");
   return `<li class="member" data-user="${esc(m.userId)}">
+    ${avatarHTML(photo, who(m), 32, m.userId)}
     <span class="member-name">${name}</span>
     <select aria-label="Role for ${esc(who(m) || "this member")}"${last || fixed ? " disabled" : ""}>${options}</select>
     <button type="button" class="btn danger" data-remove${last ? " disabled" : ""}>${you ? "Leave" : "Remove"}</button>
@@ -331,8 +334,8 @@ function wireSupport(api, team, m) {
 
 // `leave` runs when the owner changes their own role, leaves or closes the team: their access
 // changed, so the page starts again (account.js). `invited` runs when an invite is sent or
-// re-sent (the first-run checklist's step).
-export function openMembers(api, team, me, leave, invited) {
+// re-sent (the first-run checklist's step). `photoOf(userId)` is a member's photo link, or null.
+export function openMembers(api, team, me, leave, invited, photoOf) {
   const path = `/teams/${encodeURIComponent(team.id)}/members`;
   const closed = !!team.closedAt;
   // Read-only for billing (/me's subscriptionEnded): members can be removed, but not invited or given another role
@@ -390,7 +393,7 @@ export function openMembers(api, team, me, leave, invited) {
     function draw() {
       seats();
       const owners = members.filter((x) => x.role === "owner").length;
-      list.innerHTML = `<ul class="members">${members.map((x) => rowHTML(x, me, owners, closed, closed || ended)).join("")}</ul>`
+      list.innerHTML = `<ul class="members">${members.map((x) => rowHTML(x, me, owners, closed, closed || ended, photoOf(x.userId))).join("")}</ul>`
         + (owners === 1 && !closed ? `<p class="hint">A team needs at least one owner. To step down, make someone else an owner first.</p>` : "");
       list.querySelectorAll(".member").forEach((row) => {
         const member = members.find((x) => x.userId === row.dataset.user);

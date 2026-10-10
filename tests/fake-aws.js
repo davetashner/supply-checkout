@@ -6,6 +6,7 @@
 //
 // The API is served from the app's own origin (under /_api), so the tests need no CORS.
 // tests/content-security-policy.spec.js covers the real cross-origin setup.
+import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { builtFiles } from "../scripts/builds.mjs";
 import { GLOBAL_SERVICES_REGION } from "../infra/lib/config.ts";
@@ -19,6 +20,10 @@ export const CONFIG = { apiUrl: API, authUrl: AUTH, clientId: "test-client", rea
 // plane's endpoints in its region. Not in CONFIG, so the other suites never load the client.
 export const RUM_REGION = GLOBAL_SERVICES_REGION;
 export const RUM = { rumAppMonitorId: "monitor-1", rumIdentityPoolId: `${RUM_REGION}:pool-1`, rumRegion: RUM_REGION };
+// Where the photos bucket's short-lived links point (S3 presigned GETs in the real API)
+export const PHOTO_HOST = "https://photos.supply-checkout.test";
+// A teammate's photo: any image the browser can draw does
+export const PHOTO = readFileSync(new URL("./assets/maria-lopez.png", import.meta.url));
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "POST" };
 const AWS = /^https:\/\/[^/]+\.amazonaws\.com\//;
 
@@ -102,10 +107,18 @@ export class FakeBackend {
   // the invites its owners see there (invites is the signed-in user's own, for /me)
   // supportActions: { "<teamId>": [{ eventId, ts, actor, action, reason, before, after }] }, newest first
   // settings: { "<teamId>": { equipmentMarkup, version } }, the team settings (ADR 0017)
+  // photos: { "<userId>": Buffer }, profile photos (supply-checkout-6uw.30); the API has photos
+  // when user.photoUrl is there (null for none); photoUploads: the user's uploads today
   // receipt: what POST /teams/{teamId}/receipts/read answers (the lines, with `match` as
   // product keys); receiptLimit: the team's receipts a month (RECEIPTS_PER_TEAM_PER_MONTH), or
   // in all for a trial (receiptPeriod "trial", RECEIPTS_PER_TRIAL)
-  constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, supportActions = {}, settings = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600, receipt = { store: null, date: null, items: [], subtotal: null, tax: null, total: null }, receiptLimit = 200, receiptPeriod = "month" } = {}) {
+  constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, supportActions = {}, settings = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600, receipt = { store: null, date: null, items: [], subtotal: null, tax: null, total: null }, receiptLimit = 200, receiptPeriod = "month", photos = {}, photoUploads = 0 } = {}) {
+    // Profile photos by user, the photo ID in each one's links, and the links' generation: links
+    // from an earlier generation have expired (expirePhotoLinks)
+    this.photos = new Map(Object.entries(photos));
+    this.photoUploads = photoUploads;
+    this.photoIds = 0;
+    this.photoGen = 1;
     Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), supportActions: clone(supportActions), settings: clone(settings), user, signedIn, claims, config, expiresIn, receipt: clone(receipt), receiptLimit, receiptPeriod });
     // Receipts read per team, as the API counts them (backend/src/data/usage.ts)
     this.receiptsRead = {};
@@ -164,6 +177,20 @@ export class FakeBackend {
     return this.docs.get(key).version;
   }
   doc(team, coll, id) { return this.docs.get(`${team}/${coll}/${id}`); }
+
+  // A short-lived link to a user's photo, as S3 presigns it: a new one each time
+  photoLink(userId) {
+    return this.photos.has(userId) ? `${PHOTO_HOST}/photos/${encodeURIComponent(userId)}.jpg?X-Amz-Expires=3600&X-Amz-Signature=g${this.photoGen}-${++this.photoIds}` : null;
+  }
+  // Every link given out so far stops working, as an hour passing does
+  expirePhotoLinks() { this.photoGen++; }
+  // The bucket: a photo for a link of this generation, else S3's 403
+  servePhoto(route) {
+    const url = new URL(route.request().url()), user = decodeURIComponent(url.pathname.replace(/^\/photos\/|\.jpg$/g, ""));
+    const fresh = (url.searchParams.get("X-Amz-Signature") || "").startsWith(`g${this.photoGen}-`);
+    if (!fresh || !this.photos.has(user)) return route.fulfill({ status: 403, contentType: "application/xml", body: "<Error><Code>AccessDenied</Code></Error>" });
+    return route.fulfill({ status: 200, contentType: "image/jpeg", headers: { "x-content-type-options": "nosniff" }, body: this.photos.get(user) });
+  }
   requests(method, path) { return this.calls.filter((c) => c.method === method && (typeof path === "string" ? c.path === path : path.test(c.path))); }
 
   issue() {
@@ -244,7 +271,8 @@ export class FakeBackend {
     if (!this.token || (bearer !== "Bearer " + this.token && !(this.shareTokens && this.issued.has(bearer.slice(7))))) return [401, { message: "Unauthorized" }];
 
     if (path === "/me" && method === "DELETE") return this.deleteAccount(call.body, err);
-    if (path === "/me") return [200, { user: this.user, teams: this.teams, invites: this.invites }];
+    if (path === "/me") return [200, { user: this.user.photoUrl === undefined ? this.user : { ...this.user, photoUrl: this.photoLink(this.user.id) }, teams: this.teams, invites: this.invites }];
+    if (path === "/me/photo") return this.ownPhoto(method, call.body);
     // The user's own preferences (supply-checkout-005.17), as the account API checks them: either
     // field, of the right type. Only for a user that has them (an API from before them has no route)
     if (path === "/me/preferences" && method === "PATCH") {
@@ -320,6 +348,9 @@ export class FakeBackend {
     if (m && method === "POST") return this.closeTeam(decodeURIComponent(m[1]), call.body, err);
     m = path.match(/^\/teams\/([^/]+)\/reopen$/);
     if (m && method === "POST") return this.reopenTeam(decodeURIComponent(m[1]), call.body, err);
+
+    m = path.match(/^\/teams\/([^/]+)\/photos$/);
+    if (m && method === "GET") return this.teamPhotos(decodeURIComponent(m[1]), err);
 
     m = path.match(/^\/teams\/([^/]+)\/support-actions$/);
     if (m) return this.support(decodeURIComponent(m[1]), call.query, err);
@@ -444,6 +475,31 @@ export class FakeBackend {
     }
     target.role = body.role;
     return [200, { member: clone(target) }];
+  }
+
+  // The user's own photo as the API takes it (the contract in supply-checkout-6uw.30): a
+  // base64 JPEG of exactly 256 × 256, up to 64 KB, 20 a day; the errors are bare codes
+  ownPhoto(method, body) {
+    const no = (status, error) => [status, { error }];
+    if (method === "DELETE") { this.photos.delete(this.user.id); return [204]; }
+    if (!body || Object.keys(body).join() !== "image" || typeof body.image !== "string") return no(400, "photo_invalid");
+    const bytes = Buffer.from(body.image, "base64");
+    if (bytes.length > 64 * 1024) return no(413, "photo_too_large");
+    const size = jpegSize(bytes);
+    if (!size || size.width !== 256 || size.height !== 256) return no(400, "photo_invalid");
+    if (this.photoUploads >= 20) return no(429, "photo_limit");
+    this.photoUploads++;
+    this.photos.set(this.user.id, bytes);
+    return [200, { photoUrl: this.photoLink(this.user.id) }];
+  }
+
+  // A link to each photo of the team's current members (and the user), for any member
+  teamPhotos(team, err) {
+    if (!this.teams.some((t) => t.id === team)) return err(403, "permission_denied", "not_member");
+    const ids = [this.user.id, ...(this.members[team] || []).map((x) => x.userId)];
+    // The last list, for tests
+    this.photoList = Object.fromEntries(ids.filter((id) => this.photos.has(id)).map((id) => [id, this.photoLink(id)]));
+    return [200, { photos: clone(this.photoList) }];
   }
 
   // What support did to the team, as owners read it: a page of `limit`, and a cursor for the next
@@ -817,6 +873,18 @@ export class FakeBackend {
   }
 }
 
+// A JPEG's frame size, from its SOF0, SOF1 or SOF2 marker; null for anything else
+export function jpegSize(b) {
+  if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8 || b[2] !== 0xff) return null;
+  for (let i = 2; i + 9 < b.length;) {
+    if (b[i] !== 0xff) return null;
+    const marker = b[i + 1];
+    if (marker >= 0xc0 && marker <= 0xc2) return { height: b.readUInt16BE(i + 5), width: b.readUInt16BE(i + 7) };
+    i += 2 + b.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
 // In the page, before the app: a stand-in for AppSync Events' WebSocket. By default it
 // opens, acknowledges and subscribes; window.__wsMode changes that for later sockets.
 export function installFakeSocket(mode) {
@@ -897,6 +965,7 @@ export async function openAws(page, backend, { path = "/", ws = {}, storage } = 
   await page.route(ABORTED, (r) => r.abort());
   await page.route(AUTH + "/**", (r) => { backend.authRequests.push(r.request().url()); return r.fulfill({ status: 204 }); });
   await page.route(ORIGIN + "/**", (r) => backend.route(r));
+  await page.route(PHOTO_HOST + "/**", (r) => backend.servePhoto(r));
   await page.addInitScript(installFakeSocket, ws);
   if (storage) {
     await page.addInitScript((s) => {
