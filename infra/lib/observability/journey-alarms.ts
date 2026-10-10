@@ -222,9 +222,9 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
     {
       id: "security-attention",
       title: "Security attention",
-      journeys: "J0, J11",
+      journeys: "J0",
       severity: "P2",
-      rule: `Any SecurityAttention in 15 minutes, and until 2 hours pass without one: one of the security events in SECURITY_ATTENTION_METRICS (backend/src/observability/names.ts) happened: a sign-out whose refresh token Cognito didn't revoke (SignOutRevokeFailures), an account not told of a security change (SecurityNoticeFailures), or a deletion record rewritten (DeletionRecordRewrites). Apart from Needs attention, so an ordinary event that keeps it in alarm can't hide these: an alarm already in ALARM doesn't email again, so look at each metric, not only the first email. Runbook: docs/observability.md, When Security attention fires.`,
+      rule: `Any SecurityAttention in 15 minutes, and until 2 hours pass without one: one of the security events in SECURITY_ATTENTION_METRICS (backend/src/observability/names.ts) happened: a sign-out whose refresh token Cognito didn't revoke (SignOutRevokeFailures), or an account not told of a security change (SecurityNoticeFailures). A deletion record rewritten has an alarm of its own, which nothing else can hold in ALARM. Apart from Needs attention, so an ordinary event that keeps it in alarm can't hide these: an alarm already in ALARM doesn't email again, so look at each metric, not only the first email. Runbook: docs/observability.md, When Security attention fires.`,
       metric: business(BusinessMetric.SecurityAttention, region, NEEDS_ATTENTION_PERIOD),
       threshold: 0,
       periods: NEEDS_ATTENTION_PERIODS,

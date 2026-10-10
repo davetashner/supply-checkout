@@ -9,11 +9,12 @@ import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup } from "aws-cdk-lib/aws-logs";
 import { Construct } from "constructs";
 import { DELETION_PREFIXES, DELETIONS_ENV, LIFECYCLE_EXPIRATION, deletionsBucketName } from "../../../backend/src/deletions/names.js";
+import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import { opsResourceNames } from "../../../backend/src/ops/names.js";
 import { bundling } from "../stacks/api-stack.js";
 import type { AlarmTopics } from "./alarm-topics.js";
 import { LOG_RETENTION } from "./defaults.js";
-import { FIVE_MINUTES } from "./metrics.js";
+import { business, FIVE_MINUTES } from "./metrics.js";
 
 const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
 
@@ -63,9 +64,11 @@ export interface DeletionRecordsWatchProps {
  *   record's, and any write to a record's key that now has more than one
  *   version or a delete marker (S3's events don't say whether a write replaced
  *   an object, so it lists the key's versions).
- * - DeletionRecordRewrites alarms through "Needs attention" (P2, its
- *   NEEDS_ATTENTION_METRICS, journey-alarms.ts), which replaced its own
- *   "Deletion record rewritten" alarm (supply-checkout-7pe.1).
+ * - `rewritten`: P2 when DeletionRecordRewrites is above 0 in 5 minutes
+ *   ("Deletion record rewritten"). An alarm of its own, never part of an
+ *   aggregate like "Needs attention" or "Security attention": an alarm in
+ *   ALARM doesn't email again, and users can hold those in ALARM, so this one
+ *   must be the only thing that sets it off (supply-checkout-7pe.1).
  * - `failing`: P2 when the watch misses an event ("Deletion records watch
  *   failing"): events Lambda dropped after its retries (AsyncEventsDropped),
  *   and invocations EventBridge couldn't make (FailedInvocations). After
@@ -93,6 +96,7 @@ export interface DeletionRecordsWatchProps {
 export class DeletionRecordsWatch extends Construct {
   readonly fn: NodejsFunction;
   readonly rule: Rule;
+  readonly rewritten: Alarm;
   readonly failing: Alarm;
   readonly bucketChanges: Rule;
 
@@ -138,6 +142,19 @@ export class DeletionRecordsWatch extends Construct {
       },
     });
     this.rule.addTarget(new LambdaFunction(this.fn, { retryAttempts: 2, maxEventAge: Duration.hours(1) }));
+
+    this.rewritten = new Alarm(this, "Rewritten", {
+      alarmName: `supply-checkout-${props.envName}-p2-deletion-record-rewritten`,
+      alarmDescription:
+        "P2. Deletion record rewritten: a deletion record was written over, deleted or hidden behind a delete marker, or something that isn't a record was written to the bucket. " +
+        "The watch's log has the version and request IDs. Runbook: docs/backups.md, When a deletion record is rewritten.",
+      metric: business(BusinessMetric.DeletionRecordRewrites, props.region, FIVE_MINUTES),
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+    props.topics.notify(this.rewritten, "P2");
 
     this.failing = new Alarm(this, "Failing", {
       alarmName: `supply-checkout-${props.envName}-p2-deletion-records-watch-failing`,

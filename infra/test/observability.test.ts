@@ -1010,9 +1010,9 @@ describe("alarms added with the email code routes, the live update budget, team 
     ].sort());
     // The trial cap's, once a day, from the receipts function itself; the security events through Security attention
     expect(NEEDS_ATTENTION_ONCE_A_DAY).toEqual([BusinessMetric.ReceiptTrialCapReached]);
-    expect([...SECURITY_ATTENTION_METRICS].sort()).toEqual([BusinessMetric.DeletionRecordRewrites, BusinessMetric.SecurityNoticeFailures, BusinessMetric.SignOutRevokeFailures]);
+    expect([...SECURITY_ATTENTION_METRICS].sort()).toEqual([BusinessMetric.SecurityNoticeFailures, BusinessMetric.SignOutRevokeFailures]);
     const names = Object.values(observability().findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
-    for (const gone of ["sign-out-not-revoking", "security-notices-failing", "welcome-emails-failing", "welcome-emails-refused", "password-reset-hints-capped", "email-verification-not-saved", "email-codes-failing", "receipt-trials-paused", "seat-counts-drifting", "entitlements-drifting", "team-closed-notices-failing", "team-reopened-notices-failing", "reopened-team-subscription-ended", "reopen-resync-late", "reopened-team-subscription-undecided", "closed-team-charged", "closed-team-subscription-not-found", "stripe-customer-already-deleted", "held-team-purged", "lapse-job-failing", "lapse-closures-held", "lapse-checkout-held", "deletion-record-rewritten"]) {
+    for (const gone of ["sign-out-not-revoking", "security-notices-failing", "welcome-emails-failing", "welcome-emails-refused", "password-reset-hints-capped", "email-verification-not-saved", "email-codes-failing", "receipt-trials-paused", "seat-counts-drifting", "entitlements-drifting", "team-closed-notices-failing", "team-reopened-notices-failing", "reopened-team-subscription-ended", "reopen-resync-late", "reopened-team-subscription-undecided", "closed-team-charged", "closed-team-subscription-not-found", "stripe-customer-already-deleted", "held-team-purged", "lapse-job-failing", "lapse-closures-held", "lapse-checkout-held"]) {
       expect(names.filter((n) => n.endsWith(`-${gone}`)), gone).toEqual([]);
     }
   });
@@ -1677,17 +1677,20 @@ describe("dashboard", () => {
  *   1 for an alarm on one metric, else each MetricStat in its Metrics (metric
  *   math expressions themselves are free). An anomaly detection band adds 2,
  *   and a high-resolution alarm (a period under a minute) costs 3 times as much.
- *   The limit is 76 metrics (about $6.60 a month, half of before) plus 1 for
- *   "Security attention": the security events have an alarm apart from
- *   "Needs attention" because an alarm already in ALARM doesn't email again,
- *   so an ordinary event that keeps Needs attention in ALARM would otherwise
- *   hide them (the security review of supply-checkout-7pe.1).
+ *   The limit is 76 metrics (about $6.60 a month, half of before) plus 2, from
+ *   the security reviews of supply-checkout-7pe.1. An alarm already in ALARM
+ *   doesn't email again, so a source that keeps an aggregate in ALARM hides
+ *   every other source behind it: "Security attention" keeps the security
+ *   events apart from "Needs attention" (1), and "Deletion record rewritten"
+ *   keeps its own alarm (1), because a user can make SecurityNoticeFailures
+ *   on demand and hold Security attention in ALARM, while nothing but a
+ *   rewritten deletion record can set that one off.
  * - A dashboard is free up to DASHBOARD_METRICS_LIMIT metrics (3 of them), and
  *   $3 a month over it: every metric a graph names, each time it's named, an
  *   expression's own metrics included. A SEARCH can match any number, so the
  *   deployed dashboard has none.
  */
-const ALARM_METRICS_LIMIT = 77;
+const ALARM_METRICS_LIMIT = 78;
 
 type Json = Record<string, unknown>;
 
@@ -2910,12 +2913,30 @@ describe("deletion records watch (supply-checkout-72d.16)", () => {
     });
   });
 
-  it("alarms P2 on any DeletionRecordRewrites through Security attention, and P2 when the watch misses an event, on the dashboard", () => {
+  it("alarms P2 on any DeletionRecordRewrites in an alarm of its own, which no user can hold in ALARM, and P2 when the watch misses an event, both on the dashboard", () => {
     const t = observability();
     const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
-    // Its own alarm is gone (supply-checkout-7pe.1): the count adds to SecurityAttention
-    expect(alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletion-record-rewritten")).toBeUndefined();
-    expect(SECURITY_ATTENTION_METRICS.has(BusinessMetric.DeletionRecordRewrites)).toBe(true);
+    const rewritten = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletion-record-rewritten");
+    expect(rewritten).toMatchObject({
+      Metrics: [
+        expect.objectContaining({
+          MetricStat: expect.objectContaining({
+            Metric: { Namespace: "SupplyCheckout", MetricName: BusinessMetric.DeletionRecordRewrites, Dimensions: [{ Name: "Region", Value: EAST }] },
+            Period: 300,
+            Stat: "Sum",
+          }),
+        }),
+      ],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+    });
+    expect(rewritten?.AlarmDescription).toContain("docs/backups.md, When a deletion record is rewritten");
+    expect(rewritten?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
+    expect(rewritten?.OKActions).toEqual(rewritten?.AlarmActions);
+    // Its own, not part of an aggregate a user can hold in ALARM (supply-checkout-7pe.1)
+    expect(SECURITY_ATTENTION_METRICS.has(BusinessMetric.DeletionRecordRewrites)).toBe(false);
+    expect(NEEDS_ATTENTION_METRICS.has(BusinessMetric.DeletionRecordRewrites)).toBe(false);
     const failing = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletion-records-watch-failing");
     expect(failing).toMatchObject({ Threshold: 0, ComparisonOperator: "GreaterThanThreshold", TreatMissingData: "notBreaching" });
     // The events Lambda dropped after retries, and invocations EventBridge couldn't make; an error a retry gets past loses nothing
@@ -2929,6 +2950,7 @@ describe("deletion records watch (supply-checkout-72d.16)", () => {
     for (const id of ["dropped", "failed"]) expect(stat(id)?.Stat).toBe("Sum");
     expect(failing?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
     const dashboard = JSON.stringify(Object.values(t.findResources("AWS::CloudWatch::Dashboard"))[0]);
+    expect(dashboard).toMatch(/"DeletionRecordsWatchRewritten[0-9A-F]+","Arn"/);
     expect(dashboard).toMatch(/"DeletionRecordsWatchFailing[0-9A-F]+","Arn"/);
     const west = Object.values(Template.fromStack(build().region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
     expect(west.filter((n) => n.includes("deletion-record"))).toEqual([]);

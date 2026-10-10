@@ -1567,7 +1567,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Security attention (J0, J11, us-east-1). Any SecurityAttention in 15 minutes, and until 2 hours pass without one: one of the security events in SECURITY_ATTENTION_METRICS (backend/src/observability/names.ts) happened: a sign-out whose refresh token Cognito didn't revoke (SignOutRevokeFailures), an account not told of a security change (SecurityNoticeFailures), or a deletion record rewritten (DeletionRecordRewrites). Apart from Needs attention, so an ordinary event that keeps it in alarm can't hide these: an alarm already in ALARM doesn't email again, so look at each metric, not only the first email. Runbook: docs/observability.md, When Security attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Security attention (J0, us-east-1). Any SecurityAttention in 15 minutes, and until 2 hours pass without one: one of the security events in SECURITY_ATTENTION_METRICS (backend/src/observability/names.ts) happened: a sign-out whose refresh token Cognito didn't revoke (SignOutRevokeFailures), or an account not told of a security change (SecurityNoticeFailures). A deletion record rewritten has an alarm of its own, which nothing else can hold in ALARM. Apart from Needs attention, so an ordinary event that keeps it in alarm can't hide these: an alarm already in ALARM doesn't email again, so look at each metric, not only the first email. Runbook: docs/observability.md, When Security attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-security-attention",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
@@ -8594,6 +8594,70 @@
         }
       }
     },
+    "DeletionRecordsWatchRewritten0F9EA081": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2. Deletion record rewritten: a deletion record was written over, deleted or hidden behind a delete marker, or something that isn't a record was written to the bucket. The watch's log has the version and request IDs. Runbook: docs/backups.md, When a deletion record is rewritten.",
+        "AlarmName": "supply-checkout-prod-p2-deletion-record-rewritten",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "DeletionRecordRewrites (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "DeletionRecordRewrites",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "DeletionRecordsWatchFailingD53CC301": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -12880,6 +12944,13 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "DeletionRecordsWatchRewritten0F9EA081",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "DeletionRecordsWatchFailingD53CC301",
                   "Arn"
                 ]
@@ -12909,7 +12980,7 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-east-1\",{\"label\":\"NeedsAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-east-1\",{\"label\":\"SecurityAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-west-2\",{\"label\":\"NeedsAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-west-2\",{\"label\":\"SecurityAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"text\",\"width\":12,\"height\":6,\"x\":12,\"y\":7,\"properties\":{\"markdown\":\"### Which event?\\n\\nNeedsAttention: `WelcomeEmailFailures`, `WelcomeEmailsRefused`, `PasswordResetHintsCapped`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures`, `EmailCodeVerifyFailures`, `SeatQuantityDrift`, `EntitlementDrift`, `TeamClosedNoticeFailures`, `TeamReopenedNoticeFailures`, `ReopenedTeamSubscriptionsEnded`, `ReopenResyncsLate`, `ReopenedTeamSubscriptionsUndecided`, `ClosedTeamRenewalsCharged`, `ClosedTeamSubscriptionsNotFound`, `StripeCustomersAlreadyDeleted`, `HeldTeamsPurged`, `LapseFailures`, `LapseClosuresHeld`, `LapseCheckoutOverdue`, `ReceiptTrialCapReached` (the trial cap once a day).\\n\\nSecurityAttention: `SignOutRevokeFailures`, `SecurityNoticeFailures`, `DeletionRecordRewrites`.\\n\\nAn alarm in ALARM doesn't email again, so look at every metric, not just the first email's. Find it in the metrics console (SupplyCheckout, by Region), or in Logs Insights over the functions' log groups: `filter ispresent(NeedsAttention) or ispresent(SecurityAttention)`. What to do: docs/observability.md, *When Needs attention fires* and *When Security attention fires*.\"}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"API: requests, 4xx and 5xx\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-east-1\",{\"label\":\"NeedsAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-east-1\",{\"label\":\"SecurityAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-west-2\",{\"label\":\"NeedsAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-west-2\",{\"label\":\"SecurityAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"text\",\"width\":12,\"height\":6,\"x\":12,\"y\":7,\"properties\":{\"markdown\":\"### Which event?\\n\\nNeedsAttention: `WelcomeEmailFailures`, `WelcomeEmailsRefused`, `PasswordResetHintsCapped`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures`, `EmailCodeVerifyFailures`, `SeatQuantityDrift`, `EntitlementDrift`, `TeamClosedNoticeFailures`, `TeamReopenedNoticeFailures`, `ReopenedTeamSubscriptionsEnded`, `ReopenResyncsLate`, `ReopenedTeamSubscriptionsUndecided`, `ClosedTeamRenewalsCharged`, `ClosedTeamSubscriptionsNotFound`, `StripeCustomersAlreadyDeleted`, `HeldTeamsPurged`, `LapseFailures`, `LapseClosuresHeld`, `LapseCheckoutOverdue`, `ReceiptTrialCapReached` (the trial cap once a day).\\n\\nSecurityAttention: `SignOutRevokeFailures`, `SecurityNoticeFailures`.\\n\\nAn alarm in ALARM doesn't email again, so look at every metric, not just the first email's. Find it in the metrics console (SupplyCheckout, by Region), or in Logs Insights over the functions' log groups: `filter ispresent(NeedsAttention) or ispresent(SecurityAttention)`. What to do: docs/observability.md, *When Needs attention fires* and *When Security attention fires*.\"}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"API: requests, 4xx and 5xx\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

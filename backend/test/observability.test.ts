@@ -145,15 +145,19 @@ describe("business metrics", () => {
   it("adds every non-zero count of a security event to SecurityAttention instead, so the two alarms can't hide each other (supply-checkout-7pe.1)", () => {
     const obs = createObservability({ service: "auth", env });
     obs.count(BusinessMetric.SignOutRevokeFailures, 1, { reason: "cognito" });
-    obs.count(BusinessMetric.DeletionRecordRewrites, 2);
-    obs.count(BusinessMetric.SecurityNoticeFailures, 0);
+    obs.count(BusinessMetric.SecurityNoticeFailures, 2);
+    obs.count(BusinessMetric.SignOutRevokeFailures, 0);
+    // A deletion record rewritten adds to neither: it has an alarm of its own, which nothing else can hold in ALARM
+    obs.count(BusinessMetric.DeletionRecordRewrites, 3);
     obs.flush();
     const [withMetadata, rest] = emf();
     expect(withMetadata).toMatchObject({ SignOutRevokeFailures: 1, SecurityAttention: 1 });
     expect(withMetadata).not.toHaveProperty("NeedsAttention");
-    expect(rest).toMatchObject({ DeletionRecordRewrites: 2, SecurityNoticeFailures: 0, SecurityAttention: 2 });
+    expect(rest).toMatchObject({ SecurityNoticeFailures: 2, SignOutRevokeFailures: 0, DeletionRecordRewrites: 3, SecurityAttention: 2 });
     expect(rest).not.toHaveProperty("NeedsAttention");
-    expect([...SECURITY_ATTENTION_METRICS].sort()).toEqual([BusinessMetric.DeletionRecordRewrites, BusinessMetric.SecurityNoticeFailures, BusinessMetric.SignOutRevokeFailures]);
+    expect([...SECURITY_ATTENTION_METRICS].sort()).toEqual([BusinessMetric.SecurityNoticeFailures, BusinessMetric.SignOutRevokeFailures]);
+    expect(SECURITY_ATTENTION_METRICS.has(BusinessMetric.DeletionRecordRewrites)).toBe(false);
+    expect(NEEDS_ATTENTION_METRICS.has(BusinessMetric.DeletionRecordRewrites)).toBe(false);
     for (const metric of SECURITY_ATTENTION_METRICS) expect(NEEDS_ATTENTION_METRICS.has(metric), metric).toBe(false);
   });
 

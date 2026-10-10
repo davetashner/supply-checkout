@@ -318,13 +318,15 @@ export const NEEDS_ATTENTION_ONCE_A_DAY: readonly BusinessMetricName[] = [Busine
  * Security events, which alarm together through SecurityAttention ("Security
  * attention", P2), the same way NEEDS_ATTENTION_METRICS do through
  * NeedsAttention, and apart from them (supply-checkout-7pe.1): a sign-out that
- * left a session valid, an account not told of a security change, a deletion
- * record rewritten.
+ * left a session valid, an account not told of a security change.
+ * DeletionRecordRewrites isn't one: a user without a verified or deliverable
+ * address can make SecurityNoticeFailures on demand and hold this alarm in
+ * ALARM, so the deletion records watch, which no user can trigger, keeps an
+ * alarm of its own ("Deletion record rewritten") that nothing else can mask.
  */
 export const SECURITY_ATTENTION_METRICS: ReadonlySet<BusinessMetricName> = new Set<BusinessMetricName>([
   BusinessMetric.SignOutRevokeFailures,
   BusinessMetric.SecurityNoticeFailures,
-  BusinessMetric.DeletionRecordRewrites,
 ]);
 
 /**

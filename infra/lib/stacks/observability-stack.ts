@@ -544,7 +544,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         tableName: table,
         api: { region, apiId },
         web: webIds,
-        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.operatorAudit.changed, this.operatorAudit.dropped, this.operatorAudit.silent, this.operatorGroup.changed, this.operatorGroup.silent, this.deletionRecords.failing, this.photoDownloads, ...(this.supportSmtp?.sends ? [this.supportSmtp.sends] : []), ...(this.supportSmtp?.dailySends ? [this.supportSmtp.dailySends] : [])],
+        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.operatorAudit.changed, this.operatorAudit.dropped, this.operatorAudit.silent, this.operatorGroup.changed, this.operatorGroup.silent, this.deletionRecords.rewritten, this.deletionRecords.failing, this.photoDownloads, ...(this.supportSmtp?.sends ? [this.supportSmtp.sends] : []), ...(this.supportSmtp?.dailySends ? [this.supportSmtp.dailySends] : [])],
       });
     }
   }
