@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/davetashner/supply-checkout/compare/v1.12.0...v1.13.0) (2026-10-10)
+
+
+### Features
+
+* email the owner when a report arrives ([#741](https://github.com/davetashner/supply-checkout/issues/741)) ([c37d86f](https://github.com/davetashner/supply-checkout/commit/c37d86f5c98181b670b147a5378c7a0a387769f7))
+
 ## [1.12.0](https://github.com/davetashner/supply-checkout/compare/v1.11.1...v1.12.0) (2026-10-10)
 
 
