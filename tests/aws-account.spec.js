@@ -270,6 +270,30 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
     await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
   });
 
+  test("a call sent before a refresh and refused after it is sent again with the new token, without a second refresh", async ({ page }) => {
+    await page.clock.install();
+    const backend = new FakeBackend({ docs: seeded(), expiresIn: 360 });
+    await openAws(page, backend);
+    await connected(page);
+    await relisted(backend);
+    // A save goes out with the first token, a few seconds before the scheduled refresh...
+    await page.clock.fastForward(55e3);
+    const release = backend.hold("PUT", /^\/teams\/t1\/projects\//);
+    await page.getByRole("button", { name: "+ New project" }).click();
+    await page.getByLabel("Client", { exact: true }).fill("Refreshed");
+    await page.getByRole("button", { name: "Create project" }).click();
+    await expect.poll(() => backend.requests("PUT", /^\/teams\/t1\/projects\//).length).toBe(1);
+    // ...the scheduled refresh replaces it, and only then is the save refused (as one whose
+    // token expired while the device slept is, after the wake's refresh)
+    await page.clock.fastForward(6e3);
+    await expect.poll(async () => (await lastSocket(page)).token).toBe("at-2");
+    release();
+    await expect.poll(() => backend.requests("PUT", /^\/teams\/t1\/projects\//).map((c) => c.headers.authorization)).toEqual(["Bearer at-1", "Bearer at-2"]);
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(2);
+    await expect(page.getByRole("heading", { name: "Refreshed" })).toBeVisible();
+    expect([...backend.docs.values()].some((d) => d.data.client === "Refreshed")).toBe(true);
+  });
+
   test("signing out while a refresh is in flight waits for it, so the refresh can't sign the user back in", async ({ page }) => {
     await page.clock.install();
     const backend = new FakeBackend({ docs: seeded(), expiresIn: 360 });
