@@ -134,7 +134,7 @@ select{background:var(--ground);border:1px solid var(--line);border-radius:9px;p
 .avatar-96{width:96px;height:96px;font-size:36px}
 .search-row{margin-block:-4px 14px}
 .receipts-left{margin:-6px 0 10px;font-size:13px;text-align:end}
-.year-filter{border-radius:999px;padding:3px 10px;font-size:13px;font-weight:600;color:var(--ink)}
+.year-filter{border-radius:999px;padding:3px 26px 3px 12px;font-size:13px;font-weight:600;color:var(--ink);-webkit-appearance:none;appearance:none;background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);background-position:calc(100% - 15px) 50%,calc(100% - 10px) 50%;background-size:5px 5px;background-repeat:no-repeat}
 .year-group{margin-top:20px}
 .year-head{margin:0 0 10px;font-size:22px}
 .year-toggle{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:8px 2px;cursor:pointer;font:inherit;color:inherit}
