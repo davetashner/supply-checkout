@@ -151,10 +151,10 @@ describe("GET /teams/{teamId}/members", () => {
       status: 200,
       body: {
         members: [
-          { userId: OWNER, name: null, email: "owner@example.com", role: "owner", joinedAt: "2026-09-01T00:00:00.000Z" },
-          { userId: CONTRIBUTOR, name: "Cora Contributor", email: "contributor@example.com", role: "contributor", joinedAt: "2026-09-01T00:00:00.000Z" },
-          { userId: "user-noemail", name: null, email: null, role: "viewer", joinedAt: "2026-09-01T00:00:00.000Z" },
-          { userId: VIEWER, name: null, email: "viewer@example.com", role: "viewer", joinedAt: "2026-09-01T00:00:00.000Z" },
+          { userId: OWNER, name: null, email: "owner@example.com", role: "owner", joinedAt: "2026-09-01T00:00:00.000Z", photoUrl: null },
+          { userId: CONTRIBUTOR, name: "Cora Contributor", email: "contributor@example.com", role: "contributor", joinedAt: "2026-09-01T00:00:00.000Z", photoUrl: null },
+          { userId: "user-noemail", name: null, email: null, role: "viewer", joinedAt: "2026-09-01T00:00:00.000Z", photoUrl: null },
+          { userId: VIEWER, name: null, email: "viewer@example.com", role: "viewer", joinedAt: "2026-09-01T00:00:00.000Z", photoUrl: null },
         ],
       },
     });
@@ -174,7 +174,7 @@ describe("PATCH /teams/{teamId}/members/{userId}", () => {
   it("changes the role on the member, their team switcher and the owner count together", async () => {
     expect(await setRole(VIEWER, "contributor")).toEqual({
       status: 200,
-      body: { member: { userId: VIEWER, name: null, email: "viewer@example.com", role: "contributor", joinedAt: "2026-09-01T00:00:00.000Z" } },
+      body: { member: { userId: VIEWER, name: null, email: "viewer@example.com", role: "contributor", joinedAt: "2026-09-01T00:00:00.000Z", photoUrl: null } },
     });
     expect([roleOf(VIEWER), switcherRole(VIEWER)]).toEqual(["contributor", "contributor"]);
     expect((await setRole(VIEWER, "owner")).status).toBe(200);

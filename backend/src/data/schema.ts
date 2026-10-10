@@ -642,6 +642,15 @@ export const PASSWORD_RESET_RECORD_ATTRIBUTES = [PK, SK, "passwordResetAt"] as c
 export const PREFERENCES_SK = "PREFERENCES";
 
 /**
+ * The sort key of the item in a user's own `USER#<sub>` partition that names
+ * their profile photo (supply-checkout-6uw.30, photos.ts): the current
+ * photo's ID, and the IDs of photos whose objects may still be in the bucket
+ * and are to be deleted. Not a `LIMIT#` key, so deleting an account removes
+ * it (after its photos, api/account-handler.ts).
+ */
+export const PHOTO_SK = "PHOTO";
+
+/**
  * The only attributes the billing-access role may name in the caller's own
  * `USER#<sub>` partition (GetItem and UpdateItem, dynamodb:Attributes): the
  * keys and `totpOnAt`, which no other item has. So the billing function can't

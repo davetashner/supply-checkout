@@ -167,6 +167,9 @@ describe("HTTP API routes", () => {
       "POST /me/mfa/totp/verify": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /me/sign-out-everywhere": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "PATCH /me/preferences": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
+      "PUT /me/photo": { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 3 },
+      "DELETE /me/photo": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "GET /teams/{teamId}/photos": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "POST /teams/{teamId}/billing/checkout": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /teams/{teamId}/billing/portal": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "GET /teams/{teamId}/billing/invoices": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
@@ -502,7 +505,7 @@ describe("account-access role (LeadingKeys)", () => {
     ]);
   });
 
-  it("lets the account function put account deletion records, in the primary region's bucket, and no other function touch S3", () => {
+  it("lets the account function put account deletion records and put, get and delete profile photos, in the primary region's buckets, and no other function touch S3", () => {
     for (const region of [EAST, WEST]) {
       const { template } = api(region);
       const s3 = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>
@@ -519,11 +522,23 @@ describe("account-access role (LeadingKeys)", () => {
             Condition: { Null: { "s3:if-none-match": "false" } },
           },
         ],
+        [
+          expect.stringMatching(/^AccountFunctionRole/),
+          {
+            // Profile photos (supply-checkout-6uw.30): under photos/ only, no ListBucket, no other action
+            Sid: "ProfilePhotos",
+            Effect: "Allow",
+            Action: ["s3:DeleteObject", "s3:GetObject", "s3:PutObject"],
+            Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-photos-${EAST}-`, { Ref: "AWS::AccountId" }, "/photos/*"]] },
+          },
+        ],
       ]);
       const fn = resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("AccountFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> };
       expect(fn.Variables).toMatchObject({
         DELETIONS_BUCKET: { "Fn::Join": ["", [`supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] },
         DELETIONS_REGION: EAST,
+        PHOTOS_BUCKET: { "Fn::Join": ["", [`supply-checkout-prod-photos-${EAST}-`, { Ref: "AWS::AccountId" }]] },
+        PHOTOS_REGION: EAST,
       });
       // Neither the account-access role nor any other role reaches the bucket
       const roles = resources(template, "AWS::IAM::Role").filter(([, r]) => JSON.stringify(r.Properties).includes("s3:"));

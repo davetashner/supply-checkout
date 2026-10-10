@@ -191,6 +191,7 @@ const MEMBER_CASES: Record<string, Omit<Case, "minRole">> = {
   "POST /teams/{teamId}/invites/{inviteId}/resend": { method: "POST", path: `/teams/team-a/invites/${INVITE}/resend` },
   "POST /teams/{teamId}/close": { method: "POST", path: "/teams/team-a/close", body: { name: "team-a" } },
   "POST /teams/{teamId}/reopen": { method: "POST", path: "/teams/team-a/reopen", body: { name: "team-a" } },
+  "GET /teams/{teamId}/photos": { method: "GET", path: "/teams/team-a/photos" },
 };
 const MEMBER_MIN_ROLE: Record<string, TeamRole> = {
   "GET /teams/{teamId}/members": "owner",
@@ -202,6 +203,8 @@ const MEMBER_MIN_ROLE: Record<string, TeamRole> = {
   "POST /teams/{teamId}/invites/{inviteId}/resend": "owner",
   "POST /teams/{teamId}/close": "owner",
   "POST /teams/{teamId}/reopen": "owner",
+  // 'Prepared by' and the signed-in indicator show to every member (supply-checkout-6uw.30)
+  "GET /teams/{teamId}/photos": "viewer",
 };
 
 const TEAM_ACCOUNT_ROUTES = ACCOUNT_ROUTES.filter((r) => r.path.startsWith("/teams/{teamId}"));

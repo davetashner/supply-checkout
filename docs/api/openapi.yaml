@@ -1133,7 +1133,7 @@ paths:
                 properties:
                   user:
                     type: object
-                    required: [id, email, emailVerified, mfa, preferences]
+                    required: [id, email, emailVerified, mfa, preferences, photoUrl]
                     properties:
                       id: { type: string, description: "The user's `sub`." }
                       email: { type: [string, "null"] }
@@ -1143,6 +1143,10 @@ paths:
                         enum: [totp, provider, "off"]
                         description: "Two-step sign-in, which owners need for the billing routes: `totp` (an authenticator app is on), `provider` (a Google or Apple user, whose provider's sign-in counts for it), or `off`."
                       preferences: { $ref: "#/components/schemas/Preferences" }
+                      photoUrl:
+                        type: [string, "null"]
+                        format: uri
+                        description: "A presigned URL for the caller's profile photo (`setPhoto`), good for an hour, or null if they have none (or it couldn't be read). A bearer link: don't log or share it."
                   teams:
                     type: array
                     items: { $ref: "#/components/schemas/Team" }
@@ -1548,6 +1552,103 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           description: "Too many requests: API Gateway's throttle for this route (10 a second across all callers). Try again shortly."
+  /me/photo:
+    put:
+      tags: [account]
+      operationId: setPhoto
+      summary: Set the caller's profile photo.
+      description: |
+        `image` is a 256×256 JPEG, baseline or progressive, grayscale or
+        color, at most 64 KB, in base64 (a `data:image/jpeg;base64,` prefix
+        is allowed): the app crops and re-encodes the picked image to that.
+        Anything else is refused. The server walks the JPEG's structure,
+        refuses anything it doesn't expect (other frame types, data after
+        the end, segments that run past it), drops every APPn and COM
+        segment (EXIF and its GPS, XMP, ICC, comments) and stores the
+        result under a new random ID; the photo it replaces is deleted.
+        Each user may upload 20 photos per UTC day. The photo shows to the
+        caller's teammates (`listPhotos`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [image]
+              properties:
+                image: { type: string, contentEncoding: base64, contentMediaType: image/jpeg }
+      responses:
+        "200":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [photoUrl]
+                properties:
+                  photoUrl: { type: string, format: uri, description: "A presigned URL for the new photo, good for an hour." }
+        "400":
+          description: "`bad_request`: `photo_invalid` (not a 256×256 baseline or progressive JPEG, or not base64), or the body isn't `{ image }`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`aborted`: the account is being deleted, or another upload or removal changed the photo at the same moment (try again)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "413":
+          description: "`quota_exceeded` with `reason: \"photo_too_large\"`: the photo is over 64 KB, or the body over 100 KB."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: "`quota_exceeded` with `reason: \"photo_limit\"`: the caller's 20 uploads for the UTC day are used up. Or API Gateway's throttle for this route (1 a second across all callers)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    delete:
+      tags: [account]
+      operationId: deletePhoto
+      summary: Remove the caller's profile photo.
+      description: Deletes the stored photo; teammates see initials again. Idempotent.
+      responses:
+        "204": { description: "Removed, or there was none." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`aborted`: the account is being deleted, or an upload changed the photo at the same moment (try again)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: "Too many requests: API Gateway's throttle for this route (2 a second across all callers)."
+        "503":
+          description: "`unavailable`: the photo couldn't be deleted from storage just now. Try again: it isn't shown meanwhile."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /teams/{teamId}/photos:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    get:
+      tags: [members]
+      operationId: listPhotos
+      summary: Presigned URLs for the profile photos of the team's members. Any member.
+      description: |
+        For every current member of the team who has a photo, by user ID; a
+        member without one isn't listed, and someone removed from the team
+        is gone from it. Only user IDs and URLs: no names or emails. Each URL
+        is good for an hour (less if the server's own credentials expire
+        sooner): cache them, and fetch this again before then or when an
+        image fails to load. They're bearer links: don't log or share them.
+        S3 answers them with `Content-Type: image/jpeg`.
+      responses:
+        "200":
+          description: The members' photos.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [photos]
+                properties:
+                  photos:
+                    type: object
+                    additionalProperties: { type: string, format: uri }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429":
+          description: "Too many requests: API Gateway's throttle for this route (10 a second across all callers)."
   /teams/{teamId}/members:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     get:
@@ -3371,7 +3472,7 @@ components:
         failedAt: { type: [string, "null"], format: date-time }
     Member:
       type: object
-      required: [userId, name, email, role, joinedAt]
+      required: [userId, name, email, role, joinedAt, photoUrl]
       properties:
         userId: { type: string }
         name:
@@ -3381,6 +3482,7 @@ components:
         email: { type: [string, "null"], description: The address they joined with. }
         role: { type: string, enum: [owner, contributor, viewer] }
         joinedAt: { type: [string, "null"], format: date-time }
+        photoUrl: { type: [string, "null"], format: uri, description: "A presigned URL for their profile photo, good for an hour, or null (as in `listPhotos`)." }
     ReceiptUsage:
       type: object
       description: The team's receipt reads against its allowance (provisional until pricing is decided).
@@ -3408,7 +3510,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_reset, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_reset, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output, photo_invalid, photo_too_large, photo_limit]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -3457,7 +3559,9 @@ components:
                 short time, or the day's trial reads across every trial team are
                 used up; see Retry-After), `model_busy` (the model service is throttling),
                 `model_timeout` (no answer in time) and `invalid_output` (the
-                model's reply couldn't be used).
+                model's reply couldn't be used). Profile photos:
+                `photo_invalid` (not a 256×256 JPEG), `photo_too_large` (over
+                64 KB) and `photo_limit` (the day's uploads are used up).
   responses:
     OperatorsOnly:
       description: "`permission_denied`: the token's user isn't in the `operators` group (now, according to Cognito)."

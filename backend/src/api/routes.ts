@@ -188,7 +188,7 @@ export const PASSWORD_RESET_ROUTES: readonly PasswordResetRoute[] = [
 ];
 
 export interface AccountRoute {
-  readonly method: "GET" | "POST" | "PATCH" | "DELETE";
+  readonly method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   readonly path: string;
   readonly action:
     | "me"
@@ -210,7 +210,10 @@ export interface AccountRoute {
     | "startTotp"
     | "verifyTotp"
     | "signOutEverywhere"
-    | "setPreferences";
+    | "setPreferences"
+    | "setPhoto"
+    | "deletePhoto"
+    | "listPhotos";
   /**
    * API Gateway's throttle for this route across all callers (requests a
    * second, and burst), below the stage's. /me assumes a role per team, so it
@@ -231,6 +234,8 @@ export interface AccountRoute {
  * two-step sign-in, which owners need for billing: setting a password and an
  * authenticator app (TOTP) up (supply-checkout-8jc.12). And the caller's
  * own app preferences, such as the What's New banner (supply-checkout-005.17).
+ * And profile photos (supply-checkout-6uw.30): the caller's own, and their
+ * teammates' for any member of a team.
  * Each needs a Cognito access token (the JWT
  * authorizer). They write the user's own `USER#` rows (or, for a member
  * change, that member's), which the team-scoped data function can't reach,
@@ -267,6 +272,12 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   // The caller's own app preferences (supply-checkout-005.17): a toggle in Account, and the
   // What's New banner recording the day it was shown, at most once a day per person
   { method: "PATCH", path: "/me/preferences", action: "setPreferences", throttle: { rate: 10, burst: 20 } },
+  // Profile photos (supply-checkout-6uw.30): an upload is checked, stripped and stored in S3, so it's
+  // the tightest; each user also has a daily limit (PHOTO_UPLOADS_PER_USER_PER_DAY)
+  { method: "PUT", path: "/me/photo", action: "setPhoto", throttle: { rate: 1, burst: 3 } },
+  { method: "DELETE", path: "/me/photo", action: "deletePhoto", throttle: { rate: 2, burst: 5 } },
+  // Presigned URLs for the team's members' photos, for any member: signed locally, no S3 call
+  { method: "GET", path: "/teams/{teamId}/photos", action: "listPhotos", throttle: { rate: 10, burst: 20 } },
 ];
 
 export interface BillingRoute {

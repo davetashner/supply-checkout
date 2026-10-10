@@ -21,6 +21,14 @@ import {
   deleteUserRows,
   getPreferences,
   setPreferences,
+  getPhotoRecord,
+  stagePhoto,
+  commitPhoto,
+  removePhoto,
+  clearOrphans,
+  setOwnMemberPhoto,
+  PhotoLimitError,
+  PHOTO_UPLOADS_PER_USER_PER_DAY,
   setChecklist,
   checklistOf,
   startAccountDeletion,
@@ -292,6 +300,43 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(await rawItem(db, `USER#${leaving}`, "PREFERENCES")).toBeUndefined();
     });
 
+    // supply-checkout-6uw.30
+    it("keeps a user's photo record in their own partition: staged, committed, replaced, removed and cleared, each on the version it read", async () => {
+      db = table.db;
+      const userId = newUser();
+      const at = new Date("2026-10-09T14:00:00.000Z");
+      const [a, b] = ["a".repeat(32), "b".repeat(32)];
+      const empty = await getPhotoRecord(db, userId);
+      expect(empty).toEqual({ orphans: [], version: 0 });
+      const staged = await stagePhoto(db, userId, empty, a, at);
+      expect(await getPhotoRecord(db, userId)).toEqual({ orphans: [a], version: 1 });
+      // A write on a version it didn't read is refused
+      await expect(stagePhoto(db, userId, empty, b, at)).rejects.toThrow(ConflictError);
+      const first = await commitPhoto(db, userId, staged, a, at);
+      expect(await getPhotoRecord(db, userId)).toEqual({ photoId: a, orphans: [], version: 2 });
+      const replaced = await commitPhoto(db, userId, await stagePhoto(db, userId, first, b, at), b, at);
+      expect(replaced).toEqual({ photoId: b, orphans: [a], version: 4 });
+      expect(await rawItem(db, `USER#${userId}`, "PHOTO")).toEqual({ PK: `USER#${userId}`, SK: "PHOTO", type: "photo", photoId: b, orphans: [a], version: 4, updatedAt: at.toISOString() });
+      const cleared = await clearOrphans(db, userId, replaced, [a], at);
+      const removed = await removePhoto(db, userId, cleared, at);
+      expect(await getPhotoRecord(db, userId)).toEqual({ orphans: [b], version: 6 });
+      expect(removed).toEqual({ orphans: [b], version: 6 });
+      // The day's uploads are counted, with a TTL, and the limit holds
+      expect(await rawItem(db, `USER#${userId}`, "LIMIT#PHOTOS#2026-10-09")).toMatchObject({ count: 2, type: "photoUploads" });
+      let record = await clearOrphans(db, userId, removed, [b], at);
+      for (let i = 2; i < PHOTO_UPLOADS_PER_USER_PER_DAY; i++) record = await clearOrphans(db, userId, await stagePhoto(db, userId, record, "c".repeat(32), at), ["c".repeat(32)], at);
+      await expect(stagePhoto(db, userId, record, "d".repeat(32), at)).rejects.toThrow(PhotoLimitError);
+      // Deleting the account removes the record (deleteUserRows) but not the day's count
+      await deleteUserRows(db, userId);
+      expect(await getPhotoRecord(db, userId)).toEqual({ orphans: [], version: 0 });
+      expect(await rawItem(db, `USER#${userId}`, "LIMIT#PHOTOS#2026-10-09")).toBeDefined();
+      // Never for an account being deleted, in the same transaction
+      const leaving = newUser();
+      await startAccountDeletion(db, leaving, at);
+      await expect(stagePhoto(db, leaving, { orphans: [], version: 0 }, a, at)).rejects.toThrow(ConflictError);
+      expect(await rawItem(db, `USER#${leaving}`, "PHOTO")).toBeUndefined();
+    });
+
     it("starts a trial, and makes one team per request key however often it's sent", async () => {
       db = table.db;
       const userId = newUser();
@@ -383,6 +428,28 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(removeMember(db, contributor, owner.userId)).rejects.toThrow(ForbiddenError);
       await removeMember(db, contributor, contributor.userId);
       expect((await listMembers(db, owner)).map((m) => m.userId)).toEqual([owner.userId]);
+    });
+  });
+
+  describe("a member's photo", () => {
+    // supply-checkout-6uw.30
+    it("is set and removed on the member's own item only, without recreating a membership, and not in a closed team", async () => {
+      const { owner, contributor, viewer } = await team();
+      const photo = "e".repeat(32);
+      expect(await setOwnMemberPhoto(db, viewer, photo)).toBe(true);
+      expect((await getMember(db, owner, viewer.userId))?.photoId).toBe(photo);
+      expect((await getMember(db, owner, contributor.userId))?.photoId).toBeUndefined();
+      expect(await setOwnMemberPhoto(db, viewer, photo)).toBe(false);
+      expect(await setOwnMemberPhoto(db, viewer, undefined)).toBe(true);
+      expect(await setOwnMemberPhoto(db, viewer, undefined)).toBe(false);
+      expect((await getMember(db, owner, viewer.userId))?.photoId).toBeUndefined();
+      await expect(setOwnMemberPhoto(db, viewer, "not-a-photo-id")).rejects.toThrow(/photo ID/);
+      await removeMember(db, viewer, viewer.userId);
+      expect(await setOwnMemberPhoto(db, viewer, photo)).toBe(false);
+      expect(await rawItem(db, `TEAM#${owner.teamId}`, `MEMBER#${viewer.userId}`)).toBeUndefined();
+      await closeTeam(db, owner, { confirmName: "Echo Cleaning" });
+      const closed = await authorizeTeam(db, contributor.userId, owner.teamId);
+      await expect(setOwnMemberPhoto(db, closed, photo)).rejects.toThrow();
     });
   });
 

@@ -14,6 +14,7 @@ import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { GSI1, GSI1PK, GSI1SK, GSI2, GSI2PK, GSI2SK, GSI3, GSI3PK, GSI3SK, OPS_INDEX_ATTRIBUTES, PK, SK, TTL_ATTRIBUTE, tableName } from "../../../backend/src/data/schema.js";
 import { DELETION_RECORD_RETENTION_DAYS, deletionsBucketName } from "../../../backend/src/deletions/names.js";
+import { photosBucketName } from "../../../backend/src/photos/names.js";
 import { backupCopyFromContext, backupParameters } from "../backup.js";
 import type { DeploymentConfig } from "../config.js";
 import { backupAccountFromCopyVaultArn, replicateDeletionRecords } from "../deletions.js";
@@ -57,6 +58,11 @@ export function logsBucketName(envName: string, region: string, account: string 
  *   /supply-checkout/<env>/backup/copy-vault-arn and organization-id at
  *   deploy time; `-c backupCopy=false` leaves the replication out. Its object
  *   events go to EventBridge, for the deletion records watch.
+ * - The profile photos bucket, in the primary region (supply-checkout-6uw.30):
+ *   `photos/<photoId>.jpg`, private, read and written only by the account
+ *   function (api-stack.ts) and served through presigned URLs. Not versioned
+ *   and not backed up: a deleted or replaced photo is gone at once, which is
+ *   the point, and a lost one is re-uploaded.
  * - Everything added here must use RemovalPolicy.RETAIN.
  */
 export class DataStack extends SupplyCheckoutStack {
@@ -72,6 +78,8 @@ export class DataStack extends SupplyCheckoutStack {
   readonly deletionsBucket?: Bucket;
   /** Replicates the deletion records to the backup account. Primary region only, and not with `-c backupCopy=false`. */
   readonly deletionsReplicationRole?: Role;
+  /** Profile photos (backend/src/photos). Primary region only. */
+  readonly photosBucket?: Bucket;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "data", layer: "stateful" });
@@ -266,5 +274,28 @@ export class DataStack extends SupplyCheckoutStack {
         organizationId: ssm(params.organizationId),
       });
     }
+
+    // Profile photos (supply-checkout-6uw.30): one object per photo,
+    // `photos/<photoId>.jpg`, the ID random. Only the account function's role
+    // may put, get or delete them, under photos/* only (api-stack.ts); people
+    // see them through presigned GET URLs that last an hour, which the web
+    // app's img-src allows for this bucket's host only. Not versioned, so a
+    // photo its owner removed or replaced, or deleted with their account, is
+    // gone at once rather than kept as an old version; and not in AWS Backup
+    // (S3 isn't in the backup plan): a lost photo is re-uploaded. Uploads are
+    // single PUTs, so the multipart rule only tidies up after anything else.
+    this.photosBucket = new Bucket(this, "PhotosBucket", {
+      bucketName: photosBucketName(config.envName, region, Aws.ACCOUNT_ID),
+      encryption: BucketEncryption.S3_MANAGED,
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      objectOwnership: ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      enforceSSL: true,
+      versioned: false,
+      lifecycleRules: [{ abortIncompleteMultipartUploadAfter: Duration.days(1) }],
+      serverAccessLogsBucket: this.logsBucket,
+      serverAccessLogsPrefix: "s3/photos/",
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    publish("PhotosBucketParam", "photos-bucket-name", this.photosBucket.bucketName, "Profile photos bucket (primary region)");
   }
 }

@@ -84,6 +84,7 @@ import {
   WEBHOOK_RECORD_PREFIX,
 } from "../../../backend/src/data/schema.js";
 import { TEST_MAIL_DOMAIN_ENV } from "../../../backend/src/data/test-accounts.js";
+import { PHOTO_PREFIX, PHOTOS_ENV, photosBucketName } from "../../../backend/src/photos/names.js";
 import { BILLING_ENV, BILLING_MAX_RECEIVES, billingResourceNames, OPS_STRIPE_ENV, SEAT_SYNC_MAX_CONCURRENCY, STRIPE_ENV, stripeOpsKeySecretName, stripeSecretName, stripeWebhookSecretName } from "../../../backend/src/billing/names.js";
 import { BILLING_WORKER_TAGS } from "../../../backend/src/billing/worker-db.js";
 import { type DeploymentConfig, foundationModelOf, RECEIPT_MODEL_ID, RECEIPT_MODEL_REGIONS, receiptsReservedConcurrencyFromContext, receiptTrialReadsPerDayFromContext, stripeModeOf, stripeOpsKeySecretArn, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
@@ -465,6 +466,8 @@ export class ApiStack extends SupplyCheckoutStack {
     grantSendEmail(this.accountFunction, config);
     // A deleted account's record (user ID, time, teams it closed), in the primary region's bucket
     grantPutDeletionRecords(this.accountFunction, config, "user");
+    // Profile photos (supply-checkout-6uw.30), in the primary region's bucket
+    this.grantPhotos(this.accountFunction, config);
 
     const billing = this.addBilling(config, table, tableArn, region, appOrigin, ssm(identity.issuerUrl), tableKeyStatement);
     this.billingFunction = billing.fn;
@@ -1409,6 +1412,32 @@ export class ApiStack extends SupplyCheckoutStack {
       }),
     );
     fn.addToRolePolicy(tableKeyStatement());
+  }
+
+  /**
+   * Profile photos (supply-checkout-6uw.30, backend/src/photos): the account
+   * function's own role may put, get (which presigned URLs are signed for)
+   * and delete objects under photos/ in the primary region's photos bucket,
+   * and nothing else of it: no ListBucket, no other prefix, no ACL, tagging
+   * or version actions. The object names a random photo ID that the function
+   * chooses at run time, so IAM can't narrow it further than the prefix.
+   */
+  private grantPhotos(fn: NodejsFunction, config: DeploymentConfig): void {
+    const bucket = photosBucketName(config.envName, config.primaryRegion, Aws.ACCOUNT_ID);
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ProfilePhotos",
+        effect: Effect.ALLOW,
+        actions: ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+        resources: [`arn:${Aws.PARTITION}:s3:::${bucket}/${PHOTO_PREFIX}*`],
+      }),
+    );
+    Validations.of(fn.role as Role).acknowledge({
+      id: `AwsSolutions-IAM5[Resource::arn:<AWS::Partition>:s3:::${photosBucketName(config.envName, config.primaryRegion, "<AWS::AccountId>")}/${PHOTO_PREFIX}*]`,
+      reason: `Each photo is its own object, named by a random ID the function chooses at run time; the grant is Put, Get and Delete under ${PHOTO_PREFIX} only`,
+    });
+    fn.addEnvironment(PHOTOS_ENV.bucket, bucket);
+    fn.addEnvironment(PHOTOS_ENV.region, config.primaryRegion);
   }
 
   /** A function from backend/src/<dir>/<name>.ts. */

@@ -157,6 +157,12 @@ export interface Member {
    * LAPSE_READ_ATTRIBUTES); none of them may read this one.
    */
   readonly displayName?: string;
+  /**
+   * Their current profile photo's ID (supply-checkout-6uw.30, photos.ts),
+   * copied from their own photo record and kept current on /me: what the
+   * team's /photos route presigns. Absent when they have none.
+   */
+  readonly photoId?: string;
   readonly joinedAt: string;
 }
 

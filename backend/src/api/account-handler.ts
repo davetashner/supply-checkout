@@ -70,6 +70,14 @@
 //                                   returns them as `user.preferences` (the
 //                                   defaults if they can't be read). Refused
 //                                   (409) for an account being deleted.
+//   PUT    /me/photo                The caller's profile photo: a 256×256 JPEG,
+//                                   checked and stripped of its metadata
+//                                   (photos/jpeg.ts), stored under a new random
+//                                   ID; the one it replaces is deleted. See
+//                                   "Profile photos" below.
+//   DELETE /me/photo                Removes it (idempotent).
+//   GET    /teams/{teamId}/photos   Any member: presigned URLs for the photos of
+//                                   the team's current members who have one.
 //
 // The team's last owner can't be removed, demoted or leave: the team item's
 // owner count moves in the same transaction as the membership, conditioned
@@ -167,11 +175,28 @@
 // and a message that couldn't be queued is logged and counted
 // (SeatSyncQueueFailures): the purge ends the subscription anyway.
 //
+// Profile photos (supply-checkout-6uw.30, data/photos.ts, photos/): one
+// object per photo in the photos bucket, `photos/<photoId>.jpg`, the ID 128
+// random bits, so no key names a person. The caller's own photo record
+// (USER#<sub>, PHOTO) names the current photo and any objects still to be
+// deleted (orphans): an upload is counted against the caller's daily limit
+// and staged in the record before its object is written, then committed,
+// and the photo it replaced is deleted. The photo's ID is copied to the
+// caller's MEMBER item in each open team they're in (and kept current on
+// /me), and the team's /photos route presigns only what its MEMBER items
+// name, after the membership check: a removed member's item is gone, and no
+// ID from the request reaches the bucket. The photos bucket is reached only
+// with the function's own role, PutObject, GetObject and DeleteObject under
+// photos/* only. The image, its URLs (bearer links) and names are never
+// logged; the photo ID at most. Deleting an account deletes every object the
+// record names, before the record goes.
+//
 // Invite emails: the invite is written first, then sent (email/mailer.ts). If
 // SES won't take it, the invite stays, marked failed (`not_sent`), so the
 // owner sees "Couldn't deliver" and can re-send or revoke it. Addresses,
 // names and tokens never go in a log line or a metric.
 
+import { randomBytes } from "node:crypto";
 import type { APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import {
   acceptInvite,
@@ -227,6 +252,16 @@ import {
   type Preferences,
   preferencesChange,
   setPreferences,
+  clearOrphans,
+  commitPhoto,
+  getPhotoRecord,
+  PhotoLimitError,
+  type PhotoRecord,
+  photoIdsOf,
+  removePhoto,
+  setOwnMemberPhoto,
+  stagePhoto,
+  storedPhotoId,
   clearCodeSent,
   codeSentHash,
   recordCodeSent,
@@ -247,6 +282,8 @@ import { EmailNotSentError, type Mailer, sendInviteEmail, sendTeamNotice } from 
 import type { EmailInput, SecurityNotice } from "../email/templates.js";
 import type { DeletionLog } from "../deletions/records.js";
 import type { SeatSyncQueue } from "../billing/seat-queue.js";
+import { PhotoRejectedError, stripPhoto } from "../photos/jpeg.js";
+import type { PhotoStore } from "../photos/store.js";
 import { BusinessMetric, type BusinessMetricName, type Observability, testMark } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
 import type { CognitoUser, DeleteUser, EmailCodes, TotpSetup, UserInfo } from "./cognito-user.js";
@@ -274,6 +311,8 @@ export interface AccountHandlerDeps {
   readonly deleteUser: DeleteUser;
   /** Where a deleted account's record goes (deletions/records.ts). */
   readonly deletions: DeletionLog;
+  /** The photos bucket (photos/store.ts). The Lambda entry always sets it; absent, there are no photos and the photo routes fail. */
+  readonly photos?: PhotoStore;
   /** Queues a seat sync on the seat sync queue after a membership change (billing/seats.ts). Absent, nothing is queued. */
   readonly seats?: SeatSyncQueue;
   /** How long a security notice may wait on SES (NOTICE_TIMEOUT_MS); for tests. */
@@ -305,8 +344,17 @@ const SIGN_OUT_ATTEMPTS = 3;
 /** The wait before each try after the first, times the tries so far. */
 const SIGN_OUT_BACKOFF_MS = 100;
 
+/** The largest PUT /me/photo body: a 64 KB photo in base64, and room for the JSON around it. */
+export const PHOTO_BODY_BYTES = 100_000;
+/** Base64, with an optional data URL prefix for a JPEG (what canvas.toDataURL gives). */
+const PHOTO_BASE64 = /^(?:data:image\/jpeg;base64,)?((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/;
+
+const photoInvalid = () => new ApiError(400, "bad_request", "That isn't a 256×256 JPEG photo", "photo_invalid");
+const photoTooLarge = () => new ApiError(413, "quota_exceeded", "That photo is too large", "photo_too_large");
+
 /** The data layer's errors, as the account routes answer them. */
 export function errorFor(error: unknown): ApiError {
+  if (error instanceof PhotoLimitError) return new ApiError(429, "quota_exceeded", error.message, "photo_limit");
   if (error instanceof TeamClosedError) return new ApiError(403, "permission_denied", error.message, "team_closed");
   if (error instanceof TeamDeletingError) return new ApiError(409, "aborted", error.message, "team_deleting");
   if (error instanceof LastOwnerError) return new ApiError(409, "aborted", error.message, "last_owner");
@@ -412,7 +460,7 @@ function lastOwnerOf(names: string[]): string {
 }
 
 /** A member as the members routes return them: never the stored item as is. */
-const memberBody = (member: Member) => ({ userId: member.userId, name: member.displayName ?? null, email: member.email ?? null, role: member.role, joinedAt: member.joinedAt ?? null });
+const memberBody = (member: Member, photoUrl: string | null = null) => ({ userId: member.userId, name: member.displayName ?? null, email: member.email ?? null, role: member.role, joinedAt: member.joinedAt ?? null, photoUrl });
 
 /** Two addresses the same but for ASCII case and surrounding space, and neither empty. */
 const sameAddress = (a?: string, b?: string) => !!a?.trim() && !!b?.trim() && verifiedEmailHash(a) === verifiedEmailHash(b);
@@ -476,10 +524,11 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const user = await cognitoUser(event, userId);
     const email = verifiedEmail(user);
     const own = dbFor({ userId, invitee: email && hashEmail(email) });
-    const [rows, invites, preferences] = await Promise.all([
+    const [rows, invites, preferences, photo] = await Promise.all([
       listTeamsForUser(own, userId),
       email ? listInvitesForEmail(own, email, new Date(now())) : [],
       ownPreferences(own, userId),
+      ownPhoto(own, userId),
       email ? rememberNoticeAddress(own, userId, email, user.email ?? email) : undefined,
     ]);
     // Each team's details on a session for that team, after the membership
@@ -494,7 +543,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
             throw error;
           });
           if (!ctx) return undefined;
-          await keepMemberProfile(db, ctx, email, user.name);
+          await keepMemberProfile(db, ctx, email, user.name, photo);
           return teamBody(await getTeam(db, ctx), ctx.role, new Date(now()));
         }),
       )
@@ -503,7 +552,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     const joined = new Set(teams.map((t) => t.id));
     return json(200, {
-      user: { id: userId, email: user.email ?? null, emailVerified: email !== undefined, mfa: mfaState(user), preferences },
+      user: { id: userId, email: user.email ?? null, emailVerified: email !== undefined, mfa: mfaState(user), preferences, photoUrl: await photoUrl(photo?.photoId) },
       teams,
       invites: invites.filter((i) => !joined.has(i.teamId)).map(inviteBody),
     });
@@ -513,12 +562,14 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
    * Brings the caller's MEMBER email in one team up to their verified address
    * (supply-checkout-xv3k), when they have one, and their name up to Cognito's
    * (supply-checkout-lx7; removed if they cleared it): the members list and
-   * owner notices read them, and they were copied when they joined. Reads
+   * owner notices read them, and they were copied when they joined. And, when
+   * `photo` (their photo record) could be read, their photo's ID up to it
+   * (supply-checkout-6uw.30), which the team's /photos route reads. Reads
    * first, so a member already current costs no write. Closed teams are left
    * as they are. Best effort: a failure is logged (the team ID and error name
    * only, never the address or name) and the request goes on.
    */
-  async function keepMemberProfile(db: ReturnType<DbForAccount>, ctx: TeamContext, email: string | undefined, name?: string): Promise<void> {
+  async function keepMemberProfile(db: ReturnType<DbForAccount>, ctx: TeamContext, email: string | undefined, name?: string, photo?: PhotoRecord): Promise<void> {
     if (ctx.closed) return;
     // Two /me calls at once, around a change, could each read and write: the
     // last write wins, and if it carried the older value the next /me corrects it
@@ -528,6 +579,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       if (!member) return;
       if (email && member.email !== email) await setOwnMemberEmail(db, ctx, email);
       if (member.displayName !== name) await setOwnMemberName(db, ctx, name);
+      if (photo && member.photoId !== photo.photoId) await setOwnMemberPhoto(db, ctx, photo.photoId);
     } catch (error) {
       obs.logger.warn("Member details not updated", { teamId: ctx.teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
     }
@@ -632,8 +684,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   async function members(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     const { teamId, ctx } = await teamContext(event, userId);
     requireRole(ctx.role, "owner");
-    const list = (await listMembers(dbFor({ userId, teamId }), ctx))
-      .map(memberBody)
+    const list = (await Promise.all((await listMembers(dbFor({ userId, teamId }), ctx)).map(async (m) => memberBody(m, await photoUrl(storedPhotoId(m.photoId))))))
       .sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || (a.email ?? "").localeCompare(b.email ?? "") || a.userId.localeCompare(b.userId));
     return json(200, { members: list });
   }
@@ -648,7 +699,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     await seatsAfterChange(db, ctx);
     const member = await getMember(db, ctx, target);
     if (!member) throw new ApiError(409, "aborted", "That person was removed from the team just now");
-    return json(200, { member: memberBody(member) });
+    return json(200, { member: memberBody(member, await photoUrl(storedPhotoId(member.photoId))) });
   }
 
   async function remove(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
@@ -955,11 +1006,13 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     await deps.deletions.record({ kind: "user", id: userId, deletedAt: at.toISOString(), teamsClosed: teams.filter((t) => t.alone).map((t) => t.ctx.teamId) });
     const invites = email ? await listInvitesForEmail(own, email, at, { includeExpired: true }) : [];
     for (const invite of invites) await deleteInviteForEmail(dbFor({ userId, teamId: invite.teamId, invitee }), email as string, invite);
+    // Before the record that names them goes; a failure stops here, and a retry carries on
+    const photosDeleted = await deleteEveryPhoto(own, userId);
     const rowsDeleted = await deleteUserRows(own, userId);
     // Last: until it's gone the user can sign in and try again
     await deps.deleteUser(token);
     obs.count(BusinessMetric.AccountsDeleted, 1, testMark(test));
-    obs.logger.info("Account deleted", { userId, teamsLeft: teams.length, teamsClosed: teams.filter((t) => t.alone).length, invitesDeleted: invites.length, rowsDeleted });
+    obs.logger.info("Account deleted", { userId, teamsLeft: teams.length, teamsClosed: teams.filter((t) => t.alone).length, invitesDeleted: invites.length, photosDeleted, rowsDeleted });
     return noContent();
   }
 
@@ -1183,6 +1236,167 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     return json(200, { preferences });
   }
 
+  /** The photo store, or a 500: the Lambda entry always has one. */
+  function photoStore(): PhotoStore {
+    if (!deps.photos) throw new Error("No photo store");
+    return deps.photos;
+  }
+
+  /** A presigned URL for a photo, or null for none (or no store). */
+  async function photoUrl(photoId: string | undefined): Promise<string | null> {
+    return photoId && deps.photos ? deps.photos.url(photoId) : null;
+  }
+
+  /**
+   * The caller's photo record for /me. Cosmetic, so a failed read never fails
+   * /me: it's logged (the error's name only), /me says there's no photo, and
+   * the member copies are left as they are.
+   */
+  async function ownPhoto(db: ReturnType<DbForAccount>, userId: string): Promise<PhotoRecord | undefined> {
+    try {
+      return await getPhotoRecord(db, userId);
+    } catch (error) {
+      obs.logger.warn("Photo not read", { code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      return undefined;
+    }
+  }
+
+  /**
+   * Deletes the objects of the record's orphans and takes them off it. Best
+   * effort, unless `strict`: an object that couldn't be deleted is logged
+   * (the count and error name) and stays an orphan, for the next upload or
+   * removal; with `strict` that's a 503. Returns the record as it is now.
+   */
+  async function deleteOrphans(db: ReturnType<DbForAccount>, userId: string, record: PhotoRecord, strict = false): Promise<PhotoRecord> {
+    if (!record.orphans.length) return record;
+    const store = photoStore();
+    const results = await Promise.allSettled(record.orphans.map((id) => store.delete(id)));
+    const deleted = record.orphans.filter((_, i) => results[i]?.status === "fulfilled");
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failed) {
+      obs.logger.warn("Photos not deleted", { userId, failed: record.orphans.length - deleted.length, code: (failed.reason as { name?: string } | null)?.name ?? "Unknown" });
+      if (strict) throw new ApiError(503, "unavailable", "Your photo couldn't be removed just now; try again");
+    }
+    if (!deleted.length) return record;
+    try {
+      return await clearOrphans(db, userId, record, deleted, new Date(now()));
+    } catch (error) {
+      // The objects are gone either way; an orphan left on the record is deleted again next time
+      obs.logger.warn("Photo record not updated", { userId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      return getPhotoRecord(db, userId);
+    }
+  }
+
+  /**
+   * Copies the caller's photo ID (or its removal) to their MEMBER item in
+   * every open team they're in, each on a session for that team after the
+   * membership check. Best effort: a team that fails is logged (its ID and
+   * the error's name) and catches up on the next /me.
+   */
+  async function syncMemberPhotos(userId: string, photo: string | undefined): Promise<void> {
+    try {
+      const rows = await listTeamsForUser(dbFor({ userId }), userId);
+      await Promise.all(
+        rows.slice(0, MAX_TEAMS_PER_USER).map(async (row) => {
+          try {
+            const db = dbFor({ userId, teamId: row.teamId });
+            const ctx = await authorizeTeam(db, userId, row.teamId, new Date(now()));
+            if (!ctx.closed) await setOwnMemberPhoto(db, ctx, photo);
+          } catch (error) {
+            // A stale switcher row: not a member any more
+            if (error instanceof ForbiddenError) return;
+            obs.logger.warn("Member photo not updated", { teamId: row.teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+          }
+        }),
+      );
+    } catch (error) {
+      obs.logger.warn("Member photos not updated", { code: (error as { name?: string } | null)?.name ?? "Unknown" });
+    }
+  }
+
+  /** PUT /me/photo (see "Profile photos" at the top). */
+  async function setPhoto(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    let body: Record<string, unknown>;
+    try {
+      body = jsonBody(event, ["image"], PHOTO_BODY_BYTES);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 413) throw photoTooLarge();
+      throw error;
+    }
+    const match = typeof body.image === "string" ? PHOTO_BASE64.exec(body.image) : null;
+    if (!match?.[1]) throw photoInvalid();
+    let jpeg: Buffer;
+    let dropped: number;
+    try {
+      ({ bytes: jpeg, dropped } = stripPhoto(Buffer.from(match[1], "base64")));
+    } catch (error) {
+      if (error instanceof PhotoRejectedError) throw error.reason === "too_large" ? photoTooLarge() : photoInvalid();
+      throw error;
+    }
+    const store = photoStore();
+    const own = dbFor({ userId });
+    // Leftovers from an earlier upload or removal first, so the record never holds many
+    const record = await deleteOrphans(own, userId, await getPhotoRecord(own, userId));
+    const photoId = randomBytes(16).toString("hex");
+    const staged = await stagePhoto(own, userId, record, photoId, new Date(now()));
+    await store.put(photoId, jpeg);
+    let committed: PhotoRecord;
+    try {
+      committed = await commitPhoto(own, userId, staged, photoId, new Date(now()));
+    } catch (error) {
+      // Not this photo after all (the account is being deleted, or another upload won): its object goes now.
+      // If that fails too, it's still an orphan on the record (unless the account is gone with it)
+      await store.delete(photoId).catch((e: unknown) => obs.logger.warn("Photo not deleted", { userId, photoId, code: (e as { name?: string } | null)?.name ?? "Unknown" }));
+      throw error;
+    }
+    obs.logger.info("Photo set", { userId, photoId, dropped });
+    await deleteOrphans(own, userId, committed);
+    await syncMemberPhotos(userId, photoId);
+    return json(200, { photoUrl: await store.url(photoId) });
+  }
+
+  /** DELETE /me/photo: the record first, then the objects (a failure is a 503, and a retry finishes it). Idempotent. */
+  async function deletePhoto(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    if (event.body) jsonBody(event, []);
+    const own = dbFor({ userId });
+    let record = await getPhotoRecord(own, userId);
+    if (record.photoId) record = await removePhoto(own, userId, record, new Date(now()));
+    await deleteOrphans(own, userId, record, true);
+    await syncMemberPhotos(userId, undefined);
+    obs.logger.info("Photo removed", { userId });
+    return noContent();
+  }
+
+  /**
+   * GET /teams/{teamId}/photos: any member of the team gets a presigned URL
+   * for each current member who has a photo, by user ID. Only IDs the team's
+   * own MEMBER items name are signed; no names or emails.
+   */
+  async function listPhotos(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const { teamId, ctx } = await teamContext(event, userId);
+    const members = await listMembers(dbFor({ userId, teamId }), ctx);
+    const photos: [string, string][] = [];
+    for (const member of members) {
+      const url = await photoUrl(storedPhotoId(member.photoId));
+      if (url) photos.push([member.userId, url]);
+    }
+    // fromEntries: a user ID can't reach an object's prototype
+    return json(200, { photos: Object.fromEntries(photos) });
+  }
+
+  /**
+   * Deletes every photo object the caller's record names (account deletion).
+   * Throws if any can't be deleted, so the deletion stops before the record
+   * goes and a retry carries on. Returns how many it deleted.
+   */
+  async function deleteEveryPhoto(db: ReturnType<DbForAccount>, userId: string): Promise<number> {
+    const ids = photoIdsOf(await getPhotoRecord(db, userId));
+    if (!ids.length) return 0;
+    const store = photoStore();
+    for (const id of ids) await store.delete(id);
+    return ids.length;
+  }
+
   const actions: Record<AccountRoute["action"], (event: DataEvent, userId: string) => Promise<APIGatewayProxyStructuredResultV2>> = {
     me,
     createTeam: newTeam,
@@ -1204,6 +1418,9 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     verifyTotp,
     signOutEverywhere,
     setPreferences: setPreferencesRoute,
+    setPhoto,
+    deletePhoto,
+    listPhotos,
   };
 
   return async (event: DataEvent, context?: Context): Promise<APIGatewayProxyStructuredResultV2> => {

@@ -437,11 +437,17 @@ describe("backup stack (workload account)", () => {
 });
 
 describe("S3 versioning", () => {
-  it("is on for every bucket in the app, with old versions expiring", () => {
+  it("is on for every bucket in the app, with old versions expiring, but the profile photos bucket", () => {
     const { stacks } = workload();
     let count = 0;
     for (const stack of stacks.all) {
-      for (const bucket of Object.values(Template.fromStack(stack).findResources("AWS::S3::Bucket"))) {
+      for (const [id, bucket] of Object.entries(Template.fromStack(stack).findResources("AWS::S3::Bucket"))) {
+        // A photo its owner removed or replaced, or deleted with their account, must be gone at
+        // once, not kept as an old version; a lost one is re-uploaded (supply-checkout-6uw.30)
+        if (id.startsWith("PhotosBucket")) {
+          expect(bucket.Properties.VersioningConfiguration).toBeUndefined();
+          continue;
+        }
         count++;
         expect(bucket.Properties.VersioningConfiguration).toEqual({ Status: "Enabled" });
         const rules = bucket.Properties.LifecycleConfiguration.Rules as { NoncurrentVersionExpiration?: unknown }[];

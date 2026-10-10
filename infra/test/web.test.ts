@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
-import { type Stack } from "aws-cdk-lib";
+import { Aws, Stack } from "aws-cdk-lib";
 import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { domainOutputParameters, hostNames } from "../lib/domain.js";
 import { DELETION_RECORD_RETENTION_DAYS } from "../../backend/src/deletions/names.js";
+import { photosBucketName, photosHost } from "../../backend/src/photos/names.js";
 import { webBucketName } from "../lib/stacks/data-stack.js";
 import { DELETIONS_REPLICATION_RULE_ID, deletionsReplicationRoleName } from "../lib/deletions.js";
 import { MANAGED_RULE_GROUPS, OPS_CHANNEL, RATE_LIMIT_PER_5_MINUTES, RELEASE_CHANNELS, webOutputParameters } from "../lib/stacks/web-stack.js";
@@ -20,7 +21,8 @@ const [EAST, WEST] = APPROVED_REGIONS;
 const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST, WEST], primaryRegion: EAST };
 const names = hostNames(config);
 // The CSP's hosts: the web stack's RUM app monitor is in GLOBAL_SERVICES_REGION
-const cspHosts = { ...names, rumRegion: GLOBAL_SERVICES_REGION };
+// and the photos bucket in the primary region (supply-checkout-6uw.30)
+const cspHosts = { ...names, rumRegion: GLOBAL_SERVICES_REGION, photos: photosHost(photosBucketName("prod", EAST, Aws.ACCOUNT_ID), EAST) };
 
 function build(overrides: Partial<DeploymentConfig> = {}) {
   const app = testApp();
@@ -288,11 +290,11 @@ describe("web stack", () => {
   });
 
   it("sends CSP, HSTS and the other security headers", () => {
-    const { web } = build();
+    const { web, stacks } = build();
     web.hasResourceProperties("AWS::CloudFront::ResponseHeadersPolicy", {
       ResponseHeadersPolicyConfig: Match.objectLike({
         SecurityHeadersConfig: {
-          ContentSecurityPolicy: { ContentSecurityPolicy: contentSecurityPolicy(cspHosts), Override: true },
+          ContentSecurityPolicy: { ContentSecurityPolicy: Stack.of(stacks.web).resolve(contentSecurityPolicy(cspHosts)), Override: true },
           StrictTransportSecurity: { AccessControlMaxAgeSec: 63072000, IncludeSubdomains: true, Override: true },
           ContentTypeOptions: { Override: true },
           FrameOptions: { FrameOption: "DENY", Override: true },
@@ -564,7 +566,7 @@ describe("content security policy", () => {
     expect(directives["connect-src"]).toEqual(
       expect.arrayContaining([`https://${names.api}`, `wss://${names.realtime}`, `https://${names.auth}`]),
     );
-    expect(contentSecurityPolicy({ ...hostNames({ envName: "staging", domainName: "supplycheckout.com" }), rumRegion: GLOBAL_SERVICES_REGION })).toContain(
+    expect(contentSecurityPolicy({ ...hostNames({ envName: "staging", domainName: "supplycheckout.com" }), rumRegion: GLOBAL_SERVICES_REGION, photos: cspHosts.photos })).toContain(
       "https://api.staging.supplycheckout.com",
     );
   });
@@ -577,11 +579,22 @@ describe("content security policy", () => {
     ]);
     // The RUM client is bundled: no script host
     expect(directives["script-src"]).toEqual(["'self'"]);
-    expect(() => cspDirectives({ ...names, rumRegion: "${Token[AWS.Region.1]}" })).toThrow(/isn't a region name/);
+    expect(() => cspDirectives({ ...cspHosts, rumRegion: "${Token[AWS.Region.1]}" })).toThrow(/isn't a region name/);
   });
 
   it("fits CloudFront's header limit", () => {
-    expect(contentSecurityPolicy(cspHosts).length).toBeLessThan(1783);
+    // With a real account ID in the photos bucket's name, and the longest environment name and approved region
+    const region = [...APPROVED_REGIONS].sort((a, b) => b.length - a.length)[0] as string;
+    expect(contentSecurityPolicy({ ...cspHosts, photos: photosHost(photosBucketName("staging", region, "123456789012"), region) }).length).toBeLessThan(1783);
+  });
+
+  it("allows profile photos from the photos bucket's own regional host only, not the rest of S3 (supply-checkout-6uw.30)", () => {
+    expect(directives["img-src"]).toEqual(["'self'", "data:", "blob:", `https://${cspHosts.photos}`]);
+    expect(cspHosts.photos.startsWith(`supply-checkout-prod-photos-${EAST}-`)).toBe(true);
+    expect(cspHosts.photos.endsWith(`.s3.${EAST}.amazonaws.com`)).toBe(true);
+    for (const photos of ["*.amazonaws.com", `s3.${EAST}.amazonaws.com`, `a.s3.${EAST}.amazonaws.com https://evil.example`, `a.s3.${EAST}.amazonaws.com; script-src *`, "", "a.s3.amazonaws.com"]) {
+      expect(() => cspDirectives({ ...cspHosts, photos }), photos).toThrow(/regional host/);
+    }
   });
 });
 

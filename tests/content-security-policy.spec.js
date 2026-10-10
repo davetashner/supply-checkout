@@ -12,7 +12,7 @@ import { contentSecurityPolicy } from "../infra/lib/web/content-security-policy.
 import { FakeBackend, FakeRum, RUM, RUM_REGION, installFakeSocket, TEAM } from "./fake-aws.js";
 
 
-const CSP = contentSecurityPolicy({ api: "api.supplycheckout.com", realtime: "realtime.supplycheckout.com", auth: "auth.supplycheckout.com", rumRegion: RUM_REGION });
+const CSP = contentSecurityPolicy({ api: "api.supplycheckout.com", realtime: "realtime.supplycheckout.com", auth: "auth.supplycheckout.com", rumRegion: RUM_REGION, photos: `supply-checkout-prod-photos-${RUM_REGION}-000000000000.s3.${RUM_REGION}.amazonaws.com` });
 // Their own origins, so coverage of the other suites isn't affected
 const APP = "https://csp-app.supply-checkout.test";
 const DEMO_SITE = "https://csp-demo.supply-checkout.test";
