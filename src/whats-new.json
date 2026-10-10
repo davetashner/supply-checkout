@@ -1,6 +1,14 @@
 {
   "releases": [
     {
+      "version": "1.13.0",
+      "date": "2026-10-10",
+      "notes": [],
+      "skip": {
+        "741": "Behind the scenes: we get an email when a report arrives"
+      }
+    },
+    {
       "version": "1.12.0",
       "date": "2026-10-10",
       "notes": [
