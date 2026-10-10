@@ -125,3 +125,14 @@
 .crop-frame::after{content:"";position:absolute;inset:0;border-radius:50%;box-shadow:0 0 0 999px rgb(0 0 0 / .45);pointer-events:none}
 .crop-zoom{width:min(240px,100%)}
 .crop-zoom input{width:100%;accent-color:var(--accent)}
+/* Report an issue (src/aws/report.js), in the app's modal */
+.report-form{display:grid;gap:14px}
+.report-form textarea{font:inherit;color:inherit;background:var(--ground);border:1px solid var(--line);border-radius:9px;padding:9px 12px;width:100%;resize:vertical;min-height:44px}
+.report-form textarea:focus{outline:2px solid var(--accent);outline-offset:0;border-color:transparent}
+.report-form textarea[aria-invalid=true]{border-color:var(--danger)}
+.report-form .report-kind{min-height:44px}
+.report-form .report-kind input{flex:none}
+.report-form .modal-actions .btn{min-height:44px}
+.report-form fieldset.kinds{display:grid}
+.report-form [role=alert]{margin:0}
+.report-form .report-kind + .report-kind{margin-top:0}

@@ -120,3 +120,11 @@ test.describe("at 320px", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   });
 });
+
+test("has no Report an issue: the demo sends nothing anywhere", async ({ page }) => {
+  const requests = await openDemo(page);
+  await expect(page.getByRole("button", { name: "Report an issue" })).toHaveCount(0);
+  await expect(page.getByText("Report an issue")).toHaveCount(0);
+  expectOnlyAllowed(requests);
+  expect(requests.some((url) => url.includes("feedback"))).toBe(false);
+});
