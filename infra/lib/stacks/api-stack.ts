@@ -53,6 +53,9 @@ import {
   DATA_ROLE_DENIED_ATTRIBUTES,
   FEEDBACK_ATTRIBUTES,
   FEEDBACK_PREFIX,
+  FEEDBACK_READ_ATTRIBUTES,
+  FEEDBACK_STATUS_ATTRIBUTES,
+  FEEDBACK_STATUS_PREFIX,
   GSI1,
   GSI2,
   GSI3,
@@ -1046,6 +1049,14 @@ export class ApiStack extends SupplyCheckoutStack {
    *   and UpdateItem in the tagged team's partition naming only its GSI1
    *   keys (IMPORT_INDEX_ATTRIBUTES): listing stuck imports and taking one
    *   out of the stuck-import check.
+   * - Reports from Report an issue (supply-checkout-3sv.26): Query GSI1's
+   *   FEEDBACK#STATUS#* partitions and GetItem in the tagged team's
+   *   FEEDBACK# partition, naming only FEEDBACK_READ_ATTRIBUTES (a
+   *   projection required), and UpdateItem there naming only
+   *   FEEDBACK_STATUS_ATTRIBUTES, returning nothing old or whole.
+   *
+   * The function's own role may also call AdminGetUser on the app pool (and
+   * nothing else there): a report's sender's verified email.
    */
   private addOps(config: DeploymentConfig, table: string, tableArn: string, tableKeyStatement: () => PolicyStatement) {
     const identity = identityOutputParameters(config.envName);
@@ -1061,6 +1072,7 @@ export class ApiStack extends SupplyCheckoutStack {
           [API_ENV.opsIssuerUrl]: ssm(identity.opsIssuerUrl),
           [API_ENV.opsClientId]: ssm(identity.opsClientId),
           [API_ENV.opsUserPoolId]: ssm(identity.opsUserPoolId),
+          [API_ENV.appUserPoolId]: ssm(identity.userPoolId),
         },
       },
       "operator",
@@ -1171,6 +1183,52 @@ export class ApiStack extends SupplyCheckoutStack {
                 StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
+            // Reports from Report an issue (supply-checkout-3sv.26), the operator page's side of
+            // `npm run feedback`. Listing by status: GSI1's FEEDBACK#STATUS#* partitions only,
+            // naming only a report's own attributes, with a projection required (StringEquals, not
+            // IfExists, so a Query without Select is denied). Nothing else is in those partitions
+            new PolicyStatement({
+              sid: "FeedbackListReadOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:Query"],
+              resources: [`${tableArn}/index/${GSI1}`],
+              conditions: {
+                "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${FEEDBACK_STATUS_PREFIX}*`] },
+                "ForAllValues:StringEquals": { "dynamodb:Attributes": [...FEEDBACK_READ_ATTRIBUTES] },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+              },
+            }),
+            // One report: GetItem only (no Query, so no listing of a team's reports by key), in the
+            // reports partition of the team the session is tagged with (the path's), projected
+            new PolicyStatement({
+              sid: "FeedbackReportReadOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:GetItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`${FEEDBACK_PREFIX}${tag}`],
+                  "dynamodb:Attributes": [...FEEDBACK_READ_ATTRIBUTES],
+                },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+              },
+            }),
+            // Triage or dismiss it: UpdateItem only, in the tagged team's reports partition, naming
+            // only the status fields (and the keys and type its condition names), never the text,
+            // the sender or the expiry, and returning nothing old or whole. No PutItem or DeleteItem
+            new PolicyStatement({
+              sid: "FeedbackStatusOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`${FEEDBACK_PREFIX}${tag}`],
+                  "dynamodb:Attributes": [...FEEDBACK_STATUS_ATTRIBUTES],
+                },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": ["NONE", "UPDATED_OLD", "UPDATED_NEW"] },
+              },
+            }),
             new PolicyStatement({
               sid: "OperatorAuditAppendOnly",
               effect: Effect.ALLOW,
@@ -1185,6 +1243,11 @@ export class ApiStack extends SupplyCheckoutStack {
     });
     fn.addToRolePolicy(new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [role.roleArn] }));
     fn.addToRolePolicy(new PolicyStatement({ actions: ["cognito-idp:AdminListGroupsForUser"], resources: [ssm(identity.opsUserPoolArn)] }));
+    // A report's sender's verified email (supply-checkout-3sv.26, backend/src/operator/reporter-email.ts): AdminGetUser
+    // on the app pool only, one user by their sub. Never ListUsers, which would list every user's address. The ARN is
+    // built from the pool ID the function calls with (watched by OperatorAuthorizerUserPoolId), not read from SSM
+    const appPool = this.formatArn({ service: "cognito-idp", resource: "userpool", resourceName: ssm(identity.userPoolId) });
+    fn.addToRolePolicy(new PolicyStatement({ sid: "ReadReportSender", actions: ["cognito-idp:AdminGetUser"], resources: [appPool] }));
     fn.addEnvironment(API_ENV.opsRoleArn, role.roleArn);
     // The ops restricted Stripe key (ADR 0015 §2, supply-checkout-6uw.4): this one secret only, never the
     // billing functions' secret key. The owner stores it with Secrets Manager's AWS managed key, which

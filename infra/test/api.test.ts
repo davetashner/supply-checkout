@@ -23,6 +23,8 @@ import {
   RECEIPT_TRIAL_READS_PER_DAY,
   RECEIPT_USAGE_ATTRIBUTES,
   TEST_MARK_ATTRIBUTES,
+  FEEDBACK_READ_ATTRIBUTES,
+  FEEDBACK_STATUS_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
   STRIPE_LINK_READ_ATTRIBUTES,
@@ -187,6 +189,10 @@ describe("HTTP API routes", () => {
       "GET /ops/imports": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /ops/teams/{teamId}/imports/{importId}/clear": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "GET /ops/receipts": { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 2 },
+      "GET /ops/feedback": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "GET /ops/feedback/{teamId}/{reportId}": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "POST /ops/feedback/{teamId}/{reportId}/dismiss": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "POST /ops/feedback/{teamId}/{reportId}/record": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
     });
     // Created after the routes it names
     expect((stage.DependsOn as string[]).filter((d) => d.startsWith("HttpApi")).length).toBeGreaterThanOrEqual(ACCOUNT_ROUTES.length + 1);
@@ -517,15 +523,21 @@ describe("account-access role (LeadingKeys)", () => {
     expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
   });
 
-  it("gives no other role in the API stack a statement for the reports partition or its status index, but the account function's put", () => {
+  it("gives no other role in the API stack a statement for the reports partition or its status index, but the account function's put and the operator-access role's triage (supply-checkout-3sv.26)", () => {
     const { template } = api();
     const grants = resources(template, "AWS::IAM::Role").flatMap(([id, r]) =>
       ((r.Properties.Policies ?? []) as { PolicyDocument: { Statement: Record<string, unknown>[] } }[]).flatMap((p) =>
         p.PolicyDocument.Statement.filter((s) => JSON.stringify(s.Condition ?? {}).includes("FEEDBACK#")).map((s) => [id, s.Sid]),
       ),
     );
-    expect(grants).toEqual([[expect.stringMatching(/^AccountAccessRole/), "WriteFeedbackReport"]]);
-    expect(JSON.stringify(template.toJSON())).not.toContain("FEEDBACK#STATUS");
+    expect(grants).toEqual([
+      [expect.stringMatching(/^AccountAccessRole/), "WriteFeedbackReport"],
+      [expect.stringMatching(/^OperatorAccessRole/), "FeedbackListReadOnly"],
+      [expect.stringMatching(/^OperatorAccessRole/), "FeedbackReportReadOnly"],
+      [expect.stringMatching(/^OperatorAccessRole/), "FeedbackStatusOnly"],
+    ]);
+    // The status index only in the operator-access role's list statement
+    expect(JSON.stringify(template.toJSON()).split("FEEDBACK#STATUS").length).toBe(2);
   });
 
   it("lets the account function send invite emails, from noreply only, and nothing else in SES", () => {
@@ -1115,7 +1127,46 @@ describe("operator-access role (ADR 0015)", () => {
   it("queries only the operators' index partitions, for projected attributes only; updates only comp attributes of the tagged team; reads only teams' receipt counts and test marks; and only appends operator audit", () => {
     const [policy, ...others] = role().Policies;
     expect(others).toEqual([]);
-    const [index, comp, stuckList, stuckClear, testMarks, receipts, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [index, comp, stuckList, stuckClear, testMarks, receipts, feedbackList, feedbackRead, feedbackStatus, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    // Reports from Report an issue (supply-checkout-3sv.26): list by status on GSI1, read one in the tagged team's
+    // reports partition, both naming only a report's own attributes with a projection required (not IfExists)
+    expect(feedbackList).toEqual({
+      Sid: "FeedbackListReadOnly",
+      Effect: "Allow",
+      Action: "dynamodb:Query",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["FEEDBACK#STATUS#*"] },
+        "ForAllValues:StringEquals": { "dynamodb:Attributes": [...FEEDBACK_READ_ATTRIBUTES] },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect(JSON.stringify(feedbackList?.Resource)).toContain("/index/GSI1");
+    expect(feedbackRead).toEqual({
+      Sid: "FeedbackReportReadOnly",
+      Effect: "Allow",
+      Action: "dynamodb:GetItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["FEEDBACK#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...FEEDBACK_READ_ATTRIBUTES] },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect(JSON.stringify(feedbackRead?.Resource)).not.toMatch(/index|\*/);
+    // ...and change only its status fields there, returning nothing old or whole: never its text, sender or expiry
+    expect(feedbackStatus).toEqual({
+      Sid: "FeedbackStatusOnly",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["FEEDBACK#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...FEEDBACK_STATUS_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": ["NONE", "UPDATED_OLD", "UPDATED_NEW"] },
+      },
+    });
+    expect([...FEEDBACK_STATUS_ATTRIBUTES]).toEqual(["PK", "SK", "GSI1PK", "type", "status", "beadId", "statusAt", "dismissReason"]);
+    expect([...FEEDBACK_READ_ATTRIBUTES]).toEqual(["PK", "SK", "GSI1PK", "GSI1SK", "type", "reportId", "shortId", "teamId", "userId", "role", "createdAt", "category", "message", "expected", "contactOk", "context", "status", "beadId", "expiresAt", "statusAt", "dismissReason"]);
+    expect(JSON.stringify(feedbackStatus?.Resource)).not.toMatch(/index|\*/);
     // Test marks (supply-checkout-o60.2): BatchGetItem by key only, the keys and `test` only, projected; read only
     expect(testMarks).toEqual({
       Sid: "TeamTestMarksReadOnly",
@@ -1207,16 +1258,18 @@ describe("operator-access role (ADR 0015)", () => {
     });
     expect(JSON.stringify(audit?.Resource)).not.toContain("index");
     expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
-    // Nothing else reads a team's partition from the table: no GetItem, no Query there, no Scan anywhere,
-    // and the batch reads are the receipt counters' and test marks' above
-    expect(JSON.stringify({ ...policy, PolicyDocument: { Statement: (policy?.PolicyDocument.Statement ?? []).filter((x) => x !== receipts && x !== testMarks) } })).not.toMatch(/GetItem|Scan|Batch|DeleteItem|ConditionCheck/);
+    // Nothing else reads a team's partition from the table: no GetItem but a report's, no Query there, no Scan
+    // anywhere, and the batch reads are the receipt counters' and test marks' above
+    expect(JSON.stringify({ ...policy, PolicyDocument: { Statement: (policy?.PolicyDocument.Statement ?? []).filter((x) => x !== receipts && x !== testMarks && x !== feedbackRead) } })).not.toMatch(/GetItem|Scan|Batch|DeleteItem|ConditionCheck/);
+    // And only the report statements name a report's text or sender (supply-checkout-3sv.26)
+    expect(JSON.stringify({ ...policy, PolicyDocument: { Statement: (policy?.PolicyDocument.Statement ?? []).filter((x) => x !== feedbackList && x !== feedbackRead) } })).not.toMatch(/"message"|"userId"|FEEDBACK#STATUS/);
     // And nothing anywhere in it can write the test mark: it's in no statement but the read
     expect(JSON.stringify({ ...policy, PolicyDocument: { Statement: (policy?.PolicyDocument.Statement ?? []).filter((x) => x !== testMarks) } })).not.toMatch(/"test"/);
     // And no closure field: with closedAt and purgeAfter it could close a team and have the purge delete it (supply-checkout-6uw.6)
     expect(JSON.stringify(policy)).not.toMatch(/closedAt|closedBy|purgeAfter|owners/);
   });
 
-  it("is the only thing the ops function may assume, and it may call only AdminListGroupsForUser on the operator pool in Cognito", () => {
+  it("is the only thing the ops function may assume, and in Cognito it may call only AdminListGroupsForUser on the operator pool and AdminGetUser on the app pool", () => {
     const { template } = api();
     const statements = resources(template, "AWS::IAM::Policy")
       .filter(([id]) => id.startsWith("OpsFunctionRole"))
@@ -1224,7 +1277,15 @@ describe("operator-access role (ADR 0015)", () => {
     expect(statements.filter((s) => JSON.stringify(s.Action).includes("sts:")).map((s) => JSON.stringify(s.Resource))).toEqual([expect.stringMatching(/OperatorAccessRole/)]);
     expect(statements.map((s) => JSON.stringify(s.Resource)).join()).not.toMatch(/OperatorReopenRole/);
     const cognito = statements.filter((s) => JSON.stringify(s.Action).includes("cognito-idp:"));
-    expect(cognito).toEqual([expect.objectContaining({ Action: "cognito-idp:AdminListGroupsForUser", Resource: { Ref: expect.stringMatching(/identityopsuserpoolarn/i) } })]);
+    expect(cognito).toEqual([
+      expect.objectContaining({ Action: "cognito-idp:AdminListGroupsForUser", Resource: { Ref: expect.stringMatching(/identityopsuserpoolarn/i) } }),
+      // A report's sender's verified email (supply-checkout-3sv.26): one user by sub, never ListUsers
+      { Sid: "ReadReportSender", Effect: "Allow", Action: "cognito-idp:AdminGetUser", Resource: expect.anything() },
+    ]);
+    expect(JSON.stringify(cognito)).not.toMatch(/ListUsers"|AdminUpdate|AdminDelete|AdminDisable|AdminSet|\*/);
+    // The app pool, by the same watched pool ID the function is given, never the operator pool
+    expect(JSON.stringify(cognito[1]?.Resource)).toMatch(/:userpool\/".*identityuserpoolid/i);
+    expect(JSON.stringify(cognito[1]?.Resource)).not.toMatch(/ops/i);
     // No other function may assume the operator-access role
     const assumes = resources(template, "AWS::IAM::Policy").filter(([id, p]) => !id.startsWith("OpsFunctionRole") && /OperatorAccessRole/.test(JSON.stringify(p.Properties.PolicyDocument)));
     expect(assumes).toEqual([]);
@@ -1254,7 +1315,9 @@ describe("operator-access role (ADR 0015)", () => {
       OPS_ISSUER_URL: { Ref: expect.stringMatching(/opsissuerurl/i) },
       OPS_CLIENT_ID: { Ref: expect.stringMatching(/opsclientid/i) },
       OPS_USER_POOL_ID: { Ref: expect.stringMatching(/opsuserpoolid/i) },
+      APP_USER_POOL_ID: { Ref: expect.stringMatching(/identityuserpoolid/i) },
     });
+    expect(JSON.stringify(fn.Variables.APP_USER_POOL_ID)).not.toMatch(/ops/i);
   });
 });
 

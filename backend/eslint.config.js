@@ -99,15 +99,16 @@ export default tseslint.config(
   },
   {
     // The owner's report triage (docs/infrastructure.md, "Triaging reports")
-    // runs src/data/feedback-owner.ts, which index.ts doesn't export so no
-    // Lambda can.
+    // runs src/data/feedback-owner.ts, which index.ts doesn't export: among
+    // the Lambda sources only data/operator.ts imports it, for the ops routes.
     files: ["scripts/feedback.ts"],
     rules: {
       "no-restricted-imports": ["error", { patterns: [{ regex: DYNAMODB, message: DYNAMODB_MESSAGE }, { regex: String.raw`(^|/)data/(?!(index|feedback-owner)(\.js|\.ts)?$)`, message: DATA_INTERNALS_MESSAGE }] }],
     },
   },
   {
-    files: ["src/data/operator.ts"],
+    // feedback-owner.ts too: the ops routes run it on the operator-access role (supply-checkout-3sv.26)
+    files: ["src/data/operator.ts", "src/data/feedback-owner.ts"],
     rules: {
       "no-restricted-imports": ["error", { patterns: [{ regex: String.raw`(^|/)team-context(\.js|\.ts)?$`, message: OPERATOR_MESSAGE }] }],
       "no-restricted-syntax": [

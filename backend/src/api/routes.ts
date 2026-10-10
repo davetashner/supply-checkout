@@ -321,7 +321,7 @@ export const BILLING_TAG_UNUSED = ".";
 export interface OpsRoute {
   readonly method: "GET" | "PUT" | "DELETE" | "POST";
   readonly path: string;
-  readonly action: "listTeams" | "getTeam" | "setComp" | "endComp" | "reopenTeam" | "listAudit" | "listStuckImports" | "clearStuckImport" | "listReceiptUsage";
+  readonly action: "listTeams" | "getTeam" | "setComp" | "endComp" | "reopenTeam" | "listAudit" | "listStuckImports" | "clearStuckImport" | "listReceiptUsage" | "listFeedback" | "getFeedback" | "dismissFeedback" | "recordFeedback";
   readonly throttle: { readonly rate: number; readonly burst: number };
 }
 
@@ -330,7 +330,8 @@ export interface OpsRoute {
  * account record, comp a team or end its comp, reopen a closed team, read
  * the operator audit, list stuck imports and take one out of the
  * stuck-import check, and see the teams that read the most receipts in a
- * month (a team's own reads are in its record).
+ * month (a team's own reads are in its record), and triage the reports
+ * from Report an issue (list, read, dismiss, record a bead).
  * Each needs an access token from the operator user pool (its own JWT
  * authorizer; a customer's token fails it), and the `ops` function checks
  * the `operators` group with Cognito on every request. Primary region only.
@@ -348,6 +349,11 @@ export const OPS_ROUTES: readonly OpsRoute[] = [
   { method: "POST", path: "/ops/teams/{teamId}/imports/{importId}/clear", action: "clearStuckImport", throttle: { rate: 2, burst: 5 } },
   // The teams that read the most receipts in a month (supply-checkout-wxx); each reads up to 1,000 teams' counters
   { method: "GET", path: "/ops/receipts", action: "listReceiptUsage", throttle: { rate: 1, burst: 2 } },
+  // Reports from Report an issue (supply-checkout-3sv.26): the operator page's side of `npm run feedback`
+  { method: "GET", path: "/ops/feedback", action: "listFeedback", throttle: { rate: 5, burst: 10 } },
+  { method: "GET", path: "/ops/feedback/{teamId}/{reportId}", action: "getFeedback", throttle: { rate: 5, burst: 10 } },
+  { method: "POST", path: "/ops/feedback/{teamId}/{reportId}/dismiss", action: "dismissFeedback", throttle: { rate: 2, burst: 5 } },
+  { method: "POST", path: "/ops/feedback/{teamId}/{reportId}/record", action: "recordFeedback", throttle: { rate: 2, burst: 5 } },
 ];
 
 /**
@@ -422,6 +428,8 @@ export const API_ENV = {
   opsClientId: "OPS_CLIENT_ID",
   /** The operator pool, for AdminListGroupsForUser on every request. */
   opsUserPoolId: "OPS_USER_POOL_ID",
+  /** The app (customer) pool, for the ops function's AdminGetUser of a report's sender (supply-checkout-3sv.26). */
+  appUserPoolId: "APP_USER_POOL_ID",
   /** The operator reopen function the ops function invokes to reopen a closed team (supply-checkout-6uw.6). */
   opsReopenFunction: "OPS_REOPEN_FUNCTION",
   /** The role the operator reopen function assumes, tagged with the team it reopens. */

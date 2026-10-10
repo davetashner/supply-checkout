@@ -6,21 +6,30 @@
 // - API data is only ever put in the page as text (textContent, via h()), never as HTML. The
 //   CloudFront CSP also requires Trusted Types, so an HTML sink would throw.
 // - The access token is only in `session` below: no storage, no cookies, no console, no logs.
-// - Every write needs a reason, and sends the team's version and an Idempotency-Key.
-import { ApiError, NetworkError, TEAM_ID, createApi } from "./lib/api.js";
+// - Every write needs a reason, and sends the team's version and an Idempotency-Key. A report's
+//   dismissal or bead (supply-checkout-3sv.26) sends an Idempotency-Key, and the API refuses it
+//   unless the report is still new.
+// - A report's text is the sender's: only ever text in the page, never in a URL, a title or a log.
+import { ApiError, FEEDBACK_STATUSES, NetworkError, REPORT_ID, TEAM_ID, createApi } from "./lib/api.js";
 import { SignInError, beginSignIn, callbackParams, exchangeCode, logoutUrl, sessionFor, takePending, withoutCallback } from "./lib/auth.js";
 import { ConfigError, loadConfig } from "./lib/config.js";
 import {
   DISCOUNT_OUTCOMES,
+  FEEDBACK_STATUS_LABELS,
   InputError,
   MAX_COMP_MONTHS,
   auditRow,
   checkMonth,
   compBody,
   date,
+  dismissBody,
+  emailLine,
   endCompBody,
+  feedbackFacts,
+  feedbackRow,
   idempotencyKeys,
   receiptLines,
+  recordBody,
   stripeFacts,
   teamFacts,
   teamRow,
@@ -37,6 +46,8 @@ let expiryTimer = null;
 let clockTimer = null;
 /** The last team list, kept in memory so going back doesn't search again. */
 let teamsView = { q: "", teams: [], cursor: undefined, loaded: false };
+/** The last report list, kept in memory so going back doesn't read it again. */
+let feedbackView = { status: "new", reports: [], cursor: undefined, loaded: false };
 /** What the operator typed in a team's forms, kept across "read it again". */
 let drafts = {};
 const keys = idempotencyKeys();
@@ -88,7 +99,7 @@ function drawAccount() {
   const signOutButton = h("button", { type: "button", className: "secondary" }, "Sign out");
   signOutButton.addEventListener("click", signOut);
   account.replaceChildren(
-    h("nav", { "aria-label": "Operator pages" }, h("a", { href: "#/teams" }, "Teams"), h("a", { href: "#/audit" }, "Audit")),
+    h("nav", { "aria-label": "Operator pages" }, h("a", { href: "#/teams" }, "Teams"), h("a", { href: "#/feedback" }, "Feedback"), h("a", { href: "#/audit" }, "Audit")),
     h("span", { className: "who" }, `Signed in as ${session.username || "operator"}`),
     h("span", { className: "clock", id: "clock" }, `Session ends in ${minutesLeft()} min`),
     signOutButton,
@@ -100,6 +111,7 @@ function forget() {
   clearTimeout(expiryTimer);
   clearInterval(clockTimer);
   teamsView = { q: "", teams: [], cursor: undefined, loaded: false };
+  feedbackView = { status: "new", reports: [], cursor: undefined, loaded: false };
   drafts = {};
   drawAccount();
 }
@@ -360,6 +372,166 @@ async function write(button, outcome, team, send, describe) {
   }
 }
 
+// Reports from Report an issue (supply-checkout-3sv.26)
+
+async function drawFeedback(status) {
+  if (status && status !== feedbackView.status) feedbackView = { status, reports: [], cursor: undefined, loaded: false };
+  const select = h("select", { id: "feedback-status", name: "status" }, FEEDBACK_STATUSES.map((s) => h("option", { value: s }, FEEDBACK_STATUS_LABELS[s])));
+  select.value = feedbackView.status;
+  const form = h("form", { className: "search" }, field("feedback-status", "Status", select), h("button", { type: "submit" }, "Show"));
+  const results = h("div", { id: "results" });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    location.hash = `#/feedback/${select.value}`;
+  });
+  show(
+    h("h1", {}, "Feedback"),
+    h("p", { className: "hint" }, "Reports from Report an issue, oldest first. Opening one is audited, and so is looking up its sender's email. Make beads with npm run feedback -- bead, then record them here."),
+    form,
+    results,
+  );
+
+  async function load(cursor) {
+    results.setAttribute("aria-busy", "true");
+    try {
+      const page = await api.listFeedback({ status: feedbackView.status, cursor });
+      feedbackView.reports = cursor ? [...feedbackView.reports, ...page.reports] : page.reports;
+      feedbackView.cursor = page.cursor;
+      feedbackView.loaded = true;
+      drawResults();
+    } catch (error) {
+      results.replaceChildren(problem(error) ?? "");
+    } finally {
+      results.removeAttribute("aria-busy");
+    }
+  }
+
+  function drawResults() {
+    const rows = feedbackView.reports.map((report) => {
+      const row = feedbackRow(report);
+      const linkable = TEAM_ID.test(String(report.teamId)) && REPORT_ID.test(String(report.reportId));
+      const id = linkable ? h("a", { href: `#/report/${report.teamId}/${report.reportId}`, "aria-label": `Report ${row.shortId}` }, row.shortId) : row.shortId;
+      return h("tr", {}, h("td", { className: "mono" }, id), h("td", {}, row.sent), h("td", {}, row.category), h("td", { className: "mono" }, row.teamId), h("td", {}, row.role), h("td", {}, row.preview), h("td", {}, row.status));
+    });
+    const more = h("button", { type: "button", className: "secondary" }, "More");
+    more.addEventListener("click", () => load(feedbackView.cursor));
+    results.replaceChildren(
+      rows.length
+        ? h("table", {}, h("caption", {}, `${FEEDBACK_STATUS_LABELS[feedbackView.status]} reports`), h("thead", {}, h("tr", {}, ["Report", "Sent", "Category", "Team", "Role", "What happened", "Status"].map((c) => h("th", { scope: "col" }, c)))), h("tbody", {}, rows))
+        : h("p", {}, `No ${feedbackView.status} reports.`),
+      feedbackView.cursor ? more : "",
+    );
+  }
+
+  if (!feedbackView.loaded) await load();
+  else drawResults();
+}
+
+async function drawReport(teamId, reportId) {
+  show(h("p", { "aria-busy": "true" }, "Loading the report…"));
+  let detail;
+  try {
+    detail = await api.getFeedback(teamId, reportId);
+  } catch (error) {
+    const box = problem(error);
+    if (box) show(h("h1", {}, "Report"), box, h("p", {}, h("a", { href: "#/feedback" }, "Back to feedback")));
+    return;
+  }
+  const { report } = detail;
+  const outcome = h("div", { id: "outcome", "aria-live": "polite" });
+  const back = FEEDBACK_STATUSES.includes(report.status) ? `#/feedback/${report.status}` : "#/feedback";
+  show(
+    h("p", {}, h("a", { href: back }, "Back to feedback")),
+    h("h1", {}, `Report ${String(report.shortId ?? "")}`),
+    h("dl", { className: "facts" }, feedbackFacts(report).map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
+    h("section", {}, h("h2", {}, "What happened"), h("p", { className: "report-text" }, String(report.message ?? ""))),
+    report.expected ? h("section", {}, h("h2", {}, "What they expected"), h("p", { className: "report-text" }, String(report.expected))) : null,
+    h("section", {}, h("h2", {}, "Contact"), h("p", { id: "contact" }, emailLine(detail))),
+    TEAM_ID.test(String(report.teamId)) ? h("p", {}, h("a", { href: `#/team/${report.teamId}` }, "The sender's team")) : null,
+    outcome,
+    report.status === "new" ? [recordForm(report, outcome), dismissForm(report, outcome)] : h("p", {}, "Only a new report can be dismissed or have a bead recorded."),
+  );
+}
+
+function recordForm(report, outcome) {
+  const bead = draftInput(`record-${report.reportId}`, "bead", { id: "record-bead", name: "beadId", type: "text", required: true, autocomplete: "off", maxlength: "64", spellcheck: "false" });
+  const submit = h("button", { type: "submit" }, "Record bead");
+  const form = h(
+    "form",
+    { className: "write", "aria-labelledby": "record-heading", novalidate: true },
+    h("h2", { id: "record-heading" }, "Record its bead"),
+    field("record-bead", "Bead ID", bead, "Make the bead on your machine with npm run feedback -- bead (or bd create), then record its ID here. The report becomes triaged."),
+    submit,
+  );
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    let body;
+    try {
+      body = recordBody({ beadId: bead.value });
+    } catch (error) {
+      outcome.replaceChildren(problem(error));
+      return;
+    }
+    await writeReport(submit, outcome, report, () => api.recordFeedback(report.teamId, report.reportId, body, keys.keyFor(["record", report.teamId, report.reportId, body])), (o) =>
+      o.eventId ? `Recorded ${o.report?.beadId}: the report is triaged. Audit event ${o.eventId}.` : `The report was already triaged with ${o.report?.beadId}.`,
+    );
+  });
+  return form;
+}
+
+function dismissForm(report, outcome) {
+  const reason = draftInput(`dismiss-${report.reportId}`, "reason", { id: "dismiss-reason", name: "reason", type: "text", required: true, minlength: "3", maxlength: "200", autocomplete: "off" });
+  const submit = h("button", { type: "submit", className: "danger" }, "Dismiss report");
+  const form = h(
+    "form",
+    { className: "write", "aria-labelledby": "dismiss-heading", novalidate: true },
+    h("h2", { id: "dismiss-heading" }, "Dismiss it"),
+    field("dismiss-reason", "Reason (required, your own words)", reason, "Kept on the report and in the operator audit, never shown to the team. Not the report's words, and no email addresses."),
+    submit,
+  );
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    let body;
+    try {
+      body = dismissBody({ reason: reason.value });
+    } catch (error) {
+      outcome.replaceChildren(problem(error));
+      return;
+    }
+    await writeReport(submit, outcome, report, () => api.dismissFeedback(report.teamId, report.reportId, body, keys.keyFor(["dismiss", report.teamId, report.reportId, body])), (o) =>
+      o.eventId ? `Dismissed. Audit event ${o.eventId}.` : "The report was already dismissed.",
+    );
+  });
+  return form;
+}
+
+/** Sends a report's change, then reads it again on success. A 409 says to read it again first. */
+async function writeReport(button, outcome, report, send, describe) {
+  button.disabled = true;
+  outcome.replaceChildren(message("info", "Saving…"));
+  try {
+    const answer = await send();
+    keys.answered();
+    drafts = {};
+    // The list it came from is out of date now
+    feedbackView.loaded = false;
+    await drawReport(report.teamId, report.reportId);
+    document.getElementById("outcome")?.replaceChildren(message("success", describe(answer)));
+  } catch (error) {
+    button.disabled = false;
+    if (!(error instanceof NetworkError)) keys.answered();
+    if (error instanceof ApiError && error.status === 409) {
+      const again = h("button", { type: "button" }, "Read the report again");
+      again.addEventListener("click", () => drawReport(report.teamId, report.reportId));
+      outcome.replaceChildren(message("conflict", h("p", {}, h("strong", {}, "Not saved. "), error.message), "Someone changed this report since you opened it. Read it again to see what it says now.", again));
+      return;
+    }
+    const box = problem(error);
+    if (box && error instanceof NetworkError) box.append(h("p", {}, "Sending again sends the same request, which is applied at most once."));
+    outcome.replaceChildren(box ?? "");
+  }
+}
+
 // The audit
 
 async function drawAudit(teamId) {
@@ -426,12 +598,15 @@ async function drawAudit(teamId) {
   await load();
 }
 
-// Routing: #/teams, #/team/<id>, #/audit, #/audit/<teamId>
+// Routing: #/teams, #/team/<id>, #/feedback, #/feedback/<status>, #/report/<teamId>/<reportId>,
+// #/audit, #/audit/<teamId>
 
 async function route() {
   if (!session) return;
-  const [, view, id] = location.hash.split("/");
+  const [, view, id, sub] = location.hash.split("/");
   if (view === "team" && id && TEAM_ID.test(id)) return drawTeam(id);
+  if (view === "feedback") return drawFeedback(FEEDBACK_STATUSES.includes(id) ? id : undefined);
+  if (view === "report" && id && sub && TEAM_ID.test(id) && REPORT_ID.test(sub)) return drawReport(id, sub);
   if (view === "audit") return drawAudit(id && TEAM_ID.test(id) ? id : undefined);
   return drawTeams();
 }

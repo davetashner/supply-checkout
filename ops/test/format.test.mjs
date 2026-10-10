@@ -4,8 +4,17 @@ import { test } from "node:test";
 import {
   DISCOUNT_OUTCOMES,
   InputError,
+  BEAD_ID,
+  DISMISS_REASON_MAX,
   auditChange,
   auditRow,
+  dismissBody,
+  emailLine,
+  feedbackFacts,
+  feedbackRow,
+  feedbackStatus,
+  preview,
+  recordBody,
   checkMonth,
   checkReason,
   compBody,
@@ -194,4 +203,74 @@ test("idempotency keys: the same request without an answer reuses its key; anyth
   assert.equal(keys.keyFor(["comp", "t1", { months: 3 }]), "k3");
   assert.match(idempotencyKeys().keyFor(["x"]), /^[0-9a-f-]{36}$/);
   assert.equal(Object.keys(DISCOUNT_OUTCOMES).length, 3);
+});
+
+const report = {
+  reportId: "0123456789abcdef0123456789abcdef",
+  shortId: "01234567",
+  teamId: "team_a",
+  userId: "u-1",
+  role: "member",
+  createdAt: "2026-10-09T10:00:00.000Z",
+  category: "bug",
+  message: "The scanner\nfroze",
+  expected: "",
+  contactOk: true,
+  context: { build: "1.13.0", screen: "scan", browser: "safari" },
+  status: "new",
+  beadId: null,
+  statusAt: null,
+  dismissReason: null,
+};
+
+test("reports: rows, facts and status (supply-checkout-3sv.26)", () => {
+  assert.deepEqual(feedbackRow(report), { shortId: "01234567", sent: "2026-10-09", category: "bug", teamId: "team_a", role: "member", build: "1.13.0", preview: "The scanner froze", status: "New" });
+  assert.equal(feedbackRow({ ...report, context: undefined }).build, "-");
+  assert.equal(preview("x".repeat(81)), `${"x".repeat(80)}…`);
+  assert.equal(preview("  "), "-");
+  assert.equal(preview(undefined), "-");
+  assert.equal(preview("abcdef", 3), "abc…");
+  assert.equal(feedbackStatus({ status: "triaged", beadId: "supply-checkout-a.1" }), "Triaged: supply-checkout-a.1");
+  assert.equal(feedbackStatus({ status: "triaged" }), "Triaged");
+  assert.equal(feedbackStatus({ status: "dismissed", dismissReason: "Duplicate" }), "Dismissed: Duplicate");
+  assert.equal(feedbackStatus({ status: "dismissed" }), "Dismissed");
+  assert.equal(feedbackStatus({ status: "odd" }), "odd");
+  const facts = Object.fromEntries(feedbackFacts(report));
+  assert.equal(facts.From, "member (user u-1)");
+  assert.equal(facts["May contact"], "Yes");
+  assert.equal(facts["App build"], "1.13.0");
+  assert.equal(facts["Status changed"], undefined);
+  const changed = Object.fromEntries(feedbackFacts({ ...report, contactOk: false, context: null, status: "triaged", beadId: "supply-checkout-a.1", statusAt: "2026-10-10T00:00:00Z" }));
+  assert.equal(changed["Status changed"], "2026-10-10T00:00:00Z");
+  assert.equal(changed["May contact"], "No");
+  assert.equal(changed.Screen, "-");
+});
+
+test("reports: what to say about the sender's email", () => {
+  assert.match(emailLine({ report: { ...report, contactOk: false } }), /didn't agree/);
+  assert.match(emailLine(undefined), /didn't agree/);
+  assert.equal(emailLine({ report, email: "a@example.test" }), "Email (verified): a@example.test");
+  assert.match(emailLine({ report, email: null, emailNote: "not_found" }), /npm run feedback -- show/);
+  assert.match(emailLine({ report, email: "", emailNote: "unverified" }), /no verified address/);
+  assert.match(emailLine({ report, email: null, emailNote: "unavailable" }), /lookup failed/);
+});
+
+test("reports: the dismiss and record bodies, checked as the API checks them", () => {
+  assert.deepEqual(dismissBody({ reason: "  Duplicate  " }), { reason: "Duplicate" });
+  assert.throws(() => dismissBody({}), /at least 3/);
+  assert.throws(() => dismissBody({ reason: "x".repeat(DISMISS_REASON_MAX + 1) }), /at most 200/);
+  assert.throws(() => dismissBody({ reason: "two\u0007bells" }), /one line/);
+  assert.deepEqual(recordBody({ beadId: " supply-checkout-3sv.26 " }), { beadId: "supply-checkout-3sv.26" });
+  assert.throws(() => recordBody({ beadId: "other-abc.1" }), /bead ID of this project/);
+  assert.throws(() => recordBody({}), InputError);
+  assert.equal(BEAD_ID.test("supply-checkout-ABC"), false);
+});
+
+test("auditChange for the report actions", () => {
+  assert.equal(auditChange({ action: "ops.feedback.list", after: { status: "new", reports: ["a/b", "c/d"] } }), "reports new, 2 listed");
+  assert.equal(auditChange({ action: "ops.feedback.list", after: { status: "new" } }), "reports new, 0 listed");
+  assert.equal(auditChange({ action: "ops.feedback.read", target: "feedback/t/r", after: { status: "new", emailLookup: false } }), "feedback/t/r");
+  assert.equal(auditChange({ action: "ops.feedback.email", target: "feedback/t/r", after: { status: "new", emailLookup: true } }), "feedback/t/r, email looked up");
+  assert.equal(auditChange({ action: "ops.feedback.record", target: "feedback/t/r", after: { status: "triaged", beadId: "supply-checkout-a.1" } }), "feedback/t/r -> triaged (supply-checkout-a.1)");
+  assert.equal(auditChange({ action: "ops.feedback.dismiss", target: "feedback/t/r", after: { status: "dismissed", beadId: "" } }), "feedback/t/r -> dismissed");
 });

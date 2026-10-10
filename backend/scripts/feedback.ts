@@ -33,7 +33,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { ConflictError, createDb, type Db, type DbOptions, FEEDBACK_STATUSES, type FeedbackReport, type FeedbackStatus } from "../src/data/index.js";
-import { DISMISS_REASON_MAX, dismissFeedback, getFeedback, listFeedback, recordFeedbackBead } from "../src/data/feedback-owner.js";
+import { BEAD_ID, DISMISS_REASON_MAX, dismissFeedback, getFeedback, listFeedback, namesReportIds, quotesReport, recordFeedbackBead, scrub } from "../src/data/feedback-owner.js";
 import { findUserBySub, type PoolUser } from "../src/identity/cognito-admin.js";
 import { noticeAddressOf } from "../src/identity/notice-address.js";
 import { publicSafetyFindings } from "../../scripts/public-safety-rules.mjs";
@@ -66,18 +66,14 @@ type Command = (typeof COMMANDS)[number];
 const TEAM_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const FULL_ID = /^[0-9a-f]{32}$/;
 const SHORT_ID = /^[0-9a-f]{8}$/;
-/** A bead of this project, as `bd` prints it. */
-const BEAD_ID = /^supply-checkout-[a-z0-9.]+$/;
 /** Where --endpoint may point: this machine, over http. */
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 /** The longest bead title, and summary, the CLI takes, in characters. */
 export const TITLE_MAX = 200;
 export const SUMMARY_MAX = 1000;
 const PREVIEW = 60;
-/** A run of this many characters of the report in a bead's text is the report's own words. */
-export const VERBATIM_RUN = 100;
-/** A whole report at least this long, inside a bead's text, is the report's own words too (shorter ones only when the text equals them). */
-const WHOLE_MESSAGE_MIN = 12;
+// The report's own words (quotesReport, namesReportIds) are checked by src/data/feedback-owner.ts, which the ops routes share
+export { namesReportIds, quotesReport, scrub, VERBATIM_RUN } from "../src/data/feedback-owner.js";
 
 const BEAD_TYPES = ["bug", "task", "feature"] as const;
 type BeadType = (typeof BEAD_TYPES)[number];
@@ -115,9 +111,6 @@ const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}
 const ACCOUNT_ID = /(?<![0-9])[0-9]{12}(?![0-9])/;
 const SSO_URL = /awsapps\.com|identitycenter\.amazonaws\.com|\/start\/?#|sso\.[a-z0-9-]+\.amazonaws\.com/i;
 
-/** `text` as the checks see it: NFKC-normalized (a fullwidth `＠` is `@`) and with format characters (zero-width, bidi) removed. */
-export const scrub = (text: string) => text.normalize("NFKC").replace(/\p{Cf}/gu, "");
-
 const HEX32 = /[0-9a-f]{32}/i;
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
@@ -133,34 +126,6 @@ export function unsafeText(raw: string): string | undefined {
   const found = publicSafetyFindings(text)[0];
   if (found) return `something check-public-safety refuses (${found.name})`;
   return undefined;
-}
-
-/** Whether `text` names the report's team, user or report ID (any case). */
-export function namesReportIds(text: string, report: Pick<FeedbackReport, "teamId" | "userId" | "reportId">): boolean {
-  const lower = scrub(text).toLowerCase();
-  return [report.teamId, report.userId, report.reportId].some((value) => value !== "" && lower.includes(value.toLowerCase()));
-}
-
-const normalize = (text: string) => scrub(text).toLowerCase().replace(/\s+/g, " ").trim();
-
-/**
- * Whether `text` holds the report's own words: equal to its message or
- * expected text, all of one of 12 or more characters (case and spacing
- * ignored), or a run of 100 characters. A guardrail against accident: a
- * paraphrase gets through.
- */
-export function quotesReport(text: string, report: Pick<FeedbackReport, "message" | "expected">): boolean {
-  const candidate = normalize(text);
-  if (!candidate) return false;
-  for (const source of [report.message, report.expected].map(normalize)) {
-    if (!source) continue;
-    if (candidate === source) return true;
-    if (source.length >= WHOLE_MESSAGE_MIN && candidate.includes(source)) return true;
-    for (let i = 0; i + VERBATIM_RUN <= candidate.length; i++) {
-      if (source.includes(candidate.slice(i, i + VERBATIM_RUN))) return true;
-    }
-  }
-  return false;
 }
 
 /** The title and summary as one text two ways (joined with a space and with nothing), so a quote can't be split across them. */

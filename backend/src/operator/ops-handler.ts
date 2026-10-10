@@ -17,6 +17,15 @@
 //   GET    /ops/imports                 Imports stuck part-way (the "Imports stuck" alarm)
 //   POST   /ops/teams/{teamId}/imports/{importId}/clear
 //                                       Take a stuck import out of the check (audited)
+//   GET    /ops/feedback?status=&cursor=&limit=
+//                                       Reports from Report an issue, oldest first (audited)
+//   GET    /ops/feedback/{teamId}/{reportId}
+//                                       One report (audited), with its sender's verified
+//                                       email when they agreed to be contacted
+//   POST   /ops/feedback/{teamId}/{reportId}/dismiss
+//   POST   /ops/feedback/{teamId}/{reportId}/record
+//                                       Dismiss a new report with a reason, or record the
+//                                       bead it became (audited, with an Idempotency-Key)
 //
 // Who gets in, on every request:
 // 1. API Gateway's ops JWT authorizer checks the token against the operator
@@ -34,10 +43,19 @@
 // and this code has no TeamContext (the lint config keeps team-context
 // functions out of it). Every DynamoDB call runs on the operator-access role
 // (ops-db.ts), which can read only GSI3's projection and teams' receipt
-// counters (by key, `receipts` only), change only comp attributes, and only
-// append audit items. Every change is audited in its own
+// counters (by key, `receipts` only), change only comp attributes, read only
+// reports' own attributes and change only their status fields (in
+// `FEEDBACK#<the path's team>`, supply-checkout-3sv.26), and only append
+// audit items. Every change is audited in its own
 // transaction (data/operator.ts). Log lines carry the action, the team ID,
-// the operator's `sub` and the status: never emails, names or tokens.
+// the operator's `sub` and the status: never emails, names, tokens or a
+// report's text (a report's team is logged; its sender isn't).
+//
+// A report's sender's email (supply-checkout-3sv.26) is looked up only for a
+// report with `contactOk`, after the read's audit item (`ops.feedback.email`)
+// is written, with AdminGetUser on the app pool (reporter-email.ts), the
+// function role's only permission on that pool. A failed lookup leaves the
+// report readable, with the email unavailable, and logs the error's name.
 //
 // After an operator reopens a team, it queues a seat sync for the team's
 // Stripe customer (billing/seats.ts), as the account function does after an
@@ -81,6 +99,12 @@ import {
   type OpsOwner,
   type OpsTeam,
   setComp,
+  type FeedbackReport,
+  type FeedbackOutcome,
+  listOpsFeedback,
+  getOpsFeedback,
+  dismissOpsFeedback,
+  recordOpsFeedbackBead,
 } from "../data/index.js";
 import { OPERATORS_GROUP } from "../identity/names.js";
 import { STUCK_IMPORT_AFTER_MINUTES } from "../ops/names.js";
@@ -92,6 +116,7 @@ import type { OperatorDirectory } from "./cognito.js";
 import type { Reopener } from "./reopen-client.js";
 import type { DbForOps } from "./ops-db.js";
 import { type OpsStripe, opsStripeDetail } from "./stripe-detail.js";
+import type { ReporterEmail } from "./reporter-email.js";
 
 export type OpsEvent = APIGatewayProxyEventV2WithJWTAuthorizer;
 
@@ -108,6 +133,8 @@ export interface OpsHandlerDeps {
    * detail comes back with `stripe: { error: "unavailable" }`.
    */
   readonly stripe?: () => Promise<OpsStripe>;
+  /** Looks up a report's sender's verified email in the app pool (reporter-email.ts). Without it, the email is `unavailable`. */
+  readonly reporterEmail?: ReporterEmail;
   /** How long a team's detail waits for Stripe (OPS_STRIPE_DEADLINE_MS by default). */
   readonly stripeDeadlineMs?: number;
   /** The operator pool's issuer URL. */
@@ -121,6 +148,8 @@ export interface OpsHandlerDeps {
 const ROUTES = new Map(OPS_ROUTES.map((r) => [routeKey(r), r.action]));
 const SUB = /^[A-Za-z0-9_-]{1,128}$/;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
+/** A full report ID: 32 hex digits (feedbackIdFor). */
+const REPORT_ID = /^[0-9a-f]{32}$/;
 
 /** Operators only: one answer for every way of not being one. */
 const notOperator = () => new ApiError(403, "permission_denied", "Operators only");
@@ -176,6 +205,27 @@ export function opsTeamBody(team: OpsTeam, now: Date, owners?: OpsOwner[], test:
   };
 }
 
+/** A report as the ops routes return it: without its type or TTL. */
+export function opsFeedbackBody(report: FeedbackReport) {
+  return {
+    reportId: report.reportId,
+    shortId: report.shortId,
+    teamId: report.teamId,
+    userId: report.userId,
+    role: report.role,
+    createdAt: report.createdAt,
+    category: report.category,
+    message: report.message,
+    expected: report.expected,
+    contactOk: report.contactOk === true,
+    context: report.context ?? {},
+    status: report.status,
+    beadId: report.beadId || null,
+    statusAt: report.statusAt ?? null,
+    dismissReason: report.dismissReason ?? null,
+  };
+}
+
 /** An audit event as the ops routes return it: without its type or TTL. */
 function auditBody(event: OperatorAuditEvent | OperatorAuditSummary) {
   const { expiresAt, type, ...rest } = event as Partial<OperatorAuditEvent>;
@@ -212,6 +262,32 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
     if (typeof value !== "string" || !ID.test(value)) throw new ApiError(400, "bad_request", "Invalid import ID");
     return value;
   }
+
+  function reportIdFrom(event: OpsEvent): string {
+    const value = event.pathParameters?.reportId;
+    if (typeof value !== "string" || !REPORT_ID.test(value)) throw new ApiError(400, "bad_request", "Invalid report ID");
+    return value;
+  }
+
+  /**
+   * The sender's email for a report with contactOk, or why not: `not_found`
+   * (no native user by that sub: a deleted account, or a Google or Apple
+   * user, whom `npm run feedback -- show` finds), `unverified`, or
+   * `unavailable` (no lookup configured, or Cognito failed). Never throws.
+   */
+  async function senderEmail(report: FeedbackReport): Promise<{ email: string | null; emailNote: string | null }> {
+    if (!report.contactOk) return { email: null, emailNote: null };
+    if (!deps.reporterEmail) return { email: null, emailNote: "unavailable" };
+    try {
+      const found = await deps.reporterEmail(report.userId);
+      return found.email === null ? { email: null, emailNote: found.why } : { email: found.email, emailNote: null };
+    } catch (error) {
+      obs.logger.warn("Reporter email unavailable", { teamId: report.teamId, code: String((error as { name?: unknown } | null)?.name ?? "Error").slice(0, 64) });
+      return { email: null, emailNote: "unavailable" };
+    }
+  }
+
+  const feedbackOutcome = (o: FeedbackOutcome) => ({ eventId: o.eventId, replayed: o.replayed, report: opsFeedbackBody(o.report) });
 
   const stuckBefore = () => new Date(now() - STUCK_IMPORT_AFTER_MINUTES * 60_000);
 
@@ -342,6 +418,35 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new ApiError(400, "bad_request", "month is YYYY-MM");
       const usage = await listOpsReceiptUsage(deps.dbFor(op.sub), op, { month, limit: limitFrom(q.limit) }, at);
       return { response: json(200, usage) };
+    },
+    async listFeedback(event, op) {
+      if (event.body) jsonBody(event, []);
+      const q = event.queryStringParameters ?? {};
+      const page = await listOpsFeedback(deps.dbFor(op.sub), op, { status: q.status, cursor: q.cursor, limit: limitFrom(q.limit) }, new Date(now()));
+      return { response: json(200, { reports: page.items.map(opsFeedbackBody), ...(page.cursor ? { cursor: page.cursor } : {}) }) };
+    },
+    async getFeedback(event, op) {
+      const teamId = teamIdFrom(event);
+      const reportId = reportIdFrom(event);
+      // Tagged with the path's team: the role reads reports in FEEDBACK#<tag> only
+      const report = await getOpsFeedback(deps.dbFor(op.sub, teamId), op, teamId, reportId, new Date(now()));
+      // Only after the read (and its ops.feedback.email audit) is written
+      const contact = await senderEmail(report);
+      return { teamId, response: json(200, { report: opsFeedbackBody(report), ...contact }) };
+    },
+    async dismissFeedback(event, op) {
+      const teamId = teamIdFrom(event);
+      const reportId = reportIdFrom(event);
+      const body = jsonBody(event, ["reason"]);
+      const outcome = await dismissOpsFeedback(deps.dbFor(op.sub, teamId), op, teamId, reportId, { reason: body.reason, idempotencyKey: header(event, IDEMPOTENCY_HEADER) }, new Date(now()));
+      return { teamId, response: json(200, feedbackOutcome(outcome)) };
+    },
+    async recordFeedback(event, op) {
+      const teamId = teamIdFrom(event);
+      const reportId = reportIdFrom(event);
+      const body = jsonBody(event, ["beadId"]);
+      const outcome = await recordOpsFeedbackBead(deps.dbFor(op.sub, teamId), op, teamId, reportId, { beadId: body.beadId, idempotencyKey: header(event, IDEMPOTENCY_HEADER) }, new Date(now()));
+      return { teamId, response: json(200, feedbackOutcome(outcome)) };
     },
     async listAudit(event, op) {
       const q = event.queryStringParameters ?? {};

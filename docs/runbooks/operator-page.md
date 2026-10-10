@@ -1,6 +1,6 @@
 # The operator page: using it, and when it doesn't work
 
-For operators: people in the operator pool's `operators` group ([Operators](../infrastructure.md#operators), [ADR 0015](../adr/0015-platform-operator-role.md)). The page is at `https://ops.supplycheckout.com/` (`https://ops.<env>.supplycheckout.com/` elsewhere). It does what `npm run ops` does for teams and comps; reopening a team, stuck imports and the receipt ranking are in the CLI. Bead `supply-checkout-gxlt`.
+For operators: people in the operator pool's `operators` group ([Operators](../infrastructure.md#operators), [ADR 0015](../adr/0015-platform-operator-role.md)). The page is at `https://ops.supplycheckout.com/` (`https://ops.<env>.supplycheckout.com/` elsewhere). It does what `npm run ops` does for teams and comps, and what `npm run feedback` does for reports from Report an issue except making the bead; reopening a team, stuck imports and the receipt ranking are in the CLI. Beads `supply-checkout-gxlt` and `supply-checkout-3sv.26`.
 
 ## Signing in
 
@@ -19,6 +19,16 @@ For operators: people in the operator pool's `operators` group ([Operators](../i
    - **Reason**, always: it's in the audit, and the team's owners see the action as "Supply Checkout support".
 4. **End the comp** ends it now, and takes off any Stripe discount it gave. It needs a reason too.
 
+## Triaging a report
+
+1. **Feedback**: pick a status (new by default) and press **Show**. Reports are oldest first, 25 at a time (**More** for the rest).
+2. Open one. Its text is what the user wrote: read it here, and never paste it into a bead, a chat or a ticket. If they agreed to be contacted, the page shows their verified email (opening it is audited as a personal-data read). If it says no account was found, look them up with `npm run feedback -- show <teamId> <reportId>`.
+3. Either:
+   - **Record its bead**: make the bead on your machine with `npm run feedback -- bead <teamId> <reportId> --title "…"` (which scrubs and records it for you) or `bd create`, in your own words, then type its ID (`supply-checkout-…`) here. The report becomes triaged.
+   - **Dismiss it**, with a short reason in your own words (3 to 200 characters, one line, no email addresses, not the report's own words). It's kept on the report and in the operator audit; the team never sees it.
+
+A report moves once. If it's already triaged or dismissed (another operator, or the CLI), the page says so and changes nothing: press **Read the report again**.
+
 ## When a change isn't saved
 
 | The page says | What it means | What to do |
@@ -26,6 +36,8 @@ For operators: people in the operator pool's `operators` group ([Operators](../i
 | **Not saved.** The team changed since you read it … **Read the team again** | Someone or something changed the team after you opened it (another operator, an owner, billing). Nothing was changed. | Press **Read the team again** (what you typed is kept), check the team now, then send the change again if it still makes sense. |
 | **Not saved.** This team is closed … | A closed team can't be comped. | Reopen it first with `npm run ops -- reopen <teamId> --reason …` if that's right, then comp it. |
 | **Not saved.** This team has no comp | There's nothing to end. | Read the team again. |
+| **Not saved.** This report is already triaged (bead …) / dismissed | Someone moved the report after you opened it. Nothing was changed. | Press **Read the report again**. To change a triaged report's bead, ask the owner (it's a one-way move on purpose). |
+| The reason can't hold an email address / the report's own words or IDs | The dismissal reason must be your words. | Rewrite it. |
 | No answer from the API … applied at most once | The request may or may not have arrived. | Press the same button again without changing anything: it sends the same request with the same key, which the API applies only once. |
 | Your session ended … Sign in again | The 15 minutes ran out, or your token was revoked or you were removed from the group. | Sign in again. If it keeps happening at once, ask an administrator whether your account is still in `operators`. |
 | This account isn't an operator | The API refused the account (403). | Ask an administrator (`npm run operators -- list`). |
@@ -37,4 +49,4 @@ For operators: people in the operator pool's `operators` group ([Operators](../i
 - **404**: only `/`, `/ops-config.json` and the page's own `/assets/` files exist there. Go to the root.
 - **Sign-in says the redirect isn't allowed** (`redirect_mismatch`): the ops client doesn't list `https://ops.<env domain>/`. The identity stack adds it; redeploy it, and check CloudTrail for an `UpdateUserPoolClient` that removed it (that would also have paged `OperatorPoolChanges`).
 - **Requests to the API fail in the browser's console with a CORS error**: the api stack's CORS doesn't list the page's origin yet; deploy the api stack.
-- The CLI always works as a fallback: `npm run ops -- team <teamId>`, `comp`, `uncomp`, `audit`.
+- The CLI always works as a fallback: `npm run ops -- team <teamId>`, `comp`, `uncomp`, `audit`, and `npm run feedback` for reports.

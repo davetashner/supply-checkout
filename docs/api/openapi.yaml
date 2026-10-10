@@ -1461,9 +1461,9 @@ paths:
         their role come from the token and the membership, never the body,
         and a body that names a team, a user or any other field it isn't
         listed here with is 400. The report is stored privately, with the
-        caller's user ID, role and the time: no route lists, fetches or
-        changes it, the app can't read it back, and the response carries only
-        its ID. The caller's email isn't stored; `contactOk` says whether we
+        caller's user ID, role and the time: no team route lists, fetches or
+        changes it (only operators can, through `/ops/feedback`), the app
+        can't read it back, and the response carries only its ID. The caller's email isn't stored; `contactOk` says whether we
         may contact them about it. A team's members can report while it's
         closed, or read-only for billing: the report is theirs, not the
         team's data. It's kept 2 years, and deleted with the team when the
@@ -1862,7 +1862,7 @@ paths:
                         eventId: { type: string }
                         ts: { type: string, format: date-time }
                         actor: { type: string, const: Supply Checkout support }
-                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.comp.discount, ops.import.clear, ops.team.reopen] }
+                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.comp.discount, ops.import.clear, ops.team.reopen, ops.feedback.list, ops.feedback.read, ops.feedback.email, ops.feedback.record, ops.feedback.dismiss] }
                         reason: { type: string }
                         before: { $ref: "#/components/schemas/AuditRecord" }
                         after: { $ref: "#/components/schemas/AuditRecord" }
@@ -2344,7 +2344,7 @@ paths:
                         ts: { type: string, format: date-time }
                         teamId: { type: string }
                         operatorSub: { type: string, description: The operator's `sub` in the operator pool. }
-                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.receipts.usage, ops.comp.set, ops.comp.end, ops.comp.discount, ops.import.clear, ops.team.reopen] }
+                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.receipts.usage, ops.comp.set, ops.comp.end, ops.comp.discount, ops.import.clear, ops.team.reopen, ops.feedback.list, ops.feedback.read, ops.feedback.email, ops.feedback.record, ops.feedback.dismiss] }
                         target: { type: string }
                         reason: { type: string }
                         before: { $ref: "#/components/schemas/AuditRecord" }
@@ -2471,6 +2471,143 @@ paths:
         "403": { $ref: "#/components/responses/OperatorsOnly" }
         "409":
           description: "`aborted`, nothing changed: the import isn't stuck, or the Idempotency-Key was used for a different request."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /ops/feedback:
+    get:
+      tags: [ops]
+      operationId: opsListFeedback
+      summary: Reports from Report an issue in one status, oldest first, across every team. Audited as `ops.feedback.list` (in the operators' audit only).
+      description: |
+        The same reports as `npm run feedback -- list`, from the same code
+        (backend/src/data/feedback-owner.ts). Each carries its text, never an
+        email: none is stored. A page holds at most `limit` reports; follow
+        `cursor` for the rest.
+      security: [{ opsCognito: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [new, triaged, dismissed], default: new } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { $ref: "#/components/parameters/cursor" }
+      responses:
+        "200":
+          description: A page of reports.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reports]
+                properties:
+                  reports: { type: array, items: { $ref: "#/components/schemas/OpsFeedbackReport" } }
+                  cursor: { type: string, description: Absent on the last page. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+  /ops/feedback/{teamId}/{reportId}:
+    parameters:
+      - { $ref: "#/components/parameters/opsTeamId" }
+      - { $ref: "#/components/parameters/opsReportId" }
+    get:
+      tags: [ops]
+      operationId: opsGetFeedback
+      summary: One report, with its sender's verified email when they agreed to be contacted. Audited before it's answered.
+      description: |
+        Audited as `ops.feedback.email` (a personal-data read) when the
+        report has `contactOk`, otherwise `ops.feedback.read`, in the
+        operators' audit only (never the team's support actions). For a
+        report with `contactOk`, the sender is looked up in the app user pool
+        by their user ID, after the audit is written, and `email` is the
+        address the account API trusts, as `npm run feedback -- show` shows
+        it. Otherwise `email` is null and `emailNote` says why: `not_found`
+        (no such native user: the account was deleted, or it's a Google or
+        Apple user, whom `npm run feedback -- show` looks up), `unverified`
+        (no address the API trusts) or `unavailable` (the lookup failed; try
+        again). Both are null for a report without `contactOk`.
+      security: [{ opsCognito: [] }]
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [report, email, emailNote]
+                properties:
+                  report: { $ref: "#/components/schemas/OpsFeedbackReport" }
+                  email: { type: [string, "null"], format: email }
+                  emailNote: { type: [string, "null"], enum: [not_found, unverified, unavailable, null] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /ops/feedback/{teamId}/{reportId}/dismiss:
+    parameters:
+      - { $ref: "#/components/parameters/opsTeamId" }
+      - { $ref: "#/components/parameters/opsReportId" }
+    post:
+      tags: [ops]
+      operationId: opsDismissFeedback
+      summary: Dismiss a new report, with a reason. Audited as `ops.feedback.dismiss`.
+      description: |
+        Only a `new` report: its status is the version the change expects.
+        The reason is kept on the report (`dismissReason`) and in the audit;
+        it's the operator's own words, so one with an email address or the
+        report's own words or IDs is refused (400), as the CLI refuses it.
+        Dismissing a report that's already dismissed answers 200 with it as
+        it is (`eventId` null); one that's triaged is 409.
+      security: [{ opsCognito: [] }]
+      parameters: [{ $ref: "#/components/parameters/opsIdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 3, maxLength: 200, description: Why, on one line. Never shown to the team. }
+      responses:
+        "200": { $ref: "#/components/responses/FeedbackChanged" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`aborted`, nothing changed: the report isn't new any more (the message names its status and bead), or the Idempotency-Key was used for a different request."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /ops/feedback/{teamId}/{reportId}/record:
+    parameters:
+      - { $ref: "#/components/parameters/opsTeamId" }
+      - { $ref: "#/components/parameters/opsReportId" }
+    post:
+      tags: [ops]
+      operationId: opsRecordFeedbackBead
+      summary: Record the bead a new report became, marking it triaged. Audited as `ops.feedback.record`.
+      description: |
+        The bead is made with `npm run feedback -- bead` or `bd create` on the
+        owner's machine (the backlog is local); this only records its ID.
+        Only a `new` report, as for dismissing. Recording the same bead again
+        answers 200 with the report as it is (`eventId` null); another bead,
+        or a dismissed report, is 409.
+      security: [{ opsCognito: [] }]
+      parameters: [{ $ref: "#/components/parameters/opsIdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [beadId]
+              properties:
+                beadId: { type: string, pattern: "^supply-checkout-[a-z0-9.]{1,48}$", description: "A bead of this project, e.g. `supply-checkout-3sv.26`." }
+      responses:
+        "200": { $ref: "#/components/responses/FeedbackChanged" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`aborted`, nothing changed: the report isn't new any more (the message names its status and bead), or the Idempotency-Key was used for a different request."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /auth/session:
     post:
@@ -2646,6 +2783,12 @@ components:
       required: true
       description: Any team's ID.
       schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+    opsReportId:
+      name: reportId
+      in: path
+      required: true
+      description: A report's full ID (32 hex digits), not its 8-character short ID.
+      schema: { type: string, pattern: "^[0-9a-f]{32}$" }
     opsIdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -2884,6 +3027,13 @@ components:
         `ReceiptUsageRecord` after (null before), and `ops.comp.discount`
         (what the billing worker did about a comp's Stripe discount) a
         `CompDiscountBefore` before and a `CompDiscountRecord` after.
+        The report actions are in the operators' audit only (`PLATFORM`),
+        with the report as `target` (`feedback/<teamId>/<reportId>`):
+        `ops.feedback.list` a `FeedbackListRecord` after (null before),
+        `ops.feedback.read` and `ops.feedback.email` a `FeedbackReadRecord`
+        after (null before), and `ops.feedback.record` and
+        `ops.feedback.dismiss` a `FeedbackStatusBefore` before and a
+        `FeedbackStatusRecord` after. None holds a report's text or an email.
         `ops.team.read` records neither.
       oneOf:
         - { $ref: "#/components/schemas/CompRecord" }
@@ -2894,6 +3044,10 @@ components:
         - { $ref: "#/components/schemas/ReopenRecord" }
         - { $ref: "#/components/schemas/TeamsListRecord" }
         - { $ref: "#/components/schemas/ReceiptUsageRecord" }
+        - { $ref: "#/components/schemas/FeedbackListRecord" }
+        - { $ref: "#/components/schemas/FeedbackReadRecord" }
+        - { $ref: "#/components/schemas/FeedbackStatusBefore" }
+        - { $ref: "#/components/schemas/FeedbackStatusRecord" }
         - type: "null"
     CompRecord:
       type: object
@@ -2966,6 +3120,63 @@ components:
       properties:
         month: { type: string }
         teams: { type: array, items: { type: string } }
+    FeedbackListRecord:
+      type: object
+      description: A page of reports, and which ones it returned (`<teamId>/<reportId>`).
+      required: [status, cursor, reports]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [new, triaged, dismissed] }
+        cursor: { type: [string, "null"] }
+        reports: { type: array, items: { type: string } }
+    FeedbackReadRecord:
+      type: object
+      description: One report read, its status, and whether its sender's email was looked up (`ops.feedback.email`).
+      required: [status, emailLookup]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [new, triaged, dismissed] }
+        emailLookup: { type: boolean }
+    FeedbackStatusBefore:
+      type: object
+      description: A report's status before it was triaged or dismissed (always `new`).
+      required: [status]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [new] }
+    FeedbackStatusRecord:
+      type: object
+      description: A report's status after, and its bead (empty for a dismissal).
+      required: [status, beadId]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [triaged, dismissed] }
+        beadId: { type: string }
+    OpsFeedbackReport:
+      type: object
+      description: A report as the operator page sees it. Its text is the sender's; show it as text only.
+      required: [reportId, shortId, teamId, userId, role, createdAt, category, message, expected, contactOk, context, status, beadId, statusAt, dismissReason]
+      properties:
+        reportId: { type: string }
+        shortId: { type: string }
+        teamId: { type: string }
+        userId: { type: string, description: The sender's `sub` in the app user pool. }
+        role: { type: string }
+        createdAt: { type: string, format: date-time }
+        category: { type: string, enum: [bug, idea, question] }
+        message: { type: string }
+        expected: { type: string }
+        contactOk: { type: boolean }
+        context:
+          type: object
+          properties:
+            build: { type: string }
+            screen: { type: string }
+            browser: { type: string }
+        status: { type: string, enum: [new, triaged, dismissed] }
+        beadId: { type: [string, "null"] }
+        statusAt: { type: [string, "null"], format: date-time }
+        dismissReason: { type: [string, "null"] }
     OpsStripeDetail:
       oneOf:
         - type: "null"
@@ -3437,6 +3648,17 @@ components:
                 properties:
                   id: { type: string }
                   shortId: { type: string, description: The first 8 characters of `id`, for the person triaging to quote. }
+    FeedbackChanged:
+      description: The report as it is now; `eventId` is null when it already was so and nothing changed. `replayed` for a retry with the same Idempotency-Key.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [eventId, replayed, report]
+            properties:
+              eventId: { type: [string, "null"], description: The audit event. }
+              replayed: { type: boolean }
+              report: { $ref: "#/components/schemas/OpsFeedbackReport" }
     OperatorsOnly:
       description: "`permission_denied`: the token's user isn't in the `operators` group (now, according to Cognito)."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

@@ -4,9 +4,14 @@
 // - The token goes only in the Authorization header, to the API's origin, never with cookies.
 // - Every write (a comp or ending one) carries the version of the team the operator read as
 //   expectedVersion and an Idempotency-Key, so a comp never overwrites a change it didn't see,
-//   and a retry of the same request after a lost answer is applied once.
+//   and a retry of the same request after a lost answer is applied once. A report's dismissal or
+//   bead (supply-checkout-3sv.26) needs it still `new` (the API checks; its status is its version)
+//   and carries an Idempotency-Key too.
 
 export const TEAM_ID = /^[A-Za-z0-9_-]{1,128}$/;
+/** A report's full ID: 32 hex digits. */
+export const REPORT_ID = /^[0-9a-f]{32}$/;
+export const FEEDBACK_STATUSES = ["new", "triaged", "dismissed"];
 export const TIMEOUT_MS = 15_000;
 /** The most requests one search makes while its pages come back empty (as the CLI). */
 export const SEARCH_REQUESTS = 20;
@@ -29,6 +34,11 @@ export class NetworkError extends Error {}
 export const teamPath = (teamId) => {
   if (!TEAM_ID.test(String(teamId))) throw new ApiError(400, { error: { message: "That isn't a team ID" } });
   return `/ops/teams/${teamId}`;
+};
+
+export const reportPath = (teamId, reportId) => {
+  if (!REPORT_ID.test(String(reportId))) throw new ApiError(400, { error: { message: "That isn't a report ID" } });
+  return `/ops/feedback/${teamPath(teamId).split("/").pop()}/${reportId}`;
 };
 
 /**
@@ -83,6 +93,15 @@ export function createApi({ apiUrl, getToken, onUnauthorized = () => {}, fetchFn
     getTeam: async (teamId) => call("GET", teamPath(teamId)),
     setComp: async (teamId, body, idempotencyKey) => call("PUT", `${teamPath(teamId)}/comp`, { body, idempotencyKey }),
     endComp: async (teamId, body, idempotencyKey) => call("DELETE", `${teamPath(teamId)}/comp`, { body, idempotencyKey }),
+    /** One page of reports in a status, oldest first. */
+    async listFeedback({ status, cursor } = {}) {
+      if (status !== undefined && !FEEDBACK_STATUSES.includes(status)) throw new ApiError(400, { error: { message: "That isn't a report status" } });
+      const page = await call("GET", "/ops/feedback", { query: { status, cursor, limit: String(PAGE_SIZE) } });
+      return { reports: Array.isArray(page.reports) ? page.reports : [], cursor: typeof page.cursor === "string" ? page.cursor : undefined };
+    },
+    getFeedback: async (teamId, reportId) => call("GET", reportPath(teamId, reportId)),
+    dismissFeedback: async (teamId, reportId, body, idempotencyKey) => call("POST", `${reportPath(teamId, reportId)}/dismiss`, { body, idempotencyKey }),
+    recordFeedback: async (teamId, reportId, body, idempotencyKey) => call("POST", `${reportPath(teamId, reportId)}/record`, { body, idempotencyKey }),
     async audit({ teamId, month, cursor } = {}) {
       if (teamId !== undefined) teamPath(teamId);
       const page = await call("GET", "/ops/audit", { query: { teamId, month, cursor } });

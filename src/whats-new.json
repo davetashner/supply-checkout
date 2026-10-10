@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "upcoming",
+      "notes": [],
+      "skip": {
+        "754": "Operators only: managing reports on the operator page"
+      }
+    },
+    {
       "version": "1.13.0",
       "date": "2026-10-10",
       "notes": [],
