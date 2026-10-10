@@ -10,15 +10,19 @@
 //   1. Only .github/workflows/journeys.yml may name `production-journeys`, in any letter case
 //      (GitHub's environment names ignore case): not in any key or value once YAML's escapes are
 //      decoded, and not anywhere in the raw text either, comments included (an extra tripwire).
-//   2. A workflow that names it, dispatches journeys.yml (any string in its jobs mentions
+//   2. A workflow that reaches it may only be started by ALLOWED_TRIGGERS: never by
+//      `pull_request`, `pull_request_target` or any other event someone without write access can
+//      cause. Its `on:` may be a name, a list or a map; anything else fails. A workflow reaches it
+//      when it names it; when it dispatches journeys.yml (any string outside its `on:` mentions
 //      `journeys.yml`, as `gh workflow run journeys.yml` and the API's
-//      `workflows/journeys.yml/dispatches` do), or calls one that does either
-//      (`jobs.<id>.uses: ./.github/workflows/…`, followed through every caller), may only be
-//      started by ALLOWED_TRIGGERS: never by `pull_request`, `pull_request_target` or any other
-//      event someone without write access can cause. Its `on:` may be a name, a list or a map;
-//      anything else fails. (A dispatched run is main's journeys.yml, whatever the dispatcher
-//      runs, but it still tests prod on demand, so only a trusted event may start it. The file
-//      name is a tripwire: a run step could dispatch it by its name or ID instead.)
+//      `workflows/journeys.yml/dispatches` do); when it dispatches a workflow that reaches it (any
+//      string outside its `on:` mentions that workflow's file, as release.yml's `gh workflow run
+//      deploy.yml` does: release.yml → deploy.yml → journeys.yml); or when it calls one that
+//      reaches it (`jobs.<id>.uses: ./.github/workflows/…`). All of it is followed through every
+//      chain, to a fixed point. (A dispatched run is main's copy of the workflow, whatever the
+//      dispatcher runs, but it still tests prod on demand, so only a trusted event may start any
+//      link of the chain. The file name is a tripwire: a run step could dispatch a workflow by its
+//      name or ID instead.)
 //   3. No job sets its `environment` (or `environment.name`) from an expression (`${{ … }}`),
 //      since then nothing here can tell which environment it names.
 //   4. A job calls a reusable workflow only as `./.github/workflows/<file>.yml` (no other
@@ -50,8 +54,8 @@ export const JOURNEYS_WORKFLOW = "journeys.yml";
 export const ALLOWED_TRIGGERS = ["workflow_call", "workflow_dispatch", "push", "schedule"];
 
 const NAMES = new RegExp(ENVIRONMENT.replace("-", "\\-"), "i");
-/** A mention of the journeys workflow's file, as a dispatch of it has. */
-const DISPATCHES = /\bjourneys\.ya?ml\b/i;
+/** A mention of a workflow's file (either extension, any letter case), as a dispatch of it has. */
+export const mentionOf = (file) => new RegExp(`(?<!\\w)${file.replace(/\.ya?ml$/i, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.ya?ml(?!\\w)`, "i");
 /** The only job-level `uses:` allowed: a workflow file in this repository, by its local path. */
 export const LOCAL_CALL = /^\.\/\.github\/workflows\/([A-Za-z0-9._-]+\.ya?ml)$/;
 const isMap = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -122,11 +126,29 @@ export function remoteCalls(workflow, repo = DEFAULT_REPO) {
   return uses(workflow).filter((u) => u.trim().toLowerCase().startsWith(prefix));
 }
 
-/** Whether a parsed workflow's jobs mention journeys.yml (dispatch it), comments and job-level `uses:` (calls, rule 2's other half) aside. */
-export function dispatchesJourneys(workflow) {
-  const jobs = Object.values(isMap(workflow.jobs) ? workflow.jobs : {});
-  return jobs.some((job) => strings(isMap(job) ? Object.fromEntries(Object.entries(job).filter(([k]) => k !== "uses")) : job).some((s) => DISPATCHES.test(s)));
+/**
+ * Every string a parsed workflow's jobs can use: everything but its triggers (`on:`, whose
+ * `paths` filters name workflow files without dispatching them) and its jobs' job-level `uses:`
+ * (calls, which rule 2 follows on their own). Top-level `env:`, `defaults:` and the like are
+ * included, since a step can read them. Comments are gone once it's parsed.
+ */
+export function jobStrings(workflow) {
+  const jobs = isMap(workflow.jobs) ? workflow.jobs : {};
+  const rest = Object.fromEntries(Object.entries(workflow).filter(([k]) => k !== "on" && k !== "jobs"));
+  return [
+    ...strings(rest),
+    ...Object.entries(jobs).flatMap(([id, job]) => [id, ...strings(isMap(job) ? Object.fromEntries(Object.entries(job).filter(([k]) => k !== "uses")) : job)]),
+  ];
 }
+
+/** Whether a parsed workflow's jobs mention the workflow file `file` (dispatch it). */
+export function mentions(workflow, file) {
+  const re = mentionOf(file);
+  return jobStrings(workflow).some((s) => re.test(s));
+}
+
+/** Whether a parsed workflow's jobs mention journeys.yml (dispatch it). */
+export const dispatchesJourneys = (workflow) => mentions(workflow, JOURNEYS_WORKFLOW);
 
 /** Problems with the jobs' `environment`: from an expression, or not a name or a map with one. */
 export function environmentProblems(workflow) {
@@ -166,7 +188,7 @@ export function workflowProblems(workflows, repo = DEFAULT_REPO) {
     }
   }
   // The workflows that name the environment or dispatch journeys.yml, and every workflow that
-  // calls one of them.
+  // calls or dispatches one of them, through every chain.
   const reach = new Map([...names].map((f) => [f, `names ${ENVIRONMENT}`]));
   for (const file of Object.keys(parsed)) {
     if (!reach.has(file) && dispatchesJourneys(parsed[file])) reach.set(file, `dispatches ${JOURNEYS_WORKFLOW}`);
@@ -176,10 +198,10 @@ export function workflowProblems(workflows, repo = DEFAULT_REPO) {
     for (const file of Object.keys(parsed)) {
       if (reach.has(file)) continue;
       const callee = calls(parsed[file]).find((c) => reach.has(c));
-      if (callee) {
-        reach.set(file, `calls ${callee}, which ${reach.get(callee)}`);
-        grew = true;
-      }
+      const dispatched = callee ? undefined : [...reach.keys()].sort().find((r) => r !== file && mentions(parsed[file], r));
+      if (callee) reach.set(file, `calls ${callee}, which ${reach.get(callee)}`);
+      else if (dispatched) reach.set(file, `dispatches ${dispatched}, which ${reach.get(dispatched)}`);
+      grew ||= Boolean(callee || dispatched);
     }
   }
   for (const [file, why] of [...reach].sort(([a], [b]) => a.localeCompare(b))) {

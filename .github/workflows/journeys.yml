@@ -66,7 +66,8 @@ permissions: {}
 # deploy run and attempt (a run waiting in a group replaces an older waiting one, so sharing one
 # group, a run by hand could cancel a deploy's waiting to start, or the reverse). Two runs against
 # prod at once would break each other (each signs the test accounts out everywhere when it ends),
-# so the check job keeps them apart: by hand refuses while a deploy is queued, waiting or running;
+# so the check job keeps them apart: by hand refuses while a deploy is queued, waiting or running,
+# or a deploy's run (titled "Journeys after deploying …") hasn't completed;
 # a deploy's waits for any other journeys run to finish (scripts/journeys/workflow.mjs
 # wait-for-prod), after checking that the deploy run it names is a deploy of main still going.
 concurrency:

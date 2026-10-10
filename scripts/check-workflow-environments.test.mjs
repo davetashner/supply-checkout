@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ALLOWED_TRIGGERS, calls, dispatchesJourneys, parseWorkflow, readWorkflows, remoteCalls, triggers, uses, workflowProblems } from "./check-workflow-environments.mjs";
+import { ALLOWED_TRIGGERS, calls, dispatchesJourneys, jobStrings, mentionOf, mentions, parseWorkflow, readWorkflows, remoteCalls, triggers, uses, workflowProblems } from "./check-workflow-environments.mjs";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const script = path.join(root, "scripts", "check-workflow-environments.mjs");
@@ -110,6 +110,46 @@ test("rule 2: nor in any workflow that dispatches journeys.yml, or calls one tha
   assert.equal(dispatchesJourneys(parsed("on: pull_request\n# starts journeys.yml\njobs:\n  j:\n    steps:\n      - run: echo hi\n")), false);
   assert.equal(dispatchesJourneys(parsed(deploy)), true);
   assert.equal(dispatchesJourneys(parsed("on: push\n")), false);
+});
+
+test("rule 2: dispatch chains are followed: a workflow that mentions a reaching workflow's file reaches it", () => {
+  const release = (on) => `on:\n${on}jobs:\n  deploy:\n    runs-on: x\n    steps:\n      - run: gh workflow run deploy.yml --ref main -f tag="$TAG"\n`;
+  assert.deepEqual(workflowProblems({ "journeys.yml": journeys(), "deploy.yml": deploy, "release.yml": release("  push:\n    branches: [main]\n") }), []);
+  assert.deepEqual(workflowProblems({ "journeys.yml": journeys(), "deploy.yml": deploy, "release.yml": release("  pull_request_target:\n") }), [
+    "release.yml: dispatches deploy.yml, which dispatches journeys.yml, so it must have no pull request trigger (has pull_request_target)",
+  ]);
+  // Three links, mixing calls and dispatches, in any order of the files; and by the API, with the
+  // file name in a top-level env, in another letter case and the other extension
+  const viaApi = `on: workflow_call\nenv:\n  W: Release.YAML\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: gh api -X POST "repos/o/r/actions/workflows/$W/dispatches"\n`;
+  const top = `on: issue_comment\njobs:\n  a:\n    uses: ./.github/workflows/aa.yml\n`;
+  assert.deepEqual(workflowProblems({ "top.yml": top, "aa.yml": viaApi, "release.yml": release("  push:\n"), "deploy.yml": deploy, "journeys.yml": journeys() }), [
+    "top.yml: calls aa.yml, which dispatches release.yml, which dispatches deploy.yml, which dispatches journeys.yml, so it may only be started by workflow_call, workflow_dispatch, push, schedule (has issue_comment)",
+  ]);
+  // Mentioning a workflow that doesn't reach it, or a reaching one only in on: (a paths filter)
+  // or a comment, is fine
+  const lint = `on:\n  pull_request:\n    paths: [.github/workflows/deploy.yml]\njobs:\n  j:\n    runs-on: x\n    steps:\n      # starts deploy.yml one day\n      - run: actionlint .github/workflows/ci.yml\n`;
+  assert.deepEqual(workflowProblems({ "lint.yml": lint, "ci.yml": ci, "deploy.yml": deploy, "journeys.yml": journeys() }), []);
+  assert.equal(mentions(parsed(lint), "deploy.yml"), false);
+  assert.equal(mentions(parsed(lint), "ci.yml"), true);
+  // This repository's own chain: release.yml dispatches deploy.yml, which dispatches journeys.yml
+  const ours = readWorkflows(path.join(root, ".github", "workflows"));
+  const opened = ours["release.yml"].replace(/^on:\n/m, "on:\n  pull_request_target:\n");
+  assert.notEqual(opened, ours["release.yml"]);
+  assert.ok(workflowProblems({ ...ours, "release.yml": opened }).includes(
+    "release.yml: dispatches deploy.yml, which dispatches journeys.yml, so it must have no pull request trigger (has pull_request_target)",
+  ));
+});
+
+test("rule 2: what counts as a mention of a workflow's file", () => {
+  const re = mentionOf("deploy.yml");
+  for (const s of ["gh workflow run deploy.yml", "workflows/deploy.yml/dispatches", "DEPLOY.YML", "x=deploy.yaml;", "./my-deploy.yml", "'deploy.yml'"]) assert.match(s, re, s);
+  for (const s of ["redeploy.yml", "deploy.yml2", "deploy_yml", "deploy.json", "deploy"]) assert.doesNotMatch(s, re, s);
+  assert.match("run a+b.yml", mentionOf("a+b.yaml"));
+  assert.doesNotMatch("run aab.yml", mentionOf("a+b.yaml"));
+  assert.match("gh workflow run -x.yml", mentionOf("-x.yml"));
+  // Everything but on: and job-level uses:, job IDs and top-level keys included
+  assert.deepEqual(jobStrings(parsed("name: n\non:\n  push:\n    paths: [p]\nenv:\n  E: e\njobs:\n  j:\n    uses: ./.github/workflows/u.yml\n    with:\n      w: v\n")).sort(), ["E", "e", "j", "n", "name", "w", "v", "with", "env"].sort());
+  assert.deepEqual(jobStrings(parsed("on: push\n")), []);
 });
 
 test("rule 6: journeys.yml can't be called (no workflow_call trigger), only dispatched", () => {
