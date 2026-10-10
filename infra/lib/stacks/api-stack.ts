@@ -51,6 +51,8 @@ import {
   COMP_ATTRIBUTES,
   CUSTOMER_LINK_TEAM_ATTRIBUTES,
   DATA_ROLE_DENIED_ATTRIBUTES,
+  FEEDBACK_ATTRIBUTES,
+  FEEDBACK_PREFIX,
   GSI1,
   GSI2,
   GSI3,
@@ -446,6 +448,26 @@ export class ApiStack extends SupplyCheckoutStack {
                 "ForAllValues:StringEquals": {
                   "dynamodb:LeadingKeys": [`${INVITE_LIMIT_PREFIX}${tag(ACCOUNT_SESSION_TAGS.inviteLimit)}`],
                   "dynamodb:Attributes": [...INVITE_LIMIT_ATTRIBUTES],
+                },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            // A member's report from the Report an issue form (supply-checkout-bmsh.1): written in
+            // the same transaction as the user's day counter, into the path's team's own reports
+            // partition, which the data-access role has no statement for. PutItem only, so the
+            // session can't read, list, change or delete a report (the item is the owner's to
+            // triage), only the report's own attributes (no email), and nothing returned. IAM
+            // can't limit the sort key; the partition holds nothing else. The handler sets the
+            // team tag only after the caller's membership check, from the path
+            new PolicyStatement({
+              sid: "WriteFeedbackReport",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:PutItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`${FEEDBACK_PREFIX}${tag(ACCOUNT_SESSION_TAGS.teamId)}`],
+                  "dynamodb:Attributes": [...FEEDBACK_ATTRIBUTES],
                 },
                 StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
               },

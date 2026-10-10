@@ -43,7 +43,7 @@
 
 import { DeleteCommand, GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { id, keys, prefixes, teamPartition } from "./keys.js";
+import { feedbackPartition, id, keys, prefixes, teamPartition } from "./keys.js";
 import { CLOSED_TEAMS_PARTITION, GSI1 } from "./schema.js";
 
 export interface TeamDue {
@@ -361,7 +361,8 @@ const CONCURRENCY = 10;
 /**
  * Deletes everything a closed team has, if its `purgeAfter` has passed: the
  * whole `TEAM#<teamId>` partition (members, invites, products, projects,
- * movements, audit trail, counters), each member's team-switcher row, and the
+ * movements, audit trail, counters), its reports partition
+ * (`FEEDBACK#<teamId>`, feedback.ts), each member's team-switcher row, and the
  * Stripe link. Returns how many items it deleted. Safe to run again after it
  * stopped part-way, and a no-op for a team that isn't closed or isn't due.
  * It first marks the team `purging`, conditioned on it still being closed and
@@ -457,23 +458,30 @@ export async function purgeTeam(
   const mark = meta.test === true ? { test: true as const } : {};
   if (typeof meta.stripeCustomerId === "string") await options.deleteStripeCustomer?.(meta.stripeCustomerId, mark);
 
-  const items: { PK: string; SK: string }[] = [];
-  let ExclusiveStartKey: Record<string, unknown> | undefined;
-  do {
-    const page = await doc.send(
-      new QueryCommand({
-        TableName: db.tableName,
-        KeyConditionExpression: "PK = :pk",
-        Select: "SPECIFIC_ATTRIBUTES",
-        ProjectionExpression: "PK, SK",
-        ExpressionAttributeValues: { ":pk": pk },
-        ConsistentRead: true,
-        ExclusiveStartKey,
-      }),
-    );
-    for (const item of page.Items ?? []) items.push(item as { PK: string; SK: string });
-    ExclusiveStartKey = page.LastEvaluatedKey;
-  } while (ExclusiveStartKey);
+  /** The keys of every item in a partition (a consistent read), and nothing else. */
+  const keysIn = async (partition: string) => {
+    const found: { PK: string; SK: string }[] = [];
+    let start: Record<string, unknown> | undefined;
+    do {
+      const page = await doc.send(
+        new QueryCommand({
+          TableName: db.tableName,
+          KeyConditionExpression: "PK = :pk",
+          Select: "SPECIFIC_ATTRIBUTES",
+          ProjectionExpression: "PK, SK",
+          ExpressionAttributeValues: { ":pk": partition },
+          ConsistentRead: true,
+          ExclusiveStartKey: start,
+        }),
+      );
+      for (const item of page.Items ?? []) found.push(item as { PK: string; SK: string });
+      start = page.LastEvaluatedKey;
+    } while (start);
+    return found;
+  };
+  const items = await keysIn(pk);
+  // The team's reports (feedback.ts) live in their own partition, which the team's data role can't reach
+  const reports = await keysIn(feedbackPartition(teamId));
 
   const remove = (key: { PK: string; SK: string }) => doc.send(new DeleteCommand({ TableName: db.tableName, Key: { PK: key.PK, SK: key.SK } }));
   // Members' switcher rows first: once a MEMBER item is gone, nothing names its row
@@ -484,7 +492,8 @@ export async function purgeTeam(
   });
   const rest = items.filter((item) => item.SK !== "META");
   await each(rest, CONCURRENCY, remove);
-  let deleted = members.length + rest.length;
+  await each(reports, CONCURRENCY, remove);
+  let deleted = members.length + rest.length + reports.length;
   if (typeof meta.stripeCustomerId === "string") {
     await doc.send(
       new DeleteCommand({

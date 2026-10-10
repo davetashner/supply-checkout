@@ -212,6 +212,62 @@ export const MAX_RECEIPT_TRIAL_READS_PER_DAY = 100_000;
  */
 export const RECEIPT_TRIAL_CAP_ATTRIBUTES = [PK, SK, "count", "capReachedAt", "expiresAt"] as const;
 
+/**
+ * Reports from the app's "Report an issue" form (supply-checkout-bmsh.1,
+ * data/feedback.ts). One private item per report, in its own partition
+ * `FEEDBACK#<teamId>` (sort key `REPORT#<reportId>`), never in the team's
+ * `TEAM#` partition: IAM can't condition on a sort key, so an item in the
+ * team's own partition could be read back by the data-access role, which holds
+ * every item there. The team's data-access role has no statement for this
+ * prefix at all, so the data routes can't list, fetch or change a report. The
+ * account function's session, tagged with the path's team after its
+ * membership check, may only PutItem into it, naming only FEEDBACK_ATTRIBUTES
+ * (the report itself, no read back). The team purge deletes the partition with
+ * the team's (purgeTeam), and reports expire (TTL) FEEDBACK_RETENTION_DAYS
+ * after they're sent.
+ */
+export const FEEDBACK_PREFIX = "FEEDBACK#";
+
+/**
+ * Reports by status, across teams, for the owner's triage (listFeedback): GSI1
+ * partition `FEEDBACK#STATUS#<status>`, sort key `<createdAt>#<reportId>`.
+ * Every report has these keys, and moves partition when its status changes.
+ * GSI1 projects every attribute, so a listing carries the whole report. No
+ * role the API uses queries these partitions: the data-access role's GSI1
+ * access is `TEAM#<tag>` and `TEAM#<tag>#PROJECTS` only.
+ */
+export const FEEDBACK_STATUS_PREFIX = "FEEDBACK#STATUS#";
+
+/** How long a report is kept (TTL), in days: 2 years. */
+export const FEEDBACK_RETENTION_DAYS = 730;
+
+/**
+ * The only attributes the account function may name when it puts a report
+ * (dynamodb:Attributes, PutItem only, `FEEDBACK#<tagged team>` only): the keys,
+ * the index keys and the report's own fields. The user's email is never in it.
+ */
+export const FEEDBACK_ATTRIBUTES = [
+  PK,
+  SK,
+  GSI1PK,
+  GSI1SK,
+  "type",
+  "reportId",
+  "shortId",
+  "teamId",
+  "userId",
+  "role",
+  "createdAt",
+  "category",
+  "message",
+  "expected",
+  "contactOk",
+  "context",
+  "status",
+  "beadId",
+  TTL_ATTRIBUTE,
+] as const;
+
 /** The only attributes a request may name in an `INVITELIMIT#` partition: the keys, the count, its item type and its expiry. */
 export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;
 

@@ -1214,7 +1214,7 @@ describe("scheduled checks", () => {
     };
     expect(query?.Resource).toEqual(table);
     expect(query?.Condition).toEqual({
-      "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*"] },
+      "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*", "FEEDBACK#*"] },
       "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
       StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
     });
@@ -1222,7 +1222,7 @@ describe("scheduled checks", () => {
     // (supply-checkout-3sv.22)
     expect(items).toMatchObject({ Sid: "DeleteClosedTeamItems", Action: "dynamodb:DeleteItem", Resource: table });
     expect(items?.Condition).toEqual({
-      "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*"] },
+      "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*", "FEEDBACK#*"] },
       "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
       StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });

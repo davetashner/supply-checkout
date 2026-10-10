@@ -86,8 +86,8 @@ export interface OpsChecksProps {
  *   teams whose read-only period has ended (backend/src/ops/team-purge-handler.ts).
  *   It may Query only GSI1's closed-teams partition there (listing keys, or
  *   Select COUNT for its overdue gauge), and on the table only Query
- *   (SPECIFIC_ATTRIBUTES) and DeleteItem on `TEAM#`, `USER#` and `STRIPE#`
- *   partitions, naming only TEAM_PURGE_ATTRIBUTES (keys, the closure fields,
+ *   (SPECIFIC_ATTRIBUTES) and DeleteItem on `TEAM#`, `USER#`, `STRIPE#` and
+ *   `FEEDBACK#` (a team's reports) partitions, naming only TEAM_PURGE_ATTRIBUTES (keys, the closure fields,
  *   the Stripe customer and link), GetItem on `TEAM#` partitions only, with a
  *   projection (Select SPECIFIC_ATTRIBUTES, required), and UpdateItem on `TEAM#` partitions
  *   naming only TEAM_PURGE_MARK_ATTRIBUTES, to mark a team `purging` before
@@ -235,7 +235,8 @@ export class OpsChecks extends Construct {
         },
       }),
     );
-    const purgePartitions = { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*"] };
+    // A team's reports (`FEEDBACK#<teamId>`, backend/src/data/feedback.ts) go with it
+    const purgePartitions = { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*", "FEEDBACK#*"] };
     this.teamPurge.addToRolePolicy(
       new PolicyStatement({
         sid: "ListClosedTeamKeys",

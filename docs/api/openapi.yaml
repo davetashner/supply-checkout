@@ -1449,6 +1449,78 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "429":
           description: "Too many requests: API Gateway's throttle for this route (50 a second across all callers)."
+  /teams/{teamId}/feedback:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    post:
+      tags: [account]
+      operationId: sendFeedback
+      summary: Send a report from the Report an issue form. Any member, a viewer included.
+      description: |
+        The team is the path's, and the caller must be a member of it (anyone
+        else is the same 403 `not_member`, whatever they send). The user and
+        their role come from the token and the membership, never the body,
+        and a body that names a team, a user or any other field it isn't
+        listed here with is 400. The report is stored privately, with the
+        caller's user ID, role and the time: no route lists, fetches or
+        changes it, the app can't read it back, and the response carries only
+        its ID. The caller's email isn't stored; `contactOk` says whether we
+        may contact them about it. A team's members can report while it's
+        closed, or read-only for billing: the report is theirs, not the
+        team's data. It's kept 2 years, and deleted with the team when the
+        team is purged.
+
+        Text is trimmed, its control and invisible characters are removed
+        (line breaks stay), and its length is counted in characters. `context`
+        takes only the keys below; a `screen` or `browser` this version
+        doesn't know is stored as `other`.
+
+        Idempotent: send a new `Idempotency-Key` for each report, and the same
+        one on retries. A repeat with the same key answers 200 with the same
+        report instead of storing another, and doesn't count against the
+        limit. A user can send 5 reports a UTC day, from all their teams
+        together (429 `quota_exceeded` with `reason: "feedback_limit"`). The
+        body is at most 4 KB (413).
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: A new random value per report, e.g. `crypto.randomUUID()`, reused on retries and double-clicks.
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{8,128}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [category, message]
+              properties:
+                category: { type: string, enum: [bug, idea, question] }
+                message: { type: string, minLength: 1, maxLength: 2000, description: "What happened. Trimmed; 1 to 2000 characters after cleaning." }
+                expected: { type: string, maxLength: 1000, description: "What the caller expected. Optional." }
+                contactOk: { type: boolean, default: false, description: "True if we may contact the caller about the report." }
+                context:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    build: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$", description: The app's build ID. }
+                    screen: { type: string, enum: [projects, project, prices, scan, receipt, team, members, billing, account, sign-in, other], description: Where in the app. Any other value is stored as `other`. }
+                    browser: { type: string, enum: [chrome, safari, firefox, edge, samsung, opera, other], description: The browser family. Any other value is stored as `other`. }
+      responses:
+        "201": { $ref: "#/components/responses/FeedbackSent" }
+        "200": { $ref: "#/components/responses/FeedbackSent" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`aborted`: the team is being deleted (reason `team_deleting`), or the caller's account is."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "413":
+          description: "`quota_exceeded`: the body is over 4 KB."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: "`quota_exceeded` with `reason: \"feedback_limit\"`: the caller's 5 reports for the UTC day are used up. Or API Gateway's throttle for this route (2 a second across all callers)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /teams/{teamId}/members:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     get:
@@ -3297,7 +3369,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_reset, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output, photo_invalid, photo_too_large, photo_limit]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_reset, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output, photo_invalid, photo_too_large, photo_limit, feedback_limit]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -3349,7 +3421,22 @@ components:
                 model's reply couldn't be used). Profile photos:
                 `photo_invalid` (not a 256×256 JPEG), `photo_too_large` (over
                 64 KB) and `photo_limit` (the day's uploads are used up).
+                Reports: `feedback_limit` (the day's reports are used up).
   responses:
+    FeedbackSent:
+      description: The report, stored now (201) or by an earlier request with the same Idempotency-Key (200). The IDs only; the text isn't returned.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [report]
+            properties:
+              report:
+                type: object
+                required: [id, shortId]
+                properties:
+                  id: { type: string }
+                  shortId: { type: string, description: The first 8 characters of `id`, for the person triaging to quote. }
     OperatorsOnly:
       description: "`permission_denied`: the token's user isn't in the `operators` group (now, according to Cognito)."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

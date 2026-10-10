@@ -3,7 +3,7 @@
 // into another key (for example, a project ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
-import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, INVITE_LIMIT_PREFIX, LAPSE_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, RECEIPT_TRIAL_CAP_PARTITION, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, PASSWORD_RESET_SK, PHOTO_SK, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, PREFERENCES_SK, TOTP_ON_SK, VERIFIED_EMAIL_SK, WELCOME_SK } from "./schema.js";
+import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, FEEDBACK_PREFIX, FEEDBACK_STATUS_PREFIX, INVITE_LIMIT_PREFIX, LAPSE_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, RECEIPT_TRIAL_CAP_PARTITION, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, PASSWORD_RESET_SK, PHOTO_SK, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, PREFERENCES_SK, TOTP_ON_SK, VERIFIED_EMAIL_SK, WELCOME_SK } from "./schema.js";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -216,6 +216,10 @@ export const keys = {
   photo: (userId: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: PHOTO_SK }),
   /** How many profile photos the user uploaded on a UTC day: the per-user limit (photos.ts). */
   photoUploads: (userId: string, day: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: `LIMIT#PHOTOS#${date(day)}` }),
+  /** How many reports the user sent on a UTC day (YYYY-MM-DD): the per-user limit (feedback.ts). */
+  feedbackSent: (userId: string, day: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: `LIMIT#FEEDBACK#${date(day)}` }),
+  /** A report from the app's Report an issue form, in the team's private reports partition (feedback.ts). */
+  feedback: (teamId: string, reportId: string) => ({ PK: feedbackPartition(teamId), SK: `REPORT#${id(reportId, "report ID")}` }),
   /** That the account was sent its welcome email, or is being sent it (welcome.ts, supply-checkout-6uw.25). */
   welcome: (userId: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: WELCOME_SK }),
   /** How many times a team was reopened on a UTC day: the per-team reopen limit (reopenTeam). */
@@ -369,6 +373,17 @@ export function inviteePartition(emailHash: string): string {
 export function inviteLimitPartition(emailHash: string): string {
   if (typeof emailHash !== "string" || !HASH.test(emailHash)) throw new InvalidInputError("Invalid email hash");
   return `${INVITE_LIMIT_PREFIX}${emailHash}`;
+}
+
+/** The partition of a team's reports (FEEDBACK_PREFIX in schema.ts). */
+export function feedbackPartition(teamId: string): string {
+  return `${FEEDBACK_PREFIX}${id(teamId, "team ID")}`;
+}
+
+/** The GSI1 partition of the reports in one status (FEEDBACK_STATUS_PREFIX in schema.ts). */
+export function feedbackStatusPartition(status: string): string {
+  if (typeof status !== "string" || !/^[a-z]{1,16}$/.test(status)) throw new InvalidInputError("Invalid report status");
+  return `${FEEDBACK_STATUS_PREFIX}${status}`;
 }
 
 /** The partition that holds everything a team owns. */

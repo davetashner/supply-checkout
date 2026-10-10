@@ -105,7 +105,7 @@ function seed() {
 
 beforeEach(seed);
 
-function event(routes: readonly { method: string; path: string }[], method: string, path: string, user: string, body?: unknown, query?: Record<string, string>): DataEvent {
+function event(routes: readonly { method: string; path: string }[], method: string, path: string, user: string, body?: unknown, query?: Record<string, string>, headers: Record<string, string> = {}): DataEvent {
   const [rawPath] = path.split("?");
   const segments = (rawPath as string).split("/");
   const route = routes.find((r) => {
@@ -121,7 +121,7 @@ function event(routes: readonly { method: string; path: string }[], method: stri
     routeKey: route ? routeKey(route) : `${method} ${path}`,
     rawPath,
     rawQueryString: "",
-    headers: {},
+    headers,
     queryStringParameters: query,
     pathParameters,
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -138,6 +138,7 @@ interface Case {
   readonly path: string;
   readonly body?: unknown;
   readonly query?: Record<string, string>;
+  readonly headers?: Record<string, string>;
   readonly minRole: TeamRole;
 }
 
@@ -180,6 +181,8 @@ const MEMBER_CASES: Record<string, Omit<Case, "minRole">> = {
   "POST /teams/{teamId}/close": { method: "POST", path: "/teams/team-a/close", body: { name: "team-a" } },
   "POST /teams/{teamId}/reopen": { method: "POST", path: "/teams/team-a/reopen", body: { name: "team-a" } },
   "GET /teams/{teamId}/photos": { method: "GET", path: "/teams/team-a/photos" },
+  // Any member, a viewer too (supply-checkout-bmsh.1)
+  "POST /teams/{teamId}/feedback": { method: "POST", path: "/teams/team-a/feedback", body: { category: "bug", message: "The scan button does nothing" }, headers: { "idempotency-key": "matrix-report-0001" } },
 };
 const MEMBER_MIN_ROLE: Record<string, TeamRole> = {
   "GET /teams/{teamId}/members": "owner",
@@ -193,6 +196,8 @@ const MEMBER_MIN_ROLE: Record<string, TeamRole> = {
   "POST /teams/{teamId}/reopen": "owner",
   // 'Prepared by' and the signed-in indicator show to every member (supply-checkout-6uw.30)
   "GET /teams/{teamId}/photos": "viewer",
+  // A viewer may report; the report isn't team data
+  "POST /teams/{teamId}/feedback": "viewer",
 };
 
 const TEAM_ACCOUNT_ROUTES = ACCOUNT_ROUTES.filter((r) => r.path.startsWith("/teams/{teamId}"));
@@ -238,7 +243,7 @@ describe("the role matrix", () => {
         const routes = fn === "data" ? DATA_ROUTES : ACCOUNT_ROUTES;
         const before = structuredClone([...table.items.entries()]);
         table.calls.length = 0;
-        const response = await handler(event(routes, c.method, c.path, USERS[caller], c.body, c.query));
+        const response = await handler(event(routes, c.method, c.path, USERS[caller], c.body, c.query, c.headers));
         const body = response.body ? JSON.parse(response.body) : undefined;
         if (allowed) {
           expect(response.statusCode, JSON.stringify(body)).toBeGreaterThanOrEqual(200);
