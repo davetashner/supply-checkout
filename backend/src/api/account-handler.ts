@@ -182,7 +182,7 @@
 // deleted (orphans): an upload is counted against the caller's daily limit
 // and staged in the record before its object is written, then committed,
 // and the photo it replaced is deleted. The photo's ID is copied to the
-// caller's MEMBER item in each open team they're in (and kept current on
+// caller's MEMBER item in each team they're in, closed ones too (and kept current on
 // /me), and the team's /photos route presigns only what its MEMBER items
 // name, after the membership check: a removed member's item is gone, and no
 // ID from the request reaches the bucket. The photos bucket is reached only
@@ -566,20 +566,21 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
    * `photo` (their photo record) could be read, their photo's ID up to it
    * (supply-checkout-6uw.30), which the team's /photos route reads. Reads
    * first, so a member already current costs no write. Closed teams are left
-   * as they are. Best effort: a failure is logged (the team ID and error name
+   * as they are, but for the photo ID. Best effort: a failure is logged (the team ID and error name
    * only, never the address or name) and the request goes on.
    */
   async function keepMemberProfile(db: ReturnType<DbForAccount>, ctx: TeamContext, email: string | undefined, name?: string, photo?: PhotoRecord): Promise<void> {
-    if (ctx.closed) return;
     // Two /me calls at once, around a change, could each read and write: the
     // last write wins, and if it carried the older value the next /me corrects it
     // (both only ever write what Cognito says for this user). Self-healing.
     try {
       const member = await getMember(db, ctx, ctx.userId);
       if (!member) return;
+      // A closed team keeps its email and name as they were, but never names a photo that's gone
+      if (photo && member.photoId !== photo.photoId) await setOwnMemberPhoto(db, ctx, photo.photoId);
+      if (ctx.closed) return;
       if (email && member.email !== email) await setOwnMemberEmail(db, ctx, email);
       if (member.displayName !== name) await setOwnMemberName(db, ctx, name);
-      if (photo && member.photoId !== photo.photoId) await setOwnMemberPhoto(db, ctx, photo.photoId);
     } catch (error) {
       obs.logger.warn("Member details not updated", { teamId: ctx.teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
     }
@@ -1289,7 +1290,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
 
   /**
    * Copies the caller's photo ID (or its removal) to their MEMBER item in
-   * every open team they're in, each on a session for that team after the
+   * every team they're in, closed ones too, each on a session for that team after the
    * membership check. Best effort: a team that fails is logged (its ID and
    * the error's name) and catches up on the next /me.
    */
@@ -1301,7 +1302,8 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
           try {
             const db = dbFor({ userId, teamId: row.teamId });
             const ctx = await authorizeTeam(db, userId, row.teamId, new Date(now()));
-            if (!ctx.closed) await setOwnMemberPhoto(db, ctx, photo);
+            // Closed teams too: their /photos must not name a photo that's been replaced or removed
+            await setOwnMemberPhoto(db, ctx, photo);
           } catch (error) {
             // A stale switcher row: not a member any more
             if (error instanceof ForbiddenError) return;

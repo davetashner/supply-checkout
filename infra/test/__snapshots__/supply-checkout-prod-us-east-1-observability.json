@@ -10634,6 +10634,73 @@
         ]
       }
     },
+    "PhotosDownloadsHigh89DC610D": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2. Profile photo downloads high: more than 5 GiB of profile photos was downloaded from the photos bucket in an hour, likely a leaked presigned URL fetched in a loop. Each URL lasts an hour. Runbook: docs/observability.md, Profile photo downloads high.",
+        "AlarmName": "supply-checkout-prod-p2-photo-downloads-high",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "BucketName",
+            "Value": {
+              "Fn::Join": [
+                "",
+                [
+                  "supply-checkout-prod-photos-us-east-1-",
+                  {
+                    "Ref": "AWS::AccountId"
+                  }
+                ]
+              ]
+            }
+          },
+          {
+            "Name": "FilterId",
+            "Value": "photos"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "BytesDownloaded",
+        "Namespace": "AWS/S3",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 3600,
+        "Statistic": "Sum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 5368709120,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "OperatorPoolChangesD40F920E": {
       "Type": "AWS::Events::Rule",
       "Properties": {
@@ -14856,6 +14923,13 @@
               {
                 "Fn::GetAtt": [
                   "DeletionRecordsWatchFailingD53CC301",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "PhotosDownloadsHigh89DC610D",
                   "Arn"
                 ]
               },

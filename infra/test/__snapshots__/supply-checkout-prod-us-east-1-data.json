@@ -1431,6 +1431,12 @@
           },
           "LogFilePrefix": "s3/photos/"
         },
+        "MetricsConfigurations": [
+          {
+            "Id": "photos",
+            "Prefix": "photos/"
+          }
+        ],
         "OwnershipControls": {
           "Rules": [
             {

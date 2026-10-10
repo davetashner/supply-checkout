@@ -167,9 +167,9 @@ describe("HTTP API routes", () => {
       "POST /me/mfa/totp/verify": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /me/sign-out-everywhere": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "PATCH /me/preferences": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
-      "PUT /me/photo": { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 3 },
+      "PUT /me/photo": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "DELETE /me/photo": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
-      "GET /teams/{teamId}/photos": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
+      "GET /teams/{teamId}/photos": { ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100 },
       "POST /teams/{teamId}/billing/checkout": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /teams/{teamId}/billing/portal": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "GET /teams/{teamId}/billing/invoices": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
@@ -397,6 +397,8 @@ describe("data-access role (LeadingKeys)", () => {
     const owned = [...BILLING_UPDATE_ATTRIBUTES, ...COMP_ATTRIBUTES, ...CUSTOMER_LINK_TEAM_ATTRIBUTES, ...LAPSE_CLOSE_ATTRIBUTES, ...TEAM_PURGE_MARK_ATTRIBUTES, ...REOPEN_ATTRIBUTES];
     for (const attribute of owned) if (!sharedWithData.includes(attribute)) expect(DATA_ROLE_DENIED_ATTRIBUTES).toContain(attribute);
     for (const attribute of ["plan", "seats", "owners", "members", "homeRegion", "trialEndsAt", "test"]) expect(DATA_ROLE_DENIED_ATTRIBUTES).toContain(attribute);
+    // A member's profile photo ID: only the account function sets it (supply-checkout-6uw.30)
+    expect(DATA_ROLE_DENIED_ATTRIBUTES).toContain("photoId");
     // The checklist (data/checklist.ts) and the projects, products and settings items
     for (const attribute of [...sharedWithData, "checklistStartedAt", "checklistReceipt", "checklistDone", "equipmentMarkup", "updatedAt", "updatedBy", "stock", "date", "items"]) {
       expect(DATA_ROLE_DENIED_ATTRIBUTES).not.toContain(attribute);

@@ -1,4 +1,5 @@
 import { Aws } from "aws-cdk-lib";
+import type { Alarm } from "aws-cdk-lib/aws-cloudwatch";
 import { CfnRule, EventField, type EventPattern, Rule, RuleTargetInput } from "aws-cdk-lib/aws-events";
 import { PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
@@ -15,6 +16,7 @@ import { identityOutputParameters } from "../identity.js";
 import { OpsDashboard } from "../observability/dashboard.js";
 import { JourneyAlarms } from "../observability/journey-alarms.js";
 import { DeletionRecordsWatch } from "../observability/deletion-records-watch.js";
+import { photosDownloadAlarm } from "../observability/photos-alarm.js";
 import { OperatorAuditWatch } from "../observability/operator-audit-watch.js";
 import { OperatorGroupWatch } from "../observability/operator-group-watch.js";
 import { OpsChecks } from "../observability/ops-checks.js";
@@ -428,6 +430,8 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  * - `deletionRecords`: primary region only, the P2 alarm on a deletion
  *   record written over or deleted, from the bucket's S3 events, and the P1
  *   rule on changes to the bucket (deletion-records-watch.ts).
+ * - `photoDownloads`: primary region only, the P2 alarm on more than 5 GiB of
+ *   profile photos downloaded in an hour (photos-alarm.ts, supply-checkout-6uw.30).
  *
  * Log retention and X-Ray tracing for every function are set app-wide by
  * ObservabilityDefaults (observability/defaults.ts).
@@ -441,6 +445,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
   readonly operatorAudit?: OperatorAuditWatch;
   readonly operatorGroup?: OperatorGroupWatch;
   readonly deletionRecords?: DeletionRecordsWatch;
+  readonly photoDownloads?: Alarm;
   readonly web?: WebAlarms;
   readonly costs?: CostAlerts;
   readonly supportSmtp?: SupportSmtpWatch;
@@ -509,6 +514,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         topics: this.topics,
       });
       this.deletionRecords = new DeletionRecordsWatch(this, "DeletionRecordsWatch", { envName: config.envName, region, topics: this.topics });
+      this.photoDownloads = photosDownloadAlarm(this, { envName: config.envName, region, topics: this.topics });
       // The tampering rules also watch the deletion records watch's two rules (supply-checkout-72d.17)
       this.operatorChanges = this.alertOnOperatorChanges(config.envName, this.operatorAudit, this.operatorGroup, [this.deletionRecords.rule, this.deletionRecords.bucketChanges]);
       // The backup stack (primary region, deployed after this one) alerts P1
@@ -528,7 +534,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         regions: config.regions,
         tableName: table,
         web: webIds,
-        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.operatorGroup.changed, this.operatorGroup.silent, this.deletionRecords.rewritten, this.deletionRecords.failing, ...(this.supportSmtp?.sends ? [this.supportSmtp.sends] : []), ...(this.supportSmtp?.dailySends ? [this.supportSmtp.dailySends] : [])],
+        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.operatorGroup.changed, this.operatorGroup.silent, this.deletionRecords.rewritten, this.deletionRecords.failing, this.photoDownloads, ...(this.supportSmtp?.sends ? [this.supportSmtp.sends] : []), ...(this.supportSmtp?.dailySends ? [this.supportSmtp.dailySends] : [])],
       });
     }
   }

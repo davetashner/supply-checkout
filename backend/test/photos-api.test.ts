@@ -434,15 +434,27 @@ describe("GET /teams/{teamId}/photos", () => {
     expect(Object.keys(body.photos)).toEqual(["__proto__"]);
   });
 
-  it("works on a closed team, which still shows read-only", async () => {
+  it("works on a closed team, and never names a photo there that was replaced or removed", async () => {
     await upload(CREW);
-    table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), closedAt: new Date(NOW).toISOString(), purgeAfter: new Date(NOW + 30 * 86_400_000).toISOString() });
+    const closeA = () => table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), closedAt: new Date(NOW).toISOString(), purgeAfter: new Date(NOW + 30 * 86_400_000).toISOString() });
+    closeA();
     expect(Object.keys((await photos(VIEWER)).body.photos)).toEqual([CREW]);
-    // And a closed team's copy isn't changed by a new upload
-    const before = memberPhoto("team-a", CREW);
+    // Replaced: the closed team's copy follows, so its URL is the new photo's, never the deleted one's
+    const old = memberPhoto("team-a", CREW);
     await upload(CREW);
-    expect(memberPhoto("team-a", CREW)).toBe(before);
-    expect(memberPhoto("team-b", CREW)).toBe(record(CREW)?.photoId);
+    const current = record(CREW)?.photoId;
+    expect(current).not.toBe(old);
+    expect(memberPhoto("team-a", CREW)).toBe(current);
+    expect((await photos(VIEWER)).body.photos).toEqual({ [CREW]: urlFor(current) });
+    // Removed: gone from the closed team's photos too
+    expect((await call("DELETE", "/me/photo", CREW)).status).toBe(204);
+    expect(memberPhoto("team-a", CREW)).toBeUndefined();
+    expect((await photos(VIEWER)).body.photos).toEqual({});
+    // A copy left stale (a failed write) is brought up to date by /me, closed team or not; its email and name stay as they were
+    table.put({ ...(table.get("TEAM#team-a", `MEMBER#${CREW}`) as Record<string, unknown>), photoId: "f".repeat(32), email: "old@example.com" });
+    await call("GET", "/me", CREW);
+    expect(table.get("TEAM#team-a", `MEMBER#${CREW}`)).toMatchObject({ email: "old@example.com" });
+    expect(memberPhoto("team-a", CREW)).toBeUndefined();
   });
 });
 

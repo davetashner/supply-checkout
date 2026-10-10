@@ -1599,7 +1599,7 @@ paths:
           description: "`quota_exceeded` with `reason: \"photo_too_large\"`: the photo is over 64 KB, or the body over 100 KB."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
-          description: "`quota_exceeded` with `reason: \"photo_limit\"`: the caller's 20 uploads for the UTC day are used up. Or API Gateway's throttle for this route (1 a second across all callers)."
+          description: "`quota_exceeded` with `reason: \"photo_limit\"`: the caller's 20 uploads for the UTC day are used up. Or API Gateway's throttle for this route (5 a second across all callers)."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     delete:
       tags: [account]
@@ -1648,7 +1648,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "429":
-          description: "Too many requests: API Gateway's throttle for this route (10 a second across all callers)."
+          description: "Too many requests: API Gateway's throttle for this route (50 a second across all callers)."
   /teams/{teamId}/members:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     get:

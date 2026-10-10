@@ -274,10 +274,10 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   { method: "PATCH", path: "/me/preferences", action: "setPreferences", throttle: { rate: 10, burst: 20 } },
   // Profile photos (supply-checkout-6uw.30): an upload is checked, stripped and stored in S3, so it's
   // the tightest; each user also has a daily limit (PHOTO_UPLOADS_PER_USER_PER_DAY)
-  { method: "PUT", path: "/me/photo", action: "setPhoto", throttle: { rate: 1, burst: 3 } },
+  { method: "PUT", path: "/me/photo", action: "setPhoto", throttle: { rate: 5, burst: 10 } },
   { method: "DELETE", path: "/me/photo", action: "deletePhoto", throttle: { rate: 2, burst: 5 } },
   // Presigned URLs for the team's members' photos, for any member: signed locally, no S3 call
-  { method: "GET", path: "/teams/{teamId}/photos", action: "listPhotos", throttle: { rate: 10, burst: 20 } },
+  { method: "GET", path: "/teams/{teamId}/photos", action: "listPhotos", throttle: { rate: 50, burst: 100 } },
 ];
 
 export interface BillingRoute {

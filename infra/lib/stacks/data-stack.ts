@@ -14,7 +14,7 @@ import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { GSI1, GSI1PK, GSI1SK, GSI2, GSI2PK, GSI2SK, GSI3, GSI3PK, GSI3SK, OPS_INDEX_ATTRIBUTES, PK, SK, TTL_ATTRIBUTE, tableName } from "../../../backend/src/data/schema.js";
 import { DELETION_RECORD_RETENTION_DAYS, deletionsBucketName } from "../../../backend/src/deletions/names.js";
-import { photosBucketName } from "../../../backend/src/photos/names.js";
+import { PHOTO_PREFIX, PHOTOS_METRICS_ID, photosBucketName } from "../../../backend/src/photos/names.js";
 import { backupCopyFromContext, backupParameters } from "../backup.js";
 import type { DeploymentConfig } from "../config.js";
 import { backupAccountFromCopyVaultArn, replicateDeletionRecords } from "../deletions.js";
@@ -294,6 +294,9 @@ export class DataStack extends SupplyCheckoutStack {
       lifecycleRules: [{ abortIncompleteMultipartUploadAfter: Duration.days(1) }],
       serverAccessLogsBucket: this.logsBucket,
       serverAccessLogsPrefix: "s3/photos/",
+      // S3 request metrics under photos/ only, for the P2 "Profile photo downloads high" alarm (observability/photos-alarm.ts):
+      // presigned URLs are bearer links, and S3 charges for every byte out
+      metrics: [{ id: PHOTOS_METRICS_ID, prefix: PHOTO_PREFIX }],
       removalPolicy: RemovalPolicy.RETAIN,
     });
     publish("PhotosBucketParam", "photos-bucket-name", this.photosBucket.bucketName, "Profile photos bucket (primary region)");

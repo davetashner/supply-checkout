@@ -1338,7 +1338,8 @@
                         "compReason",
                         "compBy",
                         "compAt",
-                        "compMonths"
+                        "compMonths",
+                        "photoId"
                       ]
                     }
                   },
@@ -8211,16 +8212,16 @@
             "ThrottlingBurstLimit": 20
           },
           "PUT /me/photo": {
-            "ThrottlingRateLimit": 1,
-            "ThrottlingBurstLimit": 3
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
           },
           "DELETE /me/photo": {
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
           },
           "GET /teams/{teamId}/photos": {
-            "ThrottlingRateLimit": 10,
-            "ThrottlingBurstLimit": 20
+            "ThrottlingRateLimit": 50,
+            "ThrottlingBurstLimit": 100
           },
           "POST /teams/{teamId}/billing/checkout": {
             "ThrottlingRateLimit": 2,

@@ -174,11 +174,12 @@ export function clearOrphans(db: Db, userId: string, from: PhotoRecord, deleted:
 /**
  * Sets the photo ID on the caller's own MEMBER item (or removes it, for
  * undefined), when it differs: what the team's /photos route reads. Like
- * setOwnMemberName: always the context's own user, any role, not on a closed
- * team, never recreates a membership. True when it wrote.
+ * setOwnMemberName: always the context's own user, any role, never recreates
+ * a membership. True when it wrote. A closed team's too, unlike the name and
+ * email: its /photos must never name a photo that was replaced or removed.
  */
 export async function setOwnMemberPhoto(db: Db, ctx: TeamContext, photo: string | undefined): Promise<boolean> {
-  writable(db, ctx, "viewer", { whileEnded: true });
+  writable(db, ctx, "viewer", { whileClosed: true, whileEnded: true });
   const update =
     photo === undefined
       ? { UpdateExpression: "REMOVE photoId", ConditionExpression: "attribute_exists(PK) AND attribute_exists(photoId)" }

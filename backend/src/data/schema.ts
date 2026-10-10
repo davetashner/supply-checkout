@@ -330,6 +330,9 @@ export const COMP_MONTHS = "compMonths";
  * `createdAt`, `type`, `version`, `teamId` and GSI keys aren't, because
  * projects and other items use them too, and the checklist's update conditions
  * on `closedAt`. Those stay protected by the data layer alone.
+ *
+ * Also `photoId`, on MEMBER items (supply-checkout-6uw.30): only the account
+ * function sets it, and the team's /photos route presigns what it names.
  */
 export const DATA_ROLE_DENIED_ATTRIBUTES = [
   "plan",
@@ -358,6 +361,7 @@ export const DATA_ROLE_DENIED_ATTRIBUTES = [
   "purging",
   ...COMP_FIELDS,
   COMP_MONTHS,
+  "photoId",
 ] as const;
 
 /**

@@ -22,6 +22,13 @@ export function photosHost(bucket: string, region: string): string {
 /** Every photo is `photos/<photoId>.jpg`; the account function may touch nothing else in the bucket. */
 export const PHOTO_PREFIX = "photos/";
 
+/**
+ * The photos bucket's one S3 request metrics configuration, filtered to
+ * PHOTO_PREFIX: the FilterId of its CloudWatch metrics, which the "Profile
+ * photo downloads high" alarm watches (infra/lib/observability/photos-alarm.ts).
+ */
+export const PHOTOS_METRICS_ID = "photos";
+
 /** A photo's ID: 128 random bits as hex, new for each upload. No user ID, name or email in it. */
 export const PHOTO_ID = /^[0-9a-f]{32}$/;
 

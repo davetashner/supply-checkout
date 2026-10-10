@@ -433,7 +433,7 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
 
   describe("a member's photo", () => {
     // supply-checkout-6uw.30
-    it("is set and removed on the member's own item only, without recreating a membership, and not in a closed team", async () => {
+    it("is set and removed on the member's own item only, without recreating a membership, in a closed team too", async () => {
       const { owner, contributor, viewer } = await team();
       const photo = "e".repeat(32);
       expect(await setOwnMemberPhoto(db, viewer, photo)).toBe(true);
@@ -449,7 +449,9 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(await rawItem(db, `TEAM#${owner.teamId}`, `MEMBER#${viewer.userId}`)).toBeUndefined();
       await closeTeam(db, owner, { confirmName: "Echo Cleaning" });
       const closed = await authorizeTeam(db, contributor.userId, owner.teamId);
-      await expect(setOwnMemberPhoto(db, closed, photo)).rejects.toThrow();
+      expect(await setOwnMemberPhoto(db, closed, photo)).toBe(true);
+      expect(await setOwnMemberPhoto(db, closed, undefined)).toBe(true);
+      expect((await getMember(db, closed, contributor.userId))?.photoId).toBeUndefined();
     });
   });
 
