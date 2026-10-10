@@ -11,6 +11,13 @@
 // taking the context's pages away, only WebKit's cut-off message, and only for an API request
 // that was in flight then (by its full URL). A CORS failure at any other time, or for any other
 // request, is still a failure.
+//
+// A refresh still in flight after AUTH_WAIT_MS may or may not spend the cookie: stopApp still
+// stops the app, then throws RefreshInFlight, so a release doesn't pool a cookie that may be
+// spent (supply-checkout-o60.18). So does a refresh whose page closed before it finished (it
+// never reports its end, so stopApp doesn't wait for it, but it may have rotated the token), and
+// one the app starts while its pages are being taken away (cut off, maybe after the server
+// rotated the token). Once the pages are blank nothing from before is in flight any more.
 
 const trackers = new WeakMap();
 /** How long stopApp waits for a refresh (any /auth/ request) already on its way. */
@@ -21,6 +28,12 @@ const POLL_MS = 50;
 
 const sleeper = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** stopApp stopped the app, but a refresh was still in flight: its cookie may be spent. */
+export class RefreshInFlight extends Error {
+  /** `when`: when the refresh was still in flight ("after 10 seconds" by default). */
+  constructor(when = `after ${AUTH_WAIT_MS / 1000} seconds`) { super(`a refresh was still in flight ${when}, so the session cookie may be spent`); this.name = "RefreshInFlight"; }
+}
+
 /**
  * Starts following a context's requests to the API (idempotent): call it before the app loads.
  * Returns the context's tracker: the requests in flight, and while stopApp runs, the URLs it
@@ -30,13 +43,17 @@ export function trackRequests(context, apiOrigin) {
   const known = trackers.get(context);
   if (known) return known;
   const origin = new URL(apiOrigin).origin;
-  const tracker = { origin, inFlight: new Set(), abandoned: null };
+  // cutOffAuth: an /auth/ request started while stopApp was taking the pages away
+  const tracker = { origin, inFlight: new Set(), abandoned: null, cutOffAuth: false };
   const toApi = (req) => { try { return new URL(req.url()).origin === origin; } catch { return false; } };
   context.on("request", (req) => {
     if (!toApi(req)) return;
     tracker.inFlight.add(req);
     // A request the app starts while its pages are being taken away is cut off too
-    tracker.abandoned?.add(req.url());
+    if (tracker.abandoned) {
+      tracker.abandoned.add(req.url());
+      if (isAuth(req)) tracker.cutOffAuth = true;
+    }
   });
   const done = (req) => { tracker.inFlight.delete(req); };
   context.on("requestfinished", done);
@@ -46,22 +63,48 @@ export function trackRequests(context, apiOrigin) {
 }
 
 const isAuth = (req) => { try { return new URL(req.url()).pathname.startsWith("/auth/"); } catch { return false; } };
+// Whether a request's page has closed: such a request never finishes. A request without a page
+// (a service worker's) counts as open.
+const pageClosed = (req) => { try { return req.frame().page().isClosed() === true; } catch { return false; } };
 
 /**
  * Stops the app in every page of `context`: waits (up to AUTH_WAIT_MS) for a refresh on its way,
  * so its new cookie lands, then takes each page to about:blank. Afterwards nothing in the context
- * can refresh, so its refresh cookie is the session as it stands.
+ * can refresh, so its refresh cookie is the session as it stands. Throws RefreshInFlight (after
+ * stopping the app) when a refresh was still on its way after the wait, its page closed before it
+ * finished, or the app started one while it was being stopped.
  */
 export async function stopApp(context, { apiOrigin, authWaitMs = AUTH_WAIT_MS, settleMs = SETTLE_MS, sleep = sleeper } = {}) {
   const tracker = trackRequests(context, apiOrigin);
-  for (let waited = 0; [...tracker.inFlight].some(isAuth) && waited < authWaitMs; waited += POLL_MS) await sleep(POLL_MS);
+  // A refresh whose page closed is never waited for, but it may have rotated the token
+  let closedRefresh = false;
+  const refreshing = () => {
+    for (const req of tracker.inFlight) {
+      if (!pageClosed(req)) continue;
+      tracker.inFlight.delete(req);
+      if (isAuth(req)) closedRefresh = true;
+    }
+    return [...tracker.inFlight].some(isAuth);
+  };
+  for (let waited = 0; refreshing() && waited < authWaitMs; waited += POLL_MS) await sleep(POLL_MS);
+  const unfinished = refreshing();
+  tracker.cutOffAuth = false;
   tracker.abandoned = new Set([...tracker.inFlight].map((req) => req.url()));
+  let cutOffAuth;
   try {
     for (const page of context.pages()) await page.goto("about:blank");
     await sleep(settleMs);
   } finally {
+    cutOffAuth = tracker.cutOffAuth;
     tracker.abandoned = null;
+    tracker.cutOffAuth = false;
+    // Every page is blank (or the stop failed): what was in flight is gone, and a request that
+    // never reports its end mustn't make the next stop wait
+    tracker.inFlight.clear();
   }
+  if (unfinished) throw new RefreshInFlight(`after ${authWaitMs / 1000} seconds`);
+  if (closedRefresh) throw new RefreshInFlight("when its page closed");
+  if (cutOffAuth) throw new RefreshInFlight("as the app was stopped");
 }
 
 // WebKit's report of a fetch cut off by navigation: "<url> due to access control checks.", with
