@@ -3,7 +3,7 @@
 // order 12, takes 3 on a run-named project so it's Low, acknowledges it, downloads the reorder
 // list, marks it ordered and cancels the order. Other items in the team may be low too, so the
 // assertions look only at the run's own row. Cleanup deletes the item and project.
-import { addItem, addToProject, createProject, enterBarcode, goToInventory, goToProjects, inventoryRow, modal } from "../ui/index.js";
+import { addItem, addToProject, createProject, enterBarcode, goToInventory, goToProjects, inventoryRow, modal, openItem } from "../ui/index.js";
 import { expect, test } from "./fixtures.mjs";
 import { download, openTeam, runData } from "./steps.mjs";
 
@@ -21,8 +21,8 @@ test("crew sets a reorder level, sees the item low, acknowledges it, and marks i
   await expect(inventoryRow(page, item.name).locator("td").nth(1)).toHaveText("5");
 
   await test.step("J15.1 Tap the item and set Reorder at and Usual order", async () => {
-    await inventoryRow(page, item.name).click();
-    await expect(modal(page).getByRole("heading", { name: "Edit item" })).toBeVisible();
+    // Its own row's form: another test's item added above it as it's tapped would open that one
+    await openItem(page, item.name);
     await modal(page).getByLabel("Reorder at (optional)").fill("3");
     await modal(page).getByLabel("Usual order (optional)").fill("12");
     await modal(page).getByRole("button", { name: "Save", exact: true }).click();
