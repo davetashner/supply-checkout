@@ -7,8 +7,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { PROD } from "../lib/config.mjs";
 import { createMasker } from "../lib/mask.mjs";
-import { isAbandonedRequestError, stopApp, trackRequests } from "../lib/app-stop.mjs";
-import { REFRESH_COOKIE, REFRESH_COOKIE_PATH, SESSIONS_DIR, createSessionHolds, createSessionPool, readSession, resumeSession, sessionCookie, sessionUrl } from "../lib/sessions.mjs";
+import { RefreshInFlight, isAbandonedRequestError, stopApp, trackRequests } from "../lib/app-stop.mjs";
+import { REFRESH_COOKIE, REFRESH_COOKIE_PATH, SESSIONS_DIR, createSessionHolds, createSessionPool, dropSession, readSession, resumeSession, sessionCookie, sessionUrl } from "../lib/sessions.mjs";
 import { assertNotTracing, markTracing, unmarkTracing } from "../lib/tracing.mjs";
 import { fakeBrowserContext, fakeRequest } from "./helpers.mjs";
 import { NOT_UPLOADED, filesToUpload } from "../upload-results.mjs";
@@ -257,6 +257,45 @@ test("release doesn't pool the cookie when the app couldn't be stopped", async (
   assert.equal(sessions.take("crew"), null);
 });
 
+test("release doesn't pool the cookie when a refresh was still in flight as the app stopped", async () => {
+  const log = [];
+  const { holds, warnings, sessions } = holdsFor({ log, stop: async (c) => { log.push("stopApp"); await stopApp(c, { apiOrigin: PROD.api, authWaitMs: 100, settleMs: 0, sleep: async () => {} }); } });
+  const ctx = fakeBrowserContext({ log, jar: [cookie("maybe-spent-uuuu")] });
+  trackRequests(ctx, PROD.api);
+  ctx.emit("request", fakeRequest(`${PROD.api}/auth/refresh`));
+  holds.hold(ctx, "viewer");
+  await holds.release(ctx);
+  assert.deepEqual(log, ["assertNotTracing", "stopApp", "page0 goto about:blank"], "stopped, never read");
+  assert.deepEqual(warnings, ["viewer: a refresh was still in flight when the app was stopped, so its session wasn't saved and the next test signs in through Managed Login again"]);
+  assert.equal(sessions.take("viewer"), null);
+});
+
+test("a refused release is never retried: the context is let go first", async () => {
+  const log = [];
+  const { holds, sessions } = holdsFor({ log });
+  const ctx = fakeBrowserContext({ log, jar: [cookie("traced-token-xxxx")] });
+  holds.hold(ctx, "crew");
+  markTracing(ctx);
+  await assert.rejects(holds.release(ctx), /being traced/);
+  unmarkTracing(ctx);
+  assert.deepEqual(holds.contexts(), []);
+  await holds.release(ctx);
+  assert.deepEqual(log, ["assertNotTracing"], "the second release does nothing");
+  assert.equal(sessions.take("crew"), null);
+});
+
+test("dropSession clears only the API's refresh cookie, on its host and path", async () => {
+  const keep = [
+    cookie("other-host-yyyy", { domain: "app.example.com" }),
+    cookie("other-path-yyyy", { path: "/" }),
+    { ...cookie("other-name-yyyy"), name: "theme" },
+  ];
+  const ctx = fakeBrowserContext({ jar: [cookie("spent-token-yyyy"), ...keep] });
+  await dropSession(ctx, PROD.api);
+  assert.deepEqual(ctx.jar, keep);
+  assert.deepEqual(ctx.log, [`clearCookies ${REFRESH_COOKIE}`]);
+});
+
 test("release reads the cookie under its path by default (readSession), never the API's origin alone", async () => {
   const { holds, sessions } = holdsFor();
   const ctx = fakeBrowserContext({ jar: [cookie("path-token-uuuu")] });
@@ -313,6 +352,18 @@ test("a spent session stops the app before Managed Login, so its cut-off request
   assert.deepEqual(ctx.jar, [], "the spent cookie is gone");
   assert.equal(page.url(), "/", "a fresh app, signed out, for Managed Login");
   assert.equal(isAbandonedRequestError(ctx, cutOff), false, "and once it's done, the same error is a failure again");
+});
+
+test("a spent session is dropped even when a refresh is still in flight as the app stops; other failures aren't swallowed", async () => {
+  const log = [];
+  const { ctx, page } = resumePage(log);
+  const spent = { meResponse: never(), signInShown: async () => { log.push("sign-in shown"); }, dropSession: (c) => dropSession(c, PROD.api) };
+  const reused = await resumeSession(page, cookie("spent-token-zzzz"), { ...spent, stopApp: async () => { log.push("stopApp"); throw new RefreshInFlight(); } });
+  assert.equal(reused, false);
+  assert.deepEqual(log, ["addCookies __Secure-sc_refresh", "page0 goto /", "sign-in shown", "stopApp", `clearCookies ${REFRESH_COOKIE}`, "page0 goto /"]);
+  assert.deepEqual(ctx.jar, []);
+  const other = resumePage([]);
+  await assert.rejects(resumeSession(other.page, cookie("spent-token-zzzz"), { ...spent, stopApp: async () => { throw new Error("page crashed"); } }), /page crashed/);
 });
 
 test("no session means Managed Login straight away: nothing to stop", async () => {

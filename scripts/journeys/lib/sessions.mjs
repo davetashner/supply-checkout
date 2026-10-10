@@ -19,6 +19,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { RefreshInFlight } from "./app-stop.mjs";
 
 export const SESSIONS_DIR = "sessions";
 /** The annotation signIn adds for each sign-in ("<role>: Managed Login" or "<role>: saved session"), counted in the job summary. */
@@ -137,7 +138,11 @@ export function createSessionPool(runDirectory, { masker, now = () => Date.now()
  * would be in its trace.zip), stops the app (`stopApp`: after it nothing in the context can
  * refresh, so the cookie read is the live one and nobody spends it after it's pooled), reads the
  * cookie and puts it back. No cookie to put back is a warning (`warn`); a closed context has none
- * and isn't one. If the app couldn't be stopped, the cookie isn't pooled.
+ * and isn't one. If the app couldn't be stopped, or a refresh was still in flight when it was
+ * (stopApp throws RefreshInFlight: the cookie may be spent), the cookie isn't pooled.
+ *
+ * A context is let go before release checks anything, so a refused release (still tracing) is
+ * deliberately never retried: its cookie is never read, and the next test signs in again.
  */
 export function createSessionHolds({ pool, apiOrigin, stopApp, assertNotTracing, warn, read = readSession }) {
   const held = new Map();
@@ -156,8 +161,9 @@ export function createSessionHolds({ pool, apiOrigin, stopApp, assertNotTracing,
       const role = held.get(context);
       held.delete(context);
       assertNotTracing(context, "reading the session's refresh cookie");
-      try { await stopApp(context); } catch {
-        warn(`${role}: the app couldn't be stopped after the test, so its session wasn't saved and the next test signs in through Managed Login again`);
+      try { await stopApp(context); } catch (err) {
+        const why = err instanceof RefreshInFlight ? "a refresh was still in flight when the app was stopped" : "the app couldn't be stopped after the test";
+        warn(`${role}: ${why}, so its session wasn't saved and the next test signs in through Managed Login again`);
         return;
       }
       let cookie;
@@ -166,6 +172,14 @@ export function createSessionHolds({ pool, apiOrigin, stopApp, assertNotTracing,
     },
   };
   return holds;
+}
+
+/**
+ * Drops the context's refresh cookie for the API (a spent session): only that cookie, on the
+ * API's host and the cookie's path, never another origin's cookie of the same name.
+ */
+export function dropSession(context, apiOrigin) {
+  return context.clearCookies({ name: REFRESH_COOKIE, domain: new URL(apiOrigin).hostname, path: REFRESH_COOKIE_PATH });
 }
 
 /**
@@ -184,7 +198,8 @@ export async function resumeSession(page, session, { meResponse, signInShown, st
   if (!session) return false;
   const reused = await Promise.race([meResponse.then(() => true, () => false), signInShown().then(() => false, () => false)]);
   if (reused) return true;
-  await stopApp(context);
+  // The session is dropped anyway, so a refresh still in flight doesn't matter here
+  try { await stopApp(context); } catch (err) { if (!(err instanceof RefreshInFlight)) throw err; }
   await dropSession(context);
   await page.goto("/");
   return false;

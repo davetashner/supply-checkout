@@ -109,7 +109,11 @@ export function fakeFetch(routes) {
 }
 
 /** A request as a browser context's "request" event gives it. */
-export const fakeRequest = (href) => ({ url: () => href });
+export const fakeRequest = (href, { pageClosed } = {}) => ({
+  url: () => href,
+  // Playwright's request.frame().page(); a request without `pageClosed` has no frame (a service worker's)
+  frame: () => { if (pageClosed === undefined) throw new Error("no frame"); return { page: () => ({ isClosed: () => pageClosed }) }; },
+});
 
 /**
  * A Playwright browser context, as far as stopApp and the session helpers use it: an event
@@ -138,6 +142,10 @@ export function fakeBrowserContext({ pages = 1, log = [], jar = [] } = {}) {
     }));
   };
   ctx.addCookies = async (cookies) => { log.push(`addCookies ${cookies.map((c) => c.name).join(",")}`); ctx.jar.push(...cookies); };
-  ctx.clearCookies = async ({ name } = {}) => { log.push(`clearCookies ${name ?? "*"}`); ctx.jar = ctx.jar.filter((c) => name !== undefined && c.name !== name); };
+  // clearCookies(filter) as Playwright's: a cookie goes when it matches every field given
+  ctx.clearCookies = async ({ name, domain, path } = {}) => {
+    log.push(`clearCookies ${name ?? "*"}`);
+    ctx.jar = ctx.jar.filter((c) => !((name === undefined || c.name === name) && (domain === undefined || c.domain === domain) && (path === undefined || c.path === path)));
+  };
   return ctx;
 }

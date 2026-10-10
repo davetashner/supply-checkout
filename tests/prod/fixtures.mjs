@@ -32,7 +32,7 @@ import { writeRecord } from "../../scripts/journeys/lib/runs.mjs";
 import { createS3 } from "../../scripts/journeys/lib/s3.mjs";
 import { freshTotp } from "../../scripts/journeys/lib/totp.mjs";
 import { PASSWORD_CHOICE, formatScreen } from "../../scripts/journeys/lib/screen.mjs";
-import { REFRESH_COOKIE, SIGN_IN, createSessionHolds, createSessionPool, resumeSession } from "../../scripts/journeys/lib/sessions.mjs";
+import { SIGN_IN, createSessionHolds, dropSession, createSessionPool, resumeSession } from "../../scripts/journeys/lib/sessions.mjs";
 import { isAbandonedRequestError, stopApp, trackRequests } from "../../scripts/journeys/lib/app-stop.mjs";
 import { assertNotTracing, markTracing, secretFill, unmarkTracing } from "../../scripts/journeys/lib/tracing.mjs";
 import { waitUntilConnected } from "../ui/app.js";
@@ -154,8 +154,12 @@ export const test = base.extend({
       await ctx.tracing.stop(failed ? { path: testInfo.outputPath("trace.zip") } : undefined);
       unmarkTracing(ctx);
     }
-    await sessionHolds.release(ctx);
-    expect(errors.map(harness.masker.redact), "page errors").toEqual([]);
+    // The page errors are checked even when the release throws (a context still traced)
+    try {
+      await sessionHolds.release(ctx);
+    } finally {
+      expect(errors.map(harness.masker.redact), "page errors").toEqual([]);
+    }
   },
 
   /**
@@ -199,7 +203,7 @@ export const test = base.extend({
           meResponse,
           signInShown: () => page.locator("#signIn").waitFor({ timeout: 30_000 }),
           stopApp: (c) => stopApp(c, { apiOrigin: PROD.api }),
-          dropSession: (c) => c.clearCookies({ name: REFRESH_COOKIE }),
+          dropSession: (c) => dropSession(c, PROD.api),
         });
         // The GET /me to check is the one after Managed Login, not a stopped app's
         if (!reused && session) meResponse = waitForMe();
@@ -207,6 +211,9 @@ export const test = base.extend({
           try {
             await page.locator("#signIn").click();
             await page.waitForURL((u) => u.origin === PROD.auth);
+            // For crew and viewer, each password sign-in also makes Cognito email a code that's
+            // never used (swept at cleanup). Each is an SES send: mind the account's sending
+            // quota if the specs (or the browsers they run in) grow
             await managedLogin(page, account, account.totp ? harness.totpCode : null, { redact: harness.masker.redact });
           } catch (err) {
             if (!(err instanceof TooManyRequests) || attempt >= RATE_LIMIT_BACKOFF_MS.length) throw err;
