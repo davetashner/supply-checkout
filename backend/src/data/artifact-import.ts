@@ -712,7 +712,7 @@ async function createWithTeamOpen(db: Db, ctx: TeamContext, writes: Item[]): Pro
   }
 }
 
-/** The team's projects, (project-items.ts), without key attributes. */
+/** The team's projects (project-items.ts), without key attributes. */
 async function projectItems(db: Db, teamId: string): Promise<Item[]> {
   return (await listProjectItems(db, teamId)).map((item) => strip<Item>(item) as Item);
 }

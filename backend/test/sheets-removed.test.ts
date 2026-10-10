@@ -163,7 +163,7 @@ describe("the old field names", () => {
       result: { operationId: id, command: "checkout", sheetId: "p1", productKey: "0123", stockDelta: -1 },
     });
     const res = await call("POST", "/teams/team-a/projects/p1/checkout", { operationId: id, productKey: "0123", quantity: 1 });
-    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBe(400);
     expect(table.get(A, "PRODUCT#0123")?.stock).toBe(10);
   });
 });
