@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.12.0](https://github.com/davetashner/supply-checkout/compare/v1.11.1...v1.12.0) (2026-10-10)
+
+
+### Features
+
+* add a Report an issue form to the app ([#738](https://github.com/davetashner/supply-checkout/issues/738)) ([275f4d0](https://github.com/davetashner/supply-checkout/commit/275f4d04936d5a2e6e02c39bea8e2a53b978293f))
+* add the report an issue API ([#736](https://github.com/davetashner/supply-checkout/issues/736)) ([7120aff](https://github.com/davetashner/supply-checkout/commit/7120aff88b8abb8db9778e7b194432469d5b9005))
+* triage reported issues into beads with npm run feedback ([#739](https://github.com/davetashner/supply-checkout/issues/739)) ([f7712a0](https://github.com/davetashner/supply-checkout/commit/f7712a0ce9d816da2c51a408250ad1575ae43f89))
+
 ## [1.11.1](https://github.com/davetashner/supply-checkout/compare/v1.11.0...v1.11.1) (2026-10-10)
 
 
