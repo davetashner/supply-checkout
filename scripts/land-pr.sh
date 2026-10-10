@@ -711,7 +711,7 @@ echo "Merged as $(gh pr view "$pr" --json mergeCommit -q '.mergeCommit.oid[0:7]'
 # A release PR this land saw open opens the release window (see the top)
 if [ -n "$is_release" ] && [ "$state" = "OPEN" ]; then
   taken="$(view mergedAt)"
-  [ -n "$taken" ] && [ "$taken" != "null" ] || taken="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  if [ -z "$taken" ] || [ "$taken" = "null" ]; then taken="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"; fi
   printf 'tag=%s\npr=%s\ntaken=%s\n' "$release_tag" "$pr" "$taken" > "$release_file.$$"
   mv "$release_file.$$" "$release_file"
   say "Release window open for $release_tag: no other PR lands until its deploy (deploy.yml, \"Deploy $release_tag\") finishes."
