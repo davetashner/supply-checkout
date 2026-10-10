@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.11.0](https://github.com/davetashner/supply-checkout/compare/v1.10.0...v1.11.0) (2026-10-10)
+
+
+### Features
+
+* store and serve profile photos (API and bucket) ([#723](https://github.com/davetashner/supply-checkout/issues/723)) ([a2ad35a](https://github.com/davetashner/supply-checkout/commit/a2ad35a5e75ae9aa97eae2691b5d72c2320edb06))
+* upload, crop and show profile photos ([#722](https://github.com/davetashner/supply-checkout/issues/722)) ([099b745](https://github.com/davetashner/supply-checkout/commit/099b7455124f7f14868a02d92e2031990a983fd3))
+
+
+### Bug Fixes
+
+* don't refresh again when a call's token was already replaced ([#730](https://github.com/davetashner/supply-checkout/issues/730)) ([05091ea](https://github.com/davetashner/supply-checkout/commit/05091ea16f9d8f571bde23169ca0d7dfc7822add))
+* keep the changed password's screen when a sign-in screen finishes drawing later ([#728](https://github.com/davetashner/supply-checkout/issues/728)) ([e303a9f](https://github.com/davetashner/supply-checkout/commit/e303a9f3c6b22c08ba9308c0324f9d179771af61))
+* require dynamodb:Select on the remaining IfExists GetItem grants ([#725](https://github.com/davetashner/supply-checkout/issues/725)) ([87a5fbe](https://github.com/davetashner/supply-checkout/commit/87a5fbef7028ea03075e95c4dcee2c62915709e1))
+
 ## [1.10.0](https://github.com/davetashner/supply-checkout/compare/v1.9.0...v1.10.0) (2026-10-09)
 
 
