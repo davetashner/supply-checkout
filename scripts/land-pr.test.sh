@@ -50,6 +50,10 @@
 #   jobs.json        the jobs `gh run view <id> --json jobs` lists
 #   deploy_runs.json deploy.yml's runs (default none)
 #   deploy_list_fails if present, `gh run list --workflow deploy.yml` fails
+#   export_only_shas commits on main, one per line, that changed only
+#                    .beads/issues.jsonl (`gh api .../commits/<sha>`); every
+#                    other commit changed src/app.js
+#   commits_fail     if present, `gh api .../commits/<sha>` fails
 #   calls            every gh, bd, sleep, backlog-page, export --due and npm call, appended by
 #                    the fakes; npm's line also says whether the land lock was
 #                    held and whether LAND_SKIP_BACKLOG was set
@@ -162,6 +166,12 @@ case "$1 $2" in
       echo "Tests  Run tests  expected 1 to equal 2"
     fi ;;
   "api repos/{owner}/{repo}/branches/main") cat "$FAKE/main_head" 2>/dev/null || echo mainhead ;;
+  "api repos/{owner}/{repo}/commits/"*)
+    [ ! -e "$FAKE/commits_fail" ] || { echo "HTTP 502" >&2; exit 1; }
+    sha="${2##*/}"
+    if grep -qx -- "$sha" "$FAKE/export_only_shas" 2>/dev/null; then files='[{"filename": ".beads/issues.jsonl"}]'
+    else files='[{"filename": "src/app.js"}]'; fi
+    jq -r "$4" <<< "{\"files\": $files}" ;;
   "api graphql")
     expr="."
     while [ $# -gt 0 ]; do case "$1" in --jq) expr="$2"; shift 2 ;; *) shift ;; esac; done
@@ -968,7 +978,7 @@ scenario main-runs-unreadable
 echo '[]' > "$FAKE/main_runs.json"
 land
 check "exits non-zero" fails
-check "says so" says "main has no completed CI run to go by"
+check "says so" says "main has no completed CI run on a code commit to go by"
 check "doesn't merge" not_called "gh pr merge"
 done_case
 
@@ -1055,7 +1065,7 @@ done_case
 echo "release window: its deploy is running"
 scenario window-deploying
 hold_release v1.13.0 2026-10-10T18:00:00Z
-echo '[{"displayTitle": "Deploy v1.13.0", "status": "in_progress", "conclusion": "", "createdAt": "2026-10-10T18:20:00Z", "url": "https://example.invalid/deploy/7"}]' > "$FAKE/deploy_runs.json"
+echo '[{"headBranch": "main", "displayTitle": "Deploy v1.13.0", "status": "in_progress", "conclusion": "", "createdAt": "2026-10-10T18:20:00Z", "url": "https://example.invalid/deploy/7"}]' > "$FAKE/deploy_runs.json"
 land
 check "exits non-zero" fails
 check "names the release" says "Release v1.13.0 (#40, merged 2026-10-10T18:00:00Z) is in its release window"
@@ -1070,9 +1080,9 @@ done_case
 echo "release window: no deploy yet, and older or dry runs don't count"
 scenario window-no-deploy
 hold_release v1.13.0 2026-10-10T18:00:00Z
-echo '[{"displayTitle": "Deploy v1.13.0 (dry run)", "status": "completed", "conclusion": "success", "createdAt": "2026-10-10T18:05:00Z", "url": "d"},
-       {"displayTitle": "Deploy v1.13.0", "status": "completed", "conclusion": "failure", "createdAt": "2026-10-10T17:00:00Z", "url": "e"},
-       {"displayTitle": "Deploy v1.12.0", "status": "completed", "conclusion": "success", "createdAt": "2026-10-10T18:06:00Z", "url": "f"}]' > "$FAKE/deploy_runs.json"
+echo '[{"headBranch": "main", "displayTitle": "Deploy v1.13.0 (dry run)", "status": "completed", "conclusion": "success", "createdAt": "2026-10-10T18:05:00Z", "url": "d"},
+       {"headBranch": "main", "displayTitle": "Deploy v1.13.0", "status": "completed", "conclusion": "failure", "createdAt": "2026-10-10T17:00:00Z", "url": "e"},
+       {"headBranch": "main", "displayTitle": "Deploy v1.12.0", "status": "completed", "conclusion": "success", "createdAt": "2026-10-10T18:06:00Z", "url": "f"}]' > "$FAKE/deploy_runs.json"
 land
 check "exits non-zero" fails
 check "says no deploy has started" says "No deploy run for v1.13.0 has started yet"
@@ -1083,7 +1093,7 @@ done_case
 echo "release window: its deploy finished (failed)"
 scenario window-deployed
 hold_release v1.13.0 2026-10-10T18:00:00Z
-echo '[{"displayTitle": "Deploy v1.13.0", "status": "completed", "conclusion": "failure", "createdAt": "2026-10-10T18:20:00Z", "url": "https://example.invalid/deploy/7"}]' > "$FAKE/deploy_runs.json"
+echo '[{"headBranch": "main", "displayTitle": "Deploy v1.13.0", "status": "completed", "conclusion": "failure", "createdAt": "2026-10-10T18:20:00Z", "url": "https://example.invalid/deploy/7"}]' > "$FAKE/deploy_runs.json"
 land
 check "exits 0" exits 0
 check "says the deploy finished" says "Release v1.13.0's deploy finished (failure): https://example.invalid/deploy/7"
@@ -1094,7 +1104,7 @@ done_case
 echo "release window: a new release PR once the last one deployed"
 scenario window-next-release
 hold_release v1.12.0 2026-10-09T18:00:00Z
-echo '[{"displayTitle": "Deploy v1.12.0", "status": "completed", "conclusion": "success", "createdAt": "2026-10-09T18:20:00Z", "url": "u"}]' > "$FAKE/deploy_runs.json"
+echo '[{"headBranch": "main", "displayTitle": "Deploy v1.12.0", "status": "completed", "conclusion": "success", "createdAt": "2026-10-09T18:20:00Z", "url": "u"}]' > "$FAKE/deploy_runs.json"
 release_pr
 land
 check "exits 0" exits 0
@@ -1166,6 +1176,114 @@ check "--release-done takes no PR" says "usage:"
 land_with
 check "needs a PR" says "usage:"
 check "calls no gh" not_called "gh "
+done_case
+
+echo "release window: its deploy was cancelled"
+scenario window-cancelled
+hold_release v1.13.0 2026-10-10T18:00:00Z
+echo '[{"headBranch": "main", "displayTitle": "Deploy v1.13.0", "status": "completed", "conclusion": "cancelled", "createdAt": "2026-10-10T18:20:00Z", "url": "https://example.invalid/deploy/7"}]' > "$FAKE/deploy_runs.json"
+land
+check "exits non-zero" fails
+check "says it ended without deploying" says "Its deploy run ended cancelled without deploying: https://example.invalid/deploy/7"
+check "points to --release-done" says "npm run land -- --release-done"
+check "keeps the release lock" test -e "$(release_file)"
+check "doesn't merge" not_called "gh pr merge"
+done_case
+
+echo "release window: a skipped deploy, then one that succeeded"
+scenario window-cancelled-then-deployed
+hold_release v1.13.0 2026-10-10T18:00:00Z
+echo '[{"headBranch": "main", "displayTitle": "Deploy v1.13.0", "status": "completed", "conclusion": "success", "createdAt": "2026-10-10T19:00:00Z", "url": "https://example.invalid/deploy/8"},
+       {"headBranch": "main", "displayTitle": "Deploy v1.13.0", "status": "completed", "conclusion": "skipped", "createdAt": "2026-10-10T18:20:00Z", "url": "https://example.invalid/deploy/7"}]' > "$FAKE/deploy_runs.json"
+land
+check "exits 0" exits 0
+check "goes by the run that deployed" says "Release v1.13.0's deploy finished (success): https://example.invalid/deploy/8"
+check "clears the release lock" [ ! -e "$(release_file)" ]
+done_case
+
+echo "release window: a finished deploy run that isn't on main doesn't count"
+scenario window-other-branch
+hold_release v1.13.0 2026-10-10T18:00:00Z
+echo '[{"headBranch": "feat/x", "displayTitle": "Deploy v1.13.0", "status": "completed", "conclusion": "failure", "createdAt": "2026-10-10T18:20:00Z", "url": "u"}]' > "$FAKE/deploy_runs.json"
+land
+check "exits non-zero" fails
+check "says no deploy has started" says "No deploy run for v1.13.0 has started yet"
+check "keeps the release lock" test -e "$(release_file)"
+done_case
+
+export_green='{"databaseId": 600, "status": "completed", "conclusion": "success", "headSha": "exporthead", "url": "https://example.invalid/runs/600"}'
+code_red='{"databaseId": 400, "status": "completed", "conclusion": "failure", "headSha": "codehead", "url": "https://example.invalid/runs/400"}'
+code_green='{"databaseId": 500, "status": "completed", "conclusion": "success", "headSha": "codehead", "url": "https://example.invalid/runs/500"}'
+code_going='{"databaseId": 500, "status": "in_progress", "conclusion": "", "headSha": "codehead", "url": "https://example.invalid/runs/500"}'
+export_head() { echo exporthead > "$FAKE/main_head"; echo exporthead > "$FAKE/export_only_shas"; }
+
+echo "main is red under a green beads-export commit"
+scenario main-red-under-export
+export_head
+echo "[$export_green, $code_red]" > "$FAKE/main_runs.json"
+land
+check "exits non-zero" fails
+check "goes by the code commit's run" says "https://example.invalid/runs/400"
+check "says main is red" says "main is red: #42 wasn't merged."
+check "looks at the newest commit's files" called "gh api repos/{owner}/{repo}/commits/exporthead"
+check "doesn't wait for the export's run" not_called "sleep 30"
+check "doesn't merge" not_called "gh pr merge"
+done_case
+
+echo "main is green under a green beads-export commit"
+scenario main-green-under-export
+export_head
+echo "[$export_green, $code_green]" > "$FAKE/main_runs.json"
+land
+check "exits 0" exits 0
+check "merges" called "gh pr merge 42"
+done_case
+
+echo "main's commits can't be read"
+scenario main-commits-unreadable
+touch "$FAKE/commits_fail"
+land
+check "exits non-zero" fails
+check "says why" says "Couldn't read which files commit mainhea on main changed"
+check "doesn't merge" not_called "gh pr merge"
+done_case
+
+echo "release PR: main's head only changed the export, and the code commit is red"
+scenario release-export-head-red
+release_pr
+export_head
+echo "[$export_green, $code_red]" > "$FAKE/main_runs.json"
+land
+check "exits non-zero" fails
+check "says it goes by the code commit" says "only changed the beads export, so its CI skipped the tests"
+check "says the code commit's CI didn't pass" says "main's CI didn't pass on its newest code commit"
+check "links that run" says "https://example.invalid/runs/400"
+check "doesn't merge" not_called "gh pr merge"
+check "opens no release window" [ ! -e "$(release_file)" ]
+done_case
+
+echo "release PR: main's head only changed the export, and the code commit is green"
+scenario release-export-head-green
+release_pr
+export_head
+echo "[$export_green, $code_green]" > "$FAKE/main_runs.json"
+land
+check "exits 0" exits 0
+check "says the code commit passed" says "main's CI passed on codehea, its newest code commit"
+check "merges" called "gh pr merge 42"
+check "opens the release window" grep -qx "tag=v1.13.0" "$(release_file)"
+done_case
+
+echo "release PR: main's head only changed the export, and the code commit's run is still going"
+scenario release-export-head-waits
+release_pr
+export_head
+# Each gh run list --workflow ci.yml call takes a line: the head's run, then the code commit's
+seq_of main_runs "[$export_green, $code_going]" "[$export_green, $code_going]" "[$export_green, $code_green]"
+land
+check "exits 0" exits 0
+check "waits for the code commit's run" says "Waiting up to 45 minutes for it: https://example.invalid/runs/500"
+check "merges" called "gh pr merge 42"
 done_case
 
 echo

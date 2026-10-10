@@ -166,8 +166,10 @@ if [ -n "$release_done" ]; then
 fi
 
 # Refuses while a release window is open, and clears it once the release's
-# deploy run has completed. Fails closed: a lock it can't read, or deploy runs
-# it can't list, refuse too.
+# deploy run on main concluded success or failure. Fails closed: a lock it
+# can't read, deploy runs it can't list, or a deploy run that was cancelled or
+# skipped (it never finished deploying) refuse too, and only --release-done
+# clears those.
 check_release_window() {
   [ -e "$release_file" ] || return 0
   local tag rpr taken found st concl url
@@ -176,23 +178,30 @@ check_release_window() {
     fail "The release lock ($release_file) doesn't name a release tag and merge time, so nothing lands until it's cleared." \
       "Once the release has deployed (or won't), clear it with: npm run land -- --release-done"
   fi
-  # The deploy runs for the tag that started after the release merged: the
-  # first completed one if any, else the first
+  # The tag's deploy runs on main that started after the release merged: the
+  # first one that concluded success or failure, else the first completed one,
+  # else the first
   found="$(TAG="$tag" TAKEN="$taken" gh run list --workflow deploy.yml -L 100 \
-      --json displayTitle,status,conclusion,createdAt,url -q '
-      [.[] | select(.displayTitle == "Deploy " + env.TAG and .createdAt >= env.TAKEN)] | sort_by(.createdAt) |
-      ((map(select(.status == "completed")) | first) // first) // empty |
+      --json displayTitle,headBranch,status,conclusion,createdAt,url -q '
+      [.[] | select(.displayTitle == "Deploy " + env.TAG and .headBranch == "main" and .createdAt >= env.TAKEN)] | sort_by(.createdAt) |
+      ((map(select(.status == "completed" and (.conclusion == "success" or .conclusion == "failure"))) | first)
+        // (map(select(.status == "completed")) | first) // first) // empty |
       "\(.status) \(if (.conclusion // "") == "" then "-" else .conclusion end) \(.url)"')" ||
     fail "Release $tag (#$rpr) holds the release window, and its deploy runs couldn't be listed (gh run list --workflow deploy.yml)." \
       "Nothing lands until its deploy has finished. Run this again, or once the release has deployed clear it with: npm run land -- --release-done"
   read -r st concl url <<< "$found"
-  if [ "$st" = "completed" ]; then
+  if [ "$st" = "completed" ] && { [ "$concl" = "success" ] || [ "$concl" = "failure" ]; }; then
     echo "Release $tag's deploy finished ($concl): $url"
     echo "Its release window is over: clearing the release lock."
     rm -f "$release_file"
     return 0
   fi
   say "Release $tag (#$rpr, merged $taken) is in its release window: nothing else merges until its deploy finishes."
+  if [ "$st" = "completed" ]; then
+    echo "Its deploy run ended $concl without deploying: $url"
+    echo "Start the deploy again, or, if the release won't deploy, the lead clears the window with: npm run land -- --release-done"
+    exit 1
+  fi
   if [ -n "$st" ]; then echo "Its deploy run is $st: $url"
   else echo "No deploy run for $tag has started yet (the release workflow starts it once the release's checks pass)."; fi
   fail "Run this again once that deploy has finished. If the release won't deploy (its checks failed, say)," \
@@ -201,13 +210,54 @@ check_release_window() {
 
 # main's CI: its ci.yml push runs (supply-checkout-pbp.46)
 main_ci_poll=30 main_ci_tries=90   # 45 minutes
+# For use inside $(...), where fail's message would be captured: says why on
+# stderr and exits
+die() { printf '%s\n' "$@" >&2; exit 1; }
 # Prints "<status> <conclusion or -> <run id> <url>" for the newest push run of
 # ci.yml on main that matches the extra gh run list arguments, or nothing
 main_run() {
   gh run list --workflow ci.yml --branch main --event push -L 1 "$@" --json databaseId,status,conclusion,url -q '
-    .[0] // empty | "\(.status) \(if (.conclusion // "") == "" then "-" else .conclusion end) \(.databaseId) \(.url)"'
+    .[0] // empty | "\(.status) \(if (.conclusion // "") == "" then "-" else .conclusion end) \(.databaseId) \(.url)"' ||
+    die "Couldn't read main's CI runs (gh run list --workflow ci.yml --branch main --event push)."
 }
-main_head() { gh api 'repos/{owner}/{repo}/branches/main' --jq .commit.sha; }
+main_head() {
+  gh api 'repos/{owner}/{repo}/branches/main' --jq .commit.sha ||
+    die "Couldn't read main's head commit (gh api repos/{owner}/{repo}/branches/main)."
+}
+# Succeeds if the commit changed only the beads export. Its CI run skips
+# nearly every job (ci.yml's beads_only), so its green says nothing about the code.
+export_only() { # sha
+  local only
+  only="$(gh api "repos/{owner}/{repo}/commits/$1" --jq '[.files[].filename] | length > 0 and all(. == ".beads/issues.jsonl")')" ||
+    die "Couldn't read which files commit ${1:0:7} on main changed (gh api repos/{owner}/{repo}/commits/$1)."
+  [ "$only" = "true" ]
+}
+# Prints main's CI verdict as "<green|red|pending> <conclusion or -> <run id>
+# <url> <sha>", or nothing if no run decides it, from main's newest push runs
+# (newest first). A green run on a commit that changed only the beads export
+# is passed over: the verdict comes from the newest run on a code commit. A red
+# run counts whatever its commit changed. With "completed", runs still going
+# are passed over too; with "any", the newest code commit's run still going is
+# "pending".
+main_verdict() { # completed|any
+  local runs st concl id url sha
+  local -a filter=()
+  [ "$1" != "completed" ] || filter=(--status completed)
+  runs="$(gh run list --workflow ci.yml --branch main --event push -L 20 "${filter[@]}" \
+      --json databaseId,status,conclusion,url,headSha -q '
+      .[] | "\(.status) \(if (.conclusion // "") == "" then "-" else .conclusion end) \(.databaseId) \(.url) \(.headSha)"')" ||
+    die "Couldn't read main's CI runs (gh run list --workflow ci.yml --branch main --event push)."
+  while read -r st concl id url sha; do
+    [ -n "$st" ] || continue
+    if [ "$st" = "completed" ] && [ "$concl" != "success" ]; then
+      printf 'red %s %s %s %s\n' "$concl" "$id" "$url" "$sha"; return 0
+    fi
+    if export_only "$sha"; then continue; fi
+    if [ "$st" = "completed" ]; then printf 'green %s %s %s %s\n' "$concl" "$id" "$url" "$sha"
+    else printf 'pending %s %s %s %s\n' "$concl" "$id" "$url" "$sha"; fi
+    return 0
+  done <<< "$runs"
+}
 # Prints a red run's link and the jobs that didn't pass
 show_red_run() { # conclusion run-id url
   echo "main's CI run ended $1: $3"
@@ -220,7 +270,7 @@ show_red_run() { # conclusion run-id url
 wait_main_run() { # sha
   local run tries=0
   while :; do
-    run="$(main_run --commit "$1")" || exit 1
+    run="$(main_run --commit "$1")"
     if [ "${run%% *}" = "completed" ] || [ "$tries" -ge "$main_ci_tries" ]; then break; fi
     if [ "$tries" -eq 0 ]; then
       echo "Waiting up to $(( main_ci_poll * main_ci_tries / 60 )) minutes for main's CI on ${1:0:7}${run:+: ${run##* }}" >&2
@@ -230,29 +280,32 @@ wait_main_run() { # sha
   printf '%s\n' "$run"
 }
 
-# Any PR but a release PR: main's latest completed push run must have passed
+# Any PR but a release PR: the newest completed push run on main that decides
+# anything (see main_verdict) must have passed
 check_main_green() {
-  local run st concl id url head newest
-  run="$(main_run --status completed)" || fail "Couldn't read main's CI runs (gh run list --workflow ci.yml --branch main)."
-  [ -n "$run" ] || fail "main has no completed CI run to go by (gh run list --workflow ci.yml --branch main --event push)."
-  read -r st concl id url <<< "$run"
-  [ "$concl" != "success" ] || return 0
+  local verdict v concl id url sha head newest
+  verdict="$(main_verdict completed)"
+  [ -n "$verdict" ] || fail "main has no completed CI run on a code commit to go by (gh run list --workflow ci.yml --branch main --event push)."
+  read -r v concl id url sha <<< "$verdict"
+  [ "$v" != "green" ] || return 0
   if [ -n "$fixes_main" ]; then
     say "main is red, and --fixes-main says #$pr is the fix: landing it anyway."
     show_red_run "$concl" "$id" "$url"
     return 0
   fi
-  # A newer run on main's head (the fix, say) may still turn main green
-  head="$(main_head)" || fail "Couldn't read main's head commit."
-  newest="$(main_run --commit "$head")" || exit 1
-  if [ -n "$newest" ] && [ "${newest%% *}" != "completed" ]; then
-    say "main's latest completed CI run failed, and a newer one on ${head:0:7} is still going: waiting for it."
-    newest="$(wait_main_run "$head")"
-    if [ "$(cut -d' ' -f1-2 <<< "$newest")" = "completed success" ]; then
+  # A newer run on main's head (the fix, say) may still turn main green. A run
+  # on an export-only head can't, so there's nothing to wait for then.
+  head="$(main_head)"
+  newest="$(main_run --commit "$head")"
+  if [ -n "$newest" ] && [ "${newest%% *}" != "completed" ] && ! export_only "$head"; then
+    say "main's latest CI run failed, and a newer one on ${head:0:7} is still going: waiting for it."
+    wait_main_run "$head" > /dev/null
+    verdict="$(main_verdict completed)"
+    if [ "${verdict%% *}" = "green" ]; then
       echo "main's CI passed on ${head:0:7}."
       return 0
     fi
-    if [ "${newest%% *}" = "completed" ]; then read -r st concl id url <<< "$newest"; fi
+    [ -z "$verdict" ] || read -r v concl id url sha <<< "$verdict"
   fi
   say "main is red: #$pr wasn't merged."
   show_red_run "$concl" "$id" "$url"
@@ -262,10 +315,12 @@ check_main_green() {
 
 # A release PR: main's CI must have passed on main's head, the commit the
 # release will tag (the release PR is up to date with it, as main's ruleset
-# requires, so its squash merge sits right on it)
+# requires, so its squash merge sits right on it). If that head only changed
+# the beads export, its run skipped the tests, so the run on the newest code
+# commit must have passed too.
 check_release_base() {
-  local head run st concl id url
-  head="$(main_head)" || fail "Couldn't read main's head commit."
+  local head run st concl id url verdict v sha tries=0
+  head="$(main_head)"
   run="$(wait_main_run "$head")"
   [ -n "$run" ] || fail "main's CI hasn't run on ${head:0:7}, the commit release $release_tag would tag, after $(( main_ci_poll * main_ci_tries / 60 )) minutes." \
     "Release PRs merge only once main's CI passed on that commit. See: gh run list --workflow ci.yml --branch main"
@@ -278,6 +333,28 @@ check_release_base() {
     say "main's CI didn't pass on ${head:0:7}, the commit release $release_tag would tag: #$pr wasn't merged."
     show_red_run "$concl" "$id" "$url"
     fail "Fix main first (npm run land -- <fix-pr> --fixes-main); release-please then updates this PR."
+  fi
+  if export_only "$head"; then
+    echo "${head:0:7} only changed the beads export, so its CI skipped the tests: going by main's newest code commit's run."
+    while :; do
+      verdict="$(main_verdict any)"
+      [ "${verdict%% *}" = "pending" ] && [ "$tries" -lt "$main_ci_tries" ] || break
+      if [ "$tries" -eq 0 ]; then echo "Waiting up to $(( main_ci_poll * main_ci_tries / 60 )) minutes for it: $(cut -d' ' -f4 <<< "$verdict")"; fi
+      sleep "$main_ci_poll"; tries=$((tries + 1))
+    done
+    [ -n "$verdict" ] || fail "main has no CI run on a code commit among its last 20 push runs, so release $release_tag can't be checked." \
+      "See: gh run list --workflow ci.yml --branch main"
+    read -r v concl id url sha <<< "$verdict"
+    case "$v" in
+      green) ;;
+      pending) fail "main's CI on ${sha:0:7}, its newest code commit, is still going after $(( main_ci_poll * main_ci_tries / 60 )) minutes: $url" \
+        "Release PRs merge only once it has passed. Run this again when it has." ;;
+      *)
+        say "main's CI didn't pass on its newest code commit, which release $release_tag would ship: #$pr wasn't merged."
+        show_red_run "$concl" "$id" "$url"
+        fail "Fix main first (npm run land -- <fix-pr> --fixes-main); release-please then updates this PR." ;;
+    esac
+    echo "main's CI passed on ${sha:0:7}, its newest code commit: $url"
   fi
   echo "main's CI passed on ${head:0:7}, the commit release $release_tag will tag: $url"
 }
@@ -315,7 +392,8 @@ merge_state() {
   local state status tries=0
   read_state() {
     local both
-    both="$(gh pr view "$pr" --json state,mergeStateStatus -q '.state + " " + .mergeStateStatus')" || exit 1
+    both="$(gh pr view "$pr" --json state,mergeStateStatus -q '.state + " " + .mergeStateStatus')" ||
+      die "Couldn't read #$pr's merge state (gh pr view $pr --json state,mergeStateStatus)."
     state="${both%% *}" status="${both#* }"
   }
   read_state
@@ -496,7 +574,7 @@ queue_failed() {
 wait_for_queue() { # gh pr merge's output, printed if the PR never joins the queue
   local status last="" seen="" outside=0 tries=0 position entry
   while :; do
-    status="$(queue_status)" || exit 1
+    status="$(queue_status)" || fail "Couldn't read #$pr's merge queue status (gh api graphql)."
     case "$status" in
       MERGED) return 0 ;;
       CLOSED) fail "PR #$pr was closed without merging." ;;
