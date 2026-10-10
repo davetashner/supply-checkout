@@ -1019,7 +1019,9 @@ jobs:
       !cancelled() && github.ref == 'refs/heads/main' && !inputs.dry-run
       && needs.apply.result == 'success'
     runs-on: ubuntu-latest
-    # The dispatched run: up to 40 minutes in its check job, 45 in its suite, and queueing
+    # The dispatched run: up to 40 minutes in its check job, 45 in its suite, and queueing. follow
+    # gives up after 5 + 95 minutes, so it cancels the run itself (scripts/journeys/test/
+    # workflow.test.mjs keeps it under this)
     timeout-minutes: 110
     permissions:
       contents: read

@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import {
-  SUITE_JOB, SUITE_STEP, VERDICT_ARTIFACT, activeRuns, cancelRuns, follow, isLiveDeploy, main, outputLines, parseFollowArgs, parseWaitArgs, runName, runsTitled,
+  DISPATCHER, FIND_SECONDS, SUITE_JOB, SUITE_STEP, VERDICT_ARTIFACT, WAIT_SECONDS, activeRuns, isDeployTitled, cancelRuns, follow, isLiveDeploy, main, outputLines, parseFollowArgs, parseWaitArgs, runName, runsTitled,
   secretProblems, suiteOutcome, waitForProd,
 } from "../workflow.mjs";
 import { fakeEnv } from "./helpers.mjs";
@@ -97,6 +97,25 @@ test("wait-for-prod --manual: refuses while a deploy is going", async () => {
   assert.equal(await waitForProd(["--repo", "o/r", "--run", "9", "--manual"], { api: () => runs([{ id: 5, status: "completed" }]) }), 0);
 });
 
+test("wait-for-prod --manual: refuses while a deploy's run of the journey tests hasn't finished, deploy or not", async () => {
+  const manual = ["--repo", "o/r", "--run", "9", "--manual"];
+  const journeyRuns = (list) => (p) => (p.includes("/workflows/deploy.yml/") ? runs([]) : runs(list));
+  const lines = [];
+  const left = journeyRuns([{ id: 9, status: "in_progress", display_title: "Journeys" }, { id: 7, status: "in_progress", display_title: runName("v1.2.3", "5-1") }]);
+  assert.equal(await waitForProd(manual, { api: left, log: (l) => lines.push(l) }), 1);
+  assert.match(lines[0], /^::error::A deploy's run of the journey tests hasn't finished \(runs 7 \(in_progress\)\)/);
+  // Finished ones, other runs by hand (queued behind this one) and this run itself don't count
+  for (const list of [
+    [{ id: 7, status: "completed", display_title: runName("v1.2.3", "5-1") }],
+    [{ id: 8, status: "queued", display_title: "Journeys" }, { id: 6, status: "waiting" }],
+    [{ id: 9, status: "in_progress", display_title: runName("v1.2.3", "5-1") }],
+  ]) assert.equal(await waitForProd(manual, { api: journeyRuns(list), log: () => {} }), 0, JSON.stringify(list));
+  assert.equal(isDeployTitled({ display_title: runName("v1.2.3", "5-1") }), true);
+  assert.equal(isDeployTitled({ display_title: "Journeys" }), false);
+  assert.equal(isDeployTitled({ display_title: 7 }), false);
+  assert.equal(isDeployTitled(null), false);
+});
+
 const liveDeploy = { id: 5, path: ".github/workflows/deploy.yml", head_branch: "main", status: "in_progress" };
 const deployArgs = ["--repo", "o/r", "--run", "9", "--deploy", "--deploy-run", "5-1"];
 
@@ -147,7 +166,7 @@ test("follow: arguments", () => {
 });
 
 const title = runName("v1.2.3", "5-1");
-const dispatched = (over = {}) => ({ id: 42, display_title: title, head_branch: "main", event: "workflow_dispatch", status: "queued", ...over });
+const dispatched = (over = {}) => ({ id: 42, display_title: title, head_branch: "main", event: "workflow_dispatch", triggering_actor: { login: DISPATCHER }, status: "queued", ...over });
 
 test("follow: finds its run only by its exact title, among main's workflow_dispatch runs", () => {
   const seen = [];
@@ -158,6 +177,9 @@ test("follow: finds its run only by its exact title, among main's workflow_dispa
     dispatched({ id: 45, event: "push" }),
     dispatched({ id: "46" }),
     dispatched({ id: -1 }),
+    dispatched({ id: 48, triggering_actor: { login: "someone" } }),
+    dispatched({ id: 49, triggering_actor: "github-actions[bot]" }),
+    dispatched({ id: 50, triggering_actor: undefined }),
     null,
     { id: 47, display_title: "Journeys" },
   ]); };
@@ -203,7 +225,7 @@ test("follow: waits for the run to show up and to finish, and writes the suite's
   const lines = [];
   assert.equal(await follow(followArgs, { api, output: (l) => out.push(l), log: (l) => lines.push(l), ...clock() }), 0);
   assert.deepEqual(out.join(""), "run-id=42\nrun-url=https://github.com/o/r/actions/runs/42\nsuite=success\nconclusion=success\n");
-  assert.equal(seen.filter((p) => p.includes("/workflows/")).length, 3);
+  assert.equal(seen.filter((p) => p.includes("/workflows/")).length, 4);
   assert.equal(seen.filter((p) => p === "repos/o/r/actions/runs/42").length, 3);
   assert.ok(seen.includes("repos/o/r/actions/runs/42/jobs?per_page=100"));
   assert.match(lines.at(-1), /run 42 finished: success \(the suite step: success\)/);
@@ -245,8 +267,29 @@ test("follow: no run, or two, with its title is refused; a run that doesn't fini
   assert.match(lines.at(-1), /didn't finish within 60 seconds: cancelling it/);
 });
 
+test("follow: after the run finishes, it must still be the only one with its title", async () => {
+  const jobs = { jobs: [{ name: SUITE_JOB, steps: [{ name: SUITE_STEP, conclusion: "success" }] }] };
+  for (const [late, says] of [
+    [[dispatched(), dispatched({ id: 43 })], "42, 43"],
+    [[dispatched({ id: 43 })], "43"],
+    [[], "none"],
+  ]) {
+    const { api, seen } = fakeRun({ finds: [[dispatched()], late], jobs });
+    const out = [];
+    const lines = [];
+    assert.equal(await follow(followArgs, { api, output: (l) => out.push(l), log: (l) => lines.push(l), ...clock() }), 1, says);
+    assert.equal(out.join(""), "run-id=42\nrun-url=https://github.com/o/r/actions/runs/42\nsuite=\n");
+    assert.equal(lines.at(-1), `::error::After run 42 finished, the runs of the journey tests titled "${title}" are ${says}: only this deploy's run should be; read them before trusting any`);
+    assert.equal(seen.filter((p) => p.includes("/workflows/")).length, late.length ? 2 : 4, "an empty listing is tried again, twice");
+    assert.ok(!seen.some((p) => p.endsWith("/jobs?per_page=100")));
+  }
+  // A listing that comes back empty once, then right, is fine
+  const { api } = fakeRun({ finds: [[dispatched()], [], [dispatched({ status: "completed" })]], jobs });
+  assert.equal(await follow(followArgs, { api, output: () => {}, log: () => {}, ...clock() }), 0);
+});
+
 test("cancel: cancels only this deploy's unfinished runs", () => {
-  const { api, seen } = fakeRun({ finds: [[dispatched({ status: "in_progress" }), dispatched({ id: 43, status: "completed" }), dispatched({ id: 44, display_title: "Journeys" })]] });
+  const { api, seen } = fakeRun({ finds: [[dispatched({ status: "in_progress" }), dispatched({ id: 43, status: "completed" }), dispatched({ id: 44, display_title: "Journeys" }), dispatched({ id: 45, status: "in_progress", triggering_actor: { login: "someone" } })]] });
   const lines = [];
   assert.equal(cancelRuns(followArgs, { api, log: (l) => lines.push(l) }), 0);
   assert.deepEqual(seen.filter((p) => p.startsWith("POST")), ["POST repos/o/r/actions/runs/42/cancel"]);
@@ -290,6 +333,24 @@ test("in step with journeys.yml and deploy.yml: the names follow reads, the run-
   assert.equal(deploy.steps.find((s) => String(s.uses).startsWith("actions/download-artifact@")).with.name, VERDICT_ARTIFACT);
   assert.deepEqual(deploy.permissions, { contents: "read", actions: "write" });
   assert.equal(deploy.uses, undefined);
+});
+
+test("in step with deploy.yml and journeys.yml: follow gives up before the deploy's journeys job times out", () => {
+  const read = (f) => parse(readFileSync(fileURLToPath(new URL(`../../../.github/workflows/${f}`, import.meta.url)), "utf8"));
+  const job = read("deploy.yml").jobs.journeys;
+  const step = job.steps.find((s) => /workflow\.mjs follow /.test(s.run ?? ""));
+  const { find, wait } = parseFollowArgs(step.run.trim().split(/\s+/).slice(3).map((a) => a.replace(/^"\$(\w+)"$/, (_, v) => ({ GITHUB_REPOSITORY: "o/r", TAG: "v1.2.3", DEPLOY_RUN: "5-1" })[v])));
+  assert.equal(find, FIND_SECONDS);
+  assert.equal(wait, 5700);
+  assert.deepEqual([FIND_SECONDS, WAIT_SECONDS], [300, 5700]);
+  // Five minutes to spare for checking out, dispatching, polling's last sleep, and the steps after
+  // it (the failed steps, the summary), so follow cancels the run and writes its outputs itself
+  assert.ok(find + wait + 300 <= job["timeout-minutes"] * 60, `${find} + ${wait} seconds, and 300 to spare, are over ${job["timeout-minutes"]} minutes`);
+  // And the dispatched run's jobs, one after another, fit in the wait with room to queue
+  const jobs = Object.values(read("journeys.yml").jobs);
+  const total = jobs.reduce((sum, j) => sum + j["timeout-minutes"] * 60, 0);
+  assert.ok(jobs.every((j) => Number.isInteger(j["timeout-minutes"])));
+  assert.ok(total + 120 <= wait, `journeys.yml's jobs can run ${total} seconds, more than ${wait} less 120 to queue`);
 });
 
 test("follow: a few API failures in a row while polling are retried, more are not", async () => {

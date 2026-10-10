@@ -18,7 +18,10 @@
 //        (--manual | --deploy --deploy-run <deploy run's id>-<attempt>) [--wait-seconds N]
 //     The suite signs the long-lived test accounts out everywhere when it ends, so two runs at
 //     once would break each other. --manual (a run by hand): refuses while any deploy run is
-//     queued, waiting or in progress. --deploy (dispatched by a deploy): first checks that the
+//     queued, waiting or in progress, or any run of the journeys workflow titled for a deploy
+//     ("Journeys after deploying …") hasn't completed: a deploy cancelled between dispatching it
+//     and following it, or a cancel that failed, can leave that run testing prod with no deploy
+//     going. --deploy (dispatched by a deploy): first checks that the
 //     deploy run it names is a run of deploy.yml on main that hasn't finished (so a run by hand
 //     can't pass for a deploy's), then waits up to N seconds (default 1800) for any other run of
 //     the journeys workflow to finish, then refuses. Uses `gh api` (GH_TOKEN, actions: read).
@@ -29,10 +32,12 @@
 //     In the deploy's journeys job, after `gh workflow run journeys.yml -f tag=… -f deploy-run=…`.
 //     The dispatched run's run-name is runName(tag, deployRun), unique to this deploy run and
 //     attempt, so `follow` finds it by that title among journeys.yml's workflow_dispatch runs on
-//     main (never "the latest run": two can start close together), waiting up to --find-seconds
-//     (default 300) for it to show up; more than one with that title is refused. Then it waits up
-//     to --wait-seconds (default 5700) for the run to finish, cancelling it if it doesn't, and
-//     reads the suite step's outcome from the run's jobs (SUITE_JOB, SUITE_STEP). It writes
+//     main started by GitHub Actions (triggering_actor github-actions[bot], as a dispatch with
+//     GITHUB_TOKEN is; never "the latest run": two can start close together), waiting up to
+//     --find-seconds (default 300) for it to show up; more than one with that title is refused.
+//     Then it waits up to --wait-seconds (default 5700) for the run to finish, cancelling it if it
+//     doesn't, lists the runs with that title again and refuses unless that run is still the only
+//     one (a second could have shown up late), and reads the suite step's outcome from the run's jobs (SUITE_JOB, SUITE_STEP). It writes
 //     run-id, run-url, suite (success, failure, cancelled, skipped, or empty when the suite never
 //     ran) and conclusion to $GITHUB_OUTPUT, and exits 1 unless the run succeeded. `cancel`
 //     cancels any unfinished run with that title (the job's `if: cancelled()` step). Everything
@@ -59,8 +64,15 @@ const OUTCOMES = ["success", "failure", "cancelled", "skipped"];
 const CONCLUSIONS = [...OUTCOMES, "neutral", "timed_out", "action_required", "stale", "startup_failure"];
 const MAX_VERDICT_BYTES = 1024 * 1024;
 
+/** How the dispatched run's title starts (journeys.yml's run-name for a deploy). */
+export const DEPLOY_TITLE = "Journeys after deploying ";
 /** The dispatched run's title (journeys.yml's run-name for a deploy), the deploy's way to find it. */
-export const runName = (tag, deployRun) => `Journeys after deploying ${tag} (deploy run ${deployRun})`;
+export const runName = (tag, deployRun) => `${DEPLOY_TITLE}${tag} (deploy run ${deployRun})`;
+/** Who starts a run dispatched with GITHUB_TOKEN, as the API's triggering_actor.login gives it. */
+export const DISPATCHER = "github-actions[bot]";
+/** follow's defaults: kept under the deploy's journeys job's timeout-minutes (the tests check). */
+export const FIND_SECONDS = 300;
+export const WAIT_SECONDS = 5700;
 
 /** The ::error:: lines for the configuration's problems, or [] when it's complete. */
 export function secretProblems(env) {
@@ -78,11 +90,14 @@ export function outputLines(verdict) {
   return `failed=${ok(verdict?.failed)}\ncritical=${ok(verdict?.critical)}\n`;
 }
 
-/** The runs of `workflow` (a file name) that haven't completed, other than `self`, as "<id> (<status>)". */
-export function activeRuns(api, repo, workflow, self) {
+/** The runs of `workflow` (a file name) that haven't completed, other than `self` and those `keep` leaves out, as "<id> (<status>)". */
+export function activeRuns(api, repo, workflow, self, keep = () => true) {
   const runs = api(`repos/${repo}/actions/workflows/${workflow}/runs?per_page=100`)?.workflow_runs ?? [];
-  return runs.filter((r) => r.status !== "completed" && String(r.id) !== String(self)).map((r) => `${r.id} (${r.status})`);
+  return runs.filter((r) => r.status !== "completed" && String(r.id) !== String(self) && keep(r)).map((r) => `${r.id} (${r.status})`);
 }
+
+/** Whether a run (from the API) is titled as a deploy's run of the journey tests. */
+export const isDeployTitled = (run) => typeof run?.display_title === "string" && run.display_title.startsWith(DEPLOY_TITLE);
 
 export function parseWaitArgs(argv) {
   const out = { wait: 1800 };
@@ -115,8 +130,13 @@ export async function waitForProd(argv, { api, log = console.log, sleep = (ms) =
   const { repo, run, mode, wait, deployRun } = parseWaitArgs(argv);
   if (mode === "manual") {
     const busy = activeRuns(api, repo, "deploy.yml", run);
-    if (!busy.length) return 0;
-    log(`::error::A deploy is running or waiting (runs ${busy.join(", ")}): run the journey tests by hand after it, since the deploy runs them too`);
+    if (busy.length) {
+      log(`::error::A deploy is running or waiting (runs ${busy.join(", ")}): run the journey tests by hand after it, since the deploy runs them too`);
+      return 1;
+    }
+    const dispatched = activeRuns(api, repo, "journeys.yml", run, isDeployTitled);
+    if (!dispatched.length) return 0;
+    log(`::error::A deploy's run of the journey tests hasn't finished (runs ${dispatched.join(", ")}): run them by hand after it, or cancel it first if its deploy is gone`);
     return 1;
   }
   const deployId = deployRun.split("-")[0];
@@ -138,7 +158,7 @@ export async function waitForProd(argv, { api, log = console.log, sleep = (ms) =
 }
 
 export function parseFollowArgs(argv) {
-  const out = { find: 300, wait: 5700 };
+  const out = { find: FIND_SECONDS, wait: WAIT_SECONDS };
   const flags = { "--repo": "repo", "--tag": "tag", "--deploy-run": "deployRun" };
   for (let i = 0; i < argv.length; i += 2) {
     const [flag, value] = [argv[i], argv[i + 1]];
@@ -153,11 +173,12 @@ export function parseFollowArgs(argv) {
   return out;
 }
 
-/** The workflow_dispatch runs of journeys.yml on main titled `title`, as { id, status }, IDs checked. */
+/** The workflow_dispatch runs of journeys.yml on main titled `title` and started by DISPATCHER, as { id, status }, IDs checked. */
 export function runsTitled(api, repo, title) {
   const runs = api(`repos/${repo}/actions/workflows/journeys.yml/runs?event=workflow_dispatch&branch=main&per_page=100`)?.workflow_runs;
   return (Array.isArray(runs) ? runs : [])
-    .filter((r) => r && r.display_title === title && r.head_branch === "main" && r.event === "workflow_dispatch" && Number.isSafeInteger(r.id) && r.id > 0)
+    .filter((r) => r && r.display_title === title && r.head_branch === "main" && r.event === "workflow_dispatch"
+      && r.triggering_actor?.login === DISPATCHER && Number.isSafeInteger(r.id) && r.id > 0)
     .map((r) => ({ id: r.id, status: String(r.status) }));
 }
 
@@ -222,6 +243,18 @@ export async function follow(argv, { api, output, log = console.log, sleep = sle
       return 1;
     }
     await sleep(30_000);
+  }
+  // Still the only run with this title: one that showed up after the search would make the
+  // result ambiguous (a few tries, since a failed listing reads as no runs)
+  let again = [];
+  for (let tries = 0; tries < 3 && !again.length; tries++) {
+    if (tries) await sleep(10_000);
+    again = runsTitled(poll, repo, title);
+  }
+  if (again.length !== 1 || again[0].id !== id) {
+    log(`::error::After run ${id} finished, the runs of the journey tests titled "${title}" are ${again.map((r) => r.id).join(", ") || "none"}: only this deploy's run should be; read them before trusting any`);
+    write("suite", "");
+    return 1;
   }
   const conclusion = CONCLUSIONS.includes(run.conclusion) ? run.conclusion : "unknown";
   const suite = suiteOutcome(api(`repos/${repo}/actions/runs/${id}/jobs?per_page=100`));
