@@ -5,6 +5,9 @@ export default defineConfig({
     include: ["test/**/*.test.ts"],
     // Each file gets its own table in DynamoDB Local; files can run in parallel.
     testTimeout: 30_000,
+    // With FUTURE_DAYS set (npm run test:future), moves the clock ahead for
+    // every test; without it, does nothing
+    setupFiles: ["test/future-clock.ts"],
     // npm run test:coverage (and CI) measures the Lambda code in src/, and
     // scripts/vitest-coverage.mjs fails the run below coverage-thresholds.json.
     // Test helpers, fixtures and the one-off scripts/ aren't in the denominator.

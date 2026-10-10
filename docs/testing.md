@@ -179,6 +179,17 @@ How it's put together: `scripts/journey-videos/record.mjs` takes the Playwright 
 
 In a visible window, leave the mouse and keyboard alone while it records: a real click or key press reaches the page under test.
 
+## Tests that depend on the date
+
+A backend test that builds data on a fixed date (a team created at a test's `NOW`) but lets the code read the real clock passes until the real clock moves far enough past that date, then fails on whatever day that is: 1.11.0's release CI failed at noon on release day because a 14-day trial had run out (#731). Pass the test's fixed time to the code instead (`authorizeTeam(db, user, team, new Date(NOW))`, or the `now` option a handler takes).
+
+To catch these before the real clock does, `backend/test/future-clock.ts` (a Vitest setup file) moves `Date` ahead by `FUTURE_DAYS` days for every backend test when that variable is set; without it, it does nothing. Only reading the clock moves (`Date.now()`, `new Date()`); a date built from a value doesn't, and timers run as usual. A test's own `vi.useFakeTimers()` starts from the moved clock, and `vi.useRealTimers()` puts the moved clock back.
+
+- `npm run test:future` in `backend/` runs the suite against DynamoDB Local, like `test:ddb`, 60 days ahead (`FUTURE_DAYS=365 npm run test:future` for another offset).
+- CI's nightly and manual runs do the same in the **Backend, clock 60 days ahead** job, which fails naming the test, as any test failure does.
+
+The infrastructure tests don't need it: nothing in `infra/lib/` or `infra/bin/` reads the clock, and the only dates in the template snapshots are IAM policy versions (`2012-10-17`).
+
 ## Coverage
 
 `npm run test:coverage` runs the suites in desktop Chrome with code coverage on. Coverage is mapped back to the files in `src/` through the builds' source maps. A run fails if lines, statements, functions or branches fall below **98%** (`THRESHOLD` in `tests/coverage.js`). CI runs this on every pull request.

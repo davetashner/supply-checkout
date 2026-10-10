@@ -271,7 +271,7 @@ describe("applying a subscription", () => {
     await worker(message("invoice.paid"));
     expect(meta()).toMatchObject({ status: "active", plan: "starter", seats: 5, billingInterval: "year" });
     // /me and the member cap now treat it as paying
-    const ctx = await authorizeTeam(table.db(TEAM), OWNER, TEAM);
+    const ctx = await authorizeTeam(table.db(TEAM), OWNER, TEAM, new Date(NOW));
     expect(ctx.subscriptionEnded).toBe(false);
   });
 
@@ -1058,7 +1058,7 @@ describe("owner notices", () => {
       ["second@example.com", "readOnly"],
     ]);
     // Members can read, but nobody can change anything
-    const ctx = await authorizeTeam(table.db(TEAM), CREW, TEAM);
+    const ctx = await authorizeTeam(table.db(TEAM), CREW, TEAM, new Date(NOW));
     expect(ctx.subscriptionEnded).toBe(true);
     await expect(createProduct(table.db(TEAM), ctx, "gloves", { name: "Gloves", code: "", price: 1 })).rejects.toBeInstanceOf(SubscriptionEndedError);
   });
@@ -1069,7 +1069,7 @@ describe("owner notices", () => {
     await worker(message("customer.subscription.deleted", { status: "canceled" }));
     expect(meta().status).toBe("canceled");
     expect(mails.sent).toEqual([]);
-    expect((await authorizeTeam(table.db(TEAM), CREW, TEAM)).subscriptionEnded).toBe(false);
+    expect((await authorizeTeam(table.db(TEAM), CREW, TEAM, new Date(NOW))).subscriptionEnded).toBe(false);
   });
 
   it("tells owners when retries run out and the subscription goes unpaid, and not for other changes", async () => {
@@ -1494,7 +1494,7 @@ describe("canceling in the Customer Portal", () => {
 describe("a team whose subscription ended", () => {
   it("still lets a member keep their email current and an owner link the customer to subscribe again, and nothing else", async () => {
     patchTeam({ status: "canceled" });
-    const owner = await authorizeTeam(table.db(TEAM), OWNER, TEAM);
+    const owner = await authorizeTeam(table.db(TEAM), OWNER, TEAM, new Date(NOW));
     expect(owner.subscriptionEnded).toBe(true);
     expect(await setOwnMemberEmail(table.db(TEAM), owner, "new@example.com")).toBe(true);
     await expect(linkStripeCustomer(table.guarded(() => true), owner, CUSTOMER)).resolves.toBeUndefined();
