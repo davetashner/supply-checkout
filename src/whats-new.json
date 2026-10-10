@@ -13,7 +13,8 @@
         }
       ],
       "skip": {
-        "736": "Behind the scenes: the service the Report an issue form sends to"
+        "736": "Behind the scenes: the service the Report an issue form sends to",
+        "739": "Behind the scenes: the owner's command for turning reports into backlog items"
       }
     },
     {
