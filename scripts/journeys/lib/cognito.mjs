@@ -1,9 +1,11 @@
 // Signing in without a browser, for global setup's /me guard and for cleanup: Cognito's public
 // USER_AUTH flow on the web client (identity-stack.ts, authFlows: { user: true }), by password
-// (plus a TOTP code for `owner`) or by email code. Unauthenticated JSON calls to Cognito's
-// regional endpoint, as any app client makes them: no AWS credentials, no admin API. And
-// GlobalSignOut with the account's own access token, which ends every session the account
-// has (refresh tokens stop working, Cognito refuses its access tokens).
+// (plus a TOTP code for `owner`) or by email code. Signing a throwaway account up (J1, J3):
+// SignUp with no password (the pool's choice-based sign-in lets an account sign in by email
+// code alone), and ConfirmSignUp with the code Cognito mails it. Unauthenticated JSON calls to
+// Cognito's regional endpoint, as any app client (and Managed Login) makes them: no AWS
+// credentials, no admin API. And GlobalSignOut with the account's own access token, which ends
+// every session the account has (refresh tokens stop working, Cognito refuses its access tokens).
 //
 // Errors carry Cognito's error type only, never its message or anything sent.
 
@@ -64,6 +66,22 @@ export function createCognito({ region, clientId, fetch = globalThis.fetch, time
     },
     async answerEmailCode({ session, username }, code) {
       return tokens(await respond(session, "EMAIL_OTP", { USERNAME: username, EMAIL_OTP_CODE: code }));
+    },
+    /**
+     * Signs `email` up, with no password: it signs in by email code. Cognito mails it a
+     * confirmation code (confirmSignUp). Only for a run's throwaway address (the caller checks).
+     */
+    async signUp(email) {
+      const r = await call("SignUp", { ClientId: clientId, Username: email, UserAttributes: [{ Name: "email", Value: email }] });
+      return { confirmed: r.UserConfirmed === true };
+    },
+    /** Confirms a sign-up with the code Cognito mailed; this also verifies the address. */
+    async confirmSignUp(email, code) {
+      await call("ConfirmSignUp", { ClientId: clientId, Username: email, ConfirmationCode: code });
+    },
+    /** Mails an unconfirmed account a new confirmation code (cleanup, for a run that died mid-sign-up). */
+    async resendConfirmationCode(email) {
+      await call("ResendConfirmationCode", { ClientId: clientId, Username: email });
     },
     /** Ends every session the account has. */
     async globalSignOut(accessToken) {

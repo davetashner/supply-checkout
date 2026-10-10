@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runBarcode, runName, throwawayAddress } from "../lib/addresses.mjs";
 import { readConfig } from "../lib/config.mjs";
+import { CognitoError } from "../lib/cognito.mjs";
+import { MailTimeout } from "../lib/mailbox.mjs";
 import { createMasker } from "../lib/mask.mjs";
 import { recordKey } from "../lib/runs.mjs";
 import { BASELINE_MARKUP, MARKUP_SENTINEL, resetMarkup } from "../lib/settings.mjs";
@@ -269,4 +271,93 @@ test("cleanup deletes the tests' saved sessions after signing everyone out, and 
   assert.ok(r.done.includes("Deleted the tests' saved sessions"));
   const r2 = await run(world(), { savedSessions: { clear: () => { throw new Error("EACCES"); } } });
   assert.ok(r2.left.includes("Couldn't delete the tests' saved sessions: EACCES"), r2.left.join("; "));
+});
+
+// A run that died around sign-up (lib/throwaway.mjs): a `signup` record, and the retry's roles
+const ownerRetry = throwawayAddress(RUN, "ownerretry");
+const crewRetry = throwawayAddress(RUN, "crewretry");
+const alone = (who) => ({ user: { id: "u-x", email: who, emailVerified: true }, teams: [] });
+/** Adds Cognito's sign-up calls to a world, logged; `resend` may throw. */
+function withSignUp(w, { resend } = {}) {
+  w.cognito.resendConfirmationCode = async (email) => { w.log.push(["resendConfirmationCode", email]); if (resend) throw resend; };
+  w.cognito.confirmSignUp = async (email, code) => { w.log.push(["confirmSignUp", email, code]); };
+  return w;
+}
+const recordState = (w, role) => JSON.parse(w.mailS3.store.get(recordKey(RUN, role)).body.toString()).state;
+
+test("cleanup confirms a throwaway left unconfirmed mid-sign-up with a new code, then deletes it", async () => {
+  const records = [{ runId: RUN, role: "ownerretry", address: ownerRetry, state: "signup" }];
+  const w = withSignUp(world({ records, meFor: { [ownerRetry]: alone(ownerRetry) } }));
+  const r = await run(w);
+  const ops = w.log.filter(([, who]) => who === ownerRetry).map(([op, , extra]) => (extra ? `${op} ${extra}` : op));
+  // Confirmed with the new code, then signed in by email code and deleted; never signed out after (it's gone)
+  assert.deepEqual(ops, ["resendConfirmationCode", "mail code", "confirmSignUp 12345678", "startEmailCode", "mail code", "answerEmailCode", "me", "deleteMe"]);
+  assert.equal(recordState(w, "ownerretry"), "deleted");
+  assert.deepEqual(r.left, []);
+  assert.match(r.done.join("\n"), /A throwaway ownerretry of this run: deleted/);
+});
+
+test("cleanup goes straight to sign-in for a signup record Cognito says is confirmed already", async () => {
+  const records = [{ runId: RUN, role: "crew", address: crew, state: "signup" }];
+  const w = withSignUp(world({ records, meFor: { [crew]: alone(crew) } }), { resend: new CognitoError("ResendConfirmationCode", "InvalidParameterException") });
+  const r = await run(w);
+  assert.ok(!w.log.some(([op]) => op === "confirmSignUp"));
+  assert.ok(w.log.some(([op, who]) => op === "deleteMe" && who === crew));
+  assert.deepEqual(r.left, []);
+});
+
+test("cleanup marks a signup record deleted when no account answers: no confirmation code and no sign-in code", async () => {
+  for (const resend of [undefined, new CognitoError("ResendConfirmationCode", "UserNotFoundException")]) {
+    const records = [{ runId: RUN, role: "owner", address: owner, state: "signup" }];
+    const w = withSignUp(world({ records }), { resend });
+    w.mail = async ({ to, want }) => { w.log.push(["mail", to, want]); throw new MailTimeout("No genuine code arrived within 60 seconds"); };
+    const r = await run(w);
+    assert.ok(!w.log.some(([op]) => op === "confirmSignUp" || op === "deleteMe" || op === "answerEmailCode"));
+    assert.equal(recordState(w, "owner"), "deleted");
+    assert.deepEqual(r.left, []);
+    assert.ok(r.done.some((d) => /A throwaway owner of this run: never signed up/.test(d)), r.done.join("; "));
+  }
+  // Cognito refusing the sign-in for an unknown user says the same
+  const records = [{ runId: RUN, role: "owner", address: owner, state: "signup" }];
+  const w = withSignUp(world({ records }));
+  w.mail = async () => { throw new MailTimeout("No genuine code arrived within 60 seconds"); };
+  w.cognito.startEmailCode = async () => { throw new CognitoError("InitiateAuth", "UserNotFoundException"); };
+  const r = await run(w);
+  assert.equal(recordState(w, "owner"), "deleted");
+  assert.deepEqual(r.left, []);
+});
+
+test("cleanup never takes a missing code as gone for an account that signed up: it's left, and reported", async () => {
+  const records = [{ runId: RUN, role: "crew", address: crew, state: "started" }];
+  const w = withSignUp(world({ records }));
+  w.mail = async () => { throw new MailTimeout("No genuine code arrived within 60 seconds"); };
+  const r = await run(w);
+  assert.ok(!w.log.some(([op]) => op === "resendConfirmationCode"), "a confirmed account isn't asked to confirm");
+  assert.equal(recordState(w, "crew"), "started");
+  assert.deepEqual(r.left, ["A throwaway crew of this run: not deleted: No genuine code arrived within 60 seconds"]);
+  // Nor when the confirmation code came but the sign-in code didn't
+  const signup = [{ runId: RUN, role: "crew", address: crew, state: "signup" }];
+  const w2 = withSignUp(world({ records: signup }));
+  let n = 0;
+  w2.mail = async ({ to }) => { if (n++ === 0) return { code: "12345678" }; void to; throw new MailTimeout("No genuine code arrived within 60 seconds"); };
+  const r2 = await run(w2);
+  assert.equal(recordState(w2, "crew"), "signup");
+  assert.equal(r2.left.length, 1);
+  // And a resend refused for another reason (a rate limit) is left too
+  const w3 = withSignUp(world({ records: signup }), { resend: new CognitoError("ResendConfirmationCode", "LimitExceededException") });
+  const r3 = await run(w3);
+  assert.deepEqual(r3.left, ["A throwaway crew of this run: not deleted: Cognito ResendConfirmationCode failed: LimitExceededException"]);
+});
+
+test("cleanup deletes the retry's crew member before its owner, as for the first try's", async () => {
+  const records = [
+    { runId: RUN, role: "ownerretry", address: ownerRetry, state: "started", teamIds: ["t-retry"] },
+    { runId: RUN, role: "crewretry", address: crewRetry, state: "started" },
+  ];
+  const w = world({ records, meFor: { [ownerRetry]: { user: { email: ownerRetry, emailVerified: true }, teams: [{ id: "t-retry", name: "Retry team", role: "owner", closedAt: null }] }, [crewRetry]: alone(crewRetry) } });
+  const r = await run(w);
+  const at2 = (op, who) => w.log.findIndex(([o, x]) => o === op && x === who);
+  assert.ok(at2("deleteMe", crewRetry) >= 0 && at2("deleteMe", crewRetry) < at2("startEmailCode", ownerRetry));
+  assert.ok(w.log.some(([op, who, team]) => op === "closeTeam" && who === ownerRetry && team === "t-retry"));
+  assert.deepEqual(r.left, []);
 });

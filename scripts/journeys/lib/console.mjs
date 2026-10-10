@@ -16,12 +16,15 @@ const pathOf = (url, origin) => {
 /**
  * Whether a console error isn't a failure:
  * - an aborted request to the RUM data plane (the fixtures abort them);
- * - the 401 of the token refresh before sign-in.
+ * - the 401 of the token refresh before sign-in (and after an account is deleted);
+ * - the 409 of DELETE /me refused for the only owner of a team with others in it: J11.2's prod
+ *   test asks for it on purpose, to see the server's message (GET /me never answers 409).
  * A 404 for one project or item isn't one either, but isn't expected: see isDocumentNotFound.
  */
 export function isExpectedConsoleError(text, url) {
   if (RUM.test(url ?? "") && /Failed to load resource|net::ERR_FAILED/.test(text)) return true;
   if (url === `${PROD.api}/auth/refresh` && /status of 401/.test(text)) return true;
+  if (url === `${PROD.api}/me` && /status of 409\b/.test(text)) return true;
   return false;
 }
 

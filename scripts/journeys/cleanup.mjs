@@ -18,7 +18,11 @@
 //    finish deleting (this run's, and a crashed run's): signs in as it by email code (read from
 //    the mailbox, checked like every test mail), closes the teams that run created and it owns,
 //    and calls DELETE /me. Members before owners. Each destructive call goes through
-//    assertDestructiveAllowed first.
+//    assertDestructiveAllowed first. A run that died mid-sign-up (`signup`) may have left an
+//    unconfirmed account, which can't sign in: it's confirmed first with a new code
+//    (ResendConfirmationCode). If neither a confirmation code nor a sign-in code comes, Cognito
+//    has no account at that address (it mails one or the other to any account it has): SignUp
+//    never reached it, and the record is marked deleted.
 // 4. Last, always: signs every long-lived account (and any throwaway it couldn't delete) out
 //    everywhere (Cognito GlobalSignOut), so no token in a trace in the results bucket still works.
 //
@@ -26,12 +30,12 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseThrowaway } from "./lib/addresses.mjs";
+import { isOwnerRole, parseThrowaway } from "./lib/addresses.mjs";
 import { appConfig, createApi } from "./lib/api.mjs";
 import { createCognito } from "./lib/cognito.mjs";
 import { PROD, assertRunAllowed, readConfig, runDir, runId as currentRunId, secretValues } from "./lib/config.mjs";
 import { assertDestructiveAllowed, checkMe, isRunScoped } from "./lib/guards.mjs";
-import { sweepInbox, waitForMail } from "./lib/mailbox.mjs";
+import { MailTimeout, sweepInbox, waitForMail } from "./lib/mailbox.mjs";
 import { createSessionPool } from "./lib/sessions.mjs";
 import { MASKED_VALUES_FILE, createMasker } from "./lib/mask.mjs";
 import { readRecords, writeRecord } from "./lib/runs.mjs";
@@ -81,6 +85,27 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
     sessions.push({ label, accessToken: tokens.accessToken });
     return apiFor(tokens.accessToken);
   };
+  // "confirmed" once an unconfirmed leftover is confirmed, or when Cognito says it already is;
+  // "no code" when no confirmation code came (no unconfirmed account at that address)
+  const confirmLeftover = async (address) => {
+    const since = now();
+    try {
+      await cognito.resendConfirmationCode(address);
+    } catch (err) {
+      // Already confirmed; or no account at all
+      if (err?.type === "InvalidParameterException") return "confirmed";
+      if (err?.type === "UserNotFoundException") return "no code";
+      throw err;
+    }
+    try {
+      const { code } = await mail({ s3: mailS3, to: address, since, want: "code", masker, log });
+      await cognito.confirmSignUp(address, code);
+      return "confirmed";
+    } catch (err) {
+      if (err instanceof MailTimeout) return "no code";
+      throw err;
+    }
+  };
 
   try {
     // 1 and 2: the long-lived teams, as owner
@@ -122,14 +147,30 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
     for (const r of records) masker.add(r.address);
     const runIds = [...new Set([runId, ...records.map((r) => r.runId)])];
     const teamsOfRun = (id) => records.filter((r) => r.runId === id).flatMap((r) => r.teamIds ?? []);
-    const pending = records.filter((r) => r.state === "started").sort((a, b) => (a.role === "owner") - (b.role === "owner"));
+    // Members before owners; a `signup` record (the run died around SignUp) as well as `started`
+    const pending = records.filter((r) => r.state === "started" || r.state === "signup").sort((a, b) => isOwnerRole(a.role) - isOwnerRole(b.role));
     for (const record of pending) {
       const label = `A throwaway ${record.role} of ${record.runId === runId ? "this run" : "an earlier run"}`;
       try {
         if (!parseThrowaway(record.address)) throw new Error("not a throwaway address");
-        const since = now();
-        const challenge = await cognito.startEmailCode(record.address);
-        const { code } = await mail({ s3: mailS3, to: record.address, since, want: "code", masker, log });
+        // A run that died mid-sign-up may have left the account unconfirmed, which can't sign
+        // in: confirm it first, with a new code. No code means no unconfirmed account there
+        const confirmation = record.state === "signup" ? await confirmLeftover(record.address) : "confirmed";
+        let challenge, code;
+        try {
+          const since = now();
+          challenge = await cognito.startEmailCode(record.address);
+          ({ code } = await mail({ s3: mailS3, to: record.address, since, want: "code", masker, log }));
+        } catch (err) {
+          // Cognito mails a code to any confirmed account, and a confirmation code to any
+          // unconfirmed one: neither came, so SignUp never made this account
+          if (confirmation === "no code" && (err instanceof MailTimeout || err?.type === "UserNotFoundException")) {
+            await writeRecord(mailS3, { ...record, state: "deleted" });
+            done.push(`${label}: never signed up (no confirmation or sign-in code came), so there was nothing to delete`);
+            continue;
+          }
+          throw err;
+        }
         const api = signedIn(label, await cognito.answerEmailCode(challenge, code));
         const createdTeams = teamsOfRun(record.runId);
         const me = await api.me();

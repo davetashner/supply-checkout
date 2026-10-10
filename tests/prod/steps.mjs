@@ -140,18 +140,27 @@ export function watchAppErrors(page, origins, testInfo) {
 const DEVICE_OPTIONS = ["viewport", "screen", "userAgent", "deviceScaleFactor", "isMobile", "hasTouch", "locale", "timezoneId", "colorScheme"];
 
 /**
- * A second browser context signed in as `role`, as another person on another phone: J4's live
- * update and J9's crew member. It aborts RUM requests as the main page does, refuses any account
- * deletion or team closure outright (a long-lived account never makes one), collects the app's
- * errors, and isn't traced. `close()` closes it and fails the test on any error it saw.
+ * A new browser context on the browser project's device, at the prod app, with requests to the
+ * RUM data plane aborted (as the main page's): another person on another phone.
  */
-export async function secondPage({ browser, harness, signIn, testInfo }, role) {
+export async function newDeviceContext(browser, testInfo) {
   const use = testInfo.project.use;
   const context = await browser.newContext({
     ...Object.fromEntries(DEVICE_OPTIONS.filter((k) => use[k] !== undefined).map((k) => [k, use[k]])),
     baseURL: PROD.app,
   });
   await context.route(/^https:\/\/dataplane\.rum\.[a-z0-9-]+\.amazonaws\.com\//, (r) => r.abort());
+  return context;
+}
+
+/**
+ * A second browser context signed in as `role`, as another person on another phone: J4's live
+ * update and J9's crew member. It aborts RUM requests as the main page does, refuses any account
+ * deletion or team closure outright (a long-lived account never makes one), collects the app's
+ * errors, and isn't traced. `close()` closes it and fails the test on any error it saw.
+ */
+export async function secondPage({ browser, harness, signIn, testInfo }, role) {
+  const context = await newDeviceContext(browser, testInfo);
   await context.route((url) => url.origin === PROD.api && (url.pathname === "/me" || /^\/teams\/[^/]+\/close$/.test(url.pathname)), (route) => {
     const method = route.request().method();
     if (method === "DELETE" || (method === "POST" && route.request().url().includes("/close"))) return route.abort("blockedbyclient");

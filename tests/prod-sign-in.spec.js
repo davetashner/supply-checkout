@@ -2,9 +2,11 @@
 // stand-ins for the shapes Managed Login's choice-based sign-in can take after the email: the
 // password straight away (an account with MFA), a choice of sign-in method (radios, or buttons),
 // a code sent by email with "Try another way" (what prod shows crew and viewer) or "Other sign-in options", and a page with no way to a password, which
-// fails saying what the page showed, without any value typed into it.
+// fails saying what the page showed, without any value typed into it. And managedLoginByCode, the
+// throwaway accounts' sign-in by email code: "Check your email" at once, or a choice of method
+// with the email code picked, never the password.
 import { expect, test } from "@playwright/test";
-import { TooManyRequests, managedLogin } from "./prod/fixtures.mjs";
+import { EMAIL_CODE_CHOICE, TooManyRequests, managedLogin, managedLoginByCode } from "./prod/fixtures.mjs";
 
 const account = { email: "crew.member@example.com", password: "not-a-real-password-1" };
 
@@ -104,4 +106,65 @@ test("managedLogin reports Managed Login's request limit as TooManyRequests, for
   await page.setContent(standIn(`<h1>Sign in</h1><div role="alert">Incorrect username or password.</div>`));
   const other = await managedLogin(page, account, null, { timeout: 4_000 }).catch((e) => e);
   expect(other).not.toBeInstanceOf(TooManyRequests);
+});
+
+// The throwaways' sign-in by email code. Each stand-in's code page records the code entered and
+// the button pressed in window.done.
+const codePage = `<h1>Check your email</h1>
+  <p role="alert">Enter the code that we sent to the email address r***@e***. The code expires in 15 minutes.</p>
+  <label>Verification code <input id="code" autocomplete="one-time-code"></label>
+  <button type="button" onclick="window.done = document.getElementById('code').value">Continue</button><button type="button">Back</button><p>Or</p>
+  <button type="button" onclick="window.touched = 'another way'">Try another way</button>`;
+const codeStandIn = (after) => standIn(after).replace("<script>", `<script>window.codePage = ${JSON.stringify(codePage)};`);
+// Built, so no literal address sits in the repository
+const throwaway = ["run-1-1-owner-0123456789abcdef0123456789abcdef", "e2e.example.com"].join("@");
+
+test("managedLoginByCode types the email, then the code mailed since the email went, on Check your email", async ({ page }) => {
+  await page.setContent(codeStandIn(codePage));
+  const asked = [];
+  const before = Date.now();
+  await managedLoginByCode(page, throwaway, async (since) => { asked.push(since); return "123456"; }, { timeout: 5_000 });
+  await expect.poll(() => page.evaluate(() => [window.email, window.done, window.touched])).toEqual([throwaway, "123456", undefined]);
+  expect(asked).toHaveLength(1);
+  expect(asked[0]).toBeGreaterThanOrEqual(before);
+});
+
+test("managedLoginByCode picks the email code from a choice of methods, never the password", async ({ page }) => {
+  for (const choice of [
+    // Prod's "Choose a sign-in method", the email code selected first
+    `<h1>Choose a sign-in method</h1><fieldset><legend>Sign-in method</legend>
+      <label><input type="radio" name="m" value="pw"> Password</label>
+      <label><input type="radio" name="m" value="otp" checked> Email one-time password</label></fieldset>
+      <button type="button" onclick="show(document.querySelector('input[value=otp]').checked ? window.codePage : window.passwordPage)">Continue</button>`,
+    // Not selected yet
+    `<h1>Choose a sign-in method</h1><label><input type="radio" name="m" value="pw" checked> Password</label>
+      <label><input type="radio" name="m" value="otp"> Email message</label>
+      <button type="button" onclick="show(document.querySelector('input[value=otp]').checked ? window.codePage : window.passwordPage)">Next</button>`,
+    // Buttons
+    `<h1>Sign in</h1><button type="button" onclick="show(window.passwordPage)">Password</button>
+      <button type="button" onclick="show(window.codePage)">Email me a code</button>`,
+  ]) {
+    await page.setContent(codeStandIn(choice));
+    await managedLoginByCode(page, throwaway, async () => "654321", { timeout: 5_000 });
+    await expect.poll(() => page.evaluate(() => window.done)).toBe("654321");
+  }
+  expect(EMAIL_CODE_CHOICE.test("Password")).toBe(false);
+  expect(EMAIL_CODE_CHOICE.test("Email one-time password")).toBe(true);
+});
+
+test("managedLoginByCode fails with what the page showed when no code field turns up, and asks for no code", async ({ page }) => {
+  let asked = false;
+  const readCode = async () => { asked = true; return "1"; };
+  await page.setContent(codeStandIn(`<h1>Enter your password</h1><label>Password <input type="password"></label><button type="button">Continue</button>`));
+  const err = await managedLoginByCode(page, throwaway, readCode, { timeout: 1_500, redact: (s) => s.split("run-1-1").join("***") }).catch((e) => e);
+  expect(err.message).toContain("Managed Login showed no code field after the email (tried: nothing)");
+  expect(err.message).toContain('headings "Enter your password"');
+  expect(err.message).not.toContain("run-1-1");
+  // An alert ends the wait early; the request limit is TooManyRequests
+  await page.setContent(codeStandIn(`<h1>Sign in</h1><div role="alert">Too many requests: You have exceeded the request limit.</div>`));
+  const started = Date.now();
+  const limited = await managedLoginByCode(page, throwaway, readCode, { timeout: 15_000 }).catch((e) => e);
+  expect(limited).toBeInstanceOf(TooManyRequests);
+  expect(Date.now() - started).toBeLessThan(10_000);
+  expect(asked).toBe(false);
 });
