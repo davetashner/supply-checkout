@@ -9,26 +9,14 @@ has the sequence diagram.
 
 ## Projects, formerly sheets
 
-Sheets are being renamed projects (bead `supply-checkout-005.6`,
-[the plan](../projects-rename-plan.md)). Through the rename's window, about a
-week, the server answers both names, so a tab still running the old app keeps
-working:
-
-- Every command on a project is at `/teams/{teamId}/projects/{projectId}/<command>`,
-  and also, deprecated, at its old path `/teams/{teamId}/sheets/{sheetId}/<command>`.
-  Both run the same code with the same role and body checks; calls to the old
-  paths are counted in the `LegacySheetsRouteCalls` metric, and the old paths
-  are removed once it stays at zero.
-- A move's destination is `toProjectId`, or its old name `toSheetId`. Send
-  one; both are accepted only with the same value.
-- Every answer carries both names of each renamed field, with the same value:
-  `result.projectId` and `result.sheetId`, `result.toProjectId` and
-  `result.toSheetId`, `result.projectCreated` and `result.sheetCreated`, and
-  the documents `project` and `sheet`, `toProject` and `toSheet`. A product's
-  movements carry `projectId` and `sheetId`, `fromProjectId` and `fromSheetId`.
-- The idempotency check compares requests with the old names mapped to the
-  new ones, so a retry sent to `/projects` matches an operation first run on
-  `/sheets` (or by the server before the rename), and the other way round.
+Sheets were renamed projects (bead `supply-checkout-005.6`,
+[the plan](../projects-rename-plan.md)). The server answers the new names only:
+a command on a project is at `/teams/{teamId}/projects/{projectId}/<command>`,
+a move's destination is `toProjectId`, and answers carry `projectId`,
+`toProjectId`, `projectCreated`, `project` and `toProject`, and movements carry
+`projectId` and `fromProjectId`. The old `/sheets` paths and `sheetId`,
+`toSheetId`, `sheetCreated`, `sheet`, `toSheet` and `fromSheetId` fields were
+removed (bead `supply-checkout-005.6.5`).
 
 ## Why
 
@@ -103,7 +91,7 @@ Money is dollars, 0 to 1,000,000, with at most two decimals: round with the
 cent-safe helper before sending, because the server refuses more decimals
 rather than rounding ([ADR 0014](../adr/0014-units-cost-and-rounding.md)).
 
-**Checkout**: `POST /teams/{teamId}/projects/{projectId}/checkout` (deprecated: `/sheets/{sheetId}/checkout`)
+**Checkout**: `POST /teams/{teamId}/projects/{projectId}/checkout`
 
 ```json
 { "operationId": "3b241101-e2bb-4255-8caf-4136c566a962", "productKey": "0123", "quantity": 3 }
@@ -168,7 +156,7 @@ section 4): `POST /teams/{teamId}/adhoc/checkout`
   `checkout` on the General Use project, and the `Checkouts` metric counts it.
 
 **Move a General Use line to a client project** (ADR 0017, section 5):
-`POST /teams/{teamId}/projects/{projectId}/move` (deprecated: `/sheets/{sheetId}/move`)
+`POST /teams/{teamId}/projects/{projectId}/move`
 
 ```json
 { "operationId": "…", "productKey": "0123", "toProjectId": "s1" }
@@ -201,7 +189,7 @@ section 4): `POST /teams/{teamId}/adhoc/checkout`
   nothing more and returns the first result, even when it races the first
   run.
 
-**Add a receipt's lines**: `POST /teams/{teamId}/projects/{projectId}/lines` (deprecated: `/sheets/{sheetId}/lines`)
+**Add a receipt's lines**: `POST /teams/{teamId}/projects/{projectId}/lines`
 
 ```json
 { "operationId": "…", "lines": [{ "productKey": "0123", "quantity": 4, "name": "Nitrile gloves", "price": 12.5, "code": "0123", "cost": 9.99 }] }
@@ -244,7 +232,7 @@ section 4): `POST /teams/{teamId}/adhoc/checkout`
   A new project from a receipt keeps its ID with the draft too, and a retry
   looks for it before saving it.
 
-**Return**: `POST /teams/{teamId}/projects/{projectId}/return` (deprecated: `/sheets/{sheetId}/return`)
+**Return**: `POST /teams/{teamId}/projects/{projectId}/return`
 
 ```json
 { "operationId": "…", "productKey": "0123", "quantity": 2 }
@@ -256,7 +244,7 @@ enforces it too, inside the transaction. A line bought for the client
 (`purchased: true`) doesn't come back: `400`.
 
 **Lost or broken** (company equipment, [ADR 0017](../adr/0017-company-equipment-and-ad-hoc-checkout.md)
-section 3): `POST /teams/{teamId}/projects/{projectId}/lost` (deprecated: `/sheets/{sheetId}/lost`)
+section 3): `POST /teams/{teamId}/projects/{projectId}/lost`
 
 ```json
 { "operationId": "…", "productKey": "ladder", "quantity": 1, "charge": 80 }
@@ -335,7 +323,6 @@ stands for, so a retry has to send the same one.
     "reason": "checkout",
     "productKey": "0123",
     "projectId": "s1",
-    "sheetId": "s1",
     "quantity": 3,
     "stockDelta": -3,
     "lineCreated": true,
@@ -344,7 +331,6 @@ stands for, so a retry has to send the same one.
     "at": "2026-09-26T12:00:00.000Z"
   },
   "project": { "id": "s1", "version": 8, "data": { "…": "the whole project" } },
-  "sheet": { "id": "s1", "version": 8, "data": { "…": "the same document, under its old name" } },
   "product": { "id": "0123", "version": 3, "data": { "…": "the whole product" } }
 }
 ```

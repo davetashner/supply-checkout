@@ -128,7 +128,7 @@ export class MemoryTable {
   }
 
   private static teamPartitions(team: string): string[] {
-    return [`TEAM#${team}`, `TEAM#${team}#PROJECTS`, `TEAM#${team}#SHEETS`, `OPAUDIT#${team}`];
+    return [`TEAM#${team}`, `TEAM#${team}#PROJECTS`, `OPAUDIT#${team}`];
   }
 
   /**

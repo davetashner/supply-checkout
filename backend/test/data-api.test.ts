@@ -606,7 +606,7 @@ describe("documents (the app's db contract)", () => {
       expect((await call("PUT", `/teams/team-a/projects/${id}`, { body: { data } })).status).toBe(200);
     }
     clock = NOW;
-    // A legacy item the rename's backfill hasn't moved yet: filtered the same way
+    // An item the rename's backfill hasn't moved: nothing reads SHEET# any more, so it's in no list
     for (const [id, status] of [["sheetOld", "closed"], ["sheetOpen", "open"]]) {
       table.put({ PK: "TEAM#team-a", SK: `SHEET#${id}`, GSI1PK: "TEAM#team-a#SHEETS", GSI1SK: `2020-01-01#${id}`, type: "sheet", id, version: 1, client: "Old", date: "2020-01-01", status, items: {} });
     }
@@ -617,14 +617,10 @@ describe("documents (the app's db contract)", () => {
       expect(res.status).toBe(200);
       return res.body.documents.map((d: { id: string }) => d.id).sort();
     };
-    expect(await ids({ since: "2026-01-01" })).toEqual(["closedBlank", "closedLate", "closedNew", "closedOn", "closedUndated", "openNoStatus", "openOld", "sheetOpen"]);
+    expect(await ids({ since: "2026-01-01" })).toEqual(["closedBlank", "closedLate", "closedNew", "closedOn", "closedUndated", "openNoStatus", "openOld"]);
     // Without since: every project, as before
-    expect(await ids({})).toEqual([...Object.keys(docs), "sheetOld", "sheetOpen"].sort());
-    // The old name of the route, through the rename's window, filters the same
-    const legacyRoute = await call("GET", "/teams/team-a/sheets", { query: { since: "2026-01-01" } });
-    expect(legacyRoute.status).toBe(200);
-    expect(legacyRoute.body.documents.map((d: { id: string }) => d.id).sort()).toEqual(await ids({ since: "2026-01-01" }));
-    expect((await call("GET", "/teams/team-a/sheets", { query: { since: "2026-01-01", limit: "5" } })).body.error.code).toBe("bad_request");
+    expect(await ids({})).toEqual(Object.keys(docs).sort());
+    expect((await call("GET", "/teams/team-a/projects", { query: { since: "2026-01-01", limit: "5" } })).body.error.code).toBe("bad_request");
     // The filter runs in DynamoDB, on the team's partition only
     const query = table.requests.filter((r) => r.command === "QueryCommand" && r.input.FilterExpression).at(-1)?.input as Record<string, unknown>;
     expect(query.KeyConditionExpression).toBe("PK = :pk AND begins_with(SK, :prefix)");
@@ -998,7 +994,7 @@ describe("team isolation (negative tests)", () => {
     await call("GET", "/teams/team-b/products");
     expect(table.calls.length).toBeGreaterThan(5);
     for (const c of table.calls.slice(0, -1)) {
-      for (const p of c.partitions) expect(["TEAM#team-a", "TEAM#team-a#PROJECTS", "TEAM#team-a#SHEETS"]).toContain(p);
+      for (const p of c.partitions) expect(["TEAM#team-a", "TEAM#team-a#PROJECTS"]).toContain(p);
     }
     // The refused request checked membership in team B's partition, and stopped there
     expect(table.calls.at(-1)).toEqual({ command: "TransactGetCommand", partitions: ["TEAM#team-b", "TEAM#team-b"] });

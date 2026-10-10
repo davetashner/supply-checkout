@@ -1,6 +1,5 @@
 // The app's document model (ADR 0004, 0006): `products/<key>` and
-// `projects/<id>` (formerly `sheets/<id>`, a name still accepted through the
-// rename's window, supply-checkout-005.6) as free-form JSON documents with get, set (replace), update
+// `projects/<id>` (formerly `sheets/<id>`, supply-checkout-005.6) as free-form JSON documents with get, set (replace), update
 // (deep merge), delete and list, the operations the app calls through
 // `window.claude.use("db")`. The HTTP data API (src/api) serves these, and the
 // browser adapter maps the app's calls onto it.
@@ -28,23 +27,18 @@ import { brandOf } from "./brand.js";
 import { hiddenCharacterProblem, withoutHiddenCharacters } from "../text/hidden-characters.js";
 import { AdhocOpenError, ConflictError, EquipmentOutError, InvalidInputError, NotFoundError, TooLargeError, isCancelledAsTooLarge, isItemTooLarge } from "./errors.js";
 import { BOUGHT_SUFFIX, adhocNumber, barcode, dateFormat, id as checkId, isAdhocId, keys, prefixes, productKey, teamPartition } from "./keys.js";
-import { legacy } from "./legacy-sheets.js";
 import { money, storedMoney } from "./money.js";
 import type { Movement } from "./commands.js";
-import { type ProjectFilter, type ProjectLayout, layoutOf, projectAttributes, projectItemsByDatePage, projectItemsPage, projectKeyFor, readProjectItem } from "./project-items.js";
+import { type ProjectFilter, projectAttributes, projectItemsByDatePage, projectItemsPage, readProjectItem } from "./project-items.js";
 import { type Page, queryPage } from "./query.js";
 import { checkReorderFields } from "./reorder.js";
 import { DATA_ROLE_DENIED_ATTRIBUTES, PK } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
 export type Collection = "products" | "projects";
-/**
- * A collection as a caller may name it: `sheets` is the old name of
- * `projects`, accepted (and treated as `projects`) through the rename's window
- * (supply-checkout-005.6).
- */
-export type CollectionName = Collection | typeof legacy.sheetsCollection;
-export const COLLECTIONS: readonly CollectionName[] = ["products", "projects", legacy.sheetsCollection];
+/** A collection as a caller names it. */
+export type CollectionName = Collection;
+export const COLLECTIONS: readonly CollectionName[] = ["products", "projects"];
 
 export type DocumentData = Record<string, unknown>;
 
@@ -140,10 +134,10 @@ const MAX_ATTEMPTS = 5;
 
 const isMap = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** The collection a name means: `sheets` is `projects`. Throws for any other name. */
+/** The collection a name means. Throws for any name that is not one (`sheets`, the old name of `projects`, is not). */
 export function canonicalCollection(name: CollectionName): Collection {
   if (!COLLECTIONS.includes(name)) throw new InvalidInputError("Unknown collection");
-  return name === legacy.sheetsCollection ? "projects" : name;
+  return name;
 }
 
 function docId(collection: Collection, value: unknown): string {
@@ -489,14 +483,10 @@ function deepMerge(target: Record<string, unknown>, patch: Record<string, unknow
   return target;
 }
 
-/**
- * The item a document is stored as. A project's goes where `layout` says: the
- * key it was read from, or, for a new one, `PROJECT#` (project-items.ts).
- * Date order comes from GSI1.
- */
-function toItem(collection: Collection, teamId: string, docId: string, data: DocumentData, version: number, layout: ProjectLayout = "project"): Record<string, unknown> {
+/** The item a document is stored as. A project's is `PROJECT#` (project-items.ts). Date order comes from GSI1. */
+function toItem(collection: Collection, teamId: string, docId: string, data: DocumentData, version: number): Record<string, unknown> {
   if (collection === "products") return { ...data, ...keys.product(teamId, docId), type: "product", key: docId, version };
-  return { ...data, ...projectAttributes(teamId, docId, data.date, layout), id: docId, version };
+  return { ...data, ...projectAttributes(teamId, docId, data.date), id: docId, version };
 }
 
 /** A new project's item as stored, with its keys and date index: for the quick take, which makes the General Use project (commands.ts). */
@@ -511,7 +501,7 @@ function fromItem(collection: Collection, item: Record<string, unknown>): Stored
   return { id, version: typeof item.version === "number" ? item.version : 1, data };
 }
 
-/** A document's item, keys included; a project's from either key (project-items.ts). */
+/** A document's item, keys included; a project's from `PROJECT#` (project-items.ts). */
 async function readItem(db: Db, collection: Collection, teamId: string, docId: string) {
   if (collection === "projects") return readProjectItem(db, teamId, docId);
   const { Item } = await connection(db).doc.send(
@@ -617,14 +607,13 @@ async function write(
       return `#${field} = :${field}`;
     };
     // An item that exists must still exist: an unchanged missing version is also true of a
-    // missing item, and a project's item can be moved by the rename's backfill meanwhile
+    // missing item
     const condition = !item
       ? "attribute_not_exists(PK)"
       : ["attribute_exists(PK)", unchanged("version"), ...(collection === "products" ? [unchanged("stock")] : [])].join(" AND ");
     const put = {
       TableName: db.tableName,
-      // Back where it was read from; a new project is PROJECT# (project-items.ts)
-      Item: storable(toItem(collection, ctx.teamId, id, data, version, layoutOf(item))),
+      Item: storable(toItem(collection, ctx.teamId, id, data, version)),
       ConditionExpression: condition,
       ...(Object.keys(names).length ? { ExpressionAttributeNames: names } : {}),
       ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
@@ -777,20 +766,12 @@ export async function deleteDocument(db: Db, ctx: TeamContext, name: CollectionN
   if (collection === "products") return deleteProductDocument(db, ctx, id, expected);
   if (isAdhocId(id)) return deleteAdhocProject(db, ctx, id, expected);
   if (expected === undefined) {
-    // Last writer wins: gone from both keys, wherever it was (project-items.ts)
+    // Last writer wins
     const item = await readProjectItem(db, ctx.teamId, id);
-    await connection(db).doc.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          { Delete: { TableName: db.tableName, Key: keys.project(ctx.teamId, id) } },
-          { Delete: { TableName: db.tableName, Key: legacy.sheetKey(ctx.teamId, id) } },
-        ],
-      }),
-    );
+    await connection(db).doc.send(new DeleteCommand({ TableName: db.tableName, Key: keys.project(ctx.teamId, id) }));
     return { before: item ? fromItem(collection, item) : undefined };
   }
-  // The key it's under now; a move by the rename's backfill since makes the condition fail (409)
-  const key = projectKeyFor(ctx.teamId, id, await readProjectItem(db, ctx.teamId, id));
+  const key = keys.project(ctx.teamId, id);
   try {
     const { Attributes } = await connection(db).doc.send(
       new DeleteCommand({
@@ -827,7 +808,7 @@ async function deleteAdhocProject(db: Db, ctx: TeamContext, id: string, expected
     const del = {
       Delete: {
         TableName: db.tableName,
-        Key: projectKeyFor(ctx.teamId, id, item),
+        Key: keys.project(ctx.teamId, id),
         ...(typeof version === "number"
           ? { ConditionExpression: "#version = :version", ExpressionAttributeValues: { ":version": version } }
           : { ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(#version)" }),

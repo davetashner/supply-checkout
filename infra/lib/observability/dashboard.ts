@@ -128,8 +128,6 @@ export class OpsDashboard extends Construct {
       businessGraph("J5: receipt reads and lines", [BusinessMetric.ReceiptReads, BusinessMetric.ReceiptReadFailures, BusinessMetric.ReceiptLines]),
       businessGraph("J5: receipt tokens", [BusinessMetric.ReceiptTokens]),
     );
-    // The projects rename's old /sheets routes (supply-checkout-005.6): flat zero for a day means they can go
-    this.dashboard.addWidgets(businessGraph("Old /sheets route calls", [BusinessMetric.LegacySheetsRouteCalls]));
     this.dashboard.addWidgets(businessGraph("J5: receipt limits", [BusinessMetric.ReceiptRateLimited, BusinessMetric.ReceiptLimitReached, BusinessMetric.ReceiptTrialsNearLimit, BusinessMetric.ReceiptPaidTeamsNearLimit, BusinessMetric.ReceiptTrialCapReached]));
     this.dashboard.addWidgets(graph("J5: receipt model call p95 (ms)", each((r) => business(BusinessMetric.ReceiptReadLatency, r, FIVE_MINUTES, "p95")), WIDTH / 4));
     // Estimated from Bedrock's token counts by the hour (Bedrock spend high alarms on the day's)

@@ -61,8 +61,8 @@ describe("HTTP API routes", () => {
     // The inventory commands and the stock history, next to the document routes
     expect(keys).toEqual(
       expect.arrayContaining([
-        "POST /teams/{teamId}/sheets/{sheetId}/checkout",
-        "POST /teams/{teamId}/sheets/{sheetId}/return",
+        "POST /teams/{teamId}/projects/{projectId}/checkout",
+        "POST /teams/{teamId}/projects/{projectId}/return",
         "POST /teams/{teamId}/products/{key}/stock",
         "GET /teams/{teamId}/products/{key}/movements",
       ]),
@@ -382,9 +382,11 @@ describe("data-access role (LeadingKeys)", () => {
       Effect: "Allow",
       // UpdateItem and ConditionCheckItem: the inventory commands' transactions. No Scan, no batch writes.
       Action: ["dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"],
-      // The team's partition and its date index partitions: projects', and sheets' (the old name) until the rename's backfill is done
-      Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}", "TEAM#${aws:PrincipalTag/teamId}#PROJECTS", "TEAM#${aws:PrincipalTag/teamId}#SHEETS"] } },
+      // The team's partition and its date index partition for projects
+      Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}", "TEAM#${aws:PrincipalTag/teamId}#PROJECTS"] } },
     });
+    // The old date index partition went with the sheets aliases (supply-checkout-005.6.5)
+    expect(JSON.stringify(items)).not.toMatch(/SHEETS?/);
     const resourcesJson = JSON.stringify(items?.Resource);
     expect(resourcesJson).toContain(":table/supply-checkout-prod-app");
     expect(resourcesJson).toContain("/index/GSI1");

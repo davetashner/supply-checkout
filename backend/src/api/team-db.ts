@@ -5,8 +5,7 @@
 // user's password was last reset (session-reset.ts). For each team it assumes
 // the data-access role with a session tag `teamId=<team>`, and that role's
 // policy allows DynamoDB only on items whose partition key is `TEAM#<tag>` (or
-// the team's date index partition, `TEAM#<tag>#PROJECTS`, or `TEAM#<tag>#SHEETS`
-// until the projects rename's backfill is done), through the
+// the team's date index partition, `TEAM#<tag>#PROJECTS`), through the
 // dynamodb:LeadingKeys condition. So even if a bug built another team's key,
 // IAM would refuse the call. The membership check (authorizeTeam) runs on the
 // same scoped handle: it reads only the team's own partition.

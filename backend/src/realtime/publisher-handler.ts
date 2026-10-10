@@ -2,8 +2,7 @@
 // the channel of each current member of the document's team (ADR 0006,
 // ADR 0016, docs/api/realtime.md).
 //
-// - Only product and project documents go out (a project's twice through the
-//   sheets-to-projects rename's window: as `projects` and as `sheets`). The event source mapping already
+// - Only product and project documents go out. The event source mapping already
 //   filters on the sort key, and documentChangeFromStream checks again, so
 //   members, invites, usage, audit entries and team metadata never reach a
 //   channel.
@@ -69,7 +68,6 @@ import {
   type CollectionEvent,
   type EventCollection,
   EVENTS_PER_PUBLISH,
-  LEGACY_EVENT_COLLECTIONS,
   PUBLISH_BUDGET_MS,
   PUBLISH_CONCURRENCY,
   PUBLISHES_PER_INVOCATION,
@@ -100,15 +98,9 @@ interface Outgoing {
   readonly sequenceNumber: string;
   readonly teamId: string;
   readonly collection: EventCollection;
-  /**
-   * How many changes (stream records) it stands for: 1, or more for a
-   * collection event; 0 for the second, old-named copy of a project's event,
-   * whose record the first one counts.
-   */
+  /** How many changes (stream records) it stands for: 1, or more for a collection event. */
   readonly changes: number;
-  /** The old-named copy of an event (LEGACY_EVENT_COLLECTIONS). */
-  readonly legacy?: true;
-  /** The stream record's ID, which a collection event's ID is made from (a copy's `eventId` has a suffix). */
+  /** The stream record's ID, which a collection event's ID is made from. */
   readonly recordId: string;
   readonly eventId: string;
   /** Stream time in epoch milliseconds, when known. */
@@ -127,13 +119,13 @@ export function changeEvent(record: DynamoDBRecord, change: DocumentChange): str
   return JSON.stringify(changeEventFields(record, change));
 }
 
-function changeEventFields(record: DynamoDBRecord, change: DocumentChange, collection: EventCollection = change.collection): ChangeEvent {
+function changeEventFields(record: DynamoDBRecord, change: DocumentChange): ChangeEvent {
   const seconds = record.dynamodb?.ApproximateCreationDateTime;
   const event: ChangeEvent = {
     v: CHANGE_EVENT_FORMAT,
     teamId: change.teamId,
     eventId: record.eventID ?? record.dynamodb?.SequenceNumber ?? "",
-    collection,
+    collection: change.collection,
     id: change.id,
     op: change.op,
     ...(change.version !== undefined ? { version: change.version } : {}),
@@ -143,44 +135,26 @@ function changeEventFields(record: DynamoDBRecord, change: DocumentChange, colle
 }
 
 /**
- * The suffix on the event ID of an old-named copy: `<record ID>#sheets`. A
- * client remembers event IDs to drop a retried batch's repeats, and an old
- * one records the ID before it looks at the collection (src/aws/live.js), so
- * with the same ID it would drop the `sheets` copy it needs as a repeat of the
- * `projects` event it ignores. Deterministic, so a retried batch's copy has the
- * same ID as before.
- */
-export const legacyEventId = (eventId: string, collection: EventCollection) => `${eventId}#${collection}`;
-
-/**
  * The records to publish, in batch order, skipping everything that isn't a
- * team's document. A project's change goes out as `projects` and then again
- * as `sheets` (LEGACY_EVENT_COLLECTIONS), the copy with its own event ID
- * (legacyEventId): one record, two names for its collection.
+ * team's document, one event per change.
  */
 export function outgoing(records: readonly DynamoDBRecord[]): Outgoing[] {
   const out: Outgoing[] = [];
   records.forEach((record, index) => {
     const change = documentChangeFromStream(record);
     if (!change) return;
-    const legacy = LEGACY_EVENT_COLLECTIONS[change.collection];
-    for (const collection of legacy ? [change.collection, legacy] : [change.collection]) {
-      const copy = collection !== change.collection;
-      const fields = changeEventFields(record, change, collection);
-      const event = copy ? { ...fields, eventId: legacyEventId(fields.eventId, collection) } : fields;
-      out.push({
-        recordId: fields.eventId,
-        index,
-        sequenceNumber: record.dynamodb?.SequenceNumber ?? "",
-        teamId: change.teamId,
-        collection,
-        changes: copy ? 0 : 1,
-        ...(copy ? { legacy: true as const } : {}),
-        eventId: event.eventId,
-        at: event.at,
-        payload: JSON.stringify(event),
-      });
-    }
+    const event = changeEventFields(record, change);
+    out.push({
+      recordId: event.eventId,
+      index,
+      sequenceNumber: record.dynamodb?.SequenceNumber ?? "",
+      teamId: change.teamId,
+      collection: change.collection,
+      changes: 1,
+      eventId: event.eventId,
+      at: event.at,
+      payload: JSON.stringify(event),
+    });
   });
   return out;
 }
@@ -201,13 +175,13 @@ export function coalesce(events: readonly Outgoing[], after: number): Outgoing[]
     const event: CollectionEvent = {
       v: COLLECTION_EVENT_FORMAT,
       teamId: first.teamId,
-      eventId: first.legacy ? legacyEventId(`${first.recordId}~${last.recordId}`, first.collection) : `${first.recordId}~${last.recordId}`,
+      eventId: `${first.recordId}~${last.recordId}`,
       collection: first.collection,
       op: "list",
       changes: list.length,
       ...(last.at !== undefined ? { at: last.at } : {}),
     };
-    replaced.set(first, { ...first, list: true, changes: first.legacy ? 0 : list.length, eventId: event.eventId, at: event.at, payload: JSON.stringify(event) });
+    replaced.set(first, { ...first, list: true, changes: list.length, eventId: event.eventId, at: event.at, payload: JSON.stringify(event) });
     for (const e of list.slice(1)) replaced.set(e, null);
   }
   const out: Outgoing[] = [];
@@ -403,7 +377,7 @@ export function createPublisherHandler(deps: PublisherDeps) {
       else unsent += left;
     });
 
-    // Document changes (stream records), not events: a project's old-named copy isn't counted again
+    // Document changes (stream records): a collection event stands for many
     const changes = changesIn(events);
     if (changes) deps.obs.count(BusinessMetric.LiveUpdates, changes);
     if (unsent) deps.obs.count(BusinessMetric.LiveUpdateFailures, unsent);
@@ -411,7 +385,7 @@ export function createPublisherHandler(deps: PublisherDeps) {
       deps.obs.count(BusinessMetric.LiveUpdatesDeferred, deferred);
       deps.obs.logger.warn("Publish budget used up; Lambda sends the rest from the earliest unsent record", { publishes, deferred, teams: results.filter((r) => r.deferred).length });
     }
-    const collectionEvents = teams.reduce((n, [, list]) => n + list.filter((e) => e.list && !e.legacy).length, 0);
+    const collectionEvents = teams.reduce((n, [, list]) => n + list.filter((e) => e.list).length, 0);
     const oldest = Math.min(...records.map((r) => r.dynamodb?.ApproximateCreationDateTime ?? Infinity));
     deps.obs.logger.info("Batch", {
       records: records.length,

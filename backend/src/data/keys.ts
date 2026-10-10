@@ -155,7 +155,7 @@ export const keys = {
     SK: `INVITEGUARD#${inviteLimitPartition(emailHash).slice(INVITE_LIMIT_PREFIX.length)}`,
   }),
   product: (teamId: string, key: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `PRODUCT#${productKey(key)}` }),
-  /** A project: where new ones are written, and where the rename's backfill moves old ones (legacy-sheets.ts has the old key). */
+  /** A project (called a sheet, under `SHEET#`, before the rename: only projects-rename.ts still names that). */
   project: (teamId: string, projectId: string) => ({
     PK: `TEAM#${id(teamId, "team ID")}`,
     SK: `PROJECT#${id(projectId, "project ID")}`,

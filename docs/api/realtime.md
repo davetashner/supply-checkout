@@ -70,7 +70,7 @@ Each `data` message carries one event as a JSON string:
 | `v` | Format version: `1` for a document event, as here; `2` for a [collection event](#collection-events). Ignore events with a `v` you don't know. |
 | `teamId` | The team whose document changed. Your channel carries every team you're in: ignore events for a team you aren't showing. |
 | `eventId` | The DynamoDB stream record's ID. A retried batch publishes the same event again with the same `eventId`, and a batch that keeps failing part way can send it up to 25 times: skip one you've already applied. |
-| `collection` | `products` or `projects` (or `sheets`, the old name of `projects`, through the rename's window: see below) |
+| `collection` | `products` or `projects` |
 | `id` | The product key or project ID (the last segment of the document's API path; percent-encode it in the URL) |
 | `op` | `put` (created, replaced, updated, or a product's stock changed) or `delete` |
 | `version` | The version after a `put`, or the deleted document's last version. Missing only for a malformed item: then just fetch. |
@@ -80,9 +80,7 @@ There is nothing else in an event, and there never will be document data (a test
 
 ### Projects, formerly sheets
 
-Sheets are being renamed projects (bead `supply-checkout-005.6`). Through the rename's window, every change to a project goes out twice, one after the other: as `collection: "projects"`, and again as `collection: "sheets"`, because a tab still running the old app ignores a collection it doesn't know and would otherwise stop updating. The copy has its own `eventId`, the record's with `#sheets` after it (`<first>~<last>#sheets` for a collection event), because the old app remembers every `eventId` it receives before it looks at the collection, and would drop a copy with the same ID as a repeat. A retry sends the copy again with the same ID. A collection event for projects goes out twice the same way. A new client reads `projects` and ignores `sheets`. The second copy is left out of the consumer's counts (`LiveUpdates`). The server stops sending `sheets` when the window ends ([the plan](../projects-rename-plan.md), section 3).
-
-A project's item moves from its old key to its new one when the rename's backfill runs: that is a `delete` and then a `put` of the same project ID (or, for more than 10 in a batch, a collection event), so an open tab drops it for a moment and fetches it again.
+Sheets were renamed projects (bead `supply-checkout-005.6`). A change to a project goes out once, as `collection: "projects"`. The server no longer publishes a second copy as `collection: "sheets"` (bead `supply-checkout-005.6.5`), so a tab still running the pre-rename app gets no live updates for projects until it reloads. The rename's backfill moving a project's item to its new key shows as one `put` of the project; the removal of the old item is not published.
 
 ### Collection events
 

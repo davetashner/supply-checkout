@@ -10,9 +10,8 @@ import type { DbForAccount } from "../src/api/account-db.js";
 import { createAccountHandler } from "../src/api/account-handler.js";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { hasRole, requireRole } from "../src/api/roles.js";
-import { ACCOUNT_ROUTES, DATA_ROUTES, LEGACY_SHEETS_SEGMENT, routeKey, TEAM_ROLES, type TeamRole } from "../src/api/routes.js";
+import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey, TEAM_ROLES, type TeamRole } from "../src/api/routes.js";
 import { hashEmail, InvalidInputError } from "../src/data/index.js";
-import { legacy } from "../src/data/legacy-sheets.js";
 import type { Observability } from "../src/observability/index.js";
 import { accountPartitions, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -149,18 +148,7 @@ const DATA_CASES: Record<string, Omit<Case, "minRole">> = {
   "PUT /teams/{teamId}/products/{key}": { method: "PUT", path: "/teams/team-a/products/0123", body: { data: { code: "0123", name: "Gloves", price: 13 }, expectedVersion: 3 } },
   "PATCH /teams/{teamId}/products/{key}": { method: "PATCH", path: "/teams/team-a/products/0123", body: { data: { name: "Gloves" }, expectedVersion: 3 } },
   "DELETE /teams/{teamId}/products/{key}": { method: "DELETE", path: "/teams/team-a/products/0123", query: { expectedVersion: "3" } },
-  "GET /teams/{teamId}/sheets": { method: "GET", path: "/teams/team-a/sheets" },
-  "GET /teams/{teamId}/sheets/{sheetId}": { method: "GET", path: "/teams/team-a/sheets/s1" },
-  "PUT /teams/{teamId}/sheets/{sheetId}": { method: "PUT", path: "/teams/team-a/sheets/s2", body: { data: { client: "Delta", date: "2026-09-27", items: {} }, expectedVersion: 0 } },
-  "PATCH /teams/{teamId}/sheets/{sheetId}": { method: "PATCH", path: "/teams/team-a/sheets/s1", body: { data: { client: "Echo 2" }, expectedVersion: 1 } },
-  "DELETE /teams/{teamId}/sheets/{sheetId}": { method: "DELETE", path: "/teams/team-a/sheets/s1", query: { expectedVersion: "1" } },
-  "POST /teams/{teamId}/sheets/{sheetId}/checkout": { method: "POST", path: "/teams/team-a/sheets/s1/checkout", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
   "POST /teams/{teamId}/adhoc/checkout": { method: "POST", path: "/teams/team-a/adhoc/checkout", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
-  "POST /teams/{teamId}/sheets/{sheetId}/move": { method: "POST", path: "/teams/team-a/sheets/adhoc-1/move", body: { operationId: randomUUID(), productKey: "rags", toSheetId: "s1" } },
-  "POST /teams/{teamId}/sheets/{sheetId}/lines": { method: "POST", path: "/teams/team-a/sheets/s1/lines", body: { operationId: randomUUID(), lines: [{ productKey: "k-1", quantity: 1, name: "Rags", price: 1.5 }] } },
-  "POST /teams/{teamId}/sheets/{sheetId}/return": { method: "POST", path: "/teams/team-a/sheets/s1/return", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
-  "POST /teams/{teamId}/sheets/{sheetId}/lost": { method: "POST", path: "/teams/team-a/sheets/s1/lost", body: { operationId: randomUUID(), productKey: "ladder", quantity: 1, charge: 50 } },
-  // The same routes under the projects name (supply-checkout-005.6), with the new field names
   "GET /teams/{teamId}/projects": { method: "GET", path: "/teams/team-a/projects" },
   "GET /teams/{teamId}/projects/{projectId}": { method: "GET", path: "/teams/team-a/projects/s1" },
   "PUT /teams/{teamId}/projects/{projectId}": { method: "PUT", path: "/teams/team-a/projects/s2", body: { data: { client: "Delta", date: "2026-09-27", items: {} }, expectedVersion: 0 } },
@@ -237,16 +225,9 @@ describe("the role matrix", () => {
     expect(DATA_ROUTES.find((r) => r.operation === "setSettings")?.minRole).toBe("owner");
   });
 
-  it("gives every old /sheets route exactly its /projects twin's role, and nothing else differs (supply-checkout-005.6)", () => {
-    expect(LEGACY_SHEETS_SEGMENT).toBe(legacy.sheetsCollection);
-    const old = DATA_ROUTES.filter((r) => r.legacy);
-    expect(old.map(routeKey).sort()).toEqual(DATA_ROUTES.filter((r) => r.path.includes("/sheets")).map(routeKey).sort());
-    expect(old).toHaveLength(10);
-    for (const route of old) {
-      const twin = DATA_ROUTES.find((r) => !r.legacy && r.method === route.method && r.path === route.path.replace("/sheets/{sheetId}", "/projects/{projectId}").replace(/\/sheets$/, "/projects"));
-      expect(twin, routeKey(route)).toBeDefined();
-      expect({ ...route, path: twin?.path, legacy: undefined }, routeKey(route)).toEqual({ ...twin, legacy: undefined });
-    }
+  it("has no /sheets route (supply-checkout-005.6.5)", () => {
+    expect(DATA_ROUTES.filter((r) => /sheet/i.test(r.path)).map(routeKey)).toEqual([]);
+    expect(DATA_ROUTES.filter((r) => r.path.includes("/projects")).map(routeKey)).toHaveLength(10);
   });
 
   for (const [key, c, fn] of cases) {
