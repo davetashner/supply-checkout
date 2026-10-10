@@ -151,8 +151,8 @@ export function branchProblems(notes, mainNotes, subjects) {
 export function stamp(notes, release) {
   const upcoming = upcomingOf(notes);
   if (!release || !upcoming || notes.releases.some((r) => r.version === release.version)) return null;
-  const { version: _placeholder, date: _none, ...rest } = upcoming;
-  return { ...notes, releases: [{ version: release.version, date: release.date, ...rest }, ...notes.releases.slice(1)] };
+  const entry = { version: release.version, date: release.date, notes: upcoming.notes, ...(upcoming.skip ? { skip: upcoming.skip } : {}) };
+  return { ...notes, releases: [entry, ...notes.releases.slice(1)] };
 }
 
 export function check({ changelog, notes, pr = null, mainNotes = null, subjects = [] }) {
