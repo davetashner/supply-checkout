@@ -22,13 +22,14 @@ import { existsSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
-import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { createDb, type Db, type DbOptions } from "../src/data/index.js";
 import { BACKFILL_MODES, type BackfillMode, type BackfillReport, type ExportedTeam, type NoticeAddressCandidate, type ProjectsRenameOptions, type ProjectsRenameReport, RENAME_MAX_ATTEMPTS, renameProjects, runBackfill } from "../src/data/backfill.js";
-import { cognitoRequest, listPoolUsers, type PoolUser } from "../src/identity/cognito-admin.js";
+import { listPoolUsers, type PoolUser } from "../src/identity/cognito-admin.js";
 import { noticeAddressOf } from "../src/identity/notice-address.js";
+import { APP_TABLE, appPool, appPoolParameter, callerAccount, type Credentials, type FoundPool, opsPoolParameter, POOL_ID } from "./owner-aws.js";
+
+export { APP_TABLE, appPoolParameter, type FoundPool, opsPoolParameter, POOL_ID };
 
 export const USAGE = `Usage: npm run backfill -- <mode> --table supply-checkout-<env>-app --region <region> --profile <profile> [--apply]
 
@@ -56,13 +57,6 @@ except for notice-address, which lists a real user pool and so needs --profile).
 const RENAME = "projects-rename";
 const MODES: readonly string[] = [...BACKFILL_MODES, RENAME];
 
-/** An app table's name (tableName in src/data/schema.ts), so a typo can't point the backfill at another table. */
-export const APP_TABLE = /^supply-checkout-([a-z0-9-]+)-app$/;
-
-/** A user pool ID, `<region>_<id>`: the region is the first group. */
-export const POOL_ID = /^([a-z]+(?:-[a-z]+)+-\d+)_[A-Za-z0-9]{1,64}$/;
-
-type Credentials = ReturnType<typeof defaultProvider>;
 
 export interface Deps {
   /** The account the credentials belong to (STS GetCallerIdentity). */
@@ -188,52 +182,9 @@ export function formatRenameReport(r: ProjectsRenameReport): string[] {
 const listUsers = (region: string, userPoolId: string, credentials: Credentials | undefined) =>
   listPoolUsers({ region, userPoolId, timeoutMs: 10_000, ...(credentials ? { credentials } : {}) });
 
-/** The app pool's SSM parameter (identityOutputParameters(envName).userPoolId in infra/lib/identity.ts). */
-export const appPoolParameter = (envName: string) => `/supply-checkout/${envName}/identity/user-pool-id`;
-
-/** The operator pool's SSM parameter (identityOutputParameters(envName).opsUserPoolId): the one pool the backfill must never list. */
-export const opsPoolParameter = (envName: string) => `/supply-checkout/${envName}/identity/ops-user-pool-id`;
-
-/** What appPool found: the app pool's ID, Cognito's name for it, and the operator pool's ID ("" if it has none). */
-export interface FoundPool {
-  readonly id: string;
-  readonly name: string;
-  readonly opsId: string;
-}
-
-/** The app pool of an environment: its ID (and the operator pool's) from SSM, then its name from Cognito, with the profile's credentials. */
-async function appPool(region: string, envName: string, credentials: Credentials | undefined): Promise<FoundPool> {
-  const ssm = new SSMClient({ region, ...(credentials ? { credentials } : {}) });
-  let id: string;
-  let opsId: string;
-  try {
-    const { Parameters } = await ssm.send(new GetParametersCommand({ Names: [appPoolParameter(envName), opsPoolParameter(envName)] }));
-    const value = (name: string) => Parameters?.find((p) => p.Name === name)?.Value ?? "";
-    id = value(appPoolParameter(envName));
-    opsId = value(opsPoolParameter(envName));
-  } finally {
-    ssm.destroy();
-  }
-  const match = POOL_ID.exec(id);
-  if (!match) return { id, name: "", opsId };
-  const described = (await cognitoRequest({ region: match[1] as string, timeoutMs: 10_000, ...(credentials ? { credentials } : {}) })("DescribeUserPool", { UserPoolId: id })) as {
-    UserPool?: { Name?: unknown };
-  };
-  return { id, name: typeof described.UserPool?.Name === "string" ? described.UserPool.Name : "", opsId };
-}
-
 const defaultDeps: Deps = {
   connect: createDb,
-  async callerAccount(region, credentials) {
-    const sts = new STSClient({ region, credentials });
-    try {
-      const { Account } = await sts.send(new GetCallerIdentityCommand({}));
-      if (!Account) throw new Error("STS returned no account");
-      return Account;
-    } finally {
-      sts.destroy();
-    }
-  },
+  callerAccount,
 };
 
 const DESCRIPTIONS: Record<BackfillMode, { found: string; change: string }> = {

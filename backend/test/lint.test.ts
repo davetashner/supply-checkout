@@ -140,6 +140,27 @@ describe("the backfill CLI (scripts/backfill.ts)", () => {
   });
 });
 
+describe("the report triage CLI (scripts/feedback.ts)", () => {
+  const CLI = "scripts/feedback.ts";
+
+  it("may import the owner's report functions and the entry point", async () => {
+    expect(await ruleIds('import { listFeedback } from "../src/data/feedback-owner.js";\nimport { createDb } from "../src/data/index.js";', CLI)).toEqual([]);
+  });
+
+  it.each([
+    'import { GetCommand } from "@aws-sdk/lib-dynamodb";',
+    'import { connection } from "../src/data/client.js";',
+    'import { runBackfill } from "../src/data/backfill.js";',
+  ])("keeps the other rules: %s", async (code) => {
+    expect(await ruleIds(code, CLI)).toContain("no-restricted-imports");
+  });
+
+  it("gives no other file the owner's report functions", async () => {
+    expect(await ruleIds('import { listFeedback } from "../data/feedback-owner.js";', HANDLER)).toContain("no-restricted-imports");
+    expect(await ruleIds('import { listFeedback } from "../src/data/feedback-owner.js";', "scripts/backfill.ts")).toContain("no-restricted-imports");
+  });
+});
+
 describe("the artifact import CLI (scripts/import-artifact.ts)", () => {
   const CLI = "scripts/import-artifact.ts";
 
