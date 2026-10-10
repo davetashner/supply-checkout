@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.1](https://github.com/davetashner/supply-checkout/compare/v1.13.0...v1.13.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* pull the year filter's arrow in from the pill's edge ([#751](https://github.com/davetashner/supply-checkout/issues/751)) ([665ae5a](https://github.com/davetashner/supply-checkout/commit/665ae5a1513f0dfa7570844d95683d634e4f0dde))
+
 ## [1.13.0](https://github.com/davetashner/supply-checkout/compare/v1.12.0...v1.13.0) (2026-10-10)
 
 
