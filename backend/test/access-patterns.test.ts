@@ -86,6 +86,7 @@ import {
   takeReceipt,
   takeReceiptRate,
   TRIAL_CAP_REACHED,
+  TrialCapReachedError,
   refundReceipt,
   getReceiptQuota,
   RateLimitedError,
@@ -1178,7 +1179,13 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(results.filter((r) => r === "ok")).toHaveLength(4);
       const refused = results.filter((r) => r !== "ok") as RateLimitedError[];
       expect(refused.map((e) => [e.name, e.message, e.retryAfterSeconds])).toEqual([0, 1].map(() => ["RateLimitedError", TRIAL_CAP_REACHED, 12 * 3600]));
-      expect(await rawItem(db, "RECEIPTTRIALS", "DAY#2031-01-15")).toEqual({ PK: "RECEIPTTRIALS", SK: "DAY#2031-01-15", count: 4, expiresAt: Date.parse("2031-01-16T00:00:00Z") / 1000 + 7 * 86_400 });
+      // The two refusals at once: exactly one is the day's first, which marks the day (supply-checkout-7pe.1)
+      expect(refused.map((e) => (e as TrialCapReachedError).firstToday).sort()).toEqual([false, true]);
+      expect(await rawItem(db, "RECEIPTTRIALS", "DAY#2031-01-15")).toEqual({ PK: "RECEIPTTRIALS", SK: "DAY#2031-01-15", count: 4, capReachedAt: at.getTime() / 1000, expiresAt: Date.parse("2031-01-16T00:00:00Z") / 1000 + 7 * 86_400 });
+      // A later refusal that day isn't
+      const later = await takeReceipt(db, a.contributor, trial, at, 4).then(() => undefined, (e: unknown) => e);
+      expect(later).toBeInstanceOf(TrialCapReachedError);
+      expect((later as TrialCapReachedError).firstToday).toBe(false);
       // The refused reads were given back to their teams
       const used = async (ctx: typeof a.viewer) => (await getReceiptQuota(db, ctx, at)).used;
       expect((await used(a.viewer)) + (await used(b.viewer))).toBe(4);
