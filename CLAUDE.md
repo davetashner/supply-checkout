@@ -42,7 +42,7 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 
 - `main` is protected by a ruleset: PR required, **squash merge only**, `CI passed` must be green, and the branch must be up to date. No bypass.
 - The merge queue needs an organization-owned repo, and this one is on a personal account, so main has none for now. With a merge queue on main (a `merge_queue` rule in the ruleset), PRs merge through the queue: it runs CI on each PR on top of main and squash-merges it, so branches don't need updating by hand.
-- CI on a pull request runs the browser tests in desktop Chrome and iPhone Safari only, against both builds (coverage in desktop Chrome). The merge queue, pushes to main, manual runs and a nightly run use all 12 browser jobs, so a failure in another browser can first show up there.
+- CI on a pull request that touches the app, its tests or anything they build or load (`src/`, `tests/`, `demo/`, `ops/`, `site/`, the Playwright and Vite configs, the package files, the CI workflow; full list in the README's CI table) runs all ten browser jobs, like the merge queue, pushes to main, manual runs and the nightly run. Other pull requests (docs, backend, other infra, the beads export) run desktop Chrome and iPhone Safari only, and a beads-export-only PR runs no browser tests. Coverage is measured in desktop Chrome.
 - Work in a worktree: `git worktree add .claude/worktrees/<type>/<name> -b <type>/<name> origin/main`.
 - PR titles are Conventional Commits; release-please turns `fix:` / `feat:` into releases. Keep app fixes in their own `fix:` PR, separate from `test:` or `docs:` work.
 - Sign off commits (`git commit -s`). Put a `Closes <bead-id>` line in the PR body for each finished bead.
