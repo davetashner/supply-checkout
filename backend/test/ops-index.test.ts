@@ -28,7 +28,7 @@ describe("the operators' index", () => {
     expect(member("user-pat")).toMatchObject({ GSI3PK: `OPS#OWNERS#${team.teamId}`, GSI3SK: "user-pat" });
     expect(member("user-sam").GSI3PK).toBeUndefined();
 
-    const owner = await authorizeTeam(db, "user-owner", team.teamId);
+    const owner = await authorizeTeam(db, "user-owner", team.teamId, NOW);
     await setMemberRole(db, owner, "user-sam", "owner");
     expect(member("user-sam")).toMatchObject({ role: "owner", GSI3PK: `OPS#OWNERS#${team.teamId}`, GSI3SK: "user-sam" });
     await setMemberRole(db, owner, "user-pat", "viewer");
