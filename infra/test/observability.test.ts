@@ -291,7 +291,9 @@ describe("alarm topics", () => {
     const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"));
     expect(alarms.length).toBeGreaterThan(0);
     for (const a of alarms) {
-      for (const action of [...(a.Properties.AlarmActions as { Ref: string }[]), ...((a.Properties.OKActions ?? []) as { Ref: string }[])]) {
+      // Only the report-received alarm has no OK action (a report isn't something that recovers); every other alarm must list them
+      const okActions = a.Properties.OKActions ?? (String(a.Properties.AlarmName).endsWith("-p2-report-received") ? [] : undefined);
+      for (const action of [...(a.Properties.AlarmActions as { Ref: string }[]), ...(okActions as { Ref: string }[])]) {
         expect(allowed.has(action.Ref)).toBe(true);
       }
     }
