@@ -10,6 +10,7 @@
   "scripts": {
     "lint": "tsc --noEmit && eslint .",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage && node ../scripts/vitest-coverage.mjs",
     "test:update": "vitest run --update",
     "synth": "cdk synth --quiet",
     "synth:all-regions": "cdk synth --quiet -c regions=all -o cdk.out/all-regions",
@@ -32,6 +33,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "5.0.2",
     "aws-cdk": "^2.1143.0",
     "esbuild": "^0.28.2",
     "eslint": "^10.11.0",

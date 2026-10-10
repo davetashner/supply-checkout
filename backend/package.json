@@ -10,6 +10,8 @@
   "scripts": {
     "lint": "tsc --noEmit && eslint .",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage && node ../scripts/vitest-coverage.mjs",
+    "test:ddb:coverage": "node scripts/test-ddb.ts --coverage && node ../scripts/vitest-coverage.mjs",
     "check": "npm run lint && npm test",
     "test:ddb": "node scripts/test-ddb.ts",
     "backfill": "esbuild scripts/backfill.ts --bundle --platform=node --format=esm --packages=external --log-level=warning --outfile=node_modules/.cache/backfill/backfill.mjs && node node_modules/.cache/backfill/backfill.mjs",
@@ -42,6 +44,7 @@
     "@smithy/types": "^4.19.0",
     "@types/aws-lambda": "^8.10.163",
     "@types/node": "^24.19.0",
+    "@vitest/coverage-v8": "5.0.2",
     "esbuild": "^0.28.2",
     "eslint": "^10.11.0",
     "typescript": "~6.0.3",

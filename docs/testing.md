@@ -184,6 +184,21 @@ When coverage is too low, `coverage/web/uncovered.txt` lists each gap by `src/` 
 
 Coverage counts what the web build ships, so `src/aws/` is in it and the demo and operator page aren't. The demo and the tests' mock runtime have the web build's commands in the page (`tests/mock-claude.js`), so the app has one path for every checkout, return and stock change. Don't lower the 98% threshold to make room; the rest of the headroom comes from tests for edge cases people can really hit, such as another user deleting a project while a form or a barcode read is open (`tests/concurrent.spec.js`, `tests/barcode.spec.js`), and from removing fallbacks no caller can reach.
 
+### Backend and infrastructure coverage
+
+The two TypeScript packages have coverage gates of their own, measured by Vitest (`@vitest/coverage-v8`) and checked by `scripts/vitest-coverage.mjs`:
+
+| Package | Measured | Minimum lines / statements / functions / branches | Run locally |
+| --- | --- | --- | --- |
+| `backend/` | `src/` (the Lambda code) | 97% / 96% / 97% / 93% | `npm run test:ddb:coverage` (needs Docker or colima, like `test:ddb`) |
+| `infra/` | `lib/` and `bin/` (the CDK code) | 99% / 98% / 100% / 96% | `npm run test:coverage` |
+
+The minimums are in each package's `coverage-thresholds.json`. They're the coverage measured when the gate was added, rounded down to a whole percent (bead `supply-checkout-pbp.43`), so a change that drops coverage fails. They're below `src/`'s 98% partly because the backend's Lambda entry points (the files that only read the environment and wire a handler, such as `src/realtime/authorizer.ts`) and the CDK app entry points in `infra/bin/` aren't run by any test (the code they wire is), and partly because of untested error and fallback branches, which `uncovered.txt` lists. Raise a minimum when coverage grows past the next whole percent; never lower one to make room.
+
+The CI **Backend** and **Infra** jobs run `npm run test:coverage` in place of `npm test`: the backend's against DynamoDB Local, as `test:ddb` does locally (without it the DynamoDB suites skip and coverage falls below the gate, so the backend's local gate is `test:ddb:coverage`). After the tests pass, the script writes `coverage/uncovered.txt` in the package (every function, statement and branch no test ran, by file and line), posts a coverage table to the job summary, and fails the job if any metric is below its minimum. CI uploads each package's `coverage/` (with `index.html`, the full report) as the `coverage-report-backend` and `coverage-report-infra` workflow artifacts. The script's own tests, including one per metric that falls below its minimum, are in `scripts/vitest-coverage.test.mjs` (`npm run test:scripts`).
+
+Only the source directories above count; tests, test helpers, fixtures, snapshots and the backend's one-off `scripts/` are outside the denominator (`coverage.include` in each package's `vitest.config.ts`).
+
 The mock (`tests/mock-claude.js`) has opt-in failure modes, so tests can reach error paths: a missing runtime, declined capabilities, failed or path-specific writes, lost listeners, failed downloads, and a receipt read that waits to be cancelled. While the page is open, `window.__mock.hold()` and `release()` make writes wait like a slow connection (`hold("products/")`: only writes to those paths), and `window.__mock.failWrites` fails every write with a code until it's cleared (`{ prefix, code }`: only writes to those paths). `window.__mock.notify()` fires live updates after a test changes `window.__mock.docs`, to act as another user.
 
 Steps that only click and read the UI (create and open a project, enter a barcode, the checkout and return dialogs, **Finished Return**, the Inventory tab and its Add item form, uploading a receipt, the team switcher) are in `tests/ui/`, imported from `tests/ui/index.js`. They import nothing from the fakes, the mock or the fixtures, so the prod journey suite can use them against the deployed app too ([plan](journey-tests-plan.md#reusing-the-local-tests)); add a step there when a spec needs one that a prod journey will too. `tests/helpers.js` keeps what's local-only: the page fixture, `openApp` and `modalViolations`.
