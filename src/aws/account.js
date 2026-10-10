@@ -2,7 +2,8 @@
 // sign-in, "name your team", joining from an invite link, and errors. They take the app's
 // place until a team is open; then a bar under the header shows the team (a switcher when
 // there are several), Members and Import CSV for owners, Leave team for everyone else,
-// Account (who is signed in, with their role; What's New on or off; deleting the account) and
+// Account (who is signed in, with their photo and role; their profile photo, profile-photo.js;
+// What's New on or off; deleting the account) and
 // Sign out. Under the bar, the What's New banner, at most once a day (whats-new.js). A team an owner closed is read-only, with a notice
 // saying when its data will be deleted, and for its owners a way to reopen it. So is a team
 // whose subscription ended (its trial ended without a card, or payments stopped), with a
@@ -29,6 +30,8 @@ import { openChangePassword } from "./password.js";
 import { openReset } from "./reset-password.js";
 import { openInvoices } from "./invoices.js";
 import { showWhatsNew } from "./whats-new.js";
+import { createPhotos } from "./photos.js";
+import { avatarHTML } from "../avatar.js";
 
 const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
 // A screen's promise resolves with this key after the user verifies their email: start the
@@ -63,9 +66,6 @@ const lastDay = (ymd) => new Date(`${ymd}T12:00:00Z`).toLocaleDateString("en-US"
 const PORTAL_LINK_MS = 4 * 60e3;
 // A write refused for billing while the page was open, when /me can't say why
 const ENDED_MEANWHILE = "This team is read-only now, so nothing in it can be changed. Reload the page to see why.";
-
-// A plain circle for the signed-in user's avatar; the API has no pictures yet
-const AVATAR = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><circle cx="1" cy="1" r="1" fill="#0E6B58"/></svg>');
 
 let box;
 
@@ -138,6 +138,8 @@ export async function start(config) {
   // everywhere refused because the session already ended starts the session's sign-in screen
   // and then the changed password's: the second is drawn, whichever finishes first.
   let turn = 0;
+  // The team's profile photos (photos.js), once a team is open and the API has photos
+  let photos = null;
   const session = createSession(config, {
     onSignedOut: () => { if (db) db.stop(); signIn(); },
     onRefreshed: () => { if (db) db.reconnect(); },
@@ -235,17 +237,25 @@ export async function start(config) {
   const twoStep = (me, options) => openTwoStep(session, me.user.email, twoStepOn, options);
   // Takes the What's New banner away once Account turns it off; nothing until it's shown
   let hideWhatsNew = () => {};
-  const account = (me) => openDeleteAccount(session.api, me.user.email, deleted, {
+  // The user's own photo, for Account: the team's list's link once a team is open, else /me's.
+  // Nothing from an API without photos (no photoUrl in /me).
+  const ownPhoto = (me, name) => me.user.photoUrl === undefined ? null : {
+    name, userId: me.user.id,
+    url: () => (photos ? photos.url(me.user.id) : me.user.photoUrl),
+    set: (url) => { me.user.photoUrl = url; if (photos) photos.set(me.user.id, url); },
+  };
+  // `name`: who they are, for their initials
+  const account = (me, name) => openDeleteAccount(session.api, me.user.email, deleted, {
     mfa: me.user.mfa,
     setUp: (moving) => twoStep(me, { moving }),
     changePassword: () => openChangePassword(session, me.user.email, passwordChanged, { required: me.user.mfa === "totp" }),
-  }, { prefs: me.user.preferences, off: () => hideWhatsNew() });
+  }, { prefs: me.user.preferences, off: () => hideWhatsNew() }, ownPhoto(me, name));
 
   // Who's signed in, with a way out, on the screens before a team is open
   const whoami = (me) => `<p class="whoami">Signed in as ${esc(me.user.email || "you")}. <button type="button" class="btn ghost" id="accountSignOut">Sign out</button> <button type="button" class="btn ghost" id="accountDelete">Delete account</button></p>`;
   const wireWhoami = (el, me) => {
     el.querySelector("#accountSignOut").addEventListener("click", signOut);
-    el.querySelector("#accountDelete").addEventListener("click", () => account(me));
+    el.querySelector("#accountDelete").addEventListener("click", () => account(me, me.user.email));
   };
 
   // The email isn't verified yet, so no invites are listed or can be accepted: offer to
@@ -454,10 +464,13 @@ export async function start(config) {
   // name from the token, else their email, cut short with an ellipsis on a narrow screen. A
   // screen reader reads it all, as "Signed in as …".
   const ROLE_NAME = { owner: "Owner", contributor: "Contributor", viewer: "Viewer" };
-  const identity = (name, team) => {
+  // With their photo, or their initials.
+  const identity = (name, team, userId) => {
     const who = esc(visibleText(name)), role = ROLE_NAME[team.role];
-    return `<button type="button" class="btn ghost whoami-chip" id="accountOpen" title="${who}" aria-label="Signed in as ${who}, ${role}. Account"><span class="who-name">${who}</span><span class="who-role">${role}</span></button>`;
+    return `<button type="button" class="btn ghost whoami-chip" id="accountOpen" title="${who}" aria-label="Signed in as ${who}, ${role}. Account">${avatarHTML(photoOf(userId), visibleText(name), 32, userId)}<span class="who-name">${who}</span><span class="who-role">${role}</span></button>`;
   };
+  // A member's photo link, or null: none, or no photos (no team open, or an API without them)
+  const photoOf = (userId) => (photos ? photos.url(userId) : null);
 
   // The team bar under the header: which team, a switcher, managing members and importing
   // inventory (owners; importing only while the team is open), leaving (everyone else), the
@@ -473,7 +486,7 @@ export async function start(config) {
     // Invoices: owners of a team with a Stripe customer, closed or not, so a closed team's owners can save them
     // before it's deleted (the server refuses once the deletion is due)
     const invoices = owner && team.billingAccount;
-    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button>` : ""}${invoices ? `<button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}${identity(who, team)}<button type="button" class="btn ghost" id="signOut">Sign out</button>`
+    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button>` : ""}${invoices ? `<button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}${identity(who, team, me.user.id)}<button type="button" class="btn ghost" id="signOut">Sign out</button>`
       + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "")
       + (!team.closedAt && !ended && team.cancelsAt ? `<p class="closed-note" role="status" id="cancelNote">This team's subscription was canceled. Everything works until ${esc(day(team.cancelsAt))}; then the team becomes read-only.${billing ? " To keep it, renew it from Billing." : " Ask an owner to renew it to keep it."}</p>` : "")
       + (!team.closedAt && !ended && team.paymentGraceEndsAt ? `<p class="closed-note" role="status" id="graceNote">A payment for this team didn't go through. Everything works until ${esc(moment(team.paymentGraceEndsAt))}; then the team becomes read-only until it's paid.${owner ? " Update the payment method in Billing to keep it working." : " Ask an owner to update the payment method."}</p>` : "")
@@ -481,13 +494,13 @@ export async function start(config) {
     box.after(bar);
     drawSwitcher(bar.querySelector(".team-pick"), me.teams, team);
     bar.querySelector("#signOut").addEventListener("click", signOut);
-    bar.querySelector("#accountOpen").addEventListener("click", () => account(me));
+    bar.querySelector("#accountOpen").addEventListener("click", () => account(me, who));
     // Verifying here needs nothing else to change: the team is open, and invites only matter
     // before one is. The button goes once it's done.
     const verify = bar.querySelector("#verifyEmail");
     if (verify) verify.addEventListener("click", () => openVerifyEmail(session, me.user.email, (fresh) => { me.user = fresh.user; verify.remove(); }));
     if (owner) {
-      bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed, invited(fr)));
+      bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed, invited(fr), photoOf));
       if (billing) bar.querySelector("#manageBilling").addEventListener("click", (e) => manageBilling(me, team, e.currentTarget));
       if (invoices) bar.querySelector("#invoices").addEventListener("click", () => openInvoices(session.api, team, (e) => needsTwoStep(me, e)));
       if (ended) {
@@ -617,7 +630,7 @@ export async function start(config) {
       save: (change) => { send(change).catch(() => {}); },
       // Set by the checklist, to redraw it
       onChange: () => {},
-      invite: () => openMembers(session.api, team, me.user.id, changed, invited(fr)),
+      invite: () => openMembers(session.api, team, me.user.id, changed, invited(fr), photoOf),
       importCsv: () => openImport(session.api, team.id, download),
     };
     // An invite another owner, or this one on another device, sent and nobody has accepted yet
@@ -642,6 +655,8 @@ export async function start(config) {
     const fr = firstRun(me, team);
     // Who is signed in: their name, else their email (shown on the team bar, and as their profile)
     const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
+    // Asked for now, so the team bar and the projects have them as soon as they can
+    if (me.user.photoUrl !== undefined) photos = createPhotos(session.api, team.id, me.user.id, me.user.photoUrl);
     let bar = teamBar(me, team, fr, name);
     // Drawn now, as the team opens, so it never moves anything under a finger later
     hideWhatsNew = showWhatsNew(session.api, me.user.preferences, bar);
@@ -667,7 +682,7 @@ export async function start(config) {
       old.remove();
       viewOnly = viewOnlyFor(team);
     })(); };
-    const profile = { id: me.user.id, name, avatarUrl: AVATAR, isMe: true };
+    const profile = { id: me.user.id, name, isMe: true };
     db = createDb({
       api: session.api, config, teamId: team.id, userId: me.user.id, token: session.token,
       onRemoved: () => removed(team),
@@ -687,8 +702,15 @@ export async function start(config) {
         isOwner: async () => team.role === "owner",
         // Why it's read-only, when that's because the team is closed or read-only for billing; null: the role says why
         viewOnlyNotice: async () => { await closing; return viewOnly; },
-        // Only the signed-in user's own profile: the API doesn't share other members' names yet
-        profiles: async (ids) => Object.fromEntries([].concat(ids).filter((id) => id === me.user.id).map((id) => [id, profile])),
+        // The signed-in user's own profile, and a photo for anyone else in the team who has one:
+        // the API doesn't share other members' names yet. The first draw waits a moment for the photos.
+        // A teammate whose photo's link is being asked for again is still there, with a blank
+        // circle meanwhile, so the photo can take its place.
+        profiles: async (ids) => {
+          if (photos) await photos.ready();
+          const known = (id) => id === me.user.id || (photos && photos.has(id));
+          return Object.fromEntries([].concat(ids).filter(known).map((id) => [id, id === me.user.id ? { ...profile, avatarUrl: photoOf(id) } : { id, name: "", avatarUrl: photoOf(id), isMe: false }]));
+        },
       },
       downloads: { save: download },
       // Where src/main.js keeps this team's receipt draft

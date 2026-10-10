@@ -7,6 +7,7 @@ import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, 
 import { scanFromInput } from "./barcode.js";
 import { startScan } from "./live-scan.js";
 import { shrinkPhoto } from "./photo.js";
+import { avatarHTML } from "./avatar.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 import { projectCsv, projectsCsv, inventoryCsv, allJson } from "./export.js";
 import { createFirstRun } from "./first-run.js";
@@ -142,7 +143,8 @@ const addLocalProject = (id, body) => { if (!projects.some(s => s.id === id)) pr
 function personHTML(s) {
   if (s.createdBy) {
     const p = own(people, s.createdBy);
-    return `<span class="who">${p ? `<img src="${esc(p.avatarUrl)}" alt="">` : ""}${esc((p && p.name) || "Someone")}</span>`;
+    // Their photo, or their initials; nothing for someone the runtime knows nothing about
+    return `<span class="who">${p ? avatarHTML(p.avatarUrl, p.name, 24, s.createdBy) : ""}${esc((p && p.name) || "Someone")}</span>`;
   }
   return `<span class="who">${esc(s.createdByName || "Unknown")}</span>`;
 }
