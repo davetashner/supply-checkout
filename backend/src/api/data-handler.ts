@@ -1,13 +1,6 @@
 // The data API: the app's `products` and `projects` documents over HTTP
 // (ADR 0006, docs/api/openapi.yaml).
 //
-// Projects were called sheets (supply-checkout-005.6). Through the rename's
-// window every `/teams/{teamId}/projects...` route has a twin under
-// `/teams/{teamId}/sheets...` (routes.ts, `legacy`), served here by the same
-// code with the same role and body checks, and counted in
-// LegacySheetsRouteCalls. Bodies take either spelling of a renamed field, and
-// responses carry both (`project` and `sheet`, `projectId` and `sheetId`).
-//
 // Team isolation, in order, on every request:
 // 1. API Gateway's JWT authorizer checks the Cognito access token.
 // 2. This handler re-checks the claims it gets (an access token, not expired)
@@ -183,25 +176,18 @@ export function projectMovement(result: WriteResult): { checkouts: number; retur
 
 const CHECKOUT_FIELDS = ["operationId", "productKey", "quantity", "name", "price", "code", "cost"];
 const QUICK_TAKE_FIELDS = ["operationId", "productKey", "quantity", "name", "price", "code", "cost", "date"];
-const MOVE_FIELDS = ["operationId", "productKey", "toProjectId", "toSheetId"];
+const MOVE_FIELDS = ["operationId", "productKey", "toProjectId"];
 const RETURN_FIELDS = ["operationId", "productKey", "quantity"];
 const LOST_FIELDS = ["operationId", "productKey", "quantity", "charge"];
 const LINES_FIELDS = ["operationId", "lines"];
 const STOCK_FIELDS = ["operationId", "reason", "quantity", "unitCost", "count", "expectedStock"];
 
-/** A project as a response carries it, under its name and (through the rename's window) its old one. */
 /** A team's metric metadata: its ID, and `test: true` for a test team (customer-activity metrics skip it: observability's skippedForTest). */
 const teamMetadata = (ctx: TeamContext) => ({ teamId: ctx.teamId, ...testMark(ctx.test) });
 
-const bothNames = (name: "project" | "toProject", doc: StoredDocument | undefined) => {
-  const body = doc ? toBody(doc) : null;
-  return name === "project" ? { project: body, sheet: body } : { toProject: body, toSheet: body };
-};
-
 /**
  * A command's response: what it did (the same on a replay), and the project
- * (as `project` and `sheet`) and product as they are now, read after the
- * write.
+ * and product as they are now, read after the write.
  */
 async function commandResponse(deps: DataHandlerDeps, ctx: TeamContext, outcome: CommandOutcome): Promise<APIGatewayProxyStructuredResultV2> {
   const db = deps.dbForTeam(ctx.teamId);
@@ -213,7 +199,7 @@ async function commandResponse(deps: DataHandlerDeps, ctx: TeamContext, outcome:
     if (result.command === "checkout" || result.command === "quickTake") deps.obs.count(BusinessMetric.Checkouts, result.quantity ?? 0, metadata);
     if (result.command === "return") deps.obs.count(BusinessMetric.Returns, result.quantity ?? 0, metadata);
   }
-  const projectId = result.projectId ?? result.sheetId;
+  const { projectId } = result;
   const [project, product] = await Promise.all([
     projectId === undefined ? undefined : getDocument(db, ctx, "projects", projectId),
     getDocument(db, ctx, "products", result.productKey),
@@ -222,7 +208,7 @@ async function commandResponse(deps: DataHandlerDeps, ctx: TeamContext, outcome:
     operationId: result.operationId,
     replayed,
     result,
-    ...(projectId === undefined ? {} : bothNames("project", project)),
+    ...(projectId === undefined ? {} : { project: project ? toBody(project) : null }),
     product: product ? toBody(product) : null,
   });
 }
@@ -248,15 +234,15 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
     const body = jsonBody(event, QUICK_TAKE_FIELDS);
     return commandResponse(deps, ctx, await quickTake(db, ctx, body as unknown as Parameters<typeof quickTake>[2], at));
   }
-  // The project is the path's, under either spelling of the route; a body can't name it
+  // The project is the path's; a body can't name it
   const projectId = documentId(event, 1);
   if (route.operation === "move") {
     const body = jsonBody(event, MOVE_FIELDS);
     const { result, replayed } = await moveLine(db, ctx, { ...body, projectId } as Parameters<typeof moveLine>[2], at);
     if (!replayed) deps.obs.count(BusinessMetric.Writes, 1, teamMetadata(ctx));
     // Both projects as they are now, read after the write (null if since deleted); no stock moved
-    const [project, toProject] = await Promise.all([getDocument(db, ctx, "projects", projectId), getDocument(db, ctx, "projects", (result.toProjectId ?? result.toSheetId) as string)]);
-    return json(200, { operationId: result.operationId, replayed, result, ...bothNames("project", project), ...bothNames("toProject", toProject), product: null });
+    const [project, toProject] = await Promise.all([getDocument(db, ctx, "projects", projectId), getDocument(db, ctx, "projects", result.toProjectId as string)]);
+    return json(200, { operationId: result.operationId, replayed, result, project: project ? toBody(project) : null, toProject: toProject ? toBody(toProject) : null, product: null });
   }
   if (route.operation === "addLines") {
     const body = jsonBody(event, LINES_FIELDS);
@@ -268,7 +254,7 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
     }
     // The project as it is now, read after the write (null if it's since been deleted)
     const project = await getDocument(db, ctx, "projects", projectId);
-    return json(200, { operationId: result.operationId, replayed, result, ...bothNames("project", project) });
+    return json(200, { operationId: result.operationId, replayed, result, project: project ? toBody(project) : null });
   }
   if (route.operation === "lost") {
     const body = jsonBody(event, LOST_FIELDS);
@@ -418,8 +404,6 @@ export function createDataHandler(deps: DataHandlerDeps) {
     let ctx: TeamContext | undefined;
     try {
       if (!route) throw new ApiError(404, "not_found", "No such route");
-      // An old client still on `/sheets` (supply-checkout-005.6): counted, then served as `/projects`
-      if (route.legacy) deps.obs.count(BusinessMetric.LegacySheetsRouteCalls, 1, { route: routeKey(route) });
       const userId = callerId(event, now());
       if (typeof teamId !== "string") throw new ApiError(400, "bad_request", "Missing team ID");
       try {

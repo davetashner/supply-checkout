@@ -43,8 +43,7 @@ import { ConflictError, InvalidInputError, NotFoundError, StockChangedError, Too
 import { BOUGHT_SUFFIX, adhocProjectId, barcode, date as checkDate, dateFormat, id as checkId, isCalendarDay, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
 import { count as checkCount, MAX_MONEY, MAX_QUANTITY, money, quantity as checkQuantity, roundCents, storedMoney } from "./money.js";
 import { type Page, queryPage } from "./query.js";
-import { legacy } from "./legacy-sheets.js";
-import { projectKeyFor, readProjectItem } from "./project-items.js";
+import { readProjectItem } from "./project-items.js";
 import { MARKS_REMOVED, marksOnCount, marksOnRaise, marksRemoval } from "./reorder.js";
 import { PK } from "./schema.js";
 import { storedMarkup } from "./settings.js";
@@ -114,15 +113,6 @@ export interface CommandResult {
   /** Move: the line's `returned` and `lost` that moved with it. */
   readonly returned?: number;
   readonly lost?: number;
-  /**
-   * The old names of `projectId`, `toProjectId` and `projectCreated`, with the
-   * same values: a command's response carries both spellings through the
-   * rename's window (supply-checkout-005.6), and withProjectNames adds them.
-   * An operation record stored before the rename has only these.
-   */
-  readonly sheetId?: string;
-  readonly toSheetId?: string;
-  readonly sheetCreated?: boolean;
   /** Checkout of a new line: what the line copied. */
   readonly snapshot?: LineSnapshot;
   /** Receipt: what was paid per each. */
@@ -154,14 +144,6 @@ export interface Movement {
   readonly projectId?: string;
   /** Move: the General Use project the line came off. */
   readonly fromProjectId?: string;
-  /**
-   * The old names of `projectId` and `fromProjectId`: stored on movements
-   * written before the rename (supply-checkout-005.6), until the backfill
-   * renames them, and sent next to the new names (listMovements) through the
-   * rename's window.
-   */
-  readonly sheetId?: string;
-  readonly fromSheetId?: string;
   /** Move: the line's `returned` and `lost` that moved with it (`quantity` is its `out`). */
   readonly returned?: number;
   readonly lost?: number;
@@ -175,9 +157,7 @@ export interface Movement {
 
 export interface CheckoutInput {
   readonly operationId: unknown;
-  /** The project: `projectId`, or its old name `sheetId` (supply-checkout-005.6). */
   readonly projectId?: unknown;
-  readonly sheetId?: unknown;
   readonly productKey: unknown;
   readonly quantity: unknown;
   /** Only for an item that isn't in inventory (a one-off line). */
@@ -189,18 +169,14 @@ export interface CheckoutInput {
 
 export interface ReturnInput {
   readonly operationId: unknown;
-  /** The project: `projectId`, or its old name `sheetId` (supply-checkout-005.6). */
   readonly projectId?: unknown;
-  readonly sheetId?: unknown;
   readonly productKey: unknown;
   readonly quantity: unknown;
 }
 
 export interface LostInput {
   readonly operationId: unknown;
-  /** The project: `projectId`, or its old name `sheetId` (supply-checkout-005.6). */
   readonly projectId?: unknown;
-  readonly sheetId?: unknown;
   readonly productKey: unknown;
   readonly quantity: unknown;
   /** Dollars to charge the client for the lot, if anything (client projects only). */
@@ -239,24 +215,14 @@ interface Plan<R = CommandResult> {
 const isMap = (v: unknown): v is Item => typeof v === "object" && v !== null && !Array.isArray(v);
 const isCount = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0;
 
-/**
- * One value sent under a field's new name or its old one (the
- * sheets-to-projects rename, supply-checkout-005.6): either, or both when
- * they're the same.
- */
-function eitherName(current: unknown, old: unknown, what: string): unknown {
-  if (current !== undefined && old !== undefined && current !== old) throw new InvalidInputError(`Send ${what} once`);
-  return current ?? old;
+/** The command's project ID. */
+function projectIdOf(input: { readonly projectId?: unknown }): string {
+  return checkId(input.projectId, "project ID");
 }
 
-/** The command's project ID: `projectId`, or its old name `sheetId`. */
-function projectIdOf(input: { readonly projectId?: unknown; readonly sheetId?: unknown }): string {
-  return checkId(eitherName(input.projectId, input.sheetId, "projectId (or sheetId)"), "project ID");
-}
-
-/** A move's destination: `toProjectId`, or its old name `toSheetId`. */
+/** A move's destination. */
 function toProjectIdOf(input: MoveInput): string {
-  return checkId(eitherName(input.toProjectId, input.toSheetId, "toProjectId (or toSheetId)"), "toProjectId");
+  return checkId(input.toProjectId, "toProjectId");
 }
 
 /** A client-generated operation ID: a UUID, compared in lowercase. */
@@ -310,50 +276,12 @@ async function getItem(db: Db, key: Item): Promise<Item | undefined> {
   return Item;
 }
 
-/** A request fingerprint's fields under their old names (sheets-to-projects rename, supply-checkout-005.6). */
-const LEGACY_REQUEST_FIELDS: Readonly<Record<string, string>> = legacy.requestFields;
-
-/**
- * A command's request fingerprint in its canonical form: the old field names
- * (`sheetId`, `toSheetId`) renamed to the new ones in place, so a record made
- * before the rename matches a retry made after it, and the other way round.
- * The fingerprint is our own JSON, written with fields in a fixed order; one
- * that won't parse is compared as it is.
- */
-export function canonicalRequest(request: unknown): unknown {
-  if (typeof request !== "string") return request;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(request);
-  } catch {
-    return request;
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return request;
-  return JSON.stringify(Object.fromEntries(Object.entries(parsed).map(([k, v]) => [Object.hasOwn(LEGACY_REQUEST_FIELDS, k) ? LEGACY_REQUEST_FIELDS[k] : k, v])));
-}
-
-/**
- * A command's result with both spellings of each renamed field (`sheetId`
- * and `projectId`, `toSheetId` and `toProjectId`, `sheetCreated` and
- * `projectCreated`), whichever one the stored result has: an old client reads
- * the old names, a new one the new names (supply-checkout-005.6).
- */
-export function withProjectNames<R>(result: R): R {
-  if (typeof result !== "object" || result === null) return result;
-  const r = { ...(result as Record<string, unknown>) };
-  for (const [old, current] of Object.entries(legacy.resultFields)) {
-    if (r[old] === undefined && r[current] !== undefined) r[old] = r[current];
-    if (r[current] === undefined && r[old] !== undefined) r[current] = r[old];
-  }
-  return r as R;
-}
-
 /** The first run's result, if this operation ID was used before. */
 async function priorOutcome<R>(db: Db, ctx: TeamContext, opId: string, request: string): Promise<CommandOutcome<R> | undefined> {
   const item = await getItem(db, keys.operation(ctx.teamId, opId));
   if (!item) return undefined;
-  if (canonicalRequest(item.request) !== canonicalRequest(request)) throw new InvalidInputError("This operationId was already used for a different request; use a new one");
-  return { result: withProjectNames(item.result as R), replayed: true };
+  if (item.request !== request) throw new InvalidInputError("This operationId was already used for a different request; use a new one");
+  return { result: item.result as R, replayed: true };
 }
 
 /**
@@ -402,7 +330,7 @@ async function execute<R = CommandResult>(
           TransactItems: [{ Put: { TableName: db.tableName, Item: record, ConditionExpression: "attribute_not_exists(PK)" } }, ...writes],
         }),
       );
-      return { result: withProjectNames(result), replayed: false };
+      return { result, replayed: false };
     } catch (error) {
       if (isCancelledAsTooLarge(error)) throw new TooLargeError("This project is too large to add to; start another project");
       const codes = cancellationCodes(error);
@@ -557,7 +485,7 @@ interface OneOff {
 }
 
 /** A checkout's or quick take's item, quantity and one-off fields, checked. */
-function takeInput(input: Omit<CheckoutInput, "sheetId" | "projectId" | "operationId">): { key: string; qty: number; oneOff: OneOff } {
+function takeInput(input: Omit<CheckoutInput, "projectId" | "operationId">): { key: string; qty: number; oneOff: OneOff } {
   const key = productKey(input.productKey);
   if (isBoughtKey(key)) throw new InvalidInputError("Items bought for the client aren't checked out from storage");
   const qty = checkQuantity(input.quantity);
@@ -707,7 +635,7 @@ function takePlan(db: Db, ctx: TeamContext, o: TakeOptions): Plan {
         Update: {
           TableName: db.tableName,
           // Where the project was read from (project-items.ts)
-          Key: projectKeyFor(ctx.teamId, projectId, project),
+          Key: keys.project(ctx.teamId, projectId),
           UpdateExpression: update,
           ConditionExpression: anyOf([...clauses, kindClause], PROJECT_OPEN),
           ExpressionAttributeNames: names,
@@ -867,7 +795,7 @@ export async function returnItems(db: Db, ctx: TeamContext, input: ReturnInput, 
         {
           Update: {
             TableName: db.tableName,
-            Key: projectKeyFor(ctx.teamId, projectId, project),
+            Key: keys.project(ctx.teamId, projectId),
             UpdateExpression: "SET #items.#line.#returned = if_not_exists(#items.#line.#returned, :zero) + :qty ADD #version :one",
             ConditionExpression: anyOf(clauses, PROJECT_OPEN),
             ExpressionAttributeNames: { "#items": "items", "#line": key, "#out": "out", "#returned": "returned", "#lost": "lost", "#status": "status", "#version": "version" },
@@ -961,7 +889,7 @@ export async function markLost(db: Db, ctx: TeamContext, input: LostInput, now =
         {
           Update: {
             TableName: db.tableName,
-            Key: projectKeyFor(ctx.teamId, projectId, project),
+            Key: keys.project(ctx.teamId, projectId),
             UpdateExpression: `SET ${sets.join(", ")} ADD #version :one`,
             ConditionExpression: anyOf(clauses, PROJECT_OPEN),
             ExpressionAttributeNames: names,
@@ -987,13 +915,11 @@ export async function markLost(db: Db, ctx: TeamContext, input: LostInput, now =
 
 export interface MoveInput {
   readonly operationId: unknown;
-  /** The open General Use project the line comes off: `projectId`, or its old name `sheetId`. */
+  /** The open General Use project the line comes off. */
   readonly projectId?: unknown;
-  readonly sheetId?: unknown;
   readonly productKey: unknown;
-  /** The open client project it goes to: `toProjectId`, or its old name `toSheetId`. */
+  /** The open client project it goes to. */
   readonly toProjectId?: unknown;
-  readonly toSheetId?: unknown;
 }
 
 /** A project's version condition: the version read, or none when it had none. */
@@ -1061,7 +987,7 @@ export async function moveLine(db: Db, ctx: TeamContext, input: MoveInput, now =
     const fromWrite: TransactItem = {
       Update: {
         TableName: db.tableName,
-        Key: projectKeyFor(ctx.teamId, projectId, from),
+        Key: keys.project(ctx.teamId, projectId),
         UpdateExpression: "REMOVE #items.#line ADD #version :one",
         ConditionExpression: anyOf(["#kind = :adhoc", "attribute_exists(#items.#line)", sameVersion(from, fromValues)], PROJECT_OPEN),
         ExpressionAttributeNames: { "#items": "items", "#line": key, "#kind": "kind", "#status": "status", "#version": "version" },
@@ -1122,7 +1048,7 @@ export async function moveLine(db: Db, ctx: TeamContext, input: MoveInput, now =
     const toWrite: TransactItem = {
       Update: {
         TableName: db.tableName,
-        Key: projectKeyFor(ctx.teamId, toProjectId, to),
+        Key: keys.project(ctx.teamId, toProjectId),
         UpdateExpression: update,
         ConditionExpression: anyOf([...clauses, "attribute_not_exists(#kind)"], PROJECT_OPEN),
         ExpressionAttributeNames: names,
@@ -1162,9 +1088,7 @@ export const MAX_ADD_LINES = 40;
 
 export interface AddLinesInput {
   readonly operationId: unknown;
-  /** The project: `projectId`, or its old name `sheetId` (supply-checkout-005.6). */
   readonly projectId?: unknown;
-  readonly sheetId?: unknown;
   /** [{ productKey, quantity, name, price?, code?, cost?, priceSet? }], each product at most once. */
   readonly lines: unknown;
 }
@@ -1373,7 +1297,7 @@ export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, n
         {
           Update: {
             TableName: db.tableName,
-            Key: projectKeyFor(ctx.teamId, projectId, project),
+            Key: keys.project(ctx.teamId, projectId),
             UpdateExpression: `SET ${sets.join(", ")} ADD #v :one`,
             ConditionExpression: anyOf(clauses, [["attribute_not_exists(#s)"], ["#s <> :closed"]]),
             ExpressionAttributeNames: names,
@@ -1554,19 +1478,5 @@ export async function listMovements(
     { attribute: PK, value: pk },
     cursor,
   );
-  return { items: page.items.map((item) => movementWithBothNames(strip<Movement>(item) as Movement)), ...(page.cursor ? { cursor: page.cursor } : {}) };
-}
-
-/**
- * A movement with both spellings of its project fields (`sheetId` and
- * `projectId`, `fromSheetId` and `fromProjectId`), whichever it was stored
- * with, through the rename's window (supply-checkout-005.6).
- */
-export function movementWithBothNames(movement: Movement): Movement {
-  const m: Record<string, unknown> = { ...movement };
-  for (const [old, current] of Object.entries(legacy.movementFields)) {
-    if (m[current] === undefined && m[old] !== undefined) m[current] = m[old];
-    if (m[old] === undefined && m[current] !== undefined) m[old] = m[current];
-  }
-  return m as unknown as Movement;
+  return { items: page.items.map((item) => strip<Movement>(item) as Movement), ...(page.cursor ? { cursor: page.cursor } : {}) };
 }

@@ -141,9 +141,7 @@ export const bundling: BundlingOptions = {
  *   can't reach the table (but for the password reset time, below). For each request it assumes the data-access role
  *   with the session tag `teamId=<path team>`, and that role may only touch
  *   items whose partition key is `TEAM#<tag>`, or the team's date index
- *   partition `TEAM#<tag>#PROJECTS` (or `TEAM#<tag>#SHEETS`, its name before
- *   the projects rename, until the backfill has moved every item)
- *   (dynamodb:LeadingKeys). The first layer, the membership check, is in the
+ *   partition `TEAM#<tag>#PROJECTS` (dynamodb:LeadingKeys). The first layer, the membership check, is in the
  *   handler.
  * - The account function can't use the data-access role: creating a team or
  *   accepting an invite writes items outside any team the caller is in. It
@@ -316,9 +314,9 @@ export class ApiStack extends SupplyCheckoutStack {
             new PolicyStatement({
               sid: "TeamItemsOnly",
               effect: Effect.ALLOW,
-              // The team's partition and its two date index partitions: projects'
-              // (`#PROJECTS`) and, until the sheets-to-projects rename's backfill
-              // has moved every item, the old name's (`#SHEETS`, supply-checkout-005.6).
+              // The team's partition and its date index partition for projects
+              // (`#PROJECTS`; the old name's `#SHEETS` went with the sheets aliases,
+              // supply-checkout-005.6.5).
               // GetItem also covers TransactGetItems (the membership check).
               // Put, Update and ConditionCheck cover the inventory commands'
               // TransactWriteItems (backend/src/data/commands.ts), whose items
@@ -326,7 +324,7 @@ export class ApiStack extends SupplyCheckoutStack {
               actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:Query"],
               resources: [tableArn, `${tableArn}/index/${GSI1}`],
               conditions: {
-                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`TEAM#${teamTag}`, `TEAM#${teamTag}#PROJECTS`, `TEAM#${teamTag}#SHEETS`] },
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`TEAM#${teamTag}`, `TEAM#${teamTag}#PROJECTS`] },
               },
             }),
             // A team's billing, Stripe, comp, closure and purge attributes on

@@ -53,8 +53,7 @@ export const realtimeOutputParameters = (envName: string) => ({
  * - Only IAM may publish, and only the consumer's role has
  *   appsync:EventPublish, on the `users` namespace. Clients can't publish.
  * - The consumer (backend/src/realtime/publisher.ts) reads the table's stream,
- *   filtered to product and project items (the changes; `PROJECT#`, and
- *   `SHEET#` until the projects rename's backfill has moved every item) and to META and MEMBER
+ *   filtered to product and project items (the changes) and to META and MEMBER
  *   items (who gets them), and publishes a small change event per write to
  *   each current member of an active team. It may read only the attributes
  *   that answer that (LIVE_AUDIENCE_ATTRIBUTES), in team partitions. A removed
@@ -250,9 +249,8 @@ export class RealtimeStack extends SupplyCheckoutStack {
       maxRecordAge: Duration.hours(1),
       onFailure: new SqsDlq(dlq),
       filters: [
-        // Five filters: Lambda's limit per event source mapping (PRODUCT#, PROJECT#, SHEET#,
-        // MEMBER#, META). Another needs one of these dropped (SHEET# once the projects
-        // rename's backfill is done, supply-checkout-005.6) or a combined pattern
+        // Four filters (PRODUCT#, PROJECT#, MEMBER#, META); Lambda's limit per event
+        // source mapping is five. A SHEET# item is no document any more (supply-checkout-005.6.5)
         ...[...DOCUMENT_SK_PREFIXES, AUDIENCE_SK.prefix].map((prefix) => FilterCriteria.filter({ dynamodb: { Keys: { SK: { S: FilterRule.beginsWith(prefix) } } } })),
         FilterCriteria.filter({ dynamodb: { Keys: { SK: { S: FilterRule.isEqual(AUDIENCE_SK.exact) } } } }),
       ],

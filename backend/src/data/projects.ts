@@ -1,8 +1,6 @@
 // Projects, called checkout sheets before supply-checkout-005.6 (ADR 0005). One
 // item holds a whole project, with its lines in an `items` map keyed by
-// product. A new one is written under `PROJECT#<id>`; through the rename's
-// window an old one can still be under `SHEET#<id>`, and is read, changed and
-// deleted where it is (project-items.ts).
+// product, under `PROJECT#<id>` (project-items.ts).
 //
 // Deviation from ADR 0005: the sort key is `PROJECT#<projectId>` (ADR 0005's
 // `SHEET#<sheetId>`), not `<prefix><date>#<id>`. The date is editable, and a key can't change, so a date
@@ -11,13 +9,12 @@
 // ordinary attributes that one update can change.
 
 import { randomUUID } from "node:crypto";
-import { DeleteCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
 import { barcode, date, id as checkId, keys, productKey, strip } from "./keys.js";
-import { legacy } from "./legacy-sheets.js";
 import { money } from "./money.js";
-import { listProjectItems, projectAttributes, projectItemsByDatePage, projectKeyFor, readProjectItem } from "./project-items.js";
+import { listProjectItems, projectAttributes, projectItemsByDatePage, readProjectItem } from "./project-items.js";
 import { type Page, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 import { hasHiddenCharacter, withoutHiddenCharacters } from "../text/hidden-characters.js";
@@ -35,8 +32,7 @@ export interface ProjectLine {
 }
 
 export interface Project {
-  /** "project" for one written since the rename; "sheet" for one the backfill hasn't moved yet. */
-  readonly type: "project" | typeof legacy.sheetType;
+  readonly type: "project";
   readonly id: string;
   readonly client: string;
   readonly date: string;
@@ -122,14 +118,14 @@ export async function createProject(
   await connection(db).doc.send(
     new PutCommand({
       TableName: db.tableName,
-      Item: storable({ ...project, ...projectAttributes(ctx.teamId, project.id, project.date, "project") }),
+      Item: storable({ ...project, ...projectAttributes(ctx.teamId, project.id, project.date) }),
       ConditionExpression: "attribute_not_exists(PK)",
     }),
   );
   return project;
 }
 
-/** Reads one project by ID, strongly consistent, from either of its keys. */
+/** Reads one project by ID, strongly consistent, from its key. */
 export async function getProject(db: Db, ctx: TeamContext, projectId: string): Promise<Project | undefined> {
   readable(ctx);
   return strip<Project>(await readProjectItem(db, ctx.teamId, projectId));
@@ -141,9 +137,9 @@ export async function listProjects(db: Db, ctx: TeamContext): Promise<Project[]>
   return (await listProjectItems(db, ctx.teamId)).map((item) => strip<Project>(item) as Project);
 }
 
-/** The key a change to an existing project goes to: wherever it is now. */
-async function existingKey(db: Db, ctx: TeamContext, projectId: string) {
-  return projectKeyFor(ctx.teamId, checkId(projectId, "project ID"), await readProjectItem(db, ctx.teamId, projectId));
+/** The key of an existing project: the ID goes through the key builder, which refuses a malformed one. */
+function existingKey(ctx: TeamContext, projectId: string) {
+  return keys.project(ctx.teamId, checkId(projectId, "project ID"));
 }
 
 /**
@@ -178,7 +174,7 @@ export async function updateProject(
   if (changes.client !== undefined) fields.client = client(changes.client);
   if (changes.date !== undefined) {
     fields.date = date(changes.date);
-    fields.GSI1SK = projectAttributes(ctx.teamId, projectId, fields.date, "project").GSI1SK;
+    fields.GSI1SK = projectAttributes(ctx.teamId, projectId, fields.date).GSI1SK;
   }
   if (changes.createdByName !== undefined) fields.createdByName = text(changes.createdByName, "name");
   if (changes.status !== undefined) {
@@ -187,7 +183,7 @@ export async function updateProject(
     if (changes.status === "closed") fields.closedAt = new Date().toISOString();
   }
   const { Attributes } = await connection(db).doc
-    .send(new UpdateCommand({ TableName: db.tableName, Key: await existingKey(db, ctx, projectId), ...versionedSet(fields, expectedVersion), ReturnValues: "ALL_NEW" }))
+    .send(new UpdateCommand({ TableName: db.tableName, Key: existingKey(ctx, projectId), ...versionedSet(fields, expectedVersion), ReturnValues: "ALL_NEW" }))
     .catch(conflictOnConditionFailure("This project changed; reload and try again"));
   return strip<Project>(Attributes) as Project;
 }
@@ -207,7 +203,7 @@ export async function setProjectLine(
     .send(
       new UpdateCommand({
         TableName: db.tableName,
-        Key: await existingKey(db, ctx, projectId),
+        Key: existingKey(ctx, projectId),
         ...update,
         UpdateExpression: `${update.UpdateExpression}, #items.#line = :line`,
         ExpressionAttributeNames: { ...update.ExpressionAttributeNames, "#items": "items", "#line": productKey(key) },
@@ -226,7 +222,7 @@ export async function removeProjectLine(db: Db, ctx: TeamContext, projectId: str
     .send(
       new UpdateCommand({
         TableName: db.tableName,
-        Key: await existingKey(db, ctx, projectId),
+        Key: existingKey(ctx, projectId),
         ...update,
         UpdateExpression: `${update.UpdateExpression} REMOVE #items.#line`,
         ExpressionAttributeNames: { ...update.ExpressionAttributeNames, "#items": "items", "#line": productKey(key) },
@@ -238,21 +234,15 @@ export async function removeProjectLine(db: Db, ctx: TeamContext, projectId: str
 }
 
 /**
- * Deletes a project. With `expectedVersion`, only the item as it is now (under
- * whichever key), if its version is still that one; without, it's gone from
- * both keys, as deleteDocument does (project-items.ts).
+ * Deletes a project. With `expectedVersion`, only the item as it is now, if
+ * its version is still that one; without, it's gone, as deleteDocument does.
  */
 export async function deleteProject(db: Db, ctx: TeamContext, projectId: string, expectedVersion?: number): Promise<void> {
   writable(db, ctx);
   const id = checkId(projectId, "project ID");
   if (expectedVersion === undefined) {
     await connection(db).doc.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          { Delete: { TableName: db.tableName, Key: keys.project(ctx.teamId, id) } },
-          { Delete: { TableName: db.tableName, Key: legacy.sheetKey(ctx.teamId, id) } },
-        ],
-      }),
+      new DeleteCommand({ TableName: db.tableName, Key: keys.project(ctx.teamId, id) }),
     );
     return;
   }
@@ -260,7 +250,7 @@ export async function deleteProject(db: Db, ctx: TeamContext, projectId: string,
     .send(
       new DeleteCommand({
         TableName: db.tableName,
-        Key: await existingKey(db, ctx, id),
+        Key: existingKey(ctx, id),
         ConditionExpression: "#version = :expected",
         ExpressionAttributeNames: { "#version": "version" },
         ExpressionAttributeValues: { ":expected": expectedVersion },

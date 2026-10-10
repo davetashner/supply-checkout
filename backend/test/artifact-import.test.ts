@@ -12,7 +12,6 @@ import { describe, expect, it } from "vitest";
 import { authorizeTeam, closeTeam, ConflictError, createTeam, type Db, ForbiddenError, getDocument, InvalidInputError, listDocuments, listMovements, quickTake, setDocument, TeamClosedError, type TeamContext, updateDocument } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { keys } from "../src/data/keys.js";
-import { legacy } from "../src/data/legacy-sheets.js";
 import {
   applyArtifactImport,
   MAX_EXPORT_BYTES,
@@ -81,7 +80,7 @@ describe("parseArtifactExport", () => {
     expect(() => parseArtifactExport(text)).toThrow(message);
   });
 
-  it("reads an export from before the rename, with its projects under sheets, the same way (supply-checkout-005.6)", () => {
+  it("reads an export from the artifact, with its projects under sheets, the same way (supply-checkout-005.6)", () => {
     const old = edited((doc) => {
       doc.sheets = doc.projects;
       delete doc.projects;
@@ -590,7 +589,7 @@ describe.skipIf(!endpoint)("the artifact import (DynamoDB Local)", () => {
     const blocked = await planArtifactImport(db, ctx, parseArtifactExport(third));
     expect(blocked.conflicts).toContainEqual({ at: 'project id "adhoc-3"', message: 'the team already has an open General Use project, "adhoc-2"; finish one of them first' });
     // And if one slips in anyway, the pointer isn't left naming one of two
-    await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...legacy.sheetKey(ctx.teamId, "adhoc-4"), type: "sheet", id: "adhoc-4", kind: "adhoc", client: "", date: "2026-09-26", status: "open", items: {}, version: 1 } }));
+    await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.project(ctx.teamId, "adhoc-4"), type: "project", id: "adhoc-4", kind: "adhoc", client: "", date: "2026-09-26", status: "open", items: {}, version: 1 } }));
     await expect(applyArtifactImport(db, ctx, { products: [], projects: [], productsPresent: 0, projectsPresent: 0, conflicts: [] })).rejects.toThrow("more than one open General Use project");
     // An import with no General Use projects leaves no pointer
     const other = await team();

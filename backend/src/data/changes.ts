@@ -17,7 +17,6 @@
 import type { DynamoDBRecord } from "aws-lambda";
 import type { Collection } from "./documents.js";
 import { id as checkId, prefixes, productKey } from "./keys.js";
-import { legacy } from "./legacy-sheets.js";
 
 export interface DocumentChange {
   readonly teamId: string;
@@ -33,8 +32,6 @@ const TEAM_PK = /^TEAM#([^#]+)$/;
 const COLLECTION_PREFIXES: readonly [string, Collection][] = [
   [prefixes.product, "products"],
   [prefixes.project, "projects"],
-  // Not yet moved by the rename's backfill (supply-checkout-005.6): the same collection
-  [legacy.sheetPrefix, "projects"],
 ];
 
 function valid(check: () => string): string | undefined {

@@ -119,7 +119,6 @@ describe("the stream consumer", () => {
     expect(patterns).toEqual([
       { dynamodb: { Keys: { SK: { S: [{ prefix: "PRODUCT#" }] } } } },
       { dynamodb: { Keys: { SK: { S: [{ prefix: "PROJECT#" }] } } } },
-      { dynamodb: { Keys: { SK: { S: [{ prefix: "SHEET#" }] } } } },
       { dynamodb: { Keys: { SK: { S: [{ prefix: "MEMBER#" }] } } } },
       { dynamodb: { Keys: { SK: { S: ["META"] } } } },
     ]);

@@ -2,9 +2,11 @@
 // (supply-checkout-ig9, ADR 0004, ADR 0014): the artifact's "Everything
 // (JSON)" export (allJson in src/export.js) goes into a team's products and
 // projects, with the same keys and IDs, so the team sees what the artifact showed.
-// The export lists projects under `projects`, or, in a file from before the
-// sheets-to-projects rename (supply-checkout-005.6), under `sheets`: either is
-// read the same way.
+// The export lists projects under `projects`, or, in a file from the claude.ai
+// artifact (which was never rebuilt after the sheets-to-projects rename,
+// supply-checkout-005.6), under `sheets`: either is read the same way. This is
+// the format of files that exist outside the server, not an alias of its API,
+// so it stays after the API's sheets names were removed (supply-checkout-005.6.5).
 //
 // Run by the owner with scripts/import-artifact.ts (docs/backend.md,
 // "Importing artifact data"), never by a Lambda: index.ts doesn't export it.
@@ -70,7 +72,6 @@ import { brandOf } from "./brand.js";
 import { hiddenCharacterProblem } from "../text/hidden-characters.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
 import { BOUGHT_SUFFIX, MAX_CODE_LENGTH, adhocNumber, isAdhocId, keys, prefixes, strip, teamPartition } from "./keys.js";
-import { legacy } from "./legacy-sheets.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 import { listProjectItems, projectAttributes, readProjectItem } from "./project-items.js";
 import { queryAll } from "./query.js";
@@ -85,6 +86,8 @@ export const MAX_EXPORT_PROJECTS = 5000;
 /** Problems listed at most; the counts have the totals. */
 export const MAX_ISSUES = 200;
 
+/** The key an artifact export holds its projects under, from before the rename. */
+const ARTIFACT_PROJECTS_KEY = "sheets";
 const APP = "Supply Checkout";
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -490,12 +493,12 @@ export function parseArtifactExport(json: unknown): ParsedExport {
   } catch {
     throw new InvalidInputError("The file isn't JSON. Use the artifact's Export, Everything (JSON)");
   }
-  if (!isMap(doc) || doc.app !== APP || !Array.isArray(doc.inventory) || !(Array.isArray(doc.projects) || Array.isArray(doc[legacy.sheetsCollection]))) {
+  if (!isMap(doc) || doc.app !== APP || !Array.isArray(doc.inventory) || !(Array.isArray(doc.projects) || Array.isArray(doc[ARTIFACT_PROJECTS_KEY]))) {
     throw new InvalidInputError("The file isn't a Supply Checkout export. Use the artifact's Export, Everything (JSON)");
   }
   // `projects`, or `sheets` in an export from before the rename; never both, so nothing is read twice or left out
-  if (doc.projects !== undefined && doc[legacy.sheetsCollection] !== undefined) throw new InvalidInputError("The file has both projects and sheets. Export it again");
-  const listKey = Array.isArray(doc.projects) ? "projects" : legacy.sheetsCollection;
+  if (doc.projects !== undefined && doc[ARTIFACT_PROJECTS_KEY] !== undefined) throw new InvalidInputError("The file has both projects and sheets. Export it again");
+  const listKey = Array.isArray(doc.projects) ? "projects" : ARTIFACT_PROJECTS_KEY;
   const list = doc[listKey] as unknown[];
   if (doc.inventory.length > MAX_EXPORT_PRODUCTS) throw new InvalidInputError(`The export has more than ${MAX_EXPORT_PRODUCTS} items`);
   if (list.length > MAX_EXPORT_PROJECTS) throw new InvalidInputError(`The export has more than ${MAX_EXPORT_PROJECTS} projects`);
@@ -709,7 +712,7 @@ async function createWithTeamOpen(db: Db, ctx: TeamContext, writes: Item[]): Pro
   }
 }
 
-/** The team's projects, from both their keys (project-items.ts), without key attributes. */
+/** The team's projects (project-items.ts), without key attributes. */
 async function projectItems(db: Db, teamId: string): Promise<Item[]> {
   return (await listProjectItems(db, teamId)).map((item) => strip<Item>(item) as Item);
 }
@@ -759,11 +762,11 @@ export async function applyArtifactImport(db: Db, ctx: TeamContext, plan: Import
     }
   }
   for (const s of plan.projects) {
-    // A new project's key (project-items.ts); the plan skipped any already under either key
+    // A new project's key (project-items.ts); the plan skipped any already there
     const put = {
       Put: {
         TableName: db.tableName,
-        Item: storable({ ...s, ...projectAttributes(ctx.teamId, s.id, s.date, "project"), id: s.id, version: 1 }),
+        Item: storable({ ...s, ...projectAttributes(ctx.teamId, s.id, s.date), id: s.id, version: 1 }),
         ConditionExpression: "attribute_not_exists(PK)",
       },
     };

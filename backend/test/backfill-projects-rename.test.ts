@@ -12,7 +12,7 @@ import { PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@
 import { afterAll, describe, expect, it } from "vitest";
 import { type Db } from "../src/data/index.js";
 import { connection, dbFromConnection, storable } from "../src/data/client.js";
-import { projectAttributes } from "../src/data/project-items.js";
+import { dateFormat } from "../src/data/keys.js";
 import { itemBytes, projectTotals, renamedItem, renameHash, renameProjects, PROJECTS, SHEETS, type ProjectsRenameOptions } from "../src/data/projects-rename.js";
 import { exportPath, formatRenameReport, main } from "../scripts/backfill.js";
 import { endpoint, rawItem, REGION, useTable } from "./helpers.js";
@@ -27,7 +27,8 @@ const put = (db: Db, Item: Record<string, unknown>) => connection(db).doc.send(n
  * now, so the seed builds the old layout itself.)
  */
 function sheetItem(teamId: string, id: string, data: Record<string, unknown>, version: number): Record<string, unknown> {
-  return { ...data, ...projectAttributes(teamId, id, data.date, "sheet"), id, version };
+  const day = dateFormat(data.date);
+  return { ...data, PK: `TEAM#${teamId}`, SK: `SHEET#${id}`, GSI1PK: `TEAM#${teamId}#SHEETS`, GSI1SK: `${day}#${id}`, type: "sheet", id, version };
 }
 
 /** A sheet's data, as the app writes it. */

@@ -20,7 +20,6 @@ import { conflictOnConditionFailure, isCancelledAsTooLarge, isItemTooLarge, star
 import { retryDelay } from "../src/data/documents.js";
 import { MAX_MONEY, money } from "../src/data/money.js";
 import { date, dateFormat, gsi1, isCalendarDay, keys, strip } from "../src/data/keys.js";
-import { legacy } from "../src/data/legacy-sheets.js";
 import { billingAccess, deletionLastDay, deletionTime, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, MEMBER_NAME_MAX, memberCap, memberName, PAYMENT_GRACE_DAYS, READ_ONLY_RETENTION_DAYS, teamCounts, teamName } from "../src/data/model.js";
 import { tableName } from "../src/data/schema.js";
 import { assertContext, writable } from "../src/data/team-context.js";
@@ -70,15 +69,6 @@ describe("keys (ADR 0005)", () => {
     expect(() => keys.product("t1", "x".repeat(257))).toThrow(InvalidInputError);
     expect(() => keys.usage("t1", "2026-13")).toThrow(InvalidInputError);
     expect(() => keys.team(42 as unknown as string)).toThrow(InvalidInputError);
-  });
-
-  it("builds a project's legacy keys from before the rename, checking the IDs the same way (supply-checkout-005.6)", () => {
-    expect(legacy.sheetKey("t1", "s1")).toEqual({ PK: "TEAM#t1", SK: "SHEET#s1" });
-    expect(legacy.sheetsPartition("t1")).toBe("TEAM#t1#SHEETS");
-    expect(legacy.sheetPrefix).toBe("SHEET#");
-    for (const bad of ["a#b", "a".repeat(129), ""]) expect(() => legacy.sheetKey("t1", bad)).toThrow(InvalidInputError);
-    expect(() => legacy.sheetKey("t1#x", "s1")).toThrow(InvalidInputError);
-    expect(() => legacy.sheetsPartition("t1#x")).toThrow(InvalidInputError);
   });
 
   it("strips key attributes from items leaving the module", () => {

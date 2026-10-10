@@ -331,8 +331,8 @@ describe("moving a General Use line to a client project", () => {
     const moved = movements().find((m) => m.reason === "move");
     expect(moved).toMatchObject({ productKey: "0123", delta: 0, tracked: true, quantity: 5, returned: 1, lost: 0, projectId: "s1", fromProjectId: "adhoc-1", userId: CONTRIBUTOR });
     // Stored under the new names only (supply-checkout-005.6)
-    expect(moved?.sheetId).toBeUndefined();
-    expect(moved?.fromSheetId).toBeUndefined();
+    expect(moved).not.toHaveProperty("sheetId");
+    expect(moved).not.toHaveProperty("fromSheetId");
     expect(counts.Writes).toBeGreaterThan(0);
   });
 

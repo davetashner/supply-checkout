@@ -1005,9 +1005,6 @@
               "Pattern": "{\"dynamodb\":{\"Keys\":{\"SK\":{\"S\":[{\"prefix\":\"PROJECT#\"}]}}}}"
             },
             {
-              "Pattern": "{\"dynamodb\":{\"Keys\":{\"SK\":{\"S\":[{\"prefix\":\"SHEET#\"}]}}}}"
-            },
-            {
               "Pattern": "{\"dynamodb\":{\"Keys\":{\"SK\":{\"S\":[{\"prefix\":\"MEMBER#\"}]}}}}"
             },
             {
