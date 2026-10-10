@@ -73,7 +73,9 @@ export function workerPolicy(scope: { eventId: string; stripeCustomer: string; t
           return pk === team && only(input, BILLING_READ_ATTRIBUTES) && projected(input);
         }
         case "QueryCommand":
-          return input.IndexName === undefined && queryPartition(input) === team && only(input, BILLING_READ_ATTRIBUTES) && projected(input);
+          // TeamBillingReadOnly requires dynamodb:Select SPECIFIC_ATTRIBUTES (supply-checkout-3sv.24), and a Query
+          // carries it only when it sends Select: DynamoDB doesn't infer it from the projection
+          return input.IndexName === undefined && queryPartition(input) === team && only(input, BILLING_READ_ATTRIBUTES) && typeof input.ProjectionExpression === "string" && input.Select === "SPECIFIC_ATTRIBUTES";
         case "PutCommand":
           if (scope.teamId !== undefined && partitionKey(input) === `OPAUDIT#${scope.teamId}`) return only(input, COMP_DISCOUNT_AUDIT_ATTRIBUTES) && returnsNothing(input);
           return partitionKey(input) === records && only(input, WEBHOOK_RECORD_ATTRIBUTES) && returnsNothing(input);

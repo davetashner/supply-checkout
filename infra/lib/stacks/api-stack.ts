@@ -920,17 +920,33 @@ export class ApiStack extends SupplyCheckoutStack {
       inlinePolicies: {
         BillingEventScope: new PolicyDocument({
           statements: [
+            // Reads here require dynamodb:Select SPECIFIC_ATTRIBUTES, not IfExists (supply-checkout-3sv.24): a GetItem
+            // without a projection may carry neither Select nor Attributes, and ForAllValues passes on an empty set, so
+            // it would read the whole item. A projected GetItem carries it; each Query sends Select itself
             new PolicyStatement({
-              sid: "EventRecordsOnly",
+              sid: "EventRecordsRead",
               effect: Effect.ALLOW,
-              actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+              actions: ["dynamodb:GetItem"],
               resources: [tableArn],
               conditions: {
                 "ForAllValues:StringEquals": {
                   "dynamodb:LeadingKeys": [`${WEBHOOK_RECORD_PREFIX}${tag(BILLING_WORKER_TAGS.eventId)}`],
                   "dynamodb:Attributes": [...WEBHOOK_RECORD_ATTRIBUTES],
                 },
-                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES", "dynamodb:ReturnValues": "NONE" },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+              },
+            }),
+            new PolicyStatement({
+              sid: "EventRecordsOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:PutItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`${WEBHOOK_RECORD_PREFIX}${tag(BILLING_WORKER_TAGS.eventId)}`],
+                  "dynamodb:Attributes": [...WEBHOOK_RECORD_ATTRIBUTES],
+                },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
               },
             }),
             new PolicyStatement({
@@ -943,8 +959,7 @@ export class ApiStack extends SupplyCheckoutStack {
                   "dynamodb:LeadingKeys": [`${STRIPE_LINK_PREFIX}${tag(BILLING_WORKER_TAGS.stripeCustomer)}`],
                   "dynamodb:Attributes": [...STRIPE_LINK_READ_ATTRIBUTES],
                 },
-                // As AWS's attribute-level examples do: a read must name its attributes
-                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
             new PolicyStatement({
@@ -954,7 +969,7 @@ export class ApiStack extends SupplyCheckoutStack {
               resources: [tableArn],
               conditions: {
                 "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [team], "dynamodb:Attributes": [...BILLING_READ_ATTRIBUTES] },
-                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
             // A comp's Stripe discount (billing/comp-discount.ts): its outcome goes in the team's operator
@@ -1193,18 +1208,32 @@ export class ApiStack extends SupplyCheckoutStack {
         ReopenScope: new PolicyDocument({
           statements: [
             new PolicyStatement({
-              sid: "ReopenClosureFieldsOnly",
+              sid: "ReopenClosureFieldsRead",
               effect: Effect.ALLOW,
-              actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+              actions: ["dynamodb:GetItem"],
               resources: [tableArn],
               conditions: {
                 "ForAllValues:StringEquals": {
                   "dynamodb:LeadingKeys": [`TEAM#${tag}`],
                   "dynamodb:Attributes": [...REOPEN_ATTRIBUTES],
                 },
-                // A GetItem without a projection names no attributes and would return the whole
-                // item: Select must be SPECIFIC_ATTRIBUTES (a ProjectionExpression implies it)
-                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES", "dynamodb:ReturnValues": "NONE" },
+                // A GetItem without a projection names no attributes and would return the whole item: Select
+                // must be SPECIFIC_ATTRIBUTES (a ProjectionExpression implies it), required, not IfExists
+                // (supply-checkout-3sv.24)
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+              },
+            }),
+            new PolicyStatement({
+              sid: "ReopenClosureFieldsOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`TEAM#${tag}`],
+                  "dynamodb:Attributes": [...REOPEN_ATTRIBUTES],
+                },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
               },
             }),
             new PolicyStatement({

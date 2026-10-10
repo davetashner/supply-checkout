@@ -52,6 +52,22 @@ describe("the reopen function's input", () => {
   });
 });
 
+describe("the operator-reopen role's read of the team (supply-checkout-3sv.24)", () => {
+  // ReopenClosureFieldsRead requires dynamodb:Select SPECIFIC_ATTRIBUTES, so reopenPolicy refuses a GetItem without a
+  // projection: the reopen tests in ops-api.test.ts, which check nothing was refused, then show the reopen projects
+  it("refuses a GetItem of the team without a projection, or with Select other than SPECIFIC_ATTRIBUTES", () => {
+    const refused: { command: string; input: Record<string, unknown> }[] = [];
+    const allow = reopenPolicy("team-1", refused);
+    const Key = { PK: "TEAM#team-1", SK: "META" };
+    const projected = { ProjectionExpression: "closedAt, purging" };
+    expect(allow("GetCommand", { Key })).toBe(false);
+    expect(allow("GetCommand", { Key, ...projected, Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(allow("GetCommand", { Key: { PK: "TEAM#team-2", SK: "META" }, ...projected })).toBe(false);
+    expect(allow("GetCommand", { Key, ...projected })).toBe(true);
+    expect(refused).toHaveLength(3);
+  });
+});
+
 describe("invoking the reopen function", () => {
   const credentials = { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret-example" };
   const answer = { ok: true, outcome: { eventId: "e-1", replayed: false, version: 3 } };

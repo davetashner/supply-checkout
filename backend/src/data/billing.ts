@@ -298,6 +298,8 @@ export async function listOwnerContacts(db: Db, ctx: TeamContext): Promise<{ rea
       new QueryCommand({
         TableName: db.tableName,
         KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+        // The billing worker's role requires it (dynamodb:Select); DynamoDB doesn't infer it from the projection
+        Select: "SPECIFIC_ATTRIBUTES",
         ProjectionExpression: "userId, #role, email",
         ExpressionAttributeNames: { "#role": "role" },
         ExpressionAttributeValues: { ":pk": teamPartition(ctx.teamId), ":prefix": prefixes.member },

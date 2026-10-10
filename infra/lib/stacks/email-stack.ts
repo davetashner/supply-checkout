@@ -480,7 +480,9 @@ export class EmailStack extends SupplyCheckoutStack {
         sid: "ReadNoticeRecords",
         actions: ["dynamodb:GetItem"],
         resources: [tableArn],
-        conditions: { ...noticeRecords, StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } },
+        // Required, not IfExists (supply-checkout-3sv.24): a GetItem without a projection may carry neither Select
+        // nor Attributes, and would read the whole item
+        conditions: { ...noticeRecords, StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } },
       }),
     );
     // ConditionCheckItem: recordNoticeAddress checks the DELETING mark in the same transaction, naming only the keys
