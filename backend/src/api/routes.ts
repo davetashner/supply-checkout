@@ -192,7 +192,8 @@ export interface AccountRoute {
     | "setPreferences"
     | "setPhoto"
     | "deletePhoto"
-    | "listPhotos";
+    | "listPhotos"
+    | "sendFeedback";
   /**
    * API Gateway's throttle for this route across all callers (requests a
    * second, and burst), below the stage's. /me assumes a role per team, so it
@@ -214,7 +215,8 @@ export interface AccountRoute {
  * authenticator app (TOTP) up (supply-checkout-8jc.12). And the caller's
  * own app preferences, such as the What's New banner (supply-checkout-005.17).
  * And profile photos (supply-checkout-6uw.30): the caller's own, and their
- * teammates' for any member of a team.
+ * teammates' for any member of a team. And a member's report of an issue
+ * (supply-checkout-bmsh.1), which any role may send.
  * Each needs a Cognito access token (the JWT
  * authorizer). They write the user's own `USER#` rows (or, for a member
  * change, that member's), which the team-scoped data function can't reach,
@@ -257,6 +259,9 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   { method: "DELETE", path: "/me/photo", action: "deletePhoto", throttle: { rate: 2, burst: 5 } },
   // Presigned URLs for the team's members' photos, for any member: signed locally, no S3 call
   { method: "GET", path: "/teams/{teamId}/photos", action: "listPhotos", throttle: { rate: 50, burst: 100 } },
+  // "Report an issue" (supply-checkout-bmsh.1): any member, a viewer included. Stored privately,
+  // never readable through a data route; at most FEEDBACK_PER_USER_PER_DAY a user a day, and a body of 4 KB
+  { method: "POST", path: "/teams/{teamId}/feedback", action: "sendFeedback", throttle: { rate: 2, burst: 5 } },
 ];
 
 export interface BillingRoute {
@@ -382,6 +387,8 @@ export const RECEIPT_SESSION_TAGS = { teamId: TEAM_SESSION_TAG, userId: "userId"
  * member's team-switcher row, when an owner changes their role or removes
  * them); and for `inviteLimit`, only updating the day's invite counter in
  * `INVITELIMIT#<inviteLimit>` (the hashed address an owner is inviting).
+ * With `teamId` it may also PutItem (nothing else) into `FEEDBACK#<teamId>`,
+ * naming only FEEDBACK_ATTRIBUTES: a member's report (data/feedback.ts).
  * Every session carries all five; one that doesn't need a tag sets it to
  * ACCOUNT_TAG_UNUSED, which no key can match.
  */

@@ -78,6 +78,13 @@
 //   DELETE /me/photo                Removes it (idempotent).
 //   GET    /teams/{teamId}/photos   Any member: presigned URLs for the photos of
 //                                   the team's current members who have one.
+//   POST   /teams/{teamId}/feedback  Any member, a viewer too: sends a report
+//                                   from the Report an issue form
+//                                   (supply-checkout-bmsh.1). Stored in the
+//                                   team's private reports partition, which no
+//                                   data route reaches; the text is never
+//                                   logged. Idempotent by Idempotency-Key, and
+//                                   at most five a user a day.
 //
 // The team's last owner can't be removed, demoted or leave: the team item's
 // owner count moves in the same transaction as the membership, conditioned
@@ -256,6 +263,11 @@ import {
   commitPhoto,
   getPhotoRecord,
   PhotoLimitError,
+  FEEDBACK_BODY_BYTES,
+  FEEDBACK_FIELDS,
+  FeedbackLimitError,
+  feedbackInput,
+  sendFeedback,
   type PhotoRecord,
   photoIdsOf,
   removePhoto,
@@ -355,6 +367,7 @@ const photoTooLarge = () => new ApiError(413, "quota_exceeded", "That photo is t
 /** The data layer's errors, as the account routes answer them. */
 export function errorFor(error: unknown): ApiError {
   if (error instanceof PhotoLimitError) return new ApiError(429, "quota_exceeded", error.message, "photo_limit");
+  if (error instanceof FeedbackLimitError) return new ApiError(429, "quota_exceeded", error.message, "feedback_limit");
   if (error instanceof TeamClosedError) return new ApiError(403, "permission_denied", error.message, "team_closed");
   if (error instanceof TeamDeletingError) return new ApiError(409, "aborted", error.message, "team_deleting");
   if (error instanceof LastOwnerError) return new ApiError(409, "aborted", error.message, "last_owner");
@@ -1399,6 +1412,29 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     return ids.length;
   }
 
+  /**
+   * POST /teams/{teamId}/feedback: a member's report of an issue, any role.
+   * The team is the path's, after the membership check (so a non-member gets
+   * the same 403 whatever they send), and the user and role are the token's
+   * and the membership's, never the body's. The report's text and context
+   * are validated and cleaned (data/feedback.ts) and go to the table and
+   * nowhere else: not a log line, an error or a metric. A retry with the
+   * same Idempotency-Key answers 200 with the same report.
+   */
+  async function sendReport(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const { teamId, ctx } = await teamContext(event, userId);
+    const key = header(event, IDEMPOTENCY_HEADER);
+    if (!key || !REQUEST_KEY.test(key)) throw new ApiError(400, "bad_request", "Send an Idempotency-Key header: 8 to 128 letters, digits, - or _, new for each report");
+    const input = feedbackInput(jsonBody(event, FEEDBACK_FIELDS, FEEDBACK_BODY_BYTES));
+    const sent = await sendFeedback(dbFor({ userId, teamId }), ctx, input, key, new Date(now()));
+    if (sent.created) {
+      obs.count(BusinessMetric.FeedbackReceived, 1, { teamId, category: input.category, ...testMark(ctx.test) });
+      // The IDs and category only: never the text, the context or a name
+      obs.logger.info("Report received", { teamId, reportId: sent.reportId, category: input.category });
+    }
+    return json(sent.created ? 201 : 200, { report: { id: sent.reportId, shortId: sent.shortId } });
+  }
+
   const actions: Record<AccountRoute["action"], (event: DataEvent, userId: string) => Promise<APIGatewayProxyStructuredResultV2>> = {
     me,
     createTeam: newTeam,
@@ -1423,6 +1459,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     setPhoto,
     deletePhoto,
     listPhotos,
+    sendFeedback: sendReport,
   };
 
   return async (event: DataEvent, context?: Context): Promise<APIGatewayProxyStructuredResultV2> => {

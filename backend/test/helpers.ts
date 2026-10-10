@@ -4,6 +4,7 @@ import { afterAll, beforeAll } from "vitest";
 import { authorizeTeam, createDb, type Db, type Role, type TeamContext } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { createLocalTable, deleteLocalTable } from "../src/data/local-table.js";
+import { FEEDBACK_ATTRIBUTES, FEEDBACK_PREFIX } from "../src/data/schema.js";
 import type { EmailCodes, TotpSetup } from "../src/api/cognito-user.js";
 import { EmailNotSentError, type Mailer, type MessageTags } from "../src/email/mailer.js";
 import type { EmailInput } from "../src/email/templates.js";
@@ -95,7 +96,48 @@ export function accountPartitions(scope: { userId: string; teamId?: string; invi
     `INVITEE#${scope.invitee ?? "."}`,
     `USER#${scope.member ?? "."}`,
     `INVITELIMIT#${scope.inviteLimit ?? "."}`,
+    // Reports: the policy below lets the session only put into it
+    `FEEDBACK#${scope.teamId ?? "."}`,
   ];
+}
+
+/**
+ * What the account-access role's IAM policy allows in a team's reports
+ * partition (WriteFeedbackReport in infra/lib/stacks/api-stack.ts): PutItem,
+ * alone or in a transaction, naming only FEEDBACK_ATTRIBUTES. Anything else
+ * that names a `FEEDBACK#` partition (a read, query, update, delete or
+ * condition check) is refused, as it is for the role. A check for
+ * MemoryTable.scoped.
+ */
+export function accountFeedbackPolicy(denied: { command: string; input: Record<string, unknown> }[] = []) {
+  const ALLOWED = new Set<string>(FEEDBACK_ATTRIBUTES);
+  const names = (input: Record<string, unknown>) => [...namedAttributes(input), ...Object.keys((input.Item ?? {}) as object)];
+  const feedback = (key: unknown) => typeof (key as { PK?: unknown } | undefined)?.PK === "string" && ((key as { PK: string }).PK).startsWith(FEEDBACK_PREFIX);
+  const strings = (value: unknown): string[] => (typeof value === "string" ? [value] : value && typeof value === "object" ? Object.values(value).flatMap(strings) : []);
+  const writes = (input: Record<string, unknown>, kind: string) => (input.TransactItems as Record<string, Record<string, unknown>>[]).map((op) => op[kind]).filter(Boolean) as Record<string, unknown>[];
+  return (command: string, input: Record<string, unknown>): boolean => {
+    const ok = (() => {
+      switch (command) {
+        case "PutCommand":
+          return !feedback(input.Item) || names(input).every((n) => ALLOWED.has(n));
+        case "TransactWriteCommand":
+          return (
+            writes(input, "Put").every((put) => !feedback(put.Item) || names(put).every((n) => ALLOWED.has(n))) &&
+            (["Update", "Delete", "ConditionCheck"] as const).every((kind) => writes(input, kind).every((op) => !feedback(op.Key)))
+          );
+        case "GetCommand":
+        case "UpdateCommand":
+        case "DeleteCommand":
+          return !feedback(input.Key);
+        case "QueryCommand":
+          return !strings(input.ExpressionAttributeValues).some((v) => v.startsWith(FEEDBACK_PREFIX));
+        default:
+          return true;
+      }
+    })();
+    if (!ok) denied.push({ command, input });
+    return ok;
+  };
 }
 
 /** The account handler's deleteUser, for tests that never delete an account. */

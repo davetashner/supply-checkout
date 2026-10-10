@@ -58,6 +58,8 @@ export const BusinessMetric = {
   SignUps: "SignUps",
   /** Invitations sent (J3). */
   InvitesSent: "InvitesSent",
+  /** Reports a member sent from the app's Report an issue form, once per report (a retry isn't counted); the category and team ID go in metadata, never the text (supply-checkout-bmsh.1). */
+  FeedbackReceived: "FeedbackReceived",
   /** Invitations accepted (J3). */
   InvitesAccepted: "InvitesAccepted",
   /** Invitations marked failed because their email bounced or drew a complaint (J3). */
@@ -252,6 +254,7 @@ export const TEST_SKIPPED_METRICS: ReadonlySet<BusinessMetricName> = new Set<Bus
   BusinessMetric.ReceiptPaidTeamsNearLimit,
   BusinessMetric.InvitesSent,
   BusinessMetric.InvitesAccepted,
+  BusinessMetric.FeedbackReceived,
   BusinessMetric.TeamsClosed,
   BusinessMetric.TeamClosedNotices,
   BusinessMetric.TeamsReopened,

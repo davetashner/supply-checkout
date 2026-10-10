@@ -53,6 +53,8 @@ export type ErrorCode =
  * 256×256 baseline or progressive JPEG), `photo_too_large` (413: over 64 KB,
  * or the body over its limit) and `photo_limit` (429: the caller's uploads
  * for the UTC day are used up).
+ * Reports (supply-checkout-bmsh.1): `feedback_limit` (429: the caller's
+ * reports for the UTC day are used up).
  */
 export type ErrorReason =
   | "view_only"
@@ -88,7 +90,8 @@ export type ErrorReason =
   | "invalid_output"
   | "photo_invalid"
   | "photo_too_large"
-  | "photo_limit";
+  | "photo_limit"
+  | "feedback_limit";
 
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {

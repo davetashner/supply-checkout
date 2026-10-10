@@ -16,6 +16,7 @@ import {
   INVITE_LIMIT_ATTRIBUTES,
   MEMBER_ROW_ATTRIBUTES,
   MEMBER_SEAT_ATTRIBUTES,
+  FEEDBACK_ATTRIBUTES,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
   RECEIPT_RATE_ATTRIBUTES,
   RECEIPT_TRIAL_CAP_ATTRIBUTES,
@@ -158,6 +159,7 @@ describe("HTTP API routes", () => {
       "DELETE /teams/{teamId}/invites/{inviteId}": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "POST /teams/{teamId}/invites/{inviteId}/resend": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /teams/{teamId}/close": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "POST /teams/{teamId}/feedback": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /teams/{teamId}/reopen": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "DELETE /me": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /me/email/code": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
@@ -444,7 +446,7 @@ describe("account-access role (LeadingKeys)", () => {
 
   it("reaches only the tagged user, team and invitee partitions, with item, transaction and query actions and no scan, a member's only to update or delete, and an invited address's counter only to update", () => {
     const [policy] = role().Policies;
-    const [items, member, limit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [items, member, limit, report, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
     expect(rest).toEqual([]);
     expect(items).toMatchObject({
       Sid: "CallerItemsOnly",
@@ -493,7 +495,37 @@ describe("account-access role (LeadingKeys)", () => {
     expect(JSON.stringify(limit?.Resource)).toContain(":table/supply-checkout-prod-app");
     expect(JSON.stringify(limit?.Resource)).not.toContain("index");
     expect(JSON.stringify(limit?.Resource)).not.toContain("*");
+    // A member's report (supply-checkout-bmsh.1): PutItem only (no read, list, update or delete of a report), in the
+    // tagged team's own reports partition, naming only the report's attributes, nothing returned. The data-access
+    // role has no statement for FEEDBACK#, so it can't reach it
+    expect(report).toEqual({
+      Sid: "WriteFeedbackReport",
+      Effect: "Allow",
+      Action: "dynamodb:PutItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["FEEDBACK#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...FEEDBACK_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    expect([...FEEDBACK_ATTRIBUTES]).toEqual(["PK", "SK", "GSI1PK", "GSI1SK", "type", "reportId", "shortId", "teamId", "userId", "role", "createdAt", "category", "message", "expected", "contactOk", "context", "status", "beadId", "expiresAt"]);
+    // The user's email is never stored with it
+    expect(FEEDBACK_ATTRIBUTES).not.toContain("email");
+    expect(JSON.stringify(report?.Resource)).toContain(":table/supply-checkout-prod-app");
+    expect(JSON.stringify(report?.Resource)).not.toContain("index");
+    expect(JSON.stringify(report?.Resource)).not.toContain("*");
     expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
+  });
+
+  it("gives no other role in the API stack a statement for the reports partition or its status index, but the account function's put", () => {
+    const { template } = api();
+    const grants = resources(template, "AWS::IAM::Role").flatMap(([id, r]) =>
+      ((r.Properties.Policies ?? []) as { PolicyDocument: { Statement: Record<string, unknown>[] } }[]).flatMap((p) =>
+        p.PolicyDocument.Statement.filter((s) => JSON.stringify(s.Condition ?? {}).includes("FEEDBACK#")).map((s) => [id, s.Sid]),
+      ),
+    );
+    expect(grants).toEqual([[expect.stringMatching(/^AccountAccessRole/), "WriteFeedbackReport"]]);
+    expect(JSON.stringify(template.toJSON())).not.toContain("FEEDBACK#STATUS");
   });
 
   it("lets the account function send invite emails, from noreply only, and nothing else in SES", () => {
