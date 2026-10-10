@@ -632,6 +632,8 @@ npm run feedback -- bead <teamId> <reportId> --title "Scanner freezes on the rec
 npm run feedback -- dismiss <teamId> <reportId> --reason "Duplicate of an open bead" "${F[@]}"
 ```
 
+**How you're told.** The **Report received** alarm emails the P2 recipients when a report arrives (never its text), once until a quiet 5-minute period has passed ([Reports in observability.md](observability.md)); run `list` when it does.
+
 Every command prints the table, region and the account the profile signs in to before it reads, and refuses a `--table` that isn't `supply-checkout-<env>-app`. `--expect-account <id>` stops it unless the profile is in that account (as for the backfills), and `--endpoint <url>` points it at DynamoDB Local.
 
 | Command | What it does |

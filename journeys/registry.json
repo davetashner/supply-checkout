@@ -371,6 +371,7 @@
     { "name": "Web router failing", "journeys": ["*"], "infra": "web-router-failing" },
     { "name": "RUM events surge", "journeys": ["*"], "infra": "rum-events-surge" },
     { "name": "RUM events flood", "journeys": ["*"], "infra": "rum-events-flood" },
+    { "name": "Report received", "journeys": ["*"], "infra": "report-received" },
     { "name": "API errors", "journeys": ["*"], "infra": "api-errors" },
     { "name": "API slow", "journeys": ["*"], "infra": "api-slow" },
     { "name": "API unhealthy", "journeys": ["*"] },

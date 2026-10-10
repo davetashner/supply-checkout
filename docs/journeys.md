@@ -361,6 +361,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Imports stuck | J2 | P2 | As below, from the stuck-import check. In the primary region only, where the check runs. |
 | Near the sending limit | J3 | P2 | As below. It reads the SES quota check's gauge, and is in the primary region only, where the check runs. Email verification not saved and Email codes failing alert through Needs attention. |
 | Invite surge | J3 | P2 | As below: `InvitesSent` summed over every team |
+| Report received | Every journey | P2 | `FeedbackReceived` summed over 5 minutes, 1 or more, notifying on ALARM only (`supply-checkout-bmsh.4`); not a blocked journey: it tells the owner a user sent a report. [Details](observability.md): the Reports entry |
 | Email bouncing, Email complaints | J3 | P1 | SES reputation metrics, as below |
 | Email events dropped | J3 | P2 | As below |
 | Writes rejected | J4 | P2 | `ConditionalWriteConflicts` ÷ `Writes`, at least 20 writes |
@@ -389,6 +390,7 @@ Every other alarm on this page waits for the resource or code it watches, and is
 | **Web router failing** | CloudFront `FunctionExecutionErrors`, `FunctionValidationErrors` and `FunctionThrottles` of the router function | 5 or more in 5 minutes | P1 |
 | **RUM events surge** | CloudWatch RUM `RumEventPayloadSize` `SampleCount` on the app monitor: events ingested, each billed. Not a blocked journey but a cost: anyone can send events with the public identity pool ([runbook](observability.md#when-rum-events-surge)) | above 100,000 in an hour | P2 |
 | **RUM events flood** | The same | above 1,000,000 in an hour | P1 |
+| **Report received** | `FeedbackReceived`, a count of reports users send from the app, summed over 5 minutes. Not a blocked journey: it tells the owner a report is waiting (`npm run feedback list`) | 1 or more, notifying on ALARM only | P2 |
 | **API errors** | API Gateway `5xx` per route | above 2% of requests for 5 minutes (at least 20 requests) | P1 |
 | **API slow** | API Gateway `Latency` p95 | above 2 seconds for 10 minutes | P2 |
 | **API unhealthy** | Route 53 health check on `/health` in us-east-1 | unhealthy for 2 minutes | P1 |

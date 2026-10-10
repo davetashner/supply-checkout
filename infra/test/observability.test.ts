@@ -7,7 +7,7 @@ import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import { AwsSolutionsChecks } from "cdk-nag";
 import type { Construct } from "constructs";
 import { describe, expect, it } from "vitest";
-import { BusinessMetric, METRICS_NAMESPACE, NEEDS_ATTENTION_METRICS, NEEDS_ATTENTION_ONCE_A_DAY, SECURITY_ATTENTION_METRICS, TEST_SKIPPED_METRICS } from "../../backend/src/observability/names.js";
+import { BusinessMetric, METRICS_NAMESPACE, NEEDS_ATTENTION_METRICS, NEEDS_ATTENTION_ONCE_A_DAY, SECURITY_ATTENTION_METRICS, TEST_SKIPPED_METRICS, REGION_DIMENSION } from "../../backend/src/observability/names.js";
 import { APPROVED_REGIONS, configFromContext, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
@@ -143,6 +143,7 @@ const ALARM_IDS = [
   "imports-stuck",
   "near-sending-limit",
   "invite-surge",
+  "report-received",
   "email-bouncing",
   "email-complaints",
   "email-events-dropped",
@@ -290,7 +291,9 @@ describe("alarm topics", () => {
     const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"));
     expect(alarms.length).toBeGreaterThan(0);
     for (const a of alarms) {
-      for (const action of [...(a.Properties.AlarmActions as { Ref: string }[]), ...(a.Properties.OKActions as { Ref: string }[])]) {
+      // Only the report-received alarm has no OK action (a report isn't something that recovers); every other alarm must list them
+      const okActions = a.Properties.OKActions ?? (String(a.Properties.AlarmName).endsWith("-p2-report-received") ? [] : undefined);
+      for (const action of [...(a.Properties.AlarmActions as { Ref: string }[]), ...(okActions as { Ref: string }[])]) {
         expect(allowed.has(action.Ref)).toBe(true);
       }
     }
@@ -592,6 +595,68 @@ describe("cost alerts (supply-checkout-jxq)", () => {
   });
 });
 
+describe("Report received (supply-checkout-bmsh.4)", () => {
+  const reportAlarm = (t: Template) => {
+    const found = Object.values(t.findResources("AWS::CloudWatch::Alarm")).filter((a) => a.Properties.AlarmName === "supply-checkout-prod-p2-report-received");
+    expect(found).toHaveLength(1);
+    return found[0]?.Properties as Record<string, unknown>;
+  };
+
+  it("emails the P2 topic when a report arrives, from the metric the account function sends, in every region", () => {
+    for (const r of [EAST, WEST]) {
+      const t = observability(r);
+      const alarm = reportAlarm(t);
+      // The same constants the emit uses (backend/src/observability: namespace, default Region dimension, the count's name)
+      expect(alarm).toMatchObject({
+        Metrics: [
+          {
+            MetricStat: {
+              Metric: { Namespace: METRICS_NAMESPACE, MetricName: BusinessMetric.FeedbackReceived, Dimensions: [{ Name: REGION_DIMENSION, Value: r }] },
+              Period: 300,
+              Stat: "Sum",
+            },
+          },
+        ],
+        Threshold: 0,
+        ComparisonOperator: "GreaterThanThreshold",
+        EvaluationPeriods: 1,
+        DatapointsToAlarm: 1,
+        TreatMissingData: "notBreaching",
+      });
+      expect(alarm.Metrics as unknown[]).toHaveLength(1);
+      // ALARM only: a recovery email for a report is noise
+      expect(alarm.AlarmActions).toEqual([{ Ref: expect.stringMatching(/^AlarmTopicsP2/) }]);
+      expect(alarm.OKActions).toBeUndefined();
+      expect(alarm.InsufficientDataActions).toBeUndefined();
+      expect(String(alarm.AlarmDescription)).toContain("npm run feedback list");
+      expect(String(alarm.AlarmDescription)).toContain("Triaging reports");
+    }
+  });
+
+  it("carries no report content: no dimension but Region, and no team, user, email or category in its text", () => {
+    const t = observability();
+    const alarm = reportAlarm(t);
+    const text = JSON.stringify(alarm);
+    expect(text).not.toMatch(/teamId|userId|category|@/i);
+    const metrics = alarm.Metrics as { MetricStat: { Metric: { Dimensions: { Name: string }[] } } }[];
+    expect(metrics[0]?.MetricStat.Metric.Dimensions.map((d) => d.Name)).toEqual([REGION_DIMENSION]);
+    expect(alarm.AlarmName).toBe("supply-checkout-prod-p2-report-received");
+  });
+
+  it("is a pure alarm: reports are a customer metric (skipped for test teams), and it adds no IAM, wildcard policy or topic", () => {
+    expect(TEST_SKIPPED_METRICS).toContain(BusinessMetric.FeedbackReceived);
+    expect(NEEDS_ATTENTION_METRICS).not.toContain(BusinessMetric.FeedbackReceived);
+    const spec = journeyAlarmSpecs(EAST, "t", "api", "prod").find((s) => s.id === "report-received");
+    expect(spec).toMatchObject({ severity: "P2", threshold: 0, alarmOnly: true });
+    expect(spec?.primaryOnly).toBeUndefined();
+    // The same two topics as before
+    observability().resourceCountIs("AWS::SNS::Topic", 2);
+    // And the dashboard doesn't graph it (the free tier's 50 metrics, #735)
+    const dashboards = Object.values(observability().findResources("AWS::CloudWatch::Dashboard"));
+    expect(JSON.stringify(dashboards)).not.toContain(BusinessMetric.FeedbackReceived);
+  });
+});
+
 describe("journey alarms (docs/journeys.md)", () => {
   it("creates the alarms in every region, the primary-only ones in the primary region alone, each notifying its severity's topic on alarm and recovery", () => {
     for (const r of config.regions) {
@@ -609,7 +674,9 @@ describe("journey alarms (docs/journeys.md)", () => {
       for (const a of alarms) {
         const topic = a.AlarmName.includes("-p1-") ? /^AlarmTopicsP1/ : /^AlarmTopicsP2/;
         expect(a.AlarmActions[0].Ref).toMatch(topic);
-        expect(a.OKActions).toEqual(a.AlarmActions);
+        // Recovery notifies too, except "Report received", where it's noise (supply-checkout-bmsh.4)
+        if (a.AlarmName.endsWith("-p2-report-received")) expect(a.OKActions).toBeUndefined();
+        else expect(a.OKActions).toEqual(a.AlarmActions);
         // Only the scheduled jobs' gauges breach on missing data: no sample means the job isn't running
         const breaches = ["deletion-overdue", "lapse-job-out-of-time"].some((id) => a.AlarmName.endsWith(`-${id}`));
         expect(a.TreatMissingData).toBe(breaches ? "breaching" : "notBreaching");
@@ -1690,7 +1757,7 @@ describe("dashboard", () => {
  *   expression's own metrics included. A SEARCH can match any number, so the
  *   deployed dashboard has none.
  */
-const ALARM_METRICS_LIMIT = 78;
+const ALARM_METRICS_LIMIT = 79;
 
 type Json = Record<string, unknown>;
 

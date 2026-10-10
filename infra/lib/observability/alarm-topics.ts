@@ -136,6 +136,11 @@ export class AlarmTopics extends Construct {
     subscribe("P2", "email", SubscriptionProtocol.EMAIL);
   }
 
+  /** Notifies the severity's topic when the alarm fires only: for alarms that are notifications, where recovery is noise. */
+  notifyOnAlarm(alarm: AlarmBase, severity: Severity): void {
+    alarm.addAlarmAction(new SnsAction(this.topics[severity]));
+  }
+
   /** Notifies the severity's topic when the alarm fires and when it recovers. */
   notify(alarm: AlarmBase, severity: Severity): void {
     const action: IAlarmAction = new SnsAction(this.topics[severity]);
