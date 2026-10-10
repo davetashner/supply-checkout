@@ -20,9 +20,11 @@
 //    and calls DELETE /me. Members before owners. Each destructive call goes through
 //    assertDestructiveAllowed first. A run that died mid-sign-up (`signup`) may have left an
 //    unconfirmed account, which can't sign in: it's confirmed first with a new code
-//    (ResendConfirmationCode). If neither a confirmation code nor a sign-in code comes, Cognito
-//    has no account at that address (it mails one or the other to any account it has): SignUp
-//    never reached it, and the record is marked deleted.
+//    (ResendConfirmationCode). Only when Cognito says there's no such user is the record marked
+//    deleted; if no code comes, it stays `signup` and the next cleanup tries again, until runs/
+//    expires it (30 days). An owner that died between POST /teams and recording the team's ID
+//    has the team's name in its record (written before POST /teams): the one team it owns
+//    with exactly that name counts as the run's.
 // 4. Last, always: signs every long-lived account (and any throwaway it couldn't delete) out
 //    everywhere (Cognito GlobalSignOut), so no token in a trace in the results bucket still works.
 //
@@ -86,7 +88,8 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
     return apiFor(tokens.accessToken);
   };
   // "confirmed" once an unconfirmed leftover is confirmed, or when Cognito says it already is;
-  // "no code" when no confirmation code came (no unconfirmed account at that address)
+  // "gone" when Cognito says there's no such user; "no code" when the resend went but no code
+  // came (maybe no account there: Cognito may answer an unknown address as a real one)
   const confirmLeftover = async (address) => {
     const since = now();
     try {
@@ -94,7 +97,7 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
     } catch (err) {
       // Already confirmed; or no account at all
       if (err?.type === "InvalidParameterException") return "confirmed";
-      if (err?.type === "UserNotFoundException") return "no code";
+      if (err?.type === "UserNotFoundException") return "gone";
       throw err;
     }
     try {
@@ -154,19 +157,31 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
       try {
         if (!parseThrowaway(record.address)) throw new Error("not a throwaway address");
         // A run that died mid-sign-up may have left the account unconfirmed, which can't sign
-        // in: confirm it first, with a new code. No code means no unconfirmed account there
+        // in: confirm it first, with a new code. Each record is tried once per cleanup
         const confirmation = record.state === "signup" ? await confirmLeftover(record.address) : "confirmed";
+        // Cognito said there's no such user: SignUp never made it
+        if (confirmation === "gone") {
+          await writeRecord(mailS3, { ...record, state: "deleted" });
+          done.push(`${label}: never signed up (Cognito has no such account), so there was nothing to delete`);
+          continue;
+        }
         let challenge, code;
         try {
           const since = now();
           challenge = await cognito.startEmailCode(record.address);
           ({ code } = await mail({ s3: mailS3, to: record.address, since, want: "code", masker, log }));
         } catch (err) {
-          // Cognito mails a code to any confirmed account, and a confirmation code to any
-          // unconfirmed one: neither came, so SignUp never made this account
-          if (confirmation === "no code" && (err instanceof MailTimeout || err?.type === "UserNotFoundException")) {
+          if (record.state === "signup" && err?.type === "UserNotFoundException") {
             await writeRecord(mailS3, { ...record, state: "deleted" });
-            done.push(`${label}: never signed up (no confirmation or sign-in code came), so there was nothing to delete`);
+            done.push(`${label}: never signed up (Cognito has no such account), so there was nothing to delete`);
+            continue;
+          }
+          // No code at all for a sign-up that may never have reached Cognito (it answers an
+          // unknown address as it would a real one): the record stays `signup`, so the next
+          // cleanup tries again, until the record expires with runs/ (30 days). Such an account,
+          // if it exists, is unconfirmed: no team, no data, and it can't sign in
+          if (confirmation === "no code" && err instanceof MailTimeout) {
+            done.push(`${label}: no confirmation or sign-in code came, so it may never have signed up; kept for the next cleanup to try again`);
             continue;
           }
           throw err;
@@ -176,6 +191,17 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
         const me = await api.me();
         masker.add(me?.user?.id);
         for (const t of me?.teams ?? []) masker.add(t?.id);
+        // The run died between POST /teams and recording the team's ID: the team it named
+        // beforehand, exactly, that it owns, and only if it's the one such team
+        let adopted = {};
+        if (record.teamName && !(record.teamIds ?? []).length) {
+          const named = (me?.teams ?? []).filter((t) => t?.name === record.teamName && t.role === "owner" && typeof t.id === "string");
+          if (named.length === 1) {
+            createdTeams.push(named[0].id);
+            adopted = { teamIds: [named[0].id] };
+            await writeRecord(mailS3, { ...record, ...adopted });
+          }
+        }
         checkMe(me, { email: record.address, teamIds: createdTeams });
         for (const team of me.teams) {
           if (team.role !== "owner" || team.closedAt) continue;
@@ -185,7 +211,7 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
         assertDestructiveAllowed({ action: "deleteAccount", account: record.address, runIds, longLived });
         await api.deleteMe();
         sessions.pop();
-        await writeRecord(mailS3, { ...record, state: "deleted" });
+        await writeRecord(mailS3, { ...record, ...adopted, state: "deleted" });
         done.push(`${label}: deleted`);
       } catch (err) {
         left.push(`${label}: not deleted: ${message(err)}`);

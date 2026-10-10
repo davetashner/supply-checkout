@@ -66,6 +66,8 @@ test("a new owner signs up and names a team, invites a crew member who joins, re
 
     await test.step("J1.3 Name the team: an empty team on a 14-day trial, with the first-run checklist", async () => {
       await expect(page.getByRole("heading", { name: "Name your team" })).toBeVisible();
+      // The name first: if the run dies before the team's ID is recorded, cleanup finds the team by it
+      await owner.keeper.update({ teamName });
       const created = page.waitForResponse((r) => r.url() === `${PROD.api}/teams` && r.request().method() === "POST", { timeout: 30_000 });
       await page.getByLabel("Team name").fill(teamName);
       await page.getByLabel("Team name").press("Enter");

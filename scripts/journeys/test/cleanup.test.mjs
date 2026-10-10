@@ -306,25 +306,91 @@ test("cleanup goes straight to sign-in for a signup record Cognito says is confi
   assert.deepEqual(r.left, []);
 });
 
-test("cleanup marks a signup record deleted when no account answers: no confirmation code and no sign-in code", async () => {
-  for (const resend of [undefined, new CognitoError("ResendConfirmationCode", "UserNotFoundException")]) {
-    const records = [{ runId: RUN, role: "owner", address: owner, state: "signup" }];
-    const w = withSignUp(world({ records }), { resend });
-    w.mail = async ({ to, want }) => { w.log.push(["mail", to, want]); throw new MailTimeout("No genuine code arrived within 60 seconds"); };
-    const r = await run(w);
-    assert.ok(!w.log.some(([op]) => op === "confirmSignUp" || op === "deleteMe" || op === "answerEmailCode"));
-    assert.equal(recordState(w, "owner"), "deleted");
-    assert.deepEqual(r.left, []);
-    assert.ok(r.done.some((d) => /A throwaway owner of this run: never signed up/.test(d)), r.done.join("; "));
-  }
-  // Cognito refusing the sign-in for an unknown user says the same
+test("cleanup keeps a signup record when no code comes, tries it once per cleanup, and the next cleanup tries again", async () => {
   const records = [{ runId: RUN, role: "owner", address: owner, state: "signup" }];
   const w = withSignUp(world({ records }));
-  w.mail = async () => { throw new MailTimeout("No genuine code arrived within 60 seconds"); };
-  w.cognito.startEmailCode = async () => { throw new CognitoError("InitiateAuth", "UserNotFoundException"); };
+  w.mail = async ({ to, want }) => { w.log.push(["mail", to, want]); throw new MailTimeout("No genuine code arrived within 60 seconds"); };
   const r = await run(w);
+  assert.ok(!w.log.some(([op]) => op === "confirmSignUp" || op === "deleteMe" || op === "answerEmailCode"));
+  // Once each, not in a loop
+  assert.equal(w.log.filter(([op]) => op === "resendConfirmationCode").length, 1);
+  assert.equal(w.log.filter(([op]) => op === "startEmailCode").length, 1);
+  assert.equal(w.log.filter(([op]) => op === "mail").length, 2);
+  assert.equal(recordState(w, "owner"), "signup");
+  assert.deepEqual(r.left, []);
+  assert.ok(r.done.some((d) => /A throwaway owner of this run: no confirmation or sign-in code came.*kept for the next cleanup/.test(d)), r.done.join("; "));
+  // The next cleanup reads the same record and tries again
+  const r2 = await run(w);
+  assert.equal(w.log.filter(([op]) => op === "resendConfirmationCode").length, 2);
+  assert.ok(r2.done.some((d) => /kept for the next cleanup/.test(d)));
+  // Once runs/ has expired the record (30 days), nothing is left to try
+  w.mailS3.store.delete(recordKey(RUN, "owner"));
+  await run(w);
+  assert.equal(w.log.filter(([op]) => op === "resendConfirmationCode").length, 2);
+});
+
+test("cleanup marks a signup record deleted only when Cognito says there's no such user", async () => {
+  const records = [{ runId: RUN, role: "owner", address: owner, state: "signup" }];
+  const w = withSignUp(world({ records }), { resend: new CognitoError("ResendConfirmationCode", "UserNotFoundException") });
+  const r = await run(w);
+  assert.ok(!w.log.some(([op]) => op === "startEmailCode" || op === "deleteMe"));
   assert.equal(recordState(w, "owner"), "deleted");
   assert.deepEqual(r.left, []);
+  assert.ok(r.done.some((d) => /never signed up \(Cognito has no such account\)/.test(d)), r.done.join("; "));
+  // Or refuses the sign-in for an unknown user, after a resend that sent nothing
+  const w2 = withSignUp(world({ records }));
+  w2.mail = async () => { throw new MailTimeout("No genuine code arrived within 60 seconds"); };
+  w2.cognito.startEmailCode = async () => { throw new CognitoError("InitiateAuth", "UserNotFoundException"); };
+  const r2 = await run(w2);
+  assert.equal(recordState(w2, "owner"), "deleted");
+  assert.deepEqual(r2.left, []);
+  // A started account that Cognito says doesn't exist isn't assumed gone
+  const w3 = withSignUp(world({ records: [{ ...records[0], state: "started" }] }));
+  w3.cognito.startEmailCode = async () => { throw new CognitoError("InitiateAuth", "UserNotFoundException"); };
+  const r3 = await run(w3);
+  assert.equal(recordState(w3, "owner"), "started");
+  assert.equal(r3.left.length, 1);
+});
+
+test("cleanup closes the team an owner died creating, found by the name recorded before POST /teams", async () => {
+  const teamName = runName(RUN, "J1 team r0");
+  const records = [{ runId: RUN, role: "owner", address: owner, state: "started", teamName }];
+  const w = world({ records, meFor: { [owner]: { user: { email: owner, emailVerified: true }, teams: [{ id: "t-unrecorded", name: teamName, role: "owner", closedAt: null }] } } });
+  const r = await run(w);
+  assert.ok(w.log.some(([op, who, team]) => op === "closeTeam" && who === owner && team === "t-unrecorded"));
+  assert.ok(w.log.some(([op, who]) => op === "deleteMe" && who === owner));
+  assert.deepEqual(r.left, []);
+  const rec = JSON.parse(w.mailS3.store.get(recordKey(RUN, "owner")).body.toString());
+  assert.deepEqual([rec.state, rec.teamIds, rec.teamName], ["deleted", ["t-unrecorded"], teamName]);
+});
+
+test("cleanup refuses a team whose name isn't exactly the recorded one, two with that name, or one it doesn't own", async () => {
+  const teamName = runName(RUN, "J1 team r0");
+  const cases = [
+    [{ id: "t-other", name: `${teamName} `, role: "owner", closedAt: null }],
+    [{ id: "t-other", name: runName(RUN, "J1 team r1"), role: "owner", closedAt: null }],
+    [{ id: "t-a", name: teamName, role: "owner", closedAt: null }, { id: "t-b", name: teamName, role: "owner", closedAt: null }],
+    [{ id: "t-other", name: teamName, role: "contributor", closedAt: null }],
+    // The name is only used when the record has no team IDs
+    [{ id: "t-run", name: "Run team", role: "owner", closedAt: null }, { id: "t-extra", name: teamName, role: "owner", closedAt: null }],
+  ];
+  for (const [i, teams] of cases.entries()) {
+    const record = { runId: RUN, role: "owner", address: owner, state: "started", teamName, ...(i === 4 ? { teamIds: ["t-run"] } : {}) };
+    const w = world({ records: [record], meFor: { [owner]: { user: { email: owner, emailVerified: true }, teams } } });
+    const r = await run(w);
+    assert.ok(!w.log.some(([op]) => op === "closeTeam" || op === "deleteMe"), `case ${i}`);
+    assert.ok(r.left.some((l) => /A throwaway owner of this run: not deleted: .*journey team/.test(l)), `case ${i}: ${r.left.join("; ")}`);
+    assert.equal(recordState(w, "owner"), "started");
+  }
+});
+
+test("a run record's team name must be its own run's", async () => {
+  const base = { runId: RUN, role: "owner", address: owner, state: "started" };
+  const { checkRecord } = await import("../lib/runs.mjs");
+  assert.equal(checkRecord({ ...base, teamName: runName(RUN, "J1 team r0") }).teamName, runName(RUN, "J1 team r0"));
+  for (const bad of [runName("8-1", "J1 team r0"), "House Finch", `${runName(RUN, "x")}\n`, runName(RUN, "x".repeat(200)), 7]) {
+    assert.throws(() => checkRecord({ ...base, teamName: bad }), /teamName/, String(bad));
+  }
 });
 
 test("cleanup never takes a missing code as gone for an account that signed up: it's left, and reported", async () => {
