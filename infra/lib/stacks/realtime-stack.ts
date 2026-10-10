@@ -206,7 +206,9 @@ export class RealtimeStack extends SupplyCheckoutStack {
         conditions: {
           "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
           "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LIVE_AUDIENCE_ATTRIBUTES] },
-          StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          // Required, not IfExists (supply-checkout-3sv.24): a GetItem without a projection may carry neither
+          // Select nor Attributes, and would read the whole item. The Query sends Select itself
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
         },
       }),
     );

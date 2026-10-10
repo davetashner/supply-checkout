@@ -1638,3 +1638,29 @@ describe("a test team (supply-checkout-o60.12)", () => {
     expect(denied).toEqual([]);
   });
 });
+
+describe("the billing-worker role's reads (supply-checkout-3sv.24)", () => {
+  // EventRecordsRead, StripeLinkTeamOnly and TeamBillingReadOnly require dynamodb:Select SPECIFIC_ATTRIBUTES, so
+  // workerPolicy refuses a GetItem without a projection and a Query that doesn't send Select: the worker tests, which
+  // check nothing was refused, then show every read the worker makes projects (and every Query sends Select)
+  it("refuses unprojected reads, and a Query without Select SPECIFIC_ATTRIBUTES", () => {
+    const refused: { command: string; input: Record<string, unknown> }[] = [];
+    const allow = workerPolicy({ eventId: "evt_1", stripeCustomer: "cus_1", teamId: TEAM }, refused);
+    const event = { Key: { PK: "WEBHOOK#evt_1", SK: "EVENT" } };
+    const link = { Key: { PK: "STRIPE#cus_1", SK: "LINK" } };
+    const team = { Key: { PK: `TEAM#${TEAM}`, SK: "META" } };
+    expect(allow("GetCommand", event)).toBe(false);
+    expect(allow("GetCommand", { ...event, ProjectionExpression: "eventId", Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(allow("GetCommand", { ...event, ProjectionExpression: "eventId" })).toBe(true);
+    expect(allow("GetCommand", link)).toBe(false);
+    expect(allow("GetCommand", { ...link, ProjectionExpression: "teamId" })).toBe(true);
+    expect(allow("GetCommand", team)).toBe(false);
+    expect(allow("GetCommand", { ...team, ProjectionExpression: "seats" })).toBe(true);
+    const members = { KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)", ExpressionAttributeValues: { ":pk": `TEAM#${TEAM}`, ":prefix": "MEMBER#" }, ProjectionExpression: "userId" };
+    expect(allow("QueryCommand", members)).toBe(false);
+    expect(allow("QueryCommand", { ...members, Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(allow("QueryCommand", { ...members, Select: "SPECIFIC_ATTRIBUTES", ProjectionExpression: undefined })).toBe(false);
+    expect(allow("QueryCommand", { ...members, Select: "SPECIFIC_ATTRIBUTES" })).toBe(true);
+    expect(refused).toHaveLength(7);
+  });
+});

@@ -959,16 +959,28 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
   it("reaches only the event's records, the customer's link, the team's billing attributes, and puts of its comp discount audit", () => {
     const [policy, ...others] = worker().Policies;
     expect(others).toEqual([]);
-    const [records, link, read, audit, update, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [recordsRead, records, link, read, audit, update, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
     expect(rest).toEqual([]);
-    expect(records).toEqual({
-      Sid: "EventRecordsOnly",
+    // Every read requires Select SPECIFIC_ATTRIBUTES, not IfExists (supply-checkout-3sv.24): a GetItem without a
+    // projection may carry neither Select nor Attributes and would read the whole item
+    expect(recordsRead).toEqual({
+      Sid: "EventRecordsRead",
       Effect: "Allow",
-      Action: ["dynamodb:GetItem", "dynamodb:PutItem"],
+      Action: "dynamodb:GetItem",
       Resource: expect.anything(),
       Condition: {
         "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["WEBHOOK#${aws:PrincipalTag/eventId}"], "dynamodb:Attributes": [...WEBHOOK_RECORD_ATTRIBUTES] },
-        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES", "dynamodb:ReturnValues": "NONE" },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect(records).toEqual({
+      Sid: "EventRecordsOnly",
+      Effect: "Allow",
+      Action: "dynamodb:PutItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["WEBHOOK#${aws:PrincipalTag/eventId}"], "dynamodb:Attributes": [...WEBHOOK_RECORD_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
       },
     });
     expect(link).toEqual({
@@ -978,7 +990,7 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
       Resource: expect.anything(),
       Condition: {
         "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["STRIPE#${aws:PrincipalTag/stripeCustomer}"], "dynamodb:Attributes": ["PK", "SK", "teamId"] },
-        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     });
     expect(read).toEqual({
@@ -988,7 +1000,7 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
       Resource: expect.anything(),
       Condition: {
         "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...BILLING_READ_ATTRIBUTES] },
-        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     });
     // The worker reads the team's test mark, for its metrics only (supply-checkout-o60.12), and can never write it
@@ -1227,19 +1239,30 @@ describe("operator reopen function and role (supply-checkout-6uw.6)", () => {
   it("reads and updates only the tagged team's keys, version, owners and closure fields, returning nothing, and only appends to that team's operator audit", () => {
     const [policy, ...others] = role().Policies;
     expect(others).toEqual([]);
-    const [closure, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [closureRead, closure, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
     expect(rest).toEqual([]);
-    expect(closure).toEqual({
-      Sid: "ReopenClosureFieldsOnly",
+    expect(closureRead).toEqual({
+      Sid: "ReopenClosureFieldsRead",
       Effect: "Allow",
-      Action: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+      Action: "dynamodb:GetItem",
       Resource: expect.anything(),
       Condition: {
         "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...REOPEN_ATTRIBUTES] },
-        // A GetItem without a projection would name no attributes and return the whole item
-        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES", "dynamodb:ReturnValues": "NONE" },
+        // A GetItem without a projection would name no attributes and return the whole item: required, not IfExists (supply-checkout-3sv.24)
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     });
+    expect(closure).toEqual({
+      Sid: "ReopenClosureFieldsOnly",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...REOPEN_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    expect(JSON.stringify(closureRead?.Resource)).not.toMatch(/index|\*/);
     // Nothing about the team's name, plan, status, members or data: and the reopen's pending Stripe resync (supply-checkout-85qp)
     expect([...REOPEN_ATTRIBUTES]).toEqual(["PK", "SK", "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", "purging", "GSI1PK", "GSI1SK", "stripeResyncFor", "stripeReopenedAt"]);
     expect(JSON.stringify(closure?.Resource)).not.toMatch(/index|\*/);

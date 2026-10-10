@@ -137,9 +137,11 @@ describe("the stream consumer", () => {
       Condition: {
         "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
         "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "userId", "role", "status", "closedAt", "compPlan", "compUntil"] },
-        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     });
+    // Required, not IfExists (supply-checkout-3sv.24): an unprojected GetItem would read the whole item
+    expect(Object.keys(reads[0]?.Condition ?? {}).sort()).toEqual(["ForAllValues:StringEquals", "ForAllValues:StringLike", "StringEquals"]);
     // Closure ends notices; a live comp (ADR 0015) keeps an ended (but not closed) team's going
     expect([...LIVE_AUDIENCE_ATTRIBUTES]).toEqual(["PK", "SK", "userId", "role", "status", "closedAt", "compPlan", "compUntil"]);
     expect(JSON.stringify(reads[0]?.Resource)).toMatch(/table\/supply-checkout-prod-app"\]\]\}$/);

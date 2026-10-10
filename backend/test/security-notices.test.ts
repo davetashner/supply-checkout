@@ -98,7 +98,8 @@ function policy(command: string, input: Record<string, unknown>): boolean {
       key.PK.startsWith("USER#") &&
       names.every((n) => allowed.has(n)) &&
       (kind !== "ConditionCheck" || (names.length === 0 && /^attribute_not_exists\(PK\)$/.test(String(body.ConditionExpression)))) &&
-      (kind !== "GetCommand" || typeof body.ProjectionExpression === "string") &&
+      // ReadNoticeRecords requires dynamodb:Select SPECIFIC_ATTRIBUTES (supply-checkout-3sv.24): projected reads only
+      (kind !== "GetCommand" || (typeof body.ProjectionExpression === "string" && (body.Select === undefined || body.Select === "SPECIFIC_ATTRIBUTES"))) &&
       (body.ReturnValues === undefined || body.ReturnValues === "NONE")
     );
   };
@@ -682,6 +683,19 @@ describe("password reset notices from the post confirmation trigger", () => {
 });
 
 describe("security notice records", () => {
+  it("has the stand-in policy refuse a read without a projection, or with Select other than SPECIFIC_ATTRIBUTES (supply-checkout-3sv.24)", () => {
+    // ReadNoticeRecords requires dynamodb:Select SPECIFIC_ATTRIBUTES: the handler tests, which check nothing was
+    // refused, then show every read the function makes projects
+    const Key = { PK: `USER#${SUB}`, SK: "NOTICE_ADDRESS" };
+    const at = { ProjectionExpression: "#at", ExpressionAttributeNames: { "#at": "noticeAddressAt" } };
+    expect(policy("GetCommand", { Key })).toBe(false);
+    expect(policy("GetCommand", { Key, ...at, Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(policy("GetCommand", { Key: { PK: "TEAM#x", SK: "META" }, ...at })).toBe(false);
+    expect(policy("GetCommand", { Key, ...at })).toBe(true);
+    expect(policy("GetCommand", { Key, ...at, Select: "SPECIFIC_ATTRIBUTES" })).toBe(true);
+    expect(denied).toHaveLength(3);
+  });
+
   it("claims a kind once per window, and each kind on its own", async () => {
     const db = table.db();
     const at = new Date(NOW);

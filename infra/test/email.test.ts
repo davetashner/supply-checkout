@@ -252,7 +252,8 @@ describe("email stack", () => {
           Condition: {
             "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
             "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash", "totpOnAt"] },
-            StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+            // Required, not IfExists (supply-checkout-3sv.24): an unprojected GetItem would read the whole item
+            StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
           },
         }),
         expect.objectContaining({

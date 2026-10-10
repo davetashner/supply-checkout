@@ -3749,10 +3749,43 @@
             "PolicyDocument": {
               "Statement": [
                 {
-                  "Action": [
-                    "dynamodb:GetItem",
-                    "dynamodb:PutItem"
-                  ],
+                  "Action": "dynamodb:GetItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "WEBHOOK#${aws:PrincipalTag/eventId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "type",
+                        "eventId",
+                        "processedAt",
+                        "sentAt",
+                        "expiresAt"
+                      ]
+                    },
+                    "StringEquals": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "EventRecordsRead"
+                },
+                {
+                  "Action": "dynamodb:PutItem",
                   "Condition": {
                     "ForAllValues:StringEquals": {
                       "dynamodb:LeadingKeys": [
@@ -3769,7 +3802,6 @@
                       ]
                     },
                     "StringEqualsIfExists": {
-                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES",
                       "dynamodb:ReturnValues": "NONE"
                     }
                   },
@@ -3801,7 +3833,7 @@
                         "teamId"
                       ]
                     },
-                    "StringEqualsIfExists": {
+                    "StringEquals": {
                       "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
                     }
                   },
@@ -3860,7 +3892,7 @@
                         "version"
                       ]
                     },
-                    "StringEqualsIfExists": {
+                    "StringEquals": {
                       "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
                     }
                   },

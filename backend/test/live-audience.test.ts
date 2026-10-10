@@ -8,63 +8,89 @@ import { type Db, ENDED_STATUSES, hasEnded, InvalidInputError, liveUpdateRecipie
 import { LIVE_AUDIENCE_ATTRIBUTES } from "../src/data/schema.js";
 import { AudienceReadTimeout, createAudience } from "../src/realtime/audience.js";
 import { AUDIENCE_READ_TIMEOUT_MS, AUDIENCE_TTL_MS } from "../src/realtime/channels.js";
-import { fakeDb } from "./helpers.js";
+import { fakeDb, namedAttributes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const TEAM = "7d3b8a52-5a61-4c3e-9d1f-0b6f2f7c1a11";
 const OTHER = "0f0e8a52-5a61-4c3e-9d1f-0b6f2f7c1a22";
 
+/**
+ * The publisher's TeamAudienceReads statement (infra/lib/stacks/realtime-stack.ts): GetItem and Query in TEAM#
+ * partitions naming only LIVE_AUDIENCE_ATTRIBUTES, with dynamodb:Select SPECIFIC_ATTRIBUTES required
+ * (supply-checkout-3sv.24): a GetItem must project, and a Query must send Select (DynamoDB doesn't infer it).
+ */
+function audiencePolicy(refused: { command: string; input: Record<string, unknown> }[]) {
+  const named = (input: Record<string, unknown>) => [...namedAttributes(input)].every((a) => (LIVE_AUDIENCE_ATTRIBUTES as readonly string[]).includes(a));
+  const projected = (input: Record<string, unknown>) => typeof input.ProjectionExpression === "string";
+  return (command: string, input: Record<string, unknown>): boolean => {
+    const pk = command === "GetCommand" ? (input.Key as { PK?: unknown } | undefined)?.PK : (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
+    const ok =
+      typeof pk === "string" &&
+      pk.startsWith("TEAM#") &&
+      named(input) &&
+      projected(input) &&
+      ((command === "GetCommand" && (input.Select === undefined || input.Select === "SPECIFIC_ATTRIBUTES")) ||
+        (command === "QueryCommand" && input.IndexName === undefined && input.Select === "SPECIFIC_ATTRIBUTES"));
+    if (!ok) refused.push({ command, input });
+    return ok;
+  };
+}
+
 describe("liveUpdateRecipients", () => {
   let table: MemoryTable;
+  let refused: { command: string; input: Record<string, unknown> }[];
+  // Every read goes through the publisher's policy, and nothing may be refused
+  const audienceDb = () => table.guarded(audiencePolicy(refused));
   beforeEach(() => {
     table = new MemoryTable();
+    refused = [];
     table.seedTeam(TEAM, { "user-owner": "owner", "user-crew": "contributor", "user-view": "viewer" });
     table.seedTeam(OTHER, { "user-other": "owner" });
   });
 
   it("is every current member of the team, whatever their role, and nobody from another team", async () => {
-    expect((await liveUpdateRecipients(table.db(), TEAM)).sort()).toEqual(["user-crew", "user-owner", "user-view"]);
-    expect(await liveUpdateRecipients(table.db(), OTHER)).toEqual(["user-other"]);
+    expect((await liveUpdateRecipients(audienceDb(), TEAM)).sort()).toEqual(["user-crew", "user-owner", "user-view"]);
+    expect(await liveUpdateRecipients(audienceDb(), OTHER)).toEqual(["user-other"]);
     // It reads only the team's own partition
     expect(new Set(table.calls.flatMap((c) => c.partitions))).toEqual(new Set([`TEAM#${TEAM}`, `TEAM#${OTHER}`]));
   });
 
   it("leaves out a removed member at once (strongly consistent reads)", async () => {
     table.items.delete(`TEAM#${TEAM}\u0000MEMBER#user-crew`);
-    expect(await liveUpdateRecipients(table.db(), TEAM)).not.toContain("user-crew");
+    expect(await liveUpdateRecipients(audienceDb(), TEAM)).not.toContain("user-crew");
   });
 
   it("leaves out MEMBER items with an unknown role or an invalid user ID", async () => {
     table.put({ PK: `TEAM#${TEAM}`, SK: "MEMBER#user-odd", userId: "user-odd", role: "admin" });
     table.put({ PK: `TEAM#${TEAM}`, SK: "MEMBER#x", userId: "a#b", role: "viewer" });
     table.put({ PK: `TEAM#${TEAM}`, SK: "MEMBER#y", role: "viewer" });
-    expect((await liveUpdateRecipients(table.db(), TEAM)).sort()).toEqual(["user-crew", "user-owner", "user-view"]);
+    expect((await liveUpdateRecipients(audienceDb(), TEAM)).sort()).toEqual(["user-crew", "user-owner", "user-view"]);
   });
 
   it.each(ENDED_STATUSES)("is nobody once the team's subscription is %s", async (status) => {
     table.put({ ...table.get(`TEAM#${TEAM}`, "META"), status });
-    expect(await liveUpdateRecipients(table.db(), TEAM)).toEqual([]);
+    expect(await liveUpdateRecipients(audienceDb(), TEAM)).toEqual([]);
   });
 
   it.each(ENDED_STATUSES)("still reaches members of a %s team while it has a live comp (ADR 0015), and not after", async (status) => {
     table.put({ ...table.get(`TEAM#${TEAM}`, "META"), status, compPlan: "free", compUntil: "2026-12-31T00:00:00.000Z" });
-    expect(await liveUpdateRecipients(table.db(), TEAM, new Date("2026-10-01T00:00:00Z"))).toHaveLength(3);
-    expect(await liveUpdateRecipients(table.db(), TEAM, new Date("2027-01-01T00:00:00Z"))).toEqual([]);
+    expect(await liveUpdateRecipients(audienceDb(), TEAM, new Date("2026-10-01T00:00:00Z"))).toHaveLength(3);
+    expect(await liveUpdateRecipients(audienceDb(), TEAM, new Date("2027-01-01T00:00:00Z"))).toEqual([]);
   });
 
   it("is nobody once the team is closed, even with a live comp", async () => {
     table.put({ ...table.get(`TEAM#${TEAM}`, "META"), status: "active", closedAt: "2026-09-30T00:00:00.000Z", compPlan: "free", compUntil: "2026-12-31T00:00:00.000Z" });
-    expect(await liveUpdateRecipients(table.db(), TEAM, new Date("2026-10-01T00:00:00Z"))).toEqual([]);
+    expect(await liveUpdateRecipients(audienceDb(), TEAM, new Date("2026-10-01T00:00:00Z"))).toEqual([]);
   });
 
   it.each(["trialing", "active", "past_due", undefined])("still reaches members while the status is %s", async (status) => {
     table.put({ ...table.get(`TEAM#${TEAM}`, "META"), status });
-    expect(await liveUpdateRecipients(table.db(), TEAM)).toHaveLength(3);
+    expect(await liveUpdateRecipients(audienceDb(), TEAM)).toHaveLength(3);
   });
 
   it("is nobody for a team that doesn't exist, and refuses a bad team ID", async () => {
-    expect(await liveUpdateRecipients(table.db(), "00000000-0000-4000-8000-000000000000")).toEqual([]);
-    await expect(liveUpdateRecipients(table.db(), "TEAM#x")).rejects.toBeInstanceOf(InvalidInputError);
+    expect(await liveUpdateRecipients(audienceDb(), "00000000-0000-4000-8000-000000000000")).toEqual([]);
+    await expect(liveUpdateRecipients(audienceDb(), "TEAM#x")).rejects.toBeInstanceOf(InvalidInputError);
   });
 
   it("names only the attributes the consumer's IAM policy allows, and follows pages", async () => {
@@ -89,6 +115,21 @@ describe("liveUpdateRecipients", () => {
     }
     expect(inputs[1]?.Select).toBe("SPECIFIC_ATTRIBUTES");
     expect(inputs[2]?.ExclusiveStartKey).toEqual({ PK: `TEAM#${TEAM}`, SK: "MEMBER#user-1" });
+  });
+
+  it("has the stand-in policy refuse unprojected reads and a Query without Select SPECIFIC_ATTRIBUTES", () => {
+    const allow = audiencePolicy(refused);
+    const Key = { PK: `TEAM#${TEAM}`, SK: "META" };
+    expect(allow("GetCommand", { Key })).toBe(false);
+    expect(allow("GetCommand", { Key, ProjectionExpression: "closedAt", Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(allow("GetCommand", { Key: { PK: "USER#x", SK: "META" }, ProjectionExpression: "closedAt" })).toBe(false);
+    expect(allow("GetCommand", { Key, ProjectionExpression: "email" })).toBe(false);
+    expect(allow("GetCommand", { Key, ProjectionExpression: "closedAt" })).toBe(true);
+    const members = { KeyConditionExpression: "PK = :pk", ExpressionAttributeValues: { ":pk": `TEAM#${TEAM}` }, ProjectionExpression: "userId" };
+    expect(allow("QueryCommand", members)).toBe(false);
+    expect(allow("QueryCommand", { ...members, Select: "ALL_ATTRIBUTES" })).toBe(false);
+    expect(allow("QueryCommand", { ...members, Select: "SPECIFIC_ATTRIBUTES" })).toBe(true);
+    expect(refused).toHaveLength(6);
   });
 
   it("knows which statuses have ended", () => {
