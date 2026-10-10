@@ -128,6 +128,20 @@ const poolUser = (u: ListedUser): PoolUser => ({
 });
 
 /**
+ * The pool user whose `sub` is `sub` (ListUsers with a `sub = "..."` filter,
+ * which finds native and Google or Apple users alike), or undefined. For the
+ * owner's triage CLI (supply-checkout-bmsh.3), signed with the owner's own
+ * credentials. `sub` must be a UUID: it goes into the filter string.
+ */
+export async function findUserBySub(options: CognitoAdminOptions & { readonly userPoolId: string; readonly sub: string }): Promise<PoolUser | undefined> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(options.sub)) throw new Error("Not a Cognito sub");
+  const answer = (await cognitoRequest(options)("ListUsers", { UserPoolId: options.userPoolId, Filter: `sub = "${options.sub}"`, Limit: 2 })) as { Users?: unknown };
+  const users = (Array.isArray(answer.Users) ? answer.Users : []) as ListedUser[];
+  const found = users.find((u) => typeof u === "object" && u !== null && typeof u.Username === "string");
+  return found ? poolUser(found) : undefined;
+}
+
+/**
  * Every user in the pool, a page of ListUsers (60, its largest) at a time,
  * for the owner's one-time backfill of notice addresses (data/backfill.ts,
  * supply-checkout-8jc.31), signed with the owner's own credentials.

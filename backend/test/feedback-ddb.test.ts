@@ -12,16 +12,12 @@ import {
   closeTeam,
   createInvite,
   createTeam,
-  dismissFeedback,
   FEEDBACK_PER_USER_PER_DAY,
   FeedbackLimitError,
   feedbackInput,
   feedbackIdFor,
-  getFeedback,
-  listFeedback,
   NotFoundError,
   purgeTeam,
-  recordFeedbackBead,
   sendFeedback,
   TeamDeletingError,
   InvalidInputError,
@@ -30,6 +26,8 @@ import {
   teamContextForEmailEvent,
 } from "../src/data/index.js";
 import { connection } from "../src/data/client.js";
+import { ConflictError } from "../src/data/errors.js";
+import { dismissFeedback, getFeedback, listFeedback, recordFeedbackBead } from "../src/data/feedback-owner.js";
 import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
 
 const DAY = 86_400_000;
@@ -179,8 +177,8 @@ describe.skipIf(!endpoint)("reports on DynamoDB Local", () => {
 
     const linked = await recordFeedbackBead(table.db, a.teamId, first.reportId, "supply-checkout-abc.1", at(10));
     expect(linked).toMatchObject({ status: "triaged", beadId: "supply-checkout-abc.1", statusAt: at(10).toISOString(), message: "First" });
-    const dismissed = await dismissFeedback(table.db, b.teamId, second.reportId, at(11));
-    expect(dismissed).toMatchObject({ status: "dismissed", beadId: "" });
+    const dismissed = await dismissFeedback(table.db, b.teamId, second.reportId, { reason: "Duplicate", at: at(11) });
+    expect(dismissed).toMatchObject({ status: "dismissed", beadId: "", dismissReason: "Duplicate" });
     expect((await all("new")).map((r) => r.message)).toEqual(["Third"]);
     expect((await all("triaged")).map((r) => r.message)).toEqual(["First"]);
     expect((await all("dismissed")).map((r) => r.message)).toEqual(["Second"]);
@@ -192,5 +190,26 @@ describe.skipIf(!endpoint)("reports on DynamoDB Local", () => {
     // The send's idempotent replay of a triaged report doesn't put it back to new
     expect((await sendFeedback(table.db, a.owner, input("First"), "ddb-list-0000001", at(20))).created).toBe(false);
     expect((await getFeedback(table.db, a.teamId, first.reportId))?.status).toBe("triaged");
+  });
+
+  it("moves a report once: dismissing a triaged report keeps its bead, and triaging again can't replace it", async () => {
+    const now = new Date("2026-10-09T10:00:00.000Z");
+    const t = await team(now);
+    const a = await sendFeedback(table.db, t.viewer, input("Triage me"), "ddb-once-0000001", now);
+    const b = await sendFeedback(table.db, t.owner, input("Dismiss me"), "ddb-once-0000002", now);
+    await recordFeedbackBead(table.db, t.teamId, a.reportId, "supply-checkout-abc.1", now);
+    await expect(dismissFeedback(table.db, t.teamId, a.reportId, { reason: "Oops", at: now })).rejects.toBeInstanceOf(ConflictError);
+    await expect(recordFeedbackBead(table.db, t.teamId, a.reportId, "supply-checkout-abc.2", now)).rejects.toBeInstanceOf(ConflictError);
+    expect(await getFeedback(table.db, t.teamId, a.reportId)).toMatchObject({ status: "triaged", beadId: "supply-checkout-abc.1" });
+    expect(await rawItem(table.db, `FEEDBACK#${t.teamId}`, `REPORT#${a.reportId}`)).toMatchObject({ GSI1PK: "FEEDBACK#STATUS#triaged", beadId: "supply-checkout-abc.1" });
+    // The same bead again is a repeat, not a conflict
+    expect(await recordFeedbackBead(table.db, t.teamId, a.reportId, "supply-checkout-abc.1", now)).toMatchObject({ status: "triaged" });
+    await dismissFeedback(table.db, t.teamId, b.reportId, { reason: "Not a defect", at: now });
+    await expect(recordFeedbackBead(table.db, t.teamId, b.reportId, "supply-checkout-abc.3", now)).rejects.toBeInstanceOf(ConflictError);
+    expect(await getFeedback(table.db, t.teamId, b.reportId)).toMatchObject({ status: "dismissed", beadId: "", dismissReason: "Not a defect" });
+    // Another team's ID can't reach it
+    const other = await team(now);
+    await expect(dismissFeedback(table.db, other.teamId, b.reportId)).rejects.toBeInstanceOf(NotFoundError);
+    expect(await getFeedback(table.db, other.teamId, b.reportId)).toBeUndefined();
   });
 });
