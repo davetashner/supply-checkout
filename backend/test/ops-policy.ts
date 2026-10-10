@@ -5,6 +5,10 @@
 import {
   COMMITTING_IMPORTS_PARTITION,
   COMP_ATTRIBUTES,
+  FEEDBACK_PREFIX,
+  FEEDBACK_READ_ATTRIBUTES,
+  FEEDBACK_STATUS_ATTRIBUTES,
+  FEEDBACK_STATUS_PREFIX,
   GSI1,
   GSI3,
   IMPORT_INDEX_ATTRIBUTES,
@@ -31,12 +35,16 @@ const indexPartition = (pk: unknown) => typeof pk === "string" && (pk === OPS_TE
 const auditPartition = (pk: unknown) => typeof pk === "string" && pk.startsWith(OPERATOR_AUDIT_PREFIX);
 const partitionKey = (input: Input) => ((input.Item ?? input.Key) as Record<string, unknown> | undefined)?.PK;
 
+const within = (names: Iterable<string>, allowed: readonly string[]) => [...names].every((a) => allowed.includes(a));
+
 function update(input: Input, team: string): boolean {
-  if (partitionKey(input) !== `TEAM#${team}`) return false;
   if (input.ReturnValues !== undefined && !["NONE", "UPDATED_OLD", "UPDATED_NEW"].includes(input.ReturnValues as string)) return false;
-  // Either statement: the comp attributes, or a stuck import's GSI1 keys
   const named = [...namedAttributes(input)];
-  return [COMP_ATTRIBUTES, IMPORT_INDEX_ATTRIBUTES].some((allowed) => named.every((a) => (allowed as readonly string[]).includes(a)));
+  // A report's status fields (supply-checkout-3sv.26), in the tagged team's reports partition
+  if (partitionKey(input) === `${FEEDBACK_PREFIX}${team}`) return within(named, FEEDBACK_STATUS_ATTRIBUTES);
+  if (partitionKey(input) !== `TEAM#${team}`) return false;
+  // Either statement: the comp attributes, or a stuck import's GSI1 keys
+  return [COMP_ATTRIBUTES, IMPORT_INDEX_ATTRIBUTES].some((allowed) => within(named, allowed));
 }
 
 /** The calls the operator-access role allows, for a session tagged with `team` ("." for none). */
@@ -47,11 +55,23 @@ export function opsPolicy(team: string, denied: { command: string; input: Input 
         case "QueryCommand": {
           const pk = (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
           if (input.IndexName === GSI3) return indexPartition(pk) && ["ALL_PROJECTED_ATTRIBUTES", "SPECIFIC_ATTRIBUTES"].includes(input.Select as string);
+          if (input.IndexName === GSI1 && typeof pk === "string" && pk.startsWith(FEEDBACK_STATUS_PREFIX)) {
+            // Reports by status (supply-checkout-3sv.26): their own attributes, projected
+            return input.Select === "SPECIFIC_ATTRIBUTES" && within(namedAttributes(input), FEEDBACK_READ_ATTRIBUTES);
+          }
           if (input.IndexName === GSI1) {
             return pk === COMMITTING_IMPORTS_PARTITION && input.Select === "SPECIFIC_ATTRIBUTES" && [...namedAttributes(input)].every((a) => (STUCK_IMPORT_ATTRIBUTES as readonly string[]).includes(a));
           }
           return input.IndexName === undefined && auditPartition(pk);
         }
+        case "GetCommand":
+          // One report in the tagged team's reports partition, projected (dynamodb:Select SPECIFIC_ATTRIBUTES)
+          return (
+            partitionKey(input) === `${FEEDBACK_PREFIX}${team}` &&
+            typeof input.ProjectionExpression === "string" &&
+            (input.Select === undefined || input.Select === "SPECIFIC_ATTRIBUTES") &&
+            within(namedAttributes(input), FEEDBACK_READ_ATTRIBUTES)
+          );
         case "PutCommand":
           return auditPartition(partitionKey(input));
         case "UpdateCommand":
@@ -71,7 +91,7 @@ export function opsPolicy(team: string, denied: { command: string; input: Input 
               [RECEIPT_USAGE_ATTRIBUTES, TEST_MARK_ATTRIBUTES].some((allowed) => [...namedAttributes(request)].every((a) => (allowed as readonly string[]).includes(a))),
           );
         default:
-          // No GetItem, Scan, DeleteItem, or batch calls but the receipt counters' reads
+          // No Scan, DeleteItem, or batch calls but the receipt counters' reads
           return false;
       }
     })();

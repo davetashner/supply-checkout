@@ -1,7 +1,7 @@
 // Unit tests for the operator page's config and API client (ops/lib/config.js, ops/lib/api.js).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ApiError, NetworkError, PAGE_SIZE, SEARCH_REQUESTS, createApi, teamPath } from "../lib/api.js";
+import { ApiError, NetworkError, PAGE_SIZE, SEARCH_REQUESTS, createApi, reportPath, teamPath } from "../lib/api.js";
 import { CONFIG_PATH, ConfigError, checkConfig, envDomainOf, loadConfig } from "../lib/config.js";
 
 const location = { protocol: "https:", hostname: "ops.example.test" };
@@ -150,4 +150,37 @@ test("a request that takes too long is aborted", async () => {
   const fetchFn = (url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
   const api = createApi({ apiUrl: "https://api.example.test", getToken: () => "T", fetchFn, timeoutMs: 5 });
   await assert.rejects(api.getTeam("t1"), NetworkError);
+});
+
+test("reports (supply-checkout-3sv.26): list by status, read one, dismiss and record with an Idempotency-Key; IDs and status checked first", async () => {
+  const id = "0123456789abcdef0123456789abcdef";
+  const { api, calls } = apiWith([
+    { status: 200, body: { reports: [{ reportId: id }], cursor: "r2" } },
+    { status: 200, body: { reports: "no", cursor: 3 } },
+    { status: 200, body: { report: { reportId: id }, email: null, emailNote: null } },
+    { status: 200, body: { eventId: "e1" } },
+    { status: 200, body: { eventId: "e2" } },
+  ]);
+  assert.deepEqual(await api.listFeedback({ status: "new", cursor: "r1" }), { reports: [{ reportId: id }], cursor: "r2" });
+  assert.equal(calls[0].url.pathname, "/ops/feedback");
+  assert.equal(calls[0].url.search, `?status=new&cursor=r1&limit=${PAGE_SIZE}`);
+  assert.deepEqual(await api.listFeedback(), { reports: [], cursor: undefined });
+  assert.equal(calls[1].url.search, `?limit=${PAGE_SIZE}`);
+  assert.deepEqual((await api.getFeedback("t1", id)).report, { reportId: id });
+  assert.equal(calls[2].url.pathname, `/ops/feedback/t1/${id}`);
+  await api.dismissFeedback("t1", id, { reason: "Duplicate" }, "key-1");
+  assert.equal(calls[3].init.method, "POST");
+  assert.equal(calls[3].url.pathname, `/ops/feedback/t1/${id}/dismiss`);
+  assert.deepEqual(calls[3].init.headers, { authorization: "Bearer TOKEN", "content-type": "application/json", "idempotency-key": "key-1" });
+  assert.deepEqual(JSON.parse(calls[3].init.body), { reason: "Duplicate" });
+  await api.recordFeedback("t1", id, { beadId: "supply-checkout-a.1" }, "key-2");
+  assert.equal(calls[4].url.pathname, `/ops/feedback/t1/${id}/record`);
+  assert.equal(calls[4].init.headers["idempotency-key"], "key-2");
+  // Nothing is sent for a bad status, team or report ID
+  await assert.rejects(api.listFeedback({ status: "open" }), ApiError);
+  await assert.rejects(api.getFeedback("t1", "0123abcd"), ApiError);
+  await assert.rejects(api.getFeedback("../x", id), ApiError);
+  assert.throws(() => reportPath("t1", id.toUpperCase()), ApiError);
+  assert.equal(reportPath("t1", id), `/ops/feedback/t1/${id}`);
+  assert.equal(calls.length, 5);
 });

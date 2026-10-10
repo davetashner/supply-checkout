@@ -48,10 +48,36 @@ const STRIPE = {
   hasMoreInvoices: false,
 };
 
+const REPORT_A = "0123456789abcdef0123456789abcdef";
+const REPORT_B = "fedcba9876543210fedcba9876543210";
+/** A report as GET /ops/feedback returns it (backend/src/operator/ops-handler.ts, opsFeedbackBody). */
+const report = (reportId, extra = {}) => ({
+  reportId,
+  shortId: reportId.slice(0, 8),
+  teamId: "team_acme",
+  userId: "11111111-2222-4333-8444-555555555555",
+  role: "member",
+  createdAt: "2026-10-01T09:00:00.000Z",
+  category: "bug",
+  message: "The scanner froze\non the second scan",
+  expected: "It keeps scanning",
+  contactOk: true,
+  context: { build: "1.13.0", screen: "scan", browser: "safari" },
+  status: "new",
+  beadId: null,
+  statusAt: null,
+  dismissReason: null,
+  ...extra,
+});
+
 /** A stand-in for the /ops routes, as backend/src/operator/ops-handler.ts answers them. */
 class FakeOpsApi {
-  constructor({ teams = [structuredClone(TEAM), { ...structuredClone(TEAM), id: "team_beta", name: "Beta Builders", comp: null, stripeCustomerId: null, owners: [] }] } = {}) {
+  constructor({
+    teams = [structuredClone(TEAM), { ...structuredClone(TEAM), id: "team_beta", name: "Beta Builders", comp: null, stripeCustomerId: null, owners: [] }],
+    reports = [report(REPORT_A), report(REPORT_B, { teamId: "team_beta", contactOk: false, message: "Add a dark mode", category: "idea", createdAt: "2026-10-02T09:00:00.000Z" })],
+  } = {}) {
     this.teams = new Map(teams.map((t) => [t.id, t]));
+    this.reports = reports;
     // As the ops authorizer and function would: an ops-client token, until it's revoked
     this.revoked = false;
     this.requests = [];
@@ -60,7 +86,7 @@ class FakeOpsApi {
   }
 
   cors(extra = {}) {
-    return { "access-control-allow-origin": SITE, "access-control-allow-headers": "authorization, content-type, idempotency-key", "access-control-allow-methods": "GET, PUT, DELETE", ...extra };
+    return { "access-control-allow-origin": SITE, "access-control-allow-headers": "authorization, content-type, idempotency-key", "access-control-allow-methods": "GET, PUT, DELETE, POST", ...extra };
   }
 
   json(route, status, body) {
@@ -78,7 +104,8 @@ class FakeOpsApi {
     if (this.revoked || claims.client_id !== CLIENT_ID || claims.iss !== OPS_ISS) return this.json(route, 401, { message: "Unauthorized" });
     if (headers.cookie) throw new Error("The page sent a cookie to the API");
     if (this.forbidden) return this.json(route, 403, { error: { code: "permission_denied", message: "Operators only" } });
-    const [, , kind, id, sub] = url.pathname.split("/");
+    const [, , kind, id, sub, verb] = url.pathname.split("/");
+    if (kind === "feedback") return this.feedback(route, req.method(), url, headers, body, id, sub, verb);
     if (kind === "teams" && !id && req.method() === "GET") {
       const q = (url.searchParams.get("q") ?? "").toLowerCase();
       const teams = [...this.teams.values()].filter((t) => !q || t.name.toLowerCase().includes(q) || t.id === q);
@@ -114,6 +141,23 @@ class FakeOpsApi {
       return this.json(route, 200, { events: url.searchParams.get("cursor") ? events.slice(1) : events });
     }
     return this.json(route, 404, { error: { code: "not_found", message: "No such route" } });
+  }
+
+  feedback(route, method, url, headers, body, teamId, reportId, verb) {
+    if (!teamId && method === "GET") {
+      const status = url.searchParams.get("status") ?? "new";
+      return this.json(route, 200, { reports: this.reports.filter((r) => r.status === status) });
+    }
+    const found = this.reports.find((r) => r.teamId === teamId && r.reportId === reportId);
+    if (!found) return this.json(route, 404, { error: { code: "not_found", message: "No such report" } });
+    if (!verb && method === "GET") return this.json(route, 200, { report: found, email: found.contactOk ? "sender@example.test" : null, emailNote: null });
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(headers["idempotency-key"] ?? "")) return this.json(route, 400, { error: { code: "bad_request", message: "Send an Idempotency-Key" } });
+    if (found.status !== "new") return this.json(route, 409, { error: { code: "aborted", message: `This report is already ${found.status}${found.beadId ? ` (bead ${found.beadId})` : ""}` } });
+    const eventId = `evt_${this.audit.length + 1}`;
+    this.audit.unshift({ ts: new Date(NOW).toISOString(), action: `ops.feedback.${verb}`, teamId: "PLATFORM", target: `feedback/${teamId}/${reportId}`, operatorSub: "sub-1", after: {} });
+    if (verb === "dismiss") Object.assign(found, { status: "dismissed", dismissReason: body.reason, statusAt: new Date(NOW).toISOString() });
+    else Object.assign(found, { status: "triaged", beadId: body.beadId, statusAt: new Date(NOW).toISOString() });
+    return this.json(route, 200, { eventId, replayed: false, report: found });
   }
 }
 
@@ -485,4 +529,94 @@ test("refuses a config that points anywhere but this environment", async ({ page
   await page.goto(`${SITE}/`);
   await expect(page.getByRole("alert")).toHaveText(`ops-config.json apiUrl must be ${API}`);
   await expect(page.getByRole("button", { name: "Sign in" })).toHaveCount(0);
+});
+
+test("lists reports by status, opens one with its sender's verified email, and records its bead (supply-checkout-3sv.26)", async ({ page }) => {
+  const { api } = await signIn(page);
+  await page.getByRole("link", { name: "Feedback" }).click();
+  await expect(page.getByRole("heading", { name: "Feedback", level: 1 })).toBeVisible();
+  const table = page.getByRole("table", { name: "New reports" });
+  await expect(table.getByRole("row")).toHaveCount(3);
+  await expect(table.getByRole("row", { name: /01234567/ })).toContainText("The scanner froze on the second scan");
+  expect(api.requests.filter((r) => r.path === "/ops/feedback").map((r) => r.query)).toEqual([{ status: "new", limit: "25" }]);
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+  await table.getByRole("link", { name: "Report 01234567" }).click();
+  await expect(page).toHaveURL(`${SITE}/#/report/team_acme/${REPORT_A}`);
+  await expect(page.getByRole("heading", { name: "Report 01234567", level: 1 })).toBeVisible();
+  await expect(page.locator(".report-text").first()).toHaveText("The scanner froze\non the second scan");
+  await expect(page.locator("#contact")).toHaveText("Email (verified): sender@example.test");
+  await expect(page.locator("dl.facts")).toContainText("member (user 11111111-2222-4333-8444-555555555555)");
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+  // A bead ID is checked before anything is sent
+  await page.getByLabel("Bead ID").fill("other-project-1");
+  await page.getByRole("button", { name: "Record bead" }).click();
+  await expect(page.getByRole("alert")).toHaveText("Give a bead ID of this project, like supply-checkout-abc.1");
+  expect(api.requests.filter((r) => r.method === "POST")).toEqual([]);
+  await page.getByLabel("Bead ID").fill("supply-checkout-abc.1");
+  await page.getByRole("button", { name: "Record bead" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Recorded" })).toHaveText("Recorded supply-checkout-abc.1: the report is triaged. Audit event evt_2.");
+  const [post] = api.requests.filter((r) => r.method === "POST");
+  expect(post.path).toBe(`/ops/feedback/team_acme/${REPORT_A}/record`);
+  expect(post.body).toEqual({ beadId: "supply-checkout-abc.1" });
+  expect(post.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
+  // Read again: triaged, and no forms for it now
+  await expect(page.locator("dl.facts")).toContainText("Triaged: supply-checkout-abc.1");
+  await expect(page.getByRole("button", { name: "Record bead" })).toHaveCount(0);
+  await expect(page.getByText("Only a new report can be dismissed or have a bead recorded.")).toBeVisible();
+
+  // Back to the list it's in now, read again
+  await page.getByRole("link", { name: "Back to feedback" }).click();
+  await expect(page.getByLabel("Status")).toHaveValue("triaged");
+  await expect(page.getByRole("table", { name: "Triaged reports" }).getByRole("row", { name: /01234567/ })).toContainText("Triaged: supply-checkout-abc.1");
+  await page.getByLabel("Status").selectOption("dismissed");
+  await page.getByRole("button", { name: "Show" }).click();
+  await expect(page.getByText("No dismissed reports.")).toBeVisible();
+  await noViolations(page);
+});
+
+test("dismisses a report with a reason, says so when it isn't new any more, and never looks up an email it wasn't allowed to", async ({ page }) => {
+  // Straight to the report: it's where the page comes back to after signing in
+  const { api } = await serve(page);
+  await page.goto(`${SITE}/#/report/team_beta/${REPORT_B}`);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("heading", { name: "Report fedcba98", level: 1 })).toBeVisible();
+  await expect(page.locator("#contact")).toHaveText("The sender didn't agree to be contacted: no email was looked up.");
+  await page.getByRole("button", { name: "Dismiss report" }).click();
+  await expect(page.getByRole("alert")).toHaveText("Give a reason (at least 3 characters)");
+  // Meanwhile someone records a bead for it
+  Object.assign(api.reports[1], { status: "triaged", beadId: "supply-checkout-x.1" });
+  await page.getByLabel(/^Reason/).fill("Not something we'll build");
+  await page.getByRole("button", { name: "Dismiss report" }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Not saved. This report is already triaged (bead supply-checkout-x.1)");
+  await alert.getByRole("button", { name: "Read the report again" }).click();
+  await expect(page.locator("dl.facts")).toContainText("Triaged: supply-checkout-x.1");
+
+  // Put back to new (say the bead was a mistake, fixed with the CLI): dismissed from the list
+  api.reports[1] = report(REPORT_B, { teamId: "team_beta", contactOk: false });
+  await page.getByRole("link", { name: "Feedback", exact: true }).click();
+  await page.getByRole("link", { name: "Report fedcba98" }).click();
+  await expect(page.getByLabel(/^Reason/)).toHaveValue("Not something we'll build");
+  await page.getByLabel(/^Reason/).fill("Duplicate of a known issue");
+  await page.getByRole("button", { name: "Dismiss report" }).click();
+  await expect(page.getByText("Dismissed. Audit event")).toBeVisible();
+  const post = api.requests.filter((r) => r.method === "POST").at(-1);
+  expect(post.body).toEqual({ reason: "Duplicate of a known issue" });
+  await expect(page.locator("dl.facts")).toContainText("Dismissed: Duplicate of a known issue");
+  await noViolations(page);
+});
+
+test("shows a report's text as text, never as HTML", async ({ page }) => {
+  const hostile = report(REPORT_A, { message: '<img src=x onerror="window.__pwned=1">Broken', expected: "<b>bold</b>" });
+  await signIn(page, { api: new FakeOpsApi({ reports: [hostile] }) });
+  await page.getByRole("link", { name: "Feedback" }).click();
+  await expect(page.getByRole("row", { name: /01234567/ })).toContainText('<img src=x onerror="window.__pwned=1">Broken');
+  await page.getByRole("link", { name: "Report 01234567" }).click();
+  await expect(page.locator(".report-text").first()).toHaveText('<img src=x onerror="window.__pwned=1">Broken');
+  await expect(page.locator(".report-text").nth(1)).toHaveText("<b>bold</b>");
+  expect(await page.locator("main img, main b").count()).toBe(0);
+  expect(await page.evaluate(() => window.__pwned)).toBeUndefined();
+  await noViolations(page);
 });

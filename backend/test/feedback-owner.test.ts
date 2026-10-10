@@ -1,5 +1,6 @@
-// The owner's side of reports (src/data/feedback-owner.ts): that no Lambda can
-// reach it, and its status preconditions with scripted answers. The same
+// The owner's side of reports (src/data/feedback-owner.ts): that only the
+// operator data module (data/operator.ts, the /ops/feedback routes) reaches it
+// among the Lambda sources, and its status preconditions with scripted answers. The same
 // expressions run against DynamoDB Local in feedback-ddb.test.ts.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -24,12 +25,13 @@ function sources(dir: string): string[] {
   });
 }
 
-describe("no Lambda bundle can import the owner's report functions", () => {
-  it("is imported by no file under src/ (Lambda entries and what they import all live there), nor is owner-aws", () => {
+describe("only the operator data module imports the owner's report functions", () => {
+  it("is imported under src/ only by data/operator.ts (whose report functions take an Operator and audit), and owner-aws by nothing", () => {
     const importers = sources(SRC)
       .filter((file) => !file.endsWith("feedback-owner.ts"))
       .filter((file) => IMPORT.test(readFileSync(file, "utf8")));
-    expect(importers.map((f) => f.slice(SRC.length))).toEqual([]);
+    expect(importers.map((f) => f.slice(SRC.length).replaceAll("\\", "/"))).toEqual(["/data/operator.ts"]);
+    expect(readFileSync(join(SRC, "data/operator.ts"), "utf8")).not.toMatch(/owner-aws/);
   });
 
   it("looks for static, side-effect, dynamic and CommonJS imports of either owner-only module", () => {
@@ -42,7 +44,7 @@ describe("no Lambda bundle can import the owner's report functions", () => {
   });
 
   it("is not exported from the data module's entry point, nor from feedback.ts", async () => {
-    const owner = ["listFeedback", "getFeedback", "recordFeedbackBead", "dismissFeedback", "DISMISS_REASON_MAX"];
+    const owner = ["listFeedback", "getFeedback", "recordFeedbackBead", "dismissFeedback", "changeFeedbackStatus", "DISMISS_REASON_MAX"];
     for (const name of owner) expect(barrel).not.toHaveProperty(name);
     const feedback = await import("../src/data/feedback.js");
     for (const name of owner) expect(feedback).not.toHaveProperty(name);
@@ -64,26 +66,37 @@ function conflicting(current: Record<string, unknown> | undefined) {
   return { db, sent };
 }
 
+/** A Db whose update succeeds, then reads `after` back. */
+function applying(after: Record<string, unknown>) {
+  const sent: Record<string, unknown>[] = [];
+  const db = fakeDb(async (command) => {
+    sent.push(command.input);
+    return "UpdateExpression" in command.input ? {} : { Item: after };
+  });
+  return { db, sent };
+}
+
 describe("status preconditions", () => {
   it("only moves a report that's still new", async () => {
-    const sent: Record<string, unknown>[] = [];
-    const db = fakeDb(async (command) => {
-      sent.push(command.input);
-      return { Attributes: { type: "feedback", reportId: REPORT, status: "triaged", beadId: "supply-checkout-abc.1", PK: "x", SK: "y", GSI1PK: "z" } };
-    });
+    const { db, sent } = applying({ type: "feedback", reportId: REPORT, status: "triaged", beadId: "supply-checkout-abc.1", PK: "x", SK: "y", GSI1PK: "z" });
     const done = await recordFeedbackBead(db, TEAM, REPORT, "supply-checkout-abc.1");
     expect(done).toEqual({ type: "feedback", reportId: REPORT, status: "triaged", beadId: "supply-checkout-abc.1" });
+    // Nothing asked back (the operator-access role may name only the status attributes), then a projected, consistent read
     expect(sent[0]).toMatchObject({
-      ConditionExpression: "attribute_exists(PK) AND #type = :feedback AND #status = :from",
+      ConditionExpression: "attribute_exists(#pk) AND #type = :feedback AND #status = :from",
+      ReturnValues: "NONE",
       ExpressionAttributeValues: expect.objectContaining({ ":from": "new", ":status": "triaged", ":bead": "supply-checkout-abc.1", ":partition": "FEEDBACK#STATUS#triaged" }),
     });
+    expect(Object.values(sent[0]?.ExpressionAttributeNames as Record<string, string>).sort()).toEqual(["GSI1PK", "PK", "beadId", "status", "statusAt", "type"]);
+    expect(sent[1]).toMatchObject({ ConsistentRead: true, ProjectionExpression: expect.any(String) });
     await dismissFeedback(db, TEAM, REPORT, { reason: "Duplicate of an open bead" });
-    expect(sent[1]).toMatchObject({
-      UpdateExpression: expect.stringContaining("dismissReason = :reason"),
+    expect(sent[2]).toMatchObject({
+      UpdateExpression: expect.stringContaining("#reason = :reason"),
+      ExpressionAttributeNames: expect.objectContaining({ "#reason": "dismissReason" }),
       ExpressionAttributeValues: expect.objectContaining({ ":from": "new", ":status": "dismissed", ":bead": "", ":reason": "Duplicate of an open bead" }),
     });
     await dismissFeedback(db, TEAM, REPORT);
-    expect(sent[2]?.UpdateExpression).not.toContain("dismissReason");
+    expect(sent[4]?.UpdateExpression).not.toContain("reason");
   });
 
   it("refuses to dismiss a triaged report, or to triage one again with another bead, and names the bead, not the text", async () => {

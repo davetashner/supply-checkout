@@ -104,6 +104,7 @@ th { color: var(--muted); font-weight: 600; }
 .notice.success { border-color: var(--ok-line); background: var(--ok-bg); }
 .notice.error { border-color: var(--bad-line); background: var(--bad-bg); }
 .notice.conflict { border-color: var(--warn-line); background: var(--warn-bg); }
+.report-text { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin: 0; }
 .signin { max-width: 520px; margin: 48px auto; }
 @media (max-width: 700px) {
   table, thead, tbody, tr, td, th { display: block; }
