@@ -33,10 +33,46 @@ jobs:
         with:
           release-type: node
 
+  release-notes:
+    # The What's New notes for the release (docs/releases.md, "What's New notes"): feat PRs write
+    # them under "upcoming" in src/whats-new.json, and here, each time release-please opens or
+    # rebuilds its pull request, they're stamped with the release's version and CHANGELOG.md date
+    # and pushed to its branch. release-please's extra-files can't stamp a date into JSON, and
+    # rebuilds the branch from main, so this runs after every rebuild. Runs only main's
+    # scripts/check-whats-new.mjs (node built-ins, no npm install) with the write token.
+    needs: release-please
+    if: needs.release-please.outputs.pr != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      BRANCH: ${{ fromJSON(needs.release-please.outputs.pr).headBranchName }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BRANCH }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Stamp the upcoming notes
+        run: node scripts/check-whats-new.mjs --stamp
+      - name: Push the stamp to the release branch
+        run: |
+          if git diff --quiet -- src/whats-new.json; then
+            echo "Nothing to stamp"
+            exit 0
+          fi
+          version="$(node -p 'require("./package.json").version')"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --signoff -m "chore: stamp the What's New notes for ${version}" -- src/whats-new.json
+          git push origin "HEAD:refs/heads/${BRANCH}"
+
   release-pr-checks:
     # Pull requests opened by GITHUB_TOKEN don't trigger CI, but main requires
-    # "CI passed" before merging, so start CI on the release branch directly.
-    needs: release-please
+    # "CI passed" before merging, so start CI on the release branch directly,
+    # once its What's New notes are stamped.
+    needs: [release-please, release-notes]
     if: needs.release-please.outputs.pr != ''
     runs-on: ubuntu-latest
     permissions:

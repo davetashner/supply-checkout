@@ -145,14 +145,11 @@ The prod journey tests ([the plan](journey-tests-plan.md), "Credentials and secr
 
 The app's What's New banner ([web-app.md](web-app.md#the-web-app-on-aws), `supply-checkout-005.17`) shows a short note for each user-facing change released in the last 14 days. The notes are written by hand, in `src/whats-new.json`, because commit titles are written for developers. The banner is drawn from that file, and the file is shipped with the app.
 
-**The check.** `scripts/check-whats-new.mjs` (in `npm run lint`) reads the newest release in `CHANGELOG.md`. Every entry under its **Features** must have a note, or an explicit skip with a reason. Fixes don't need one, but a fix users will notice deserves a note. On an ordinary pull request, `CHANGELOG.md` is main's, and its newest release already has notes, so the check passes. It only fails on release-please's pull request, whose `CHANGELOG.md` adds the next release. The error names each `feat:` entry that has neither a note nor a skip. The check also refuses a malformed file: an unknown field, a bad date, releases out of order, a title over 60 characters or text over 200, a note without `prs`, or a pull request that is both noted and skipped. Its tests are in `scripts/check-whats-new.test.mjs`.
-
-**Writing them.** When the release pull request's CI fails the check (or before, if you know what's in it), open a pull request to main that adds the release at the top of `src/whats-new.json`. release-please then carries the notes into its own pull request when it updates it. Don't push to release-please's branch, because it rewrites that branch.
+**Write them in the feature's own pull request.** A `feat:` pull request adds its note, or a skip with a reason, under the `upcoming` entry at the top of `src/whats-new.json`; add that entry if it isn't there. Open the pull request first, to get its number for `prs` or `skip`. The `upcoming` entry has no `version` or `date`: the release fills both in, and until then the app never shows it (the banner shows releases dated in the last 14 days, and it has no date).
 
 ```json
 {
-  "version": "1.10.0",
-  "date": "2026-10-08",
+  "version": "upcoming",
   "notes": [
     { "title": "See who's signed in", "text": "The bar under the header shows your name and your role in the team.", "prs": [605] }
   ],
@@ -160,10 +157,26 @@ The app's What's New banner ([web-app.md](web-app.md#the-web-app-on-aws), `suppl
 }
 ```
 
-- `version` is the release's version, and `date` is the day it's deployed to prod. The banner shows a release from that day until 14 days later, so a date later than the deploy holds the notes back until then. Releases go newest first.
+**The release stamps them.** Each time release-please opens or rebuilds its release pull request, the `release-notes` job in `.github/workflows/release.yml` runs `node scripts/check-whats-new.mjs --stamp` on that branch: the `upcoming` entry becomes the release's entry, with the release's version and the date of its `CHANGELOG.md` heading, and the job pushes that to the branch before it starts CI there. Nobody writes notes on the release branch, and a rebuild can't wipe them: they're on main, and the job stamps them again after every rebuild. A release with no `upcoming` entry, or one that already has an entry of its own, isn't changed. The owner reviews the stamped notes as part of the release pull request.
+
+Why a job and not release-please's own `extra-files`: release-please can write the version into a JSON field (a `json` extra file with a `jsonpath`), but not a date, and `extra-files` needs moving the release-please setup to a manifest config file, which can rename its release branch. The job is about 20 lines and runs only main's own script.
+
+**The check.** `scripts/check-whats-new.mjs` (in `npm run lint`) checks three things:
+
+- **A `feat:` pull request has its note.** In CI, a pull request whose title is `feat:` (the squash commit's message, which release-please reads) fails until the `upcoming` entry notes or skips its number. Change the title, and CI runs again. Locally, with no pull request number yet, a `feat:` commit since `origin/main` needs the `upcoming` entry to cover some pull request that main's doesn't. Other pull requests aren't checked, and pushes, the merge queue and the release branch have no pull request to check.
+- **The newest release is covered.** If the newest release in `CHANGELOG.md` has entries under **Features**, every one needs a note or a skip in that release's entry. A release with no features (only fixes) needs no entry at all. On an ordinary pull request that's main's newest release, which is covered already; on the release pull request it's the stamped entry. Fixes don't need a note, but a fix users will notice deserves one.
+- **The file is well formed.** It refuses an unknown field, a bad date, releases out of order, a title over 60 characters or text over 200, a note without `prs`, a pull request that's both noted and skipped, an `upcoming` entry that isn't first or has a date.
+
+Its tests are in `scripts/check-whats-new.test.mjs`.
+
+Don't push notes to release-please's branch by hand: it rewrites that branch. If a release pull request's check fails anyway, fix the notes on main in a pull request; the `release-notes` job stamps them the next time release-please rebuilds its branch, which it does when the release's changelog changes (any `feat:` or `fix:` merge).
+
+If a `feat:` pull request is still open when a release goes out, its note is now under the release's version on main: when you bring the branch up to date, move the note into a new `upcoming` entry, or the check fails.
+
+- `version` is the release's version and `date` is its `CHANGELOG.md` date: the day release-please last built the release pull request, which is usually the day it's merged and deployed. The banner shows a release from that day until 14 days later. Releases go newest first.
 - A note says what someone using the app can now do, or what's different, in a sentence or two. Write for the people using the app, not the people who built it. Don't use pull request titles, and don't name internals ("the API", "DynamoDB", "a migration"). Use the app's own words (projects, inventory, checkout, Account), and keep the title under 60 characters and the text under 200. One note can cover several pull requests (`prs`), for example a feature built in a backend PR and an app PR.
 - Skip a `feat:` entry that users won't see, such as a support tool, the marketing site, infrastructure, metrics or a migration, and give a short reason. The reason isn't shown in the app, but reviewers read it.
-- The owner reviews the notes as part of the release pull request, before approving it. They're the words customers will read.
+- The owner reviews the notes in the feature's pull request and again in the release pull request, before approving it. They're the words customers will read.
 
 ## Real-device check
 

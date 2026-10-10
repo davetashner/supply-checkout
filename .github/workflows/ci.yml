@@ -79,7 +79,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # On a pull request, scripts/check-whats-new.mjs (in npm run lint) needs a feat: PR's
+      # What's New note or skip under "upcoming"; other runs have no PR, so they're empty
       - run: npm run lint
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
       # Only journeys.yml may name the journey tests' environment, and nothing a pull request starts
       # may reach it (supply-checkout-o60.4). It parses the workflows with the yaml package.
       - run: node scripts/check-workflow-environments.mjs
