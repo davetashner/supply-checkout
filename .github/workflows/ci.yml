@@ -450,13 +450,14 @@ jobs:
             echo "backend=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if grep -Eq '^(infra/|backend/|scripts/npm-audit|\.github/workflows/ci\.yml$)' <<< "$changed"; then
+          if grep -Eq '^(infra/|backend/|scripts/npm-audit|scripts/vitest-coverage|\.github/workflows/ci\.yml$)' <<< "$changed"; then
             echo "infra=true" >> "$GITHUB_OUTPUT"
           else
             echo "infra=false" >> "$GITHUB_OUTPUT"
           fi
-          # docs/api/openapi.yaml is checked against the routes by a backend test
-          if grep -Eq '^(backend/|docs/api/|\.github/workflows/ci\.yml$)' <<< "$changed"; then
+          # docs/api/openapi.yaml is checked against the routes by a backend test, and
+          # scripts/vitest-coverage.mjs is both jobs' coverage gate
+          if grep -Eq '^(backend/|docs/api/|scripts/vitest-coverage|\.github/workflows/ci\.yml$)' <<< "$changed"; then
             echo "backend=true" >> "$GITHUB_OUTPUT"
           else
             echo "backend=false" >> "$GITHUB_OUTPUT"
@@ -467,7 +468,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.infra == 'true' && needs.changes.outputs.beads_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # About 7.5 minutes with coverage on; the cap leaves room for a slow runner
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: infra
@@ -489,7 +491,15 @@ jobs:
       # exceptions in scripts/npm-audit-exceptions.json (see their reasons).
       - run: node ../scripts/npm-audit.mjs
       - run: npm run lint
-      - run: npm test
+      # Fails below infra/coverage-thresholds.json for lib/ and bin/, and posts a
+      # coverage table to the job summary (scripts/vitest-coverage.mjs)
+      - run: npm run test:coverage
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && hashFiles('infra/coverage/coverage-final.json') != ''
+        with:
+          name: coverage-report-infra
+          path: infra/coverage/
+          retention-days: 14
       # Account-agnostic synth (no AWS credentials). cdk-nag AwsSolutions runs
       # as a validation plugin and fails the synth on any unacknowledged finding.
       # Only us-east-1 is deployed today; us-west-2 is synthesized too so the
@@ -587,9 +597,17 @@ jobs:
           done
           echo "::error::DynamoDB Local did not start"
           exit 1
-      - run: npm test
+      # Fails below backend/coverage-thresholds.json for src/, and posts a
+      # coverage table to the job summary (scripts/vitest-coverage.mjs)
+      - run: npm run test:coverage
         env:
           CI: true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && hashFiles('backend/coverage/coverage-final.json') != ''
+        with:
+          name: coverage-report-backend
+          path: backend/coverage/
+          retention-days: 14
 
   ci-passed:
     name: CI passed
