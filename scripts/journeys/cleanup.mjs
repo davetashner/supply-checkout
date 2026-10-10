@@ -10,7 +10,8 @@
 //    two journey teams).
 // 2. In both long-lived teams, deletes every project and item named for this run, and anything
 //    named for another run that's more than a day old (a crashed run's leftovers); projects first,
-//    including a General Use (no job) project whose every line is such an item, then the items.
+//    including a General Use (no job) project whose every line is such an item, and a finished
+//    General Use with no lines left (J14's), then the items.
 //    Then puts back the team's equipment markup if J2.5's test left it on its sentinel value
 //    (lib/settings.mjs): a run that died mid-test leaves the team's settings as they were.
 // 3. Deletes each throwaway account a run recorded under runs/ in the mail bucket and didn't
@@ -50,7 +51,11 @@ export async function cleanTeam(api, teamId, { runId, now }) {
   const runKeys = new Set(runProducts.map((p) => p.id));
   const lineIsRuns = (key, line, project) => runKeys.has(key) || scoped({ data: { name: line?.name, code: line?.code, createdAt: project.data?.createdAt } });
   const generalUse = (p) => p.data?.kind === "adhoc" && Object.keys(p.data.items ?? {}).length > 0 && Object.entries(p.data.items).every(([k, line]) => lineIsRuns(k, line, p));
-  const runProjects = projects.filter((p) => scoped(p) || generalUse(p));
+  // A finished General Use with no lines left: J14 moves its only line to the run's project, then
+  // taps Finished Return. Nothing is on it, so in a journey team it's only ever a test's leftover.
+  // An open one is left alone: the next quick take adds to it.
+  const emptyFinishedGeneralUse = (p) => p.data?.kind === "adhoc" && p.data.status === "closed" && Object.keys(p.data.items ?? {}).length === 0;
+  const runProjects = projects.filter((p) => scoped(p) || generalUse(p) || emptyFinishedGeneralUse(p));
   for (const p of runProjects) {
     try { await api.deleteProject(teamId, p.id, p.version); done.push("project"); } catch (err) { left.push(`a project (${message(err)})`); }
   }

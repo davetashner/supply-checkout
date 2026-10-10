@@ -2,7 +2,7 @@
 // project's long-lived team, with a run-named item and project: Quick take onto General Use (no
 // job), Return from the project list, move the line to the run's project, and Finished Return on
 // General Use, so the next run starts with none open. Cleanup deletes the item, the project and
-// the General Use project (every line on it is the run's).
+// the General Use project (finished, with no lines left).
 import { addItem, createProject, goToInventory, goToProjects, inventoryRow, lineRow, modal, saveReturn, startReturn, finishReturn } from "../ui/index.js";
 import { expect, test } from "./fixtures.mjs";
 import { openTeam, runData } from "./steps.mjs";

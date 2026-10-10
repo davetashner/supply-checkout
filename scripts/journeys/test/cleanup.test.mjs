@@ -27,6 +27,9 @@ const teamDocs = () => ({
     doc("adhoc-3", { kind: "adhoc", createdAt: "2026-10-07T11:00:00Z", items: { [runBarcode(RUN, 1)]: { code: runBarcode(RUN, 1), name: runName(RUN, "Gloves") } } }),
     doc("adhoc-2", { kind: "adhoc", createdAt: "2026-10-07T11:00:00Z", items: { [runBarcode(RUN, 1)]: { name: runName(RUN, "Gloves") }, SKU1: { code: "SKU1", name: "Paper towels" } } }),
     doc("adhoc-1", { kind: "adhoc", items: {} }),
+    doc("adhoc-empty-closed", { kind: "adhoc", status: "closed", createdAt: "2020-01-01T00:00:00Z", items: {} }, 2),
+    doc("adhoc-closed-real", { kind: "adhoc", status: "closed", items: { SKU1: { code: "SKU1", name: "Paper towels" } } }),
+    doc("p-empty-closed-job", { client: "Echo Studio", status: "closed", items: {} }),
   ],
   products: [
     doc(runBarcode(RUN, 1), { code: runBarcode(RUN, 1), name: runName(RUN, "Gloves") }, 3),
@@ -96,9 +99,12 @@ test("cleanTeam deletes this run's and day-old runs' projects (General Use inclu
     ["deleteProject", "team-desktop-1", "p-run", 4],
     ["deleteProject", "team-desktop-1", "p-old", 1],
     ["deleteProject", "team-desktop-1", "adhoc-3", 1],
+    // A finished, empty General Use (J14's), whatever its age; not an open empty one, a finished
+    // one with a real line, or an empty finished project for a client
+    ["deleteProject", "team-desktop-1", "adhoc-empty-closed", 2],
     ["deleteProduct", "team-desktop-1", runBarcode(RUN, 1), 3],
   ]);
-  assert.deepEqual(r, { done: ["project", "project", "project", "item"], left: [] });
+  assert.deepEqual(r, { done: ["project", "project", "project", "project", "item"], left: [] });
 });
 
 test("cleanTeam carries on past a failed delete and reports it", async () => {
@@ -110,7 +116,7 @@ test("cleanTeam carries on past a failed delete and reports it", async () => {
   };
   const r = await cleanTeam(api, "team-desktop-1", { runId: RUN, now: () => NOW });
   assert.deepEqual(r.left, ["a project (DELETE /teams/{teamId}/projects/{projectId} answered 409 aborted)"]);
-  assert.equal(r.done.length, 3);
+  assert.equal(r.done.length, 4);
 });
 
 test("cleanup order: owner and teams, throwaways (members first, closing the run's team), then everyone signed out", async () => {
