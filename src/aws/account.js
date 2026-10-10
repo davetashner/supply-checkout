@@ -134,6 +134,10 @@ export async function start(config) {
   document.querySelector(".top").after(box);
   // owner: the signed-in user, once the device's owner mark says it's them (see watchOwner)
   let db = null, owner = null, switched = false;
+  // Screens drawn after waiting take a turn first; one that started later wins. A sign-out
+  // everywhere refused because the session already ended starts the session's sign-in screen
+  // and then the changed password's: the second is drawn, whichever finishes first.
+  let turn = 0;
   const session = createSession(config, {
     onSignedOut: () => { if (db) db.stop(); signIn(); },
     onRefreshed: () => { if (db) db.reconnect(); },
@@ -155,7 +159,9 @@ export async function start(config) {
       location.assign(url);
       return until(() => {});
     }
+    const mine = ++turn;
     const url = await session.signInUrl();
+    if (mine !== turn) return until(() => {});
     const invited = !!takeInvite();
     show(`<h2>Sign in</h2>
       <p>${invited ? "Sign in with the email address your invite was sent to, and then you can join the team." : "Sign in to see your team's projects and inventory."}</p>
@@ -200,6 +206,7 @@ export async function start(config) {
   // owner mark stays, so the same person keeps their team and drafts.
   // The same after a password change that signed out everywhere (password.js).
   async function signedOutEverywhere(title, text) {
+    turn++;
     owner = null;
     if (db) db.stop();
     const out = await session.endEverywhere();

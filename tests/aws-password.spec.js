@@ -164,6 +164,28 @@ test("a sign-out refused because the session already ended counts as done", { ta
   expect(backend.requests("POST", "/me/sign-out-everywhere")).toHaveLength(1);
 });
 
+test("the sign-in screen the ended session starts drawing never replaces the changed password's", { tag: ["@J0"] }, async ({ page }) => {
+  const backend = await openChange(page);
+  backend.on("POST", "/me/sign-out-everywhere", error(401, "unauthenticated"));
+  backend.on("POST", "/auth/refresh", error(401, "unauthenticated"));
+  // The sign-in link's PKCE challenge is made only once the changed password's screen is up,
+  // as can happen in WebKit (supply-checkout-s3c.19)
+  await page.evaluate(() => {
+    sessionStorage.removeItem("supplyCheckout.signIn");
+    const digest = SubtleCrypto.prototype.digest, held = [];
+    SubtleCrypto.prototype.digest = function (...args) { return new Promise((resolve) => held.push(() => resolve(digest.apply(this, args)))); };
+    window.__releaseDigests = () => { SubtleCrypto.prototype.digest = digest; held.splice(0).forEach((go) => go()); return true; };
+  });
+  await fill(page, "Old-Password-1");
+  await save(page);
+  await expect(page.getByRole("heading", { name: "Your password is changed" })).toBeVisible();
+  expect(await page.evaluate(() => window.__releaseDigests())).toBe(true);
+  // The sign-in link is made (its PKCE verifier kept) just before that screen would be drawn
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("supplyCheckout.signIn"))).not.toBeNull();
+  await expect(page.getByRole("heading", { name: "Your password is changed" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in", exact: true })).toHaveCount(0);
+});
+
 test("a Google or Apple user sees a note instead of the form", { tag: ["@J0"] }, async ({ page }) => {
   await openAws(page, new FakeBackend({ user: { ...USER, mfa: "provider" } }));
   await connected(page);
