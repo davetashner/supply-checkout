@@ -788,7 +788,7 @@ describe.skipIf(!endpoint)("re-applying deletions on DynamoDB Local", () => {
     const emptied = await team(db, other, [], "Emptied");
     await closeTeam(db, emptied.context, { confirmName: "Emptied" }, NOW);
     const { removeMember } = await import("../src/data/index.js");
-    await removeMember(db, await authorizeTeam(db, other, emptied.teamId), other, {}, NOW);
+    await removeMember(db, await authorizeTeam(db, other, emptied.teamId, NOW), other, {}, NOW);
     // Someone else's open team, which the user isn't in: for a person, untouched
     const foreign = await team(db, stranger, [], "Foreign");
     // The user's team with a member who isn't deleted: for a person, and the user is held back
@@ -859,7 +859,7 @@ describe.skipIf(!endpoint)("re-applying deletions on DynamoDB Local", () => {
     const plan = await planDeletions(db, records);
     expect(plan.memberships).toHaveLength(2);
     // Between the plan and the write: the deleted user left one team, and the other owner left the other
-    const leaver = await authorizeTeam(db, deleted, gone.teamId);
+    const leaver = await authorizeTeam(db, deleted, gone.teamId, NOW);
     const { removeMember } = await import("../src/data/index.js");
     await removeMember(db, leaver, deleted);
     await removeMember(db, t.context, owner);
