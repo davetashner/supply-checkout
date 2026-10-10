@@ -125,3 +125,67 @@ export function createSessionPool(runDirectory, { masker, now = () => Date.now()
     clear() { rmSync(root, { recursive: true, force: true }); },
   };
 }
+
+/**
+ * The sessions a test holds, one per browser context, and how each goes back to the pool.
+ *
+ * A context has one refresh cookie, so it holds one role's session: check() (and hold()) throw
+ * when the context already holds another role's, so release can never file one account's session
+ * under another's.
+ *
+ * release(context), in this order: refuses if the context is still being traced (the cookie read
+ * would be in its trace.zip), stops the app (`stopApp`: after it nothing in the context can
+ * refresh, so the cookie read is the live one and nobody spends it after it's pooled), reads the
+ * cookie and puts it back. No cookie to put back is a warning (`warn`); a closed context has none
+ * and isn't one. If the app couldn't be stopped, the cookie isn't pooled.
+ */
+export function createSessionHolds({ pool, apiOrigin, stopApp, assertNotTracing, warn, read = readSession }) {
+  const held = new Map();
+  const holds = {
+    check(context, role) {
+      const holder = held.get(context);
+      if (holder !== undefined && holder !== role) throw new Error(`This browser context holds the ${holder} session already: sign ${role} in in a context of their own`);
+    },
+    hold(context, role) {
+      holds.check(context, role);
+      held.set(context, role);
+    },
+    contexts: () => [...held.keys()],
+    async release(context) {
+      if (!held.has(context)) return;
+      const role = held.get(context);
+      held.delete(context);
+      assertNotTracing(context, "reading the session's refresh cookie");
+      try { await stopApp(context); } catch {
+        warn(`${role}: the app couldn't be stopped after the test, so its session wasn't saved and the next test signs in through Managed Login again`);
+        return;
+      }
+      let cookie;
+      try { cookie = await read(context, apiOrigin); } catch { return; }
+      if (!pool.put(role, cookie)) warn(`${role}: no session to save after the test, so the next test signs in through Managed Login again`);
+    },
+  };
+  return holds;
+}
+
+/**
+ * Opens the app on `page` with a pooled session (or none) and says whether the app took it up:
+ * its GET /me (`meResponse`) came before the sign-in screen (`signInShown()`). A session the app
+ * can't refresh (revoked, or spent by a refresh elsewhere) ends on the sign-in screen, maybe with
+ * the app's requests still in flight. Then, before anything navigates to Managed Login, the app
+ * is stopped (`stopApp`, which allows those requests' cut-off), the spent cookie is dropped
+ * (`dropSession`), and the app is loaded again, signed out. False means: sign in through Managed
+ * Login, from the app's sign-in screen.
+ */
+export async function resumeSession(page, session, { meResponse, signInShown, stopApp, dropSession }) {
+  const context = page.context();
+  if (session) await context.addCookies([session]);
+  await page.goto("/");
+  if (!session) return false;
+  const reused = await Promise.race([meResponse.then(() => true, () => false), signInShown().then(() => false, () => false)]);
+  if (reused) return true;
+  await stopApp(context);
+  await dropSession(context);
+  await page.goto("/");
+  return false;
+}

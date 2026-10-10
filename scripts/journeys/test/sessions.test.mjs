@@ -1,13 +1,16 @@
 // node --test scripts/journeys/test/ (part of npm run test:scripts): the long-lived accounts'
 // saved sessions (lib/sessions.mjs), leased one test at a time and never uploaded.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { PROD } from "../lib/config.mjs";
 import { createMasker } from "../lib/mask.mjs";
-import { REFRESH_COOKIE_PATH, SESSIONS_DIR, createSessionPool, readSession, sessionCookie, sessionUrl } from "../lib/sessions.mjs";
+import { isAbandonedRequestError, stopApp, trackRequests } from "../lib/app-stop.mjs";
+import { REFRESH_COOKIE, REFRESH_COOKIE_PATH, SESSIONS_DIR, createSessionHolds, createSessionPool, readSession, resumeSession, sessionCookie, sessionUrl } from "../lib/sessions.mjs";
+import { assertNotTracing, markTracing, unmarkTracing } from "../lib/tracing.mjs";
+import { fakeBrowserContext, fakeRequest } from "./helpers.mjs";
 import { NOT_UPLOADED, filesToUpload } from "../upload-results.mjs";
 
 const NOW = 1_800_000_000;
@@ -58,12 +61,6 @@ test("a session read from a test's context goes back in the pool and out to the 
   const { sessions } = pool();
   assert.equal(sessions.put("crew", await readSession(fakeContext([cookie("rotated-token-yyyy")]), PROD.api)), true);
   assert.equal(sessions.take("crew").value, "rotated-token-yyyy");
-});
-
-test("the fixtures read the session with readSession, never the API's origin alone", () => {
-  const fixtures = readFileSync(new URL("../../../tests/prod/fixtures.mjs", import.meta.url), "utf8");
-  assert.match(fixtures, /readSession\(ctx, PROD\.api\)/);
-  assert.doesNotMatch(fixtures, /\.cookies\(PROD\.api\)/);
 });
 
 test("a session is leased: take() removes it, so two takers never get the same one", () => {
@@ -136,4 +133,204 @@ test("the sessions are never uploaded", () => {
   sessions.put("crew", cookie("crew-token-jjjj"));
   assert.deepEqual(filesToUpload(dir), ["report.json"]);
   assert.ok(NOT_UPLOADED.includes(`${SESSIONS_DIR}/*`));
+});
+
+// The sessions a test holds and their release (createSessionHolds), with a browser context that
+// logs what happens to it, in order
+const holdsFor = ({ log = [], stop, read, sessions = pool().sessions } = {}) => {
+  const warnings = [];
+  const holds = createSessionHolds({
+    pool: sessions,
+    apiOrigin: PROD.api,
+    stopApp: stop ?? (async (ctx) => { log.push("stopApp"); await stopApp(ctx, { apiOrigin: PROD.api, settleMs: 0, sleep: async () => {} }); }),
+    assertNotTracing: (ctx, what) => { log.push("assertNotTracing"); assertNotTracing(ctx, what); },
+    warn: (w) => warnings.push(w),
+    ...(read ? { read } : {}),
+  });
+  return { holds, warnings, sessions, log };
+};
+
+test("release puts the context's refresh cookie back under the role that holds the context", async () => {
+  const { holds, warnings, sessions } = holdsFor();
+  const ctx = fakeBrowserContext({ jar: [cookie("rotated-crew-llll")] });
+  holds.hold(ctx, "crew");
+  holds.hold(ctx, "crew"); // the same role again is the same session
+  assert.deepEqual(holds.contexts(), [ctx]);
+  await holds.release(ctx);
+  assert.deepEqual(warnings, []);
+  assert.equal(sessions.take("viewer"), null);
+  assert.equal(sessions.take("crew").value, "rotated-crew-llll");
+  await holds.release(ctx);
+  assert.equal(sessions.take("crew"), null, "released once: a second release has nothing to give back");
+  assert.deepEqual(holds.contexts(), []);
+  await holds.release(fakeBrowserContext({ jar: [cookie("never-held-mmmm")] }));
+  assert.equal(sessions.take("crew"), null, "a context that holds nothing gives nothing back");
+});
+
+test("one cookie per context: a second role can't sign in in a context that holds a session", () => {
+  const { holds } = holdsFor();
+  const ctx = fakeBrowserContext();
+  holds.check(ctx, "viewer");
+  holds.hold(ctx, "crew");
+  assert.throws(() => holds.check(ctx, "viewer"), /holds the crew session already: sign viewer in in a context of their own/);
+  assert.throws(() => holds.hold(ctx, "owner"), /holds the crew session already/);
+  holds.check(ctx, "crew");
+  holds.hold(fakeBrowserContext(), "viewer");
+  assert.equal(holds.contexts().length, 2, "each context its own role");
+});
+
+test("release with no cookie to save warns; a closed context doesn't", async () => {
+  const { holds, warnings, sessions } = holdsFor();
+  const signedOut = fakeBrowserContext();
+  holds.hold(signedOut, "viewer");
+  await holds.release(signedOut);
+  assert.deepEqual(warnings, ["viewer: no session to save after the test, so the next test signs in through Managed Login again"]);
+  const expiring = fakeBrowserContext({ jar: [cookie("expiring-nnnn", { expires: NOW + 60 })] });
+  holds.hold(expiring, "crew");
+  await holds.release(expiring);
+  assert.equal(warnings.length, 2, "an unusable cookie isn't saved either");
+  const closed = fakeBrowserContext();
+  closed.cookies = async () => { throw new Error("Target page, context or browser has been closed"); };
+  holds.hold(closed, "owner");
+  await holds.release(closed);
+  assert.equal(warnings.length, 2);
+  assert.equal(sessions.take("owner"), null);
+});
+
+test("release stops the app before it reads the cookie, so nothing refreshes it once it's pooled", async () => {
+  const log = [];
+  const { holds, sessions } = holdsFor({ log });
+  const ctx = fakeBrowserContext({ pages: 2, log, jar: [cookie("crew-token-oooo")] });
+  // The app would refresh (and spend the cookie) if it were still running when it's read
+  ctx.cookies = ((cookies) => async (url) => {
+    assert.ok(ctx.pages().every((p) => p.url() === "about:blank"), "every page is stopped before the read");
+    return cookies(url);
+  })(ctx.cookies);
+  holds.hold(ctx, "crew");
+  await holds.release(ctx);
+  assert.deepEqual(log, ["assertNotTracing", "stopApp", "page0 goto about:blank", "page1 goto about:blank", "cookies"]);
+  assert.equal(sessions.take("crew").value, "crew-token-oooo");
+});
+
+test("release waits for the app's refresh on its way, and pools the cookie that refresh set", async () => {
+  const { sessions } = pool();
+  const ctx = fakeBrowserContext({ jar: [cookie("before-refresh-pppp")] });
+  trackRequests(ctx, PROD.api);
+  const refresh = fakeRequest(`${PROD.api}/auth/refresh`);
+  ctx.emit("request", refresh);
+  const holds = createSessionHolds({
+    pool: sessions, apiOrigin: PROD.api, assertNotTracing, warn: assert.fail,
+    // The refresh answers while stopApp waits: its Set-Cookie replaces the spent cookie
+    stopApp: (c) => stopApp(c, { apiOrigin: PROD.api, settleMs: 0, sleep: async () => { ctx.jar = [cookie("after-refresh-qqqq")]; ctx.emit("requestfinished", refresh); } }),
+  });
+  holds.hold(ctx, "crew");
+  await holds.release(ctx);
+  assert.equal(sessions.take("crew").value, "after-refresh-qqqq");
+});
+
+test("release never reads the cookie while the context is traced, and reads it once tracing stops", async () => {
+  const log = [];
+  const { holds, sessions } = holdsFor({ log });
+  const ctx = fakeBrowserContext({ log, jar: [cookie("traced-token-rrrr")] });
+  holds.hold(ctx, "owner");
+  markTracing(ctx);
+  await assert.rejects(holds.release(ctx), /Refusing to enter reading the session's refresh cookie while this page is being traced/);
+  assert.deepEqual(log, ["assertNotTracing"], "neither stopped nor read");
+  assert.equal(sessions.take("owner"), null);
+  // The page fixture stops the trace (and unmarks the context) before it releases
+  const later = fakeBrowserContext({ log: [], jar: [cookie("untraced-token-ssss")] });
+  holds.hold(later, "owner");
+  markTracing(later);
+  unmarkTracing(later);
+  await holds.release(later);
+  assert.equal(sessions.take("owner").value, "untraced-token-ssss");
+});
+
+test("release doesn't pool the cookie when the app couldn't be stopped", async () => {
+  const log = [];
+  const { holds, warnings, sessions } = holdsFor({ log, stop: async () => { log.push("stopApp"); throw new Error("navigation failed"); } });
+  const ctx = fakeBrowserContext({ log, jar: [cookie("still-running-tttt")] });
+  holds.hold(ctx, "crew");
+  await holds.release(ctx);
+  assert.deepEqual(log, ["assertNotTracing", "stopApp"], "never read");
+  assert.match(warnings[0], /^crew: the app couldn't be stopped after the test/);
+  assert.equal(sessions.take("crew"), null);
+});
+
+test("release reads the cookie under its path by default (readSession), never the API's origin alone", async () => {
+  const { holds, sessions } = holdsFor();
+  const ctx = fakeBrowserContext({ jar: [cookie("path-token-uuuu")] });
+  holds.hold(ctx, "viewer");
+  await holds.release(ctx);
+  assert.equal(sessions.take("viewer").value, "path-token-uuuu");
+});
+
+// resumeSession: a page whose app either takes the session up (GET /me) or shows sign-in
+const resumePage = (log) => {
+  const ctx = fakeBrowserContext({ log });
+  trackRequests(ctx, PROD.api);
+  return { ctx, page: ctx.pages()[0] };
+};
+const never = () => new Promise(() => {});
+
+test("a session the app takes up is reused, and the app keeps running", async () => {
+  const log = [];
+  const { ctx, page } = resumePage(log);
+  const reused = await resumeSession(page, cookie("good-token-vvvv"), {
+    meResponse: Promise.resolve({ status: () => 200 }),
+    signInShown: never,
+    stopApp: assert.fail,
+    dropSession: assert.fail,
+  });
+  assert.equal(reused, true);
+  assert.deepEqual(log, ["addCookies __Secure-sc_refresh", `page0 goto /`]);
+  assert.equal(ctx.jar[0].value, "good-token-vvvv");
+});
+
+test("a spent session stops the app before Managed Login, so its cut-off requests aren't page errors", async () => {
+  const log = [];
+  const { ctx, page } = resumePage(log);
+  const list = `${PROD.api}/teams/t1/projects?since=2026-01-01`;
+  const cutOff = `/${new URL(PROD.api).host}/teams/t1/projects?since=2026-01-01 due to access control checks.`;
+  const errors = [];
+  // The app showed sign-in with a list still in flight; navigating away cuts it off
+  ctx.onGoto = (url) => {
+    if (url === "/") return;
+    if (!isAbandonedRequestError(ctx, cutOff)) errors.push(cutOff);
+  };
+  const reused = await resumeSession(page, cookie("spent-token-wwww"), {
+    meResponse: never(),
+    signInShown: async () => { log.push("sign-in shown"); ctx.emit("request", fakeRequest(list)); },
+    stopApp: async (c) => { log.push("stopApp"); await stopApp(c, { apiOrigin: PROD.api, settleMs: 0, sleep: async () => {} }); },
+    dropSession: async (c) => c.clearCookies({ name: REFRESH_COOKIE }),
+  });
+  assert.equal(reused, false, "the caller goes through Managed Login, from the app's sign-in screen");
+  assert.deepEqual(log, [
+    "addCookies __Secure-sc_refresh", "page0 goto /", "sign-in shown",
+    "stopApp", "page0 goto about:blank", `clearCookies ${REFRESH_COOKIE}`, "page0 goto /",
+  ]);
+  assert.deepEqual(errors, [], "the deliberate cut-off is allowed");
+  assert.deepEqual(ctx.jar, [], "the spent cookie is gone");
+  assert.equal(page.url(), "/", "a fresh app, signed out, for Managed Login");
+  assert.equal(isAbandonedRequestError(ctx, cutOff), false, "and once it's done, the same error is a failure again");
+});
+
+test("no session means Managed Login straight away: nothing to stop", async () => {
+  const log = [];
+  const { page } = resumePage(log);
+  const reused = await resumeSession(page, null, { meResponse: never(), signInShown: assert.fail, stopApp: assert.fail, dropSession: assert.fail });
+  assert.equal(reused, false);
+  assert.deepEqual(log, ["page0 goto /"]);
+});
+
+test("a /me that fails and a sign-in screen that never shows count as not reused", async () => {
+  const { page } = resumePage([]);
+  const failed = Promise.reject(new Error("timeout"));
+  let stopped = 0;
+  const reused = await resumeSession(page, cookie("odd-token-xxxx"), { meResponse: failed, signInShown: never, stopApp: async () => { stopped++; }, dropSession: async () => {} });
+  assert.equal(reused, false);
+  assert.equal(stopped, 1);
+  const shownFails = await resumeSession(page, cookie("odd-token-yyyy"), { meResponse: never(), signInShown: () => Promise.reject(new Error("timeout")), stopApp: async () => { stopped++; }, dropSession: async () => {} });
+  assert.equal(shownFails, false);
+  assert.equal(stopped, 2);
 });

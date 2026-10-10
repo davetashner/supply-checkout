@@ -10,6 +10,7 @@
 /* global document -- appReady's check runs in the page */
 import { readFile } from "node:fs/promises";
 import { runBarcode, runName } from "../../scripts/journeys/lib/addresses.mjs";
+import { isAbandonedRequestError } from "../../scripts/journeys/lib/app-stop.mjs";
 import { PROD } from "../../scripts/journeys/lib/config.mjs";
 import { switchTeam, teamPicker } from "../ui/index.js";
 import { consoleFailure, expect, isDocumentNotFound, isExpectedConsoleError, isExpectedPageError, NOT_FOUND_WARNING } from "./fixtures.mjs";
@@ -115,15 +116,19 @@ export async function download(page, button) {
  * page's CSP to it and logs "Refused to apply a stylesheet because its hash, its nonce, or
  * 'unsafe-inline' does not appear in the style-src directive" as the page's own console error
  * (prod run 37724792313, J4 and J9 on iPhone). tests/prod-second-page.spec.js shows it.
+ *
+ * A request that stopApp cuts off on purpose (signIn's spent session, or the release of the
+ * session) isn't the app's error either (lib/app-stop.mjs isAbandonedRequestError).
  */
 export function watchAppErrors(page, origins, testInfo) {
   const errors = [], warnings = [];
   let on = true;
   const fromApp = (url) => { try { return origins.includes(new URL(url).origin); } catch { return false; } };
-  page.on("pageerror", (e) => { if (on && fromApp(page.url()) && !isExpectedPageError(e.message)) errors.push(`pageerror: ${e.message}`); });
+  const abandoned = (text) => isAbandonedRequestError(page.context(), text);
+  page.on("pageerror", (e) => { if (on && fromApp(page.url()) && !isExpectedPageError(e.message) && !abandoned(e.message)) errors.push(`pageerror: ${e.message}`); });
   page.on("console", (m) => {
     const url = m.location()?.url ?? "";
-    if (!on || m.type() !== "error" || !fromApp(url || page.url()) || isExpectedConsoleError(m.text(), url)) return;
+    if (!on || m.type() !== "error" || !fromApp(url || page.url()) || isExpectedConsoleError(m.text(), url) || abandoned(m.text())) return;
     if (!isDocumentNotFound(m.text(), url)) { errors.push(consoleFailure(m.text(), url)); return; }
     warnings.push(consoleFailure(m.text(), url));
     testInfo?.annotations.push({ type: NOT_FOUND_WARNING, description: consoleFailure(m.text(), url) });
@@ -160,7 +165,8 @@ export async function secondPage({ browser, harness, signIn, testInfo }, role) {
   return {
     page,
     async close() {
-      // The session goes back to the pool before the context (and its cookie) is gone
+      // The session goes back to the pool before the context (and its cookie) is gone: the app
+      // is stopped first, so it can't spend the cookie after it's pooled
       await signIn.release?.(context);
       // What the page did is over; closing it isn't the app's doing (watchAppErrors)
       const errors = watch.stop();

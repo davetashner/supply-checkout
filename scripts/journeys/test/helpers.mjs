@@ -1,5 +1,6 @@
 // Shared fakes for the prod journey harness's unit tests (node --test scripts/journeys/test/).
 // Nothing here talks to AWS, Cognito or the app.
+import { EventEmitter } from "node:events";
 import { PROD } from "../lib/config.mjs";
 
 /** A test-domain address (built, so no literal address sits in the repository). */
@@ -105,4 +106,38 @@ export function fakeFetch(routes) {
     return { ok: status >= 200 && status < 300, status, json: async () => { if (json === undefined) throw new Error("no body"); return json; } };
   };
   return { fetch, calls };
+}
+
+/** A request as a browser context's "request" event gives it. */
+export const fakeRequest = (href) => ({ url: () => href });
+
+/**
+ * A Playwright browser context, as far as stopApp and the session helpers use it: an event
+ * emitter (a test fires "request", "requestfinished" and "requestfailed"), its pages, which
+ * record each goto in `log` (and call `onGoto`), and a cookie jar as Playwright filters it.
+ */
+export function fakeBrowserContext({ pages = 1, log = [], jar = [] } = {}) {
+  const ctx = new EventEmitter();
+  ctx.log = log;
+  ctx.jar = jar;
+  ctx.list = Array.from({ length: pages }, (_, i) => ({
+    at: `${PROD.app}/`,
+    url() { return this.at; },
+    context: () => ctx,
+    async goto(url) { log.push(`page${i} goto ${url}`); ctx.onGoto?.(url, i); this.at = url; },
+  }));
+  ctx.pages = () => ctx.list;
+  // cookies(urls) as playwright-core's filterCookies: domain matches the host, path a prefix of
+  // the URL's path, Secure ones only for https
+  ctx.cookies = async (urls) => {
+    log.push("cookies");
+    const list = urls === undefined ? [] : [urls].flat().map((u) => new URL(u));
+    return ctx.jar.filter((c) => !list.length || list.some((u) => {
+      const domain = c.domain.startsWith(".") ? c.domain : `.${c.domain}`;
+      return `.${u.hostname}`.endsWith(domain) && u.pathname.startsWith(c.path) && (u.protocol === "https:" || !c.secure);
+    }));
+  };
+  ctx.addCookies = async (cookies) => { log.push(`addCookies ${cookies.map((c) => c.name).join(",")}`); ctx.jar.push(...cookies); };
+  ctx.clearCookies = async ({ name } = {}) => { log.push(`clearCookies ${name ?? "*"}`); ctx.jar = ctx.jar.filter((c) => name !== undefined && c.name !== name); };
+  return ctx;
 }
