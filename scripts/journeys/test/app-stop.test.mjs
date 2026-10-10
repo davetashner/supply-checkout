@@ -67,7 +67,7 @@ test("in-flight requests are forgotten even when a navigation fails", async () =
   assert.equal(t.inFlight.size, 0);
 });
 
-test("stopApp doesn't wait for a refresh whose page has closed", async () => {
+test("stopApp doesn't wait for a refresh whose page has closed, but says the cookie may be spent", async () => {
   const ctx = fakeContext();
   const t = trackRequests(ctx, PROD.api);
   ctx.emit("request", request(`${PROD.api}/auth/refresh`, { pageClosed: true }));
@@ -77,9 +77,39 @@ test("stopApp doesn't wait for a refresh whose page has closed", async () => {
   let abandoned;
   ctx.onGoto = () => { abandoned = [...t.abandoned]; };
   let sleeps = 0;
-  await stopApp(ctx, opts(async () => { sleeps++; }));
+  await assert.rejects(stopApp(ctx, opts(async () => { sleeps++; })), (err) => err instanceof RefreshInFlight && /in flight when its page closed/.test(err.message));
   assert.equal(sleeps, 1, "no wait, only the settle");
   assert.deepEqual(abandoned, [`${PROD.api}/teams/t1/projects`], "a closed page's requests aren't allowed to be cut off either");
+  assert.equal(ctx.pages()[0].url(), "about:blank", "the app is stopped all the same");
+  await stopApp(ctx, opts());
+});
+
+test("a closed page's other requests are dropped without a fuss", async () => {
+  const ctx = fakeContext();
+  trackRequests(ctx, PROD.api);
+  ctx.emit("request", request(`${PROD.api}/teams/t1/products`, { pageClosed: true }));
+  let sleeps = 0;
+  await stopApp(ctx, opts(async () => { sleeps++; }));
+  assert.equal(sleeps, 1);
+});
+
+test("a refresh the app starts while stopApp takes its pages away may be spent: the cookie isn't trusted", async () => {
+  const ctx = fakeContext({ pages: 2 });
+  trackRequests(ctx, PROD.api);
+  ctx.onGoto = (url, i) => {
+    if (i !== 0) return;
+    // Cut off as the page goes: requestfailed takes it out of flight, but the server may have rotated the token
+    const refresh = request(`${PROD.api}/auth/refresh`);
+    ctx.emit("request", refresh);
+    ctx.emit("requestfailed", refresh);
+  };
+  await assert.rejects(stopApp(ctx, opts()), (err) => err instanceof RefreshInFlight && /in flight as the app was stopped/.test(err.message));
+  assert.ok(ctx.pages().every((p) => p.url() === "about:blank"), "every page is stopped first");
+  ctx.onGoto = () => ctx.emit("request", request(`${PROD.api}/teams/t1/products`));
+  await stopApp(ctx, opts());
+  ctx.onGoto = undefined;
+  ctx.emit("request", request(`${PROD.api}/auth/refresh`));
+  await assert.rejects(stopApp(ctx, { ...opts(), authWaitMs: 50 }), /after 0\.05 seconds/, "a refresh before stopApp is waited for, not counted as cut off");
 });
 
 test("stopApp still waits for a refresh on an open page, or one with no page", async () => {

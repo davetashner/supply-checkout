@@ -154,12 +154,14 @@ export const test = base.extend({
       await ctx.tracing.stop(failed ? { path: testInfo.outputPath("trace.zip") } : undefined);
       unmarkTracing(ctx);
     }
-    // The page errors are checked even when the release throws (a context still traced)
-    try {
-      await sessionHolds.release(ctx);
-    } finally {
-      expect(errors.map(harness.masker.redact), "page errors").toEqual([]);
-    }
+    // The page errors are checked even when the release throws (a context still traced), and
+    // neither failure hides the other
+    let released;
+    try { await sessionHolds.release(ctx); } catch (err) { released = err; }
+    let checked;
+    try { expect(errors.map(harness.masker.redact), "page errors").toEqual([]); } catch (err) { checked = err; }
+    if (released && checked) throw new AggregateError([released, checked], "The session's release and the page error check both failed");
+    if (released ?? checked) throw released ?? checked;
   },
 
   /**
