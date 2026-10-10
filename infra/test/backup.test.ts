@@ -12,7 +12,7 @@ import {
   backupParameters,
 } from "../lib/backup.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
-import { BACKUP_CHANGE_EVENTS, BACKUP_KEY_EVENTS, DELETIONS_COPY_CHANGE_EVENTS, backupAlertRuleNames, deletionsCopyAlertRuleName } from "../lib/backup-alerts.js";
+import { BACKUP_CHANGE_EVENTS, BACKUP_JOB_DETAIL_TYPES, BACKUP_JOB_FAILED_STATES, BACKUP_KEY_EVENTS, DELETIONS_COPY_CHANGE_EVENTS, backupAlertRuleNames, backupJobAlertRuleName, deletionsCopyAlertRuleName } from "../lib/backup-alerts.js";
 import { ACCOUNT_ID_PATTERN, COPIES_MISSING_AFTER_HOURS, OPTIONAL_ACCOUNT_ID_PATTERN, ORGANIZATION_ID_PATTERN } from "../lib/stacks/backup-account-stack.js";
 import { addBackupAccount, addSupplyCheckout } from "../lib/supply-checkout.js";
 import { DELETIONS_REPLICATION_RULE_ID, DELETIONS_REPLICATION_STUCK_MINUTES, deletionsReplicationRoleName } from "../lib/deletions.js";
@@ -76,7 +76,8 @@ function expectChangeRules(template: Template, names: { changes: string; keyChan
     "detail-type": ["AWS API Call via CloudTrail"],
     detail: { eventSource: ["kms.amazonaws.com"], eventName: [...BACKUP_KEY_EVENTS], resources: { ARN: [{ "Fn::GetAtt": [expect.stringMatching(keyId), "Arn"] }] } },
   });
-  for (const rule of rules(template)) {
+  // The workload's failed backup jobs rule tells P2 (tested on its own)
+  for (const rule of rules(template).filter((r) => r.Properties.Name !== backupJobAlertRuleName("prod"))) {
     expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: topic })]);
     // Names the CloudTrail event, never the person
     const target = JSON.stringify(rule.Properties.Targets);
@@ -302,26 +303,36 @@ describe("backup stack (workload account)", () => {
     expect(JSON.stringify(policy.find((s) => s.Sid === "RestoreFromTheTablesBackups")?.Resource)).toContain(`:table/${TABLE}/backup/*`);
   });
 
-  it("alarms to the P2 topic when a backup or copy fails, or no backup finished in a day", () => {
-    const { template } = workload();
+  it("tells the P2 topic when a backup or copy job fails, from AWS Backup's own events, and alarms when no backup finished in a day (supply-checkout-7pe.1)", () => {
+    const { template, stacks } = workload();
     const topic = ssmParameter(template, "/supply-checkout/prod/observability/alarm-topic-p2-arn");
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 4);
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-backup-failed",
-      ComparisonOperator: "GreaterThanThreshold",
-      Threshold: 0,
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: topic }],
-      OKActions: [{ Ref: topic }],
-      Metrics: Match.arrayWith([
-        Match.objectLike({ Expression: "FILL(bf, 0) + FILL(ba, 0) + FILL(be, 0) + FILL(cf, 0)" }),
-        Match.objectLike({
-          Id: "cf",
-          MetricStat: Match.objectLike({
-            Metric: { Namespace: "AWS/Backup", MetricName: "NumberOfCopyJobsFailed", Dimensions: [{ Name: "ResourceType", Value: "DynamoDB" }] },
-          }),
-        }),
-      ]),
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 3);
+    // No alarm on AWS Backup's job metrics: the events are free and come as the job ends
+    expect(JSON.stringify(template.findResources("AWS::CloudWatch::Alarm"))).not.toContain("AWS/Backup\",\"MetricName\":\"NumberOfBackupJobsFailed");
+    const jobs = byName(template, backupJobAlertRuleName("prod"));
+    expect(jobs.Properties.Name).toBe("supply-checkout-prod-backup-jobs-failed");
+    expect(jobs.Properties.EventPattern).toEqual({
+      source: ["aws.backup"],
+      "detail-type": ["Backup Job State Change", "Copy Job State Change"],
+      detail: { resourceType: ["DynamoDB"], state: ["FAILED", "ABORTED", "EXPIRED"] },
+    });
+    expect([...BACKUP_JOB_DETAIL_TYPES]).toEqual(jobs.Properties.EventPattern["detail-type"]);
+    expect([...BACKUP_JOB_FAILED_STATES]).toEqual((jobs.Properties.EventPattern.detail as { state: string[] }).state);
+    expect(jobs.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: topic } })]);
+    const target = JSON.stringify(jobs.Properties.Targets);
+    expect(target).toContain("P2 Backup failed");
+    expect(target).toContain("When a backup fails");
+    // Only this rule, by name, may publish to P2 for it
+    const observability = Template.fromStack((stacks.regions[EAST] as (typeof stacks.regions)[string]).observability);
+    const allow = Object.values(observability.findResources("AWS::SNS::TopicPolicy"))
+      .flatMap((p) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement)
+      .find((s) => s.Sid === "AllowBackupJobAlertsToPublish");
+    expect(allow).toMatchObject({
+      Effect: "Allow",
+      Principal: { Service: "events.amazonaws.com" },
+      Action: "sns:Publish",
+      Resource: { Ref: expect.stringMatching(/^AlarmTopicsP2/) },
+      Condition: { ArnEquals: { "aws:SourceArn": ruleArn(backupJobAlertRuleName("prod")) } },
     });
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-no-recent-backup",
@@ -357,33 +368,23 @@ describe("backup stack (workload account)", () => {
       AlarmActions: [{ Ref: topic }],
       OKActions: [{ Ref: topic }],
     });
-    workload({ backupCopy: "false" }).template.resourceCountIs("AWS::CloudWatch::Alarm", 2);
+    workload({ backupCopy: "false" }).template.resourceCountIs("AWS::CloudWatch::Alarm", 1);
   });
 
-  it("alarms to the P2 topic when a deletion record has waited an hour to replicate, pending or behind, and not without the copy (supply-checkout-72d.14)", () => {
+  it("alarms to the P2 topic when a deletion record has waited an hour to replicate, and not without the copy (supply-checkout-72d.14)", () => {
     const { template } = workload();
     const topic = ssmParameter(template, "/supply-checkout/prod/observability/alarm-topic-p2-arn");
     const periods = DELETIONS_REPLICATION_STUCK_MINUTES / 15;
     expect(Number.isInteger(periods)).toBe(true);
-    const metric = (name: string) =>
-      Match.objectLike({
-        Id: name === "OperationsPendingReplication" ? "pending" : "latency",
-        ReturnData: false,
-        MetricStat: Match.objectLike({
-          Metric: Match.objectLike({ Namespace: "AWS/S3", MetricName: name, Dimensions: Match.arrayWith([{ Name: "RuleId", Value: DELETIONS_REPLICATION_RULE_ID }]) }),
-          Period: 900,
-          Stat: "Maximum",
-        }),
-      });
+    // Pending alone: a record that's an hour behind has been pending that hour, so ReplicationLatency was a second alarm metric for nothing (supply-checkout-7pe.1)
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-deletions-replication-stuck",
-      Metrics: Match.arrayWith([
-        Match.objectLike({ Expression: `IF(FILL(pending, 0) > 0 OR FILL(latency, 0) > ${DELETIONS_REPLICATION_STUCK_MINUTES * 60}, 1, 0)` }),
-        metric("OperationsPendingReplication"),
-        metric("ReplicationLatency"),
-      ]),
-      ComparisonOperator: "GreaterThanOrEqualToThreshold",
-      Threshold: 1,
+      Namespace: "AWS/S3",
+      MetricName: "OperationsPendingReplication",
+      Statistic: "Maximum",
+      Period: 900,
+      ComparisonOperator: "GreaterThanThreshold",
+      Threshold: 0,
       EvaluationPeriods: periods,
       DatapointsToAlarm: periods,
       TreatMissingData: "notBreaching",
@@ -395,9 +396,7 @@ describe("backup stack (workload account)", () => {
     const alarms = Object.values(template.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
     const failed = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletions-replication-failed");
     const stuck = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletions-replication-stuck");
-    for (const m of (stuck?.Metrics as { MetricStat?: { Metric: { Dimensions: unknown } } }[]).filter((m) => m.MetricStat)) {
-      expect(m.MetricStat?.Metric.Dimensions).toEqual(failed?.Dimensions);
-    }
+    expect(stuck?.Dimensions).toEqual(failed?.Dimensions);
     const names = Object.values(workload({ backupCopy: "false" }).template.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
     expect(names).not.toContain("supply-checkout-prod-p2-deletions-replication-stuck");
   });
@@ -406,9 +405,9 @@ describe("backup stack (workload account)", () => {
     const { template, stacks } = workload();
     const names = backupAlertRuleNames("prod", "workload");
     const topic = { Ref: ssmParameter(template, "/supply-checkout/prod/observability/alarm-topic-p1-arn") };
-    expectChangeRules(template, names, topic, /^VaultKey/);
+    expectChangeRules(template, names, topic, /^VaultKey/, [backupJobAlertRuleName("prod")]);
     // With no copy to the backup account, the alerts are still there
-    expect(rules(workload({ backupCopy: "false" }).template)).toHaveLength(2);
+    expect(rules(workload({ backupCopy: "false" }).template)).toHaveLength(3);
     // The observability stack's P1 topic lets these two rule names publish, and nothing else from EventBridge but its own rules
     const observability = Template.fromStack((stacks.regions[EAST] as (typeof stacks.regions)[string]).observability);
     const allow = Object.values(observability.findResources("AWS::SNS::TopicPolicy"))

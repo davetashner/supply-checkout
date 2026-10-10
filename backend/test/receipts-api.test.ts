@@ -678,6 +678,13 @@ describe("the account-wide trial cap (supply-checkout-i1d.3)", () => {
     // 12:00 to midnight UTC
     expect(over.headers["retry-after"]).toBe(String(12 * 3600));
     expect(counts.ReceiptTrialCapReached).toBe(1);
+    // The day's first refusal tells Needs attention, and marks the day so the rest don't (supply-checkout-7pe.1)
+    expect(counts.NeedsAttention).toBe(1);
+    expect(table.get("RECEIPTTRIALS", "DAY#2026-09-26")?.capReachedAt).toBe(NOW / 1000);
+    expect((await read()).status).toBe(429);
+    expect(counts.ReceiptTrialCapReached).toBe(2);
+    expect(counts.NeedsAttention).toBe(1);
+    expect(table.get("RECEIPTTRIALS", "DAY#2026-09-26")?.capReachedAt).toBe(NOW / 1000);
     expect(counts.ReceiptLimitReached).toBeUndefined();
     expect(JSON.stringify(logs)).toContain('"refused":"trial_cap"');
     expect(calls).toHaveLength(3);
@@ -689,10 +696,13 @@ describe("the account-wide trial cap (supply-checkout-i1d.3)", () => {
     table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), status: "active" });
     expect((await read()).status).toBe(200);
     expect(trialDay()).toBe(3);
-    // The next UTC day is a new count
+    // The next UTC day is a new count, and its first refusal tells Needs attention again
     clock = Date.parse("2026-09-27T00:00:00Z");
     expect((await read(OUTSIDER, "/teams/team-c/receipts/read")).status).toBe(200);
     expect(trialDay("2026-09-27")).toBe(1);
+    table.put({ ...(table.get("RECEIPTTRIALS", "DAY#2026-09-27") as Record<string, unknown>), count: 3 });
+    expect((await read(OUTSIDER, "/teams/team-c/receipts/read")).status).toBe(429);
+    expect(counts.NeedsAttention).toBe(2);
   });
 
   it("can't be raced past by reads at once", async () => {
@@ -761,8 +771,25 @@ describe("the account-wide trial cap (supply-checkout-i1d.3)", () => {
     const res = await read();
     expect(res.body.error.message).toBe(TRIAL_CAP_REACHED);
     expect(trialDay()).toBeUndefined();
+    // Still told once that day
+    expect(counts.NeedsAttention).toBe(1);
+    await read();
+    expect(counts.ReceiptTrialCapReached).toBe(2);
+    expect(counts.NeedsAttention).toBe(1);
     expect(table.get("TEAM#team-a", "USAGE#TRIAL")?.receipts).toBe(0);
     expect(calls).toHaveLength(0);
+  });
+
+  it("tells Needs attention when the day's mark can't be written, rather than miss the cap", async () => {
+    table.put({ PK: "RECEIPTTRIALS", SK: "DAY#2026-09-26", count: 3, expiresAt: 1 });
+    const noMark = (teamId: string, userId: string) => {
+      dbFor(teamId, userId);
+      return table.guarded((command, input) => !(command === "UpdateCommand" && JSON.stringify(input).includes("capReachedAt")));
+    };
+    h = createReceiptsHandler({ dbFor: noMark, obs: fakeObservability(), model: fakeModel, modelId: MODEL_ID, now: () => clock, trialReadsPerDay: 3 });
+    expect((await read()).body.error.message).toBe(TRIAL_CAP_REACHED);
+    expect((await read()).body.error.message).toBe(TRIAL_CAP_REACHED);
+    expect(counts.NeedsAttention).toBe(2);
   });
 
   it("fails closed, and gives the team's read back, when the day's count can't be written", async () => {

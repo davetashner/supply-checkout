@@ -150,7 +150,7 @@ const conditionFailed = (error: unknown) => (error as { name?: string } | null)?
  * Counts one receipt read against the team's allowance, unless it's used up
  * (LimitReachedError). Returns the reads so far, this one included. A trial
  * read also counts in the account's trial reads for the UTC day, unless
- * `trialReadsPerDay` are counted already (RateLimitedError, TRIAL_CAP_REACHED;
+ * `trialReadsPerDay` are counted already (TrialCapReachedError, TRIAL_CAP_REACHED;
  * the team's read is given back), and in the month's counter, with no limit
  * there.
  *
@@ -225,17 +225,58 @@ function untilTomorrow(now: Date): number {
 }
 
 /**
+ * The account-wide trial cap refused a read (a RateLimitedError, so callers
+ * that don't care see one). `firstToday` is true for the first refusal of the
+ * UTC day only, which the receipts function sends to "Needs attention": a
+ * trial user can make every later one (supply-checkout-7pe.1).
+ */
+export class TrialCapReachedError extends RateLimitedError {
+  readonly firstToday: boolean;
+
+  constructor(retryAfterSeconds: number, firstToday: boolean) {
+    super(TRIAL_CAP_REACHED, retryAfterSeconds);
+    this.firstToday = firstToday;
+  }
+}
+
+/**
+ * Whether this is the day's first refusal at the trial cap: marks the day's
+ * item `capReachedAt` (seconds), once, with a conditional update that only a
+ * refused read makes, so a read under the cap costs nothing more. A failed
+ * write counts as the first, so a broken table can't silence the alert.
+ */
+async function firstCapToday(db: Db, day: string, now: Date, expiresAt: number): Promise<boolean> {
+  try {
+    await connection(db).doc.send(
+      new UpdateCommand({
+        TableName: db.tableName,
+        Key: keys.receiptTrialDay(day),
+        UpdateExpression: "SET capReachedAt = :at, expiresAt = :expires",
+        ConditionExpression: "attribute_not_exists(capReachedAt)",
+        ExpressionAttributeValues: { ":at": Math.floor(now.getTime() / 1000), ":expires": expiresAt },
+      }),
+    );
+    return true;
+  } catch (error) {
+    return !conditionFailed(error);
+  }
+}
+
+/**
  * Counts one trial read in the account's count for the UTC day, unless
- * `max` are counted already: RateLimitedError, with the seconds to the next
- * UTC day. One conditional update, so reads at once can't go past it. It
- * names only the keys, `count` and `expiresAt` (RECEIPT_TRIAL_CAP_ATTRIBUTES)
- * and returns nothing, which is all the receipts role may do in the
- * `RECEIPTTRIALS` partition.
+ * `max` are counted already: TrialCapReachedError, with the seconds to the
+ * next UTC day. One conditional update, so reads at once can't go past it.
+ * It, and the refusal's mark (firstCapToday), name only the keys, `count`,
+ * `capReachedAt` and `expiresAt` (RECEIPT_TRIAL_CAP_ATTRIBUTES) and return
+ * nothing, which is all the receipts role may do in the `RECEIPTTRIALS`
+ * partition.
  */
 async function takeTrialDay(db: Db, max: number, now: Date): Promise<void> {
   const wait = untilTomorrow(now);
-  if (max === 0) throw new RateLimitedError(TRIAL_CAP_REACHED, wait);
   const day = now.toISOString().slice(0, 10);
+  const expiresAt = Math.ceil(now.getTime() / 1000) + wait + TRIAL_DAY_GRACE_SECONDS;
+  const refused = async () => new TrialCapReachedError(wait, await firstCapToday(db, day, now, expiresAt));
+  if (max === 0) throw await refused();
   try {
     await connection(db).doc.send(
       new UpdateCommand({
@@ -244,11 +285,11 @@ async function takeTrialDay(db: Db, max: number, now: Date): Promise<void> {
         UpdateExpression: "ADD #count :one SET expiresAt = :expires",
         ConditionExpression: "attribute_not_exists(#count) OR #count < :max",
         ExpressionAttributeNames: { "#count": "count" },
-        ExpressionAttributeValues: { ":one": 1, ":max": max, ":expires": Math.ceil(now.getTime() / 1000) + wait + TRIAL_DAY_GRACE_SECONDS },
+        ExpressionAttributeValues: { ":one": 1, ":max": max, ":expires": expiresAt },
       }),
     );
   } catch (error) {
-    if (conditionFailed(error)) throw new RateLimitedError(TRIAL_CAP_REACHED, wait);
+    if (conditionFailed(error)) throw await refused();
     throw error;
   }
 }

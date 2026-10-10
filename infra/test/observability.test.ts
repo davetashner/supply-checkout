@@ -7,8 +7,8 @@ import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import { AwsSolutionsChecks } from "cdk-nag";
 import type { Construct } from "constructs";
 import { describe, expect, it } from "vitest";
-import { BusinessMetric, METRICS_NAMESPACE, TEST_SKIPPED_METRICS } from "../../backend/src/observability/names.js";
-import { APPROVED_REGIONS, configFromContext, type DeploymentConfig, GLOBAL_SERVICES_REGION, RECEIPT_MODEL_ID } from "../lib/config.js";
+import { BusinessMetric, METRICS_NAMESPACE, NEEDS_ATTENTION_METRICS, NEEDS_ATTENTION_ONCE_A_DAY, SECURITY_ATTENTION_METRICS, TEST_SKIPPED_METRICS } from "../../backend/src/observability/names.js";
+import { APPROVED_REGIONS, configFromContext, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import {
@@ -22,11 +22,10 @@ import {
   DEFAULT_COST_ANOMALY_USD,
   DEFAULT_MONTHLY_BUDGET_USD,
 } from "../lib/observability/cost-alerts.js";
-import { BEDROCK_SPEND_ALARM_USD_PER_DAY, journeyAlarmSpecs, SET_ASIDE_INCIDENT_AT, WELCOME_REFUSALS_ALARM_PER_HOUR } from "../lib/observability/journey-alarms.js";
+import { DASHBOARD_METRICS_LIMIT } from "../lib/observability/dashboard.js";
+import { BEDROCK_SPEND_ALARM_USD_PER_DAY, journeyAlarmSpecs, NEEDS_ATTENTION_PERIOD, NEEDS_ATTENTION_PERIODS, RECEIPT_READS_ALARM_PER_DAY, SET_ASIDE_INCIDENT_AT } from "../lib/observability/journey-alarms.js";
 import {
-  OPS_DOWN_MIN_REQUESTS,
   OPS_DOWN_PERCENT,
-  OPS_ROUTER_FAILING_ABOVE,
   ROUTER_FAILING_ABOVE,
   RUM_EVENTS_FLOOD_PER_HOUR,
   RUM_EVENTS_SURGE_PER_HOUR,
@@ -51,7 +50,6 @@ import {
   LAPSE_CLOSURES_ALARM_HOURS,
   LAPSE_EVERY_HOURS,
   LAPSE_MAX_CLOSURES_PER_RUN,
-  LAPSE_SILENT_ALARM_HOURS,
   LAPSE_UNSTARTED_ALARM_HOURS,
   PURGE_EVERY_HOURS,
   PURGE_OVERDUE_AFTER_HOURS,
@@ -135,20 +133,15 @@ const ALARM_IDS = [
   "functions-throttled",
   "database-errors",
   "database-throttled",
-  "sign-out-not-revoking",
-  "security-notices-failing",
+  "needs-attention",
+  "security-attention",
   "security-notices-dropped",
   "sign-in-trigger-failing",
   "sign-up-trigger-failing",
-  "welcome-emails-failing",
-  "welcome-emails-refused",
   "welcome-email-function-failing",
   "welcome-emails-dropped",
   "imports-stuck",
-  "email-verification-not-saved",
-  "email-codes-failing",
   "near-sending-limit",
-  "password-reset-hints-capped",
   "invite-surge",
   "email-bouncing",
   "email-complaints",
@@ -157,11 +150,9 @@ const ALARM_IDS = [
   "live-updates-failing",
   "live-updates-delayed",
   "live-updates-dropped",
-  "live-updates-deferred",
   "receipt-reading-failing",
   "receipt-volume-high",
   "receipt-trials-near-limit",
-  "receipt-trials-paused",
   "bedrock-spend-high",
   "checkout-broken",
   "billing-portal-broken",
@@ -169,25 +160,11 @@ const ALARM_IDS = [
   "billing-events-stuck",
   "billing-events-late",
   "seat-syncs-stuck",
-  "seat-counts-drifting",
-  "entitlements-drifting",
   "deletion-overdue",
-  "team-closed-notices-failing",
-  "reopened-team-subscription-ended",
-  "reopen-resync-late",
-  "reopened-team-subscription-undecided",
-  "closed-team-charged",
-  "closed-team-subscription-not-found",
   "closed-team-subscription-set-aside",
   "closed-team-subscriptions-set-aside-many",
-  "stripe-customer-already-deleted",
-  "held-team-purged",
   "stripe-customer-deletion-retrying",
   "stripe-customer-deletion-stuck",
-  "team-reopened-notices-failing",
-  "lapse-job-failing",
-  "lapse-closures-held",
-  "lapse-checkout-held",
   "lapse-closures-high",
   "lapse-job-out-of-time",
 ];
@@ -196,28 +173,15 @@ const ALARM_IDS = [
 const PRIMARY_ONLY_ALARM_IDS = [
   "sign-in-trigger-failing",
   "sign-up-trigger-failing",
-  "welcome-emails-failing",
-  "welcome-emails-refused",
   "welcome-email-function-failing",
   "welcome-emails-dropped",
   "imports-stuck",
   "near-sending-limit",
-  "password-reset-hints-capped",
-  "seat-counts-drifting",
-  "entitlements-drifting",
   "deletion-overdue",
-  "reopen-resync-late",
-  "closed-team-charged",
-  "closed-team-subscription-not-found",
   "closed-team-subscription-set-aside",
   "closed-team-subscriptions-set-aside-many",
-  "stripe-customer-already-deleted",
-  "held-team-purged",
   "stripe-customer-deletion-retrying",
   "stripe-customer-deletion-stuck",
-  "lapse-job-failing",
-  "lapse-closures-held",
-  "lapse-checkout-held",
   "lapse-closures-high",
   "lapse-job-out-of-time",
 ];
@@ -269,11 +233,11 @@ describe("alarm topics", () => {
       ]);
       for (const { topics, allow: all } of statements) {
         // The primary region's P1 topic also takes the operator-pool alert, from that one rule only (tested below)
-        // (and the backup stack's change alerts, by rule name)
+        // (and the backup stack's change alerts, by rule name; its failed jobs rule on P2, by name too)
         // (and the P2 topic takes the alert-route rule's, tested below)
         // (and the deletion records bucket's change rule, tested with the watch)
         // (and the global services region's P2 topic takes the budget's and Cost Anomaly Detection's, tested with the cost alerts)
-        const allow = all.filter((a) => !["AllowOperatorPoolAlertToPublish", "AllowBackupChangeAlertsToPublish", "AllowAlertRouteChangesToPublish", "AllowDeletionsBucketAlertToPublish", "AllowSupportSmtpUserAlertToPublish", "AllowBudgetsToPublish", "AllowCostAnomaliesToPublish", "AllowCostAlertChangesToPublish"].includes(String(a.Sid)));
+        const allow = all.filter((a) => !["AllowOperatorPoolAlertToPublish", "AllowBackupChangeAlertsToPublish", "AllowBackupJobAlertsToPublish", "AllowAlertRouteChangesToPublish", "AllowDeletionsBucketAlertToPublish", "AllowSupportSmtpUserAlertToPublish", "AllowBudgetsToPublish", "AllowCostAnomaliesToPublish", "AllowCostAlertChangesToPublish"].includes(String(a.Sid)));
         if (all.length !== allow.length) expect([r, topics[0]]).toEqual([EAST, expect.stringMatching(/^AlarmTopicsP[12]/)]);
         expect(allow).toEqual([
           {
@@ -635,7 +599,7 @@ describe("journey alarms (docs/journeys.md)", () => {
       // The purge's own alarm is with the purge, and the operator audit and group watches' are with the watches, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
-        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running", "supply-checkout-prod-p2-lapse-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|photo-downloads|support-smtp|site-down|web-router|ops-page-down|ops-router|rum-events/.test(String(a.AlarmName)));
+        .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-seat-reconcile-not-running" && !/operator-audit|operator-group|deletion-record|photo-downloads|support-smtp|site-down|web-router|ops-page-down|rum-events/.test(String(a.AlarmName)));
       const specs = journeyAlarmSpecs(r, "t", "api", "prod").filter((s) => r === config.primaryRegion || !s.primaryOnly);
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -646,7 +610,9 @@ describe("journey alarms (docs/journeys.md)", () => {
         const topic = a.AlarmName.includes("-p1-") ? /^AlarmTopicsP1/ : /^AlarmTopicsP2/;
         expect(a.AlarmActions[0].Ref).toMatch(topic);
         expect(a.OKActions).toEqual(a.AlarmActions);
-        expect(a.TreatMissingData).toBe("notBreaching");
+        // Only the scheduled jobs' gauges breach on missing data: no sample means the job isn't running
+        const breaches = ["deletion-overdue", "lapse-job-out-of-time"].some((id) => a.AlarmName.endsWith(`-${id}`));
+        expect(a.TreatMissingData).toBe(breaches ? "breaching" : "notBreaching");
         expect(a.AlarmDescription).toContain(r);
         expect(a.AlarmDescription).toContain("docs/journeys.md");
       }
@@ -691,27 +657,49 @@ describe("journey alarms (docs/journeys.md)", () => {
     });
   });
 
-  it("estimates the receipt model's spend in a day from Bedrock's token counts for its inference profile (supply-checkout-i1d.3)", () => {
+  it("alarms on Bedrock spend from a day's receipt reads, one metric for Bedrock's four token counts (supply-checkout-i1d.3, supply-checkout-7pe.1)", () => {
     const t = observability();
-    const tokens = (Id: string, MetricName: string) =>
-      Match.objectLike({ Id, MetricStat: Match.objectLike({ Metric: { Namespace: "AWS/Bedrock", MetricName, Dimensions: [{ Name: "ModelId", Value: RECEIPT_MODEL_ID }] }, Stat: "Sum", Period: 86_400 }) });
+    expect(RECEIPT_READS_ALARM_PER_DAY).toBe(BEDROCK_SPEND_ALARM_USD_PER_DAY * 200);
     t.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-bedrock-spend-high",
-      Threshold: BEDROCK_SPEND_ALARM_USD_PER_DAY,
+      Threshold: RECEIPT_READS_ALARM_PER_DAY,
       ComparisonOperator: "GreaterThanThreshold",
-      Metrics: Match.arrayWith([
-        Match.objectLike({ Expression: "(FILL(i_us_east_1, 0) * 1 + FILL(o_us_east_1, 0) * 5 + FILL(cr_us_east_1, 0) * 0.1 + FILL(cw_us_east_1, 0) * 1.25) / 1000000" }),
-        tokens("i_us_east_1", "InputTokenCount"),
-        tokens("o_us_east_1", "OutputTokenCount"),
-        tokens("cr_us_east_1", "CacheReadInputTokenCount"),
-        tokens("cw_us_east_1", "CacheWriteInputTokenCount"),
-      ]),
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ Namespace: "SupplyCheckout", MetricName: BusinessMetric.ReceiptReads }), Stat: "Sum", Period: 86_400 }) })],
     });
-    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-receipt-trials-paused",
-      Threshold: 0,
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ReceiptTrialCapReached }), Period: 3600 }) })],
-    });
+    // ReceiptReads counts every model call: the receipts function is the only one that may call Bedrock (api.test.ts)
+    expect(JSON.stringify(t.toJSON())).not.toContain("AWS/Bedrock");
+  });
+
+  it("alarms P2 on any NeedsAttention, the one metric every rare event adds to, in every region, until 2 hours pass without one (supply-checkout-7pe.1)", () => {
+    for (const r of [EAST, WEST]) {
+      observability(r).hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: "supply-checkout-prod-p2-needs-attention",
+        Threshold: 0,
+        ComparisonOperator: "GreaterThanThreshold",
+        EvaluationPeriods: NEEDS_ATTENTION_PERIODS,
+        DatapointsToAlarm: 1,
+        TreatMissingData: "notBreaching",
+        AlarmDescription: Match.stringLikeRegexp("When Needs attention fires"),
+        Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: { Namespace: "SupplyCheckout", MetricName: BusinessMetric.NeedsAttention, Dimensions: [{ Name: "Region", Value: r }] }, Stat: "Sum", Period: NEEDS_ATTENTION_PERIOD.toSeconds() }) })],
+      });
+    }
+    expect(NEEDS_ATTENTION_PERIOD.toSeconds() * NEEDS_ATTENTION_PERIODS).toBe(2 * 3600);
+    // Security events have one of their own, the same shape, so neither can hide the other while it's in ALARM
+    for (const r of [EAST, WEST]) {
+      observability(r).hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: "supply-checkout-prod-p2-security-attention",
+        Threshold: 0,
+        EvaluationPeriods: NEEDS_ATTENTION_PERIODS,
+        DatapointsToAlarm: 1,
+        TreatMissingData: "notBreaching",
+        AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+        AlarmDescription: Match.stringLikeRegexp("doesn't email again.*When Security attention fires"),
+        Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: { Namespace: "SupplyCheckout", MetricName: BusinessMetric.SecurityAttention, Dimensions: [{ Name: "Region", Value: r }] }, Stat: "Sum", Period: NEEDS_ATTENTION_PERIOD.toSeconds() }) })],
+      });
+    }
+    // No alarm of its own on a metric that adds to either
+    const read = new Set(Object.values(observability().findResources("AWS::CloudWatch::Alarm")).flatMap((a) => (a.Properties.Metrics ?? []).map((m: { MetricStat?: { Metric: { MetricName: string } } }) => m.MetricStat?.Metric.MetricName)));
+    for (const metric of [...NEEDS_ATTENTION_METRICS, ...NEEDS_ATTENTION_ONCE_A_DAY, ...SECURITY_ATTENTION_METRICS]) expect(read.has(metric), metric).toBe(false);
   });
 
   it("alarms on a rate only once there is enough traffic", () => {
@@ -764,7 +752,9 @@ describe("web app down alarms (supply-checkout-3sv.2)", () => {
       expect(a.EvaluationPeriods).toBe(1);
       expect(a.AlarmDescription).toContain("docs/observability.md, When the web app is down");
     }
-    for (const id of ["ops-page-down", "ops-router-failing"]) {
+    // The ops router's own alarm is gone (supply-checkout-7pe.1): a broken router fails every request with a 5xx
+    expect(webAlarm(east, "ops-router-failing", "p2")).toBeUndefined();
+    for (const id of ["ops-page-down"]) {
       const a = webAlarm(east, id, "p2");
       expect(a).toBeDefined();
       expect(a.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
@@ -778,7 +768,6 @@ describe("web app down alarms (supply-checkout-3sv.2)", () => {
     expect(webAlarm(west, "site-down")).toBeUndefined();
     expect(webAlarm(west, "web-router-failing")).toBeUndefined();
     expect(webAlarm(west, "ops-page-down", "p2")).toBeUndefined();
-    expect(webAlarm(west, "ops-router-failing", "p2")).toBeUndefined();
     expect(stacks.regions[EAST]?.observability.dependencies).toContain(stacks.web);
     // A deployment without the global services region has no stack there to hold them
     const solo = Template.fromStack(build({}, { regions: [WEST], primaryRegion: WEST }).region(WEST).observability);
@@ -836,32 +825,21 @@ describe("operator page down alarms (supply-checkout-8jc.47)", () => {
     return { Ref: id };
   };
 
-  it("Operator page down: the ops distribution's 5xx rate, from a few requests", () => {
+  it("Operator page down: the ops distribution's 5xx rate, from any number of requests, one alarm metric (supply-checkout-7pe.1)", () => {
     const t = observability(EAST);
     const distribution = ssmRef(t, webOutputParameters("prod").opsDistributionId);
     expect(distribution).not.toEqual(ssmRef(t, webOutputParameters("prod").distributionId));
     const a = opsAlarm(t, "ops-page-down");
     expect(a.Threshold).toBe(OPS_DOWN_PERCENT);
     expect(a.ComparisonOperator).toBe("GreaterThanThreshold");
-    const [expr, ...metrics] = a.Metrics;
-    expect(expr).toMatchObject({ Expression: `IF(r >= ${OPS_DOWN_MIN_REQUESTS}, FILL(e, 0), 0)`, ReturnData: true });
-    // A handful of operators: far fewer requests than the web app's threshold
-    expect(OPS_DOWN_MIN_REQUESTS).toBeLessThan(SITE_DOWN_MIN_REQUESTS);
-    const byId = Object.fromEntries(metrics.map((m: { Id: string }) => [m.Id, m]));
-    expect(byId.e.MetricStat.Metric).toEqual({ Namespace: "AWS/CloudFront", MetricName: "5xxErrorRate", Dimensions: [{ Name: "DistributionId", Value: distribution }, { Name: "Region", Value: "Global" }] });
-    expect(byId.r.MetricStat.Metric).toEqual({ Namespace: "AWS/CloudFront", MetricName: "Requests", Dimensions: [{ Name: "DistributionId", Value: distribution }, { Name: "Region", Value: "Global" }] });
-  });
-
-  it("Operator page router failing: any error or throttle of the ops router", () => {
-    const t = observability(EAST);
-    const fn = ssmRef(t, webOutputParameters("prod").opsRouterFunctionName);
-    const a = opsAlarm(t, "ops-router-failing");
-    expect(a.Threshold).toBe(OPS_ROUTER_FAILING_ABOVE);
-    expect(OPS_ROUTER_FAILING_ABOVE).toBe(0);
-    const [expr, ...metrics] = a.Metrics;
-    expect(expr.Expression).toBe("FILL(x, 0) + FILL(v, 0) + FILL(t, 0)");
-    expect(metrics).toHaveLength(3);
-    for (const m of metrics) expect(m.MetricStat.Metric).toMatchObject({ Namespace: "AWS/CloudFront", Dimensions: [{ Name: "FunctionName", Value: fn }, { Name: "Region", Value: "Global" }] });
+    expect(a.Metrics).toHaveLength(1);
+    expect(a.Metrics[0].MetricStat).toEqual({
+      Metric: { Namespace: "AWS/CloudFront", MetricName: "5xxErrorRate", Dimensions: [{ Name: "DistributionId", Value: distribution }, { Name: "Region", Value: "Global" }] },
+      Stat: "Average",
+      Period: 300,
+    });
+    // Nothing reads the ops router's name any more
+    expect(Object.values(t.findParameters("*", { Default: webOutputParameters("prod").opsRouterFunctionName }))).toEqual([]);
   });
 });
 
@@ -903,36 +881,6 @@ describe("live update alarms", () => {
 });
 
 describe("alarms on sign-in, email and import failures the functions don't throw for", () => {
-  it("alarms on repeated sign-out revoke failures (J0)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-sign-out-not-revoking",
-      Metrics: [
-        Match.objectLike({
-          MetricStat: {
-            Metric: { Namespace: "SupplyCheckout", MetricName: BusinessMetric.SignOutRevokeFailures, Dimensions: [{ Name: "Region", Value: EAST }] },
-            Stat: "Sum",
-            Period: 900,
-          },
-        }),
-      ],
-      Threshold: 2,
-      ComparisonOperator: "GreaterThanThreshold",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-    });
-  });
-
-  it("alarms on any failed email_verified update, promotion or downgrade (J3)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-email-verification-not-saved",
-      Threshold: 0,
-      Metrics: Match.arrayWith([
-        Match.objectLike({ Expression: "FILL(v, 0) + FILL(u, 0)" }),
-        Match.objectLike({ Id: "v", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.EmailVerifyFailures }), Period: 900, Stat: "Sum" }) }),
-        Match.objectLike({ Id: "u", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.EmailUnverifyFailures }), Period: 900, Stat: "Sum" }) }),
-      ]),
-    });
-  });
-
   it("alarms above 80% of the SES daily quota (J3) and on any stuck import (J2), reading the gauges' maximum", () => {
     const t = observability();
     t.hasResourceProperties("AWS::CloudWatch::Alarm", {
@@ -991,101 +939,6 @@ describe("RUM cost guard (supply-checkout-3sv.7)", () => {
 });
 
 describe("alarms added with the email code routes, the live update budget, team closure and the purge", () => {
-  it("alarms on repeated 5xx answers from the email code routes (J3)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-email-codes-failing",
-      Threshold: 2,
-      EvaluationPeriods: 1,
-      Metrics: Match.arrayWith([
-        Match.objectLike({ Expression: "FILL(s, 0) + FILL(c, 0)" }),
-        Match.objectLike({ Id: "s", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.EmailCodeSendFailures }), Period: 900, Stat: "Sum" }) }),
-        Match.objectLike({ Id: "c", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.EmailCodeVerifyFailures }), Period: 900, Stat: "Sum" }) }),
-      ]),
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-    });
-  });
-
-  it("alarms on live updates deferred in 3 consecutive 5-minute periods, not on one (J4)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-live-updates-deferred",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.LiveUpdatesDeferred }), Stat: "Sum", Period: 300 }) })],
-      Threshold: 0,
-      EvaluationPeriods: 3,
-      DatapointsToAlarm: 3,
-      TreatMissingData: "notBreaching",
-    });
-  });
-
-  it("alarms on any owner not emailed that their team closed (J11)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-team-closed-notices-failing",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.TeamClosedNoticeFailures }), Stat: "Sum", Period: 900 }) })],
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-    });
-  });
-
-  it("alarms on any security notice not emailed to an account's own address (J0, supply-checkout-3sv.13)", () => {
-    for (const r of config.regions) {
-      observability(r).hasResourceProperties("AWS::CloudWatch::Alarm", {
-        AlarmName: "supply-checkout-prod-p2-security-notices-failing",
-        Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.SecurityNoticeFailures, Dimensions: [{ Name: "Region", Value: r }] }), Stat: "Sum", Period: 900 }) })],
-        Threshold: 0,
-        ComparisonOperator: "GreaterThanThreshold",
-        TreatMissingData: "notBreaching",
-        AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-        AlarmDescription: Match.stringLikeRegexp("^P2 Security notices failing \\(J0"),
-      });
-    }
-  });
-
-  it("alarms on any owner not emailed that their team reopened (J11)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-team-reopened-notices-failing",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.TeamReopenedNoticeFailures }), Stat: "Sum", Period: 900 }) })],
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-      AlarmDescription: Match.stringLikeRegexp("^P2 Team reopened emails failing \\(J11"),
-    });
-  });
-
-  it("alarms on any reopened team whose subscription was set to end as it reopened, in every region (J7, J11)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-reopened-team-subscription-ended",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ReopenedTeamSubscriptionsEnded }), Stat: "Sum", Period: 900 }) })],
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-      AlarmDescription: Match.stringLikeRegexp("^P2 Reopened team's subscription ended \\(J7, J11"),
-    });
-  });
-
-  it("alarms on any reopened team the nightly reconciliation found still waiting for its Stripe resync, where it runs (J7, J11, supply-checkout-85qp)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-reopen-resync-late",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ReopenResyncsLate }), Stat: "Sum", Period: 3600 }) })],
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-      AlarmDescription: Match.stringLikeRegexp("^P2 Reopened team's billing not resynced \\(J7, J11"),
-    });
-  });
-
-  it("alarms on any reopened team's subscription left set to cancel for a person, in every region (J7, J11, supply-checkout-85qp)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-reopened-team-subscription-undecided",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ReopenedTeamSubscriptionsUndecided }), Stat: "Sum", Period: 3600 }) })],
-      Threshold: 0,
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-      AlarmDescription: Match.stringLikeRegexp("^P2 Reopened team's subscription left to cancel \\(J7, J11"),
-    });
-  });
-
   it("alarms on any error or throttle of the post confirmation trigger, P1, where the user pool is (J1, supply-checkout-8jc.31)", () => {
     const fn = { Name: "FunctionName", Value: "supply-checkout-prod-post-confirmation" };
     observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
@@ -1103,17 +956,8 @@ describe("alarms added with the email code routes, the live update budget, team 
     });
   });
 
-  it("alarms on any welcome email not sent, SES refusals at a rate, the function failing, and any welcome request dropped, P2, where the user pool is (J1, supply-checkout-6uw.25)", () => {
+  it("alarms on the welcome email function failing and any welcome request dropped, P2, where the user pool is (J1, supply-checkout-6uw.25)", () => {
     const t = observability();
-    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-welcome-emails-failing",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.WelcomeEmailFailures, Dimensions: [{ Name: "Region", Value: EAST }] }), Stat: "Sum", Period: 3600 }) })],
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-      AlarmDescription: Match.stringLikeRegexp("^P2 Welcome emails failing \\(J1"),
-    });
     t.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-welcome-emails-dropped",
       Namespace: "AWS/SQS",
@@ -1124,24 +968,6 @@ describe("alarms added with the email code routes, the live update budget, team 
       ComparisonOperator: "GreaterThanThreshold",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
       AlarmDescription: Match.stringLikeRegexp("^P2 Welcome emails dropped \\(J1"),
-    });
-    // SES's refusals apart; out of the sandbox, any one alarms (supply-checkout-3sv.21)
-    expect(WELCOME_REFUSALS_ALARM_PER_HOUR).toBe(1);
-    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-welcome-emails-refused",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.WelcomeEmailsRefused }), Stat: "Sum", Period: 3600 }) })],
-      Threshold: WELCOME_REFUSALS_ALARM_PER_HOUR - 1,
-      ComparisonOperator: "GreaterThanThreshold",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-    });
-    // Password reset provider hints reached their daily cap (supply-checkout-6uw.26)
-    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-password-reset-hints-capped",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.PasswordResetHintsCapped }), Stat: "Sum", Period: 3600 }) })],
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-      AlarmDescription: Match.stringLikeRegexp("^P2 Password reset hints capped \\(J0"),
     });
     // A try that died (a timeout) after claiming counts nothing else
     t.hasResourceProperties("AWS::CloudWatch::Alarm", {
@@ -1155,6 +981,40 @@ describe("alarms added with the email code routes, the live update budget, team 
       ComparisonOperator: "GreaterThanThreshold",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
     });
+  });
+
+  it("alarms on the rare events through Needs attention, not an alarm each (supply-checkout-7pe.1)", () => {
+    // The events that had alarms of their own, each any in a period but sign-outs not revoked and email code failures (3 in 15 minutes)
+    expect([...NEEDS_ATTENTION_METRICS].sort()).toEqual([
+      BusinessMetric.WelcomeEmailFailures,
+      BusinessMetric.WelcomeEmailsRefused,
+      BusinessMetric.PasswordResetHintsCapped,
+      BusinessMetric.EmailVerifyFailures,
+      BusinessMetric.EmailUnverifyFailures,
+      BusinessMetric.EmailCodeSendFailures,
+      BusinessMetric.EmailCodeVerifyFailures,
+      BusinessMetric.SeatQuantityDrift,
+      BusinessMetric.EntitlementDrift,
+      BusinessMetric.TeamClosedNoticeFailures,
+      BusinessMetric.TeamReopenedNoticeFailures,
+      BusinessMetric.ReopenedTeamSubscriptionsEnded,
+      BusinessMetric.ReopenResyncsLate,
+      BusinessMetric.ReopenedTeamSubscriptionsUndecided,
+      BusinessMetric.ClosedTeamRenewalsCharged,
+      BusinessMetric.ClosedTeamSubscriptionsNotFound,
+      BusinessMetric.StripeCustomersAlreadyDeleted,
+      BusinessMetric.HeldTeamsPurged,
+      BusinessMetric.LapseFailures,
+      BusinessMetric.LapseClosuresHeld,
+      BusinessMetric.LapseCheckoutOverdue,
+    ].sort());
+    // The trial cap's, once a day, from the receipts function itself; the security events through Security attention
+    expect(NEEDS_ATTENTION_ONCE_A_DAY).toEqual([BusinessMetric.ReceiptTrialCapReached]);
+    expect([...SECURITY_ATTENTION_METRICS].sort()).toEqual([BusinessMetric.SecurityNoticeFailures, BusinessMetric.SignOutRevokeFailures]);
+    const names = Object.values(observability().findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
+    for (const gone of ["sign-out-not-revoking", "security-notices-failing", "welcome-emails-failing", "welcome-emails-refused", "password-reset-hints-capped", "email-verification-not-saved", "email-codes-failing", "receipt-trials-paused", "seat-counts-drifting", "entitlements-drifting", "team-closed-notices-failing", "team-reopened-notices-failing", "reopened-team-subscription-ended", "reopen-resync-late", "reopened-team-subscription-undecided", "closed-team-charged", "closed-team-subscription-not-found", "stripe-customer-already-deleted", "held-team-purged", "lapse-job-failing", "lapse-closures-held", "lapse-checkout-held"]) {
+      expect(names.filter((n) => n.endsWith(`-${gone}`)), gone).toEqual([]);
+    }
   });
 
   it("alarms on any error or throttle of the pre token generation trigger, P1, where the user pool is (J0, supply-checkout-3sv.16)", () => {
@@ -1171,30 +1031,6 @@ describe("alarms added with the email code routes, the live update budget, team 
       TreatMissingData: "notBreaching",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP1") }],
       AlarmDescription: Match.stringLikeRegexp("^P1 Sign-in trigger failing \\(J0"),
-    });
-  });
-
-  it("alarms on any closed team charged for a period after it closed, where the purge runs (J7, J11)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-closed-team-charged",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ClosedTeamRenewalsCharged }), Stat: "Sum", Period: 3600 }) })],
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-      AlarmDescription: Match.stringLikeRegexp("^P2 Closed team charged \\(J7, J11"),
-    });
-  });
-
-  it("alarms on any closed team's subscription Stripe doesn't have, where the purge runs (J7, J11, supply-checkout-8jc.17)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-closed-team-subscription-not-found",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ClosedTeamSubscriptionsNotFound }), Stat: "Sum", Period: 3600 }) })],
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-      AlarmDescription: Match.stringLikeRegexp("^P2 Closed-team subscription not found in Stripe \\(J7, J11"),
     });
   });
 
@@ -1228,31 +1064,6 @@ describe("alarms added with the email code routes, the live update budget, team 
     expect(SET_ASIDE_INCIDENT_AT).toBe(5);
   });
 
-  it("alarms on any purged team's Stripe customer Stripe says was already deleted, where the purge runs (J7, J11, supply-checkout-8jc.37)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-stripe-customer-already-deleted",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.StripeCustomersAlreadyDeleted }), Stat: "Sum", Period: 3600 }) })],
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-      AlarmDescription: Match.stringLikeRegexp("^P2 Stripe customer already deleted \\(J7, J11.*deletion record"),
-    });
-  });
-
-  it("alarms on any held team the purge deleted with its subscription unresolved, where the purge runs (J7, J11, supply-checkout-8jc.40)", () => {
-    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-held-team-purged",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.HeldTeamsPurged }), Stat: "Sum", Period: 3600 }) })],
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-      AlarmDescription: Match.stringLikeRegexp(`^P2 Held team purged with its subscription unresolved \\(J7, J11.*${HELD_PURGE_GRACE_DAYS} days after its deletion date.*deletion record`),
-    });
-    expect(HELD_PURGE_GRACE_DAYS).toBe(14);
-  });
-
   it("alarms on a purged team's Stripe customer still queued for deletion after a day (P2) and after a week (P1), on the purge's gauge (J7, J11, supply-checkout-8jc.42)", () => {
     const t = observability();
     const oldest = [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.StripeCustomerDeletionOldestHours }), Stat: "Maximum", Period: 2 * PURGE_EVERY_HOURS * 3600 }) })];
@@ -1278,14 +1089,19 @@ describe("alarms added with the email code routes, the live update budget, team 
     expect(STRIPE_DELETION_STUCK_DAYS).toBe(7);
   });
 
-  it("alarms on any closed team overdue for deletion, over periods that always hold a purge run (J11)", () => {
+  it("alarms on any closed team overdue for deletion, and on the purge not running, on its gauge over periods that always hold runs (J11, supply-checkout-7pe.1)", () => {
     observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-deletion-overdue",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ClosedTeamsOverdue }), Stat: "Maximum", Period: 2 * PURGE_EVERY_HOURS * 3600 }) })],
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ClosedTeamsOverdue }), Stat: "Maximum", Period: PURGE_SILENT_ALARM_HOURS * 3600 }) })],
       Threshold: 0,
-      AlarmDescription: Match.stringLikeRegexp(`more than ${PURGE_OVERDUE_AFTER_HOURS} hours.*until the purge deletes it anyway ${HELD_PURGE_GRACE_DAYS} days after its deletion date`),
+      EvaluationPeriods: 1,
+      // No sample at all: the purge isn't running
+      TreatMissingData: "breaching",
+      AlarmDescription: Match.stringLikeRegexp(`^P2 Deletion overdue or not running \\(J11.*more than ${PURGE_OVERDUE_AFTER_HOURS} hours.*until the purge deletes it anyway ${HELD_PURGE_GRACE_DAYS} days after its deletion date.*the purge isn't running`),
     });
     expect(PURGE_OVERDUE_AFTER_HOURS).toBeGreaterThanOrEqual(PURGE_EVERY_HOURS);
+    // Three hourly runs missed, not one
+    expect(PURGE_SILENT_ALARM_HOURS).toBe(3 * PURGE_EVERY_HOURS);
   });
 });
 
@@ -1443,33 +1259,23 @@ describe("scheduled checks", () => {
     expect(listQueue?.Condition).toEqual({ "ForAllValues:StringEquals": queueOnly, StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } });
   });
 
-  it("alarm when the team purge stops sending its gauge for 3 hours, in the primary region only (J11)", () => {
+  it("alarm when the team purge stops sending its gauge for 3 hours through Deletion overdue, in the primary region only (J11, supply-checkout-7pe.1)", () => {
     const { region } = build();
     const east = Template.fromStack(region(EAST).observability);
+    // Its own alarm on the gauge's SampleCount is gone: Deletion overdue reads the same gauge, missing data breaching
     east.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-deletion-not-running",
-      Metrics: [
-        Match.objectLike({
-          MetricStat: Match.objectLike({
-            Metric: Match.objectLike({ Namespace: "SupplyCheckout", MetricName: BusinessMetric.ClosedTeamsOverdue, Dimensions: [{ Name: "Region", Value: EAST }] }),
-            Stat: "SampleCount",
-            Period: PURGE_SILENT_ALARM_HOURS * 3600,
-          }),
-        }),
-      ],
-      Threshold: 1,
-      ComparisonOperator: "LessThanThreshold",
-      EvaluationPeriods: 1,
+      AlarmName: "supply-checkout-prod-p2-deletion-overdue",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ClosedTeamsOverdue, Dimensions: [{ Name: "Region", Value: EAST }] }), Period: PURGE_SILENT_ALARM_HOURS * 3600 }) })],
       TreatMissingData: "breaching",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
       OKActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-      AlarmDescription: Match.stringLikeRegexp("docs/journeys.md"),
     });
+    const names = (r: string) => Object.values(Template.fromStack(region(r).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
+    expect(names(EAST)).not.toContain("supply-checkout-prod-p2-deletion-not-running");
     // More than two missed runs, so one slow run doesn't alarm
     expect(PURGE_SILENT_ALARM_HOURS).toBeGreaterThan(2 * PURGE_EVERY_HOURS);
     // The other region runs no purge, so an alarm there would always be in alarm
-    const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
-    expect(west).not.toContain("supply-checkout-prod-p2-deletion-not-running");
+    expect(names(WEST).filter((n) => n.endsWith("-deletion-overdue"))).toEqual([]);
   });
 
   it("let the seat reconciliation list teams from the operators' index by keys, customer, closure and status, and send only to the seat sync queue (supply-checkout-l50)", () => {
@@ -1587,10 +1393,10 @@ describe("scheduled checks", () => {
     expect(fn?.ReservedConcurrentExecutions).toBeUndefined();
   });
 
-  it("alarm when the lapsed-team job holds closures at its cap, closes many in a few hours, or runs out of time run after run, in the primary region only", () => {
+  it("alarm when the lapsed-team job closes many in a few hours, or runs out of time or doesn't run, run after run, in the primary region only", () => {
     const { region } = build();
     const east = Template.fromStack(region(EAST).observability);
-    const alarm = (name: string, metric: string, stat: string, period: number, threshold: number, periods = 1) =>
+    const alarm = (name: string, metric: string, stat: string, period: number, threshold: number, periods = 1, missing = "notBreaching") =>
       east.hasResourceProperties("AWS::CloudWatch::Alarm", {
         AlarmName: name,
         Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: metric }), Stat: stat, Period: period }) })],
@@ -1598,32 +1404,21 @@ describe("scheduled checks", () => {
         ComparisonOperator: "GreaterThanThreshold",
         EvaluationPeriods: periods,
         DatapointsToAlarm: periods,
+        TreatMissingData: missing,
         AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
       });
-    alarm("supply-checkout-prod-p2-lapse-closures-held", BusinessMetric.LapseClosuresHeld, "Sum", 2 * LAPSE_EVERY_HOURS * 3600, 0);
-    alarm("supply-checkout-prod-p2-lapse-checkout-held", BusinessMetric.LapseCheckoutOverdue, "Sum", 2 * LAPSE_EVERY_HOURS * 3600, 0);
+    // Held closures and failures alarm through Needs attention (supply-checkout-7pe.1)
     alarm("supply-checkout-prod-p2-lapse-closures-high", BusinessMetric.LapsedTeamsClosed, "Sum", LAPSE_CLOSURES_ALARM_HOURS * 3600, LAPSE_CLOSURES_ALARM_COUNT);
-    alarm("supply-checkout-prod-p2-lapse-job-out-of-time", BusinessMetric.LapseTeamsUnstarted, "Maximum", LAPSE_EVERY_HOURS * 3600, 0, LAPSE_UNSTARTED_ALARM_HOURS / LAPSE_EVERY_HOURS);
+    // Out of time, or not running: every run that lists the teams sends LapseTeamsUnstarted (with LapseTeamsChecked), so missing data breaches
+    alarm("supply-checkout-prod-p2-lapse-job-out-of-time", BusinessMetric.LapseTeamsUnstarted, "Maximum", LAPSE_EVERY_HOURS * 3600, 0, LAPSE_UNSTARTED_ALARM_HOURS / LAPSE_EVERY_HOURS, "breaching");
+    expect(LAPSE_UNSTARTED_ALARM_HOURS).toBeGreaterThan(2 * LAPSE_EVERY_HOURS);
+    const names = Object.values(east.findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
+    for (const gone of ["lapse-not-running", "lapse-job-failing", "lapse-closures-held", "lapse-checkout-held"]) expect(names.filter((n) => n.endsWith(`-${gone}`))).toEqual([]);
     // It sees a runaway well before the cap would let one through its period's runs, and well within the purge's day
     expect(LAPSE_CLOSURES_ALARM_COUNT).toBeLessThan((LAPSE_CLOSURES_ALARM_HOURS / LAPSE_EVERY_HOURS) * LAPSE_MAX_CLOSURES_PER_RUN);
     expect(LAPSE_CLOSURES_ALARM_HOURS).toBeLessThanOrEqual(6);
     const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
     expect(west.filter((n: string) => /lapse/.test(n))).toEqual([]);
-  });
-
-  it("alarm when the lapsed-team job stops sending its gauge, in the primary region only", () => {
-    const { region } = build();
-    Template.fromStack(region(EAST).observability).hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "supply-checkout-prod-p2-lapse-not-running",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.LapseTeamsChecked }), Stat: "SampleCount", Period: LAPSE_SILENT_ALARM_HOURS * 3600 }) })],
-      Threshold: 1,
-      ComparisonOperator: "LessThanThreshold",
-      TreatMissingData: "breaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-    });
-    expect(LAPSE_SILENT_ALARM_HOURS).toBeGreaterThan(2 * LAPSE_EVERY_HOURS);
-    const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
-    expect(west).not.toContain("supply-checkout-prod-p2-lapse-not-running");
   });
 
   it("let the SES quota check read the account's quota and nothing else", () => {
@@ -1809,27 +1604,55 @@ describe("dashboard", () => {
     });
   });
 
-  it("shows traffic, errors, latency and every business metric, split by region", () => {
+  it("shows traffic, errors, latency, Needs attention and the runbooks' business metrics, split by region", () => {
     const text = body(observability());
-    for (const title of ["Traffic: API requests", "Errors: API 5xx rate %", "Latency: API p95 (ms)", "Latency: Lambda duration p95 (ms)"]) {
+    for (const title of ["Needs attention and Security attention: rare events", "API: requests, 4xx and 5xx", "Lambda: invocations, errors and throttles", "API: p95 latency (ms)", "Operators: audit watch heartbeats"]) {
       expect(text).toContain(title);
     }
+    // Which events add to Needs attention, beside its graph
+    for (const name of [...NEEDS_ATTENTION_METRICS, ...NEEDS_ATTENTION_ONCE_A_DAY, ...SECURITY_ATTENTION_METRICS]) expect(text).toContain(`\`${name}\``);
+    expect(text).toContain("When Needs attention fires");
+    expect(text).toContain("When Security attention fires");
+    expect(text).toContain("doesn't email again");
+    const shown = [
+      BusinessMetric.NeedsAttention,
+      BusinessMetric.SecurityAttention,
+      BusinessMetric.Checkouts,
+      BusinessMetric.Returns,
+      BusinessMetric.Writes,
+      BusinessMetric.ConditionalWriteConflicts,
+      BusinessMetric.LiveUpdates,
+      BusinessMetric.LiveUpdateFailures,
+      BusinessMetric.LiveUpdatesDeferred,
+      BusinessMetric.SignUps,
+      BusinessMetric.InvitesSent,
+      BusinessMetric.ReceiptReads,
+      BusinessMetric.ReceiptReadFailures,
+      BusinessMetric.CheckoutSessionErrors,
+      BusinessMetric.WebhookSignatureFailures,
+      BusinessMetric.EmailBounces,
+      BusinessMetric.OperatorAuditWatchHeartbeat,
+    ];
     for (const r of config.regions) {
-      for (const name of Object.values(BusinessMetric)) {
-        expect(text).toContain(`["SupplyCheckout","${name}","Region","${r}",{"label":"${name} (${r})","region":"${r}"`);
-      }
-      expect(text).toContain(`API requests (${r})`);
-      expect(text).toContain(`Lambda Duration (${r})`);
+      for (const name of shown) expect(text).toContain(`["SupplyCheckout","${name}","Region","${r}",{"label":"${name} (${r})","region":"${r}"`);
+      expect(text).toContain(`Lambda Invocations (${r})`);
     }
+    for (const name of [BusinessMetric.ClosedTeamsOverdue, BusinessMetric.ClosedTeamsSetAside, BusinessMetric.StripeCustomerDeletionOldestHours]) {
+      expect(text).toContain(`["SupplyCheckout","${name}","Region","${EAST}",{"label":"${name} (${EAST})","region":"${EAST}","stat":"Maximum"`);
+    }
+    // The primary region's API by its ID; the other region's by search, which it can't name
+    expect(text).toContain('"AWS/ApiGateway","Count","ApiId"');
+    expect(text).toContain(`API requests (${WEST})`);
+    expect(text).not.toContain(`API requests (${EAST})`);
   });
 
   it("shows the web app's alarms and a row of CloudFront graphs", () => {
     const t = observability();
     const [dash] = Object.values(t.findResources("AWS::CloudWatch::Dashboard"));
     const all = JSON.stringify(dash.Properties.DashboardBody);
-    for (const id of ["sitedown", "webrouterfailing", "opspagedown", "opsrouterfailing"]) expect(all).toMatch(new RegExp(`"WebAlarms${id}[0-9A-F]{8}","Arn"`));
+    for (const id of ["sitedown", "webrouterfailing", "opspagedown"]) expect(all).toMatch(new RegExp(`"WebAlarms${id}[0-9A-F]{8}","Arn"`));
     const text = body(t);
-    for (const title of ["Web: CloudFront requests", "Web: CloudFront 5xx rate %", "Web: router errors and throttles", "Operator page: CloudFront requests", "Operator page: 5xx rate %", "Operator page: router errors and throttles"]) {
+    for (const title of ["Web: CloudFront requests and 5xx rate %", "Web: router errors and throttles", "Operator page: requests and 5xx rate %"]) {
       expect(text).toContain(title);
     }
     expect(text).toContain('"AWS/CloudFront","5xxErrorRate","DistributionId"');
@@ -1841,6 +1664,117 @@ describe("dashboard", () => {
     const text = body(Template.fromStack(region(EAST).observability));
     expect(text).toContain(`(${EAST})`);
     expect(text).not.toContain(WEST);
+  });
+});
+
+/**
+ * What CloudWatch bills for (supply-checkout-7pe.1), counted in the templates
+ * prod deploys: cdk.json's context and the deployed regions
+ * (DEFAULT_REGIONS), as `cdk deploy` builds them. The backup account's vault
+ * stack is another account's bill and isn't counted.
+ *
+ * - An alarm costs $0.10 a month for each metric it reads (the first 10 free):
+ *   1 for an alarm on one metric, else each MetricStat in its Metrics (metric
+ *   math expressions themselves are free). An anomaly detection band adds 2,
+ *   and a high-resolution alarm (a period under a minute) costs 3 times as much.
+ *   The limit is 76 metrics (about $6.60 a month, half of before) plus 2, from
+ *   the security reviews of supply-checkout-7pe.1. An alarm already in ALARM
+ *   doesn't email again, so a source that keeps an aggregate in ALARM hides
+ *   every other source behind it: "Security attention" keeps the security
+ *   events apart from "Needs attention" (1), and "Deletion record rewritten"
+ *   keeps its own alarm (1), because a user can make SecurityNoticeFailures
+ *   on demand and hold Security attention in ALARM, while nothing but a
+ *   rewritten deletion record can set that one off.
+ * - A dashboard is free up to DASHBOARD_METRICS_LIMIT metrics (3 of them), and
+ *   $3 a month over it: every metric a graph names, each time it's named, an
+ *   expression's own metrics included. A SEARCH can match any number, so the
+ *   deployed dashboard has none.
+ */
+const ALARM_METRICS_LIMIT = 78;
+
+type Json = Record<string, unknown>;
+
+function alarmMetricCount(alarm: Json): number {
+  const props = alarm.Properties as Json;
+  const metrics = props.Metrics as Json[] | undefined;
+  const periods = metrics ? metrics.map((m) => Number((m.MetricStat as Json | undefined)?.Period ?? 60)) : [Number(props.Period)];
+  const highResolution = periods.some((p) => p < 60) ? 3 : 1;
+  if (!metrics) return highResolution;
+  const stats = metrics.filter((m) => m.MetricStat).length;
+  const bands = metrics.filter((m) => String(m.Expression ?? "").includes("ANOMALY_DETECTION_BAND")).length;
+  return (stats + 2 * bands) * highResolution;
+}
+
+/** A dashboard body's metrics as billed, with every token (an alarm's ARN, the region) as a placeholder. */
+function dashboardMetricCount(dashboard: Json): number {
+  const raw = (dashboard.Properties as Json).DashboardBody as string | { "Fn::Join": [string, unknown[]] };
+  const text = typeof raw === "string" ? raw : raw["Fn::Join"][1].map((p) => (typeof p === "string" ? p : "TOKEN")).join("");
+  const body = JSON.parse(text) as { widgets: { properties: { metrics?: unknown[][] } }[] };
+  let count = 0;
+  for (const widget of body.widgets) {
+    for (const row of widget.properties.metrics ?? []) {
+      const first = row[0];
+      if (typeof first === "string") count += 1;
+      else if (String((first as Json).expression).includes("SEARCH")) count += Number.POSITIVE_INFINITY;
+    }
+  }
+  return count;
+}
+
+describe("CloudWatch cost: alarm and dashboard metrics in prod (supply-checkout-7pe.1)", () => {
+  const app = testApp();
+  const deployed = configFromContext(app.node);
+  const stacks = addSupplyCheckout(app, deployed);
+  const templates = stacks.all.map((stack) => Template.fromStack(stack));
+  const alarms = templates.flatMap((t) => Object.values(t.findResources("AWS::CloudWatch::Alarm")));
+  const name = (a: Json) => String((a.Properties as Json).AlarmName);
+
+  it("are counted in the prod deployment: one region, the primary, with every alarm", () => {
+    expect(deployed.envName).toBe("prod");
+    expect(deployed.regions).toEqual([EAST]);
+    expect(alarms.length).toBeGreaterThan(50);
+    // Counted as billed
+    expect(alarmMetricCount({ Properties: { MetricName: "x", Period: 300 } })).toBe(1);
+    expect(alarmMetricCount({ Properties: { MetricName: "x", Period: 10 } })).toBe(3);
+    expect(alarmMetricCount({ Properties: { Metrics: [{ Expression: "a + b" }, { MetricStat: { Period: 300 } }, { MetricStat: { Period: 300 } }] } })).toBe(2);
+    expect(alarmMetricCount({ Properties: { Metrics: [{ Expression: "ANOMALY_DETECTION_BAND(m, 2)" }, { MetricStat: { Period: 300 } }] } })).toBe(3);
+    expect(dashboardMetricCount({ Properties: { DashboardBody: JSON.stringify({ widgets: [{ properties: { metrics: [["NS", "M"], [{ expression: "SEARCH('{NS}', 'Sum', 300)" }]] } }] }) } })).toBe(Number.POSITIVE_INFINITY);
+    expect(dashboardMetricCount({ Properties: { DashboardBody: JSON.stringify({ widgets: [{ properties: { metrics: [["NS", "M"], [{ expression: "m1 + m2" }], ["NS", "N"]] } }, { properties: {} }] }) } })).toBe(2);
+  });
+
+  it(`read at most ${ALARM_METRICS_LIMIT} alarm metrics, every P1 alarm included`, () => {
+    const total = alarms.reduce((sum, a) => sum + alarmMetricCount(a), 0);
+    expect(total).toBeLessThanOrEqual(ALARM_METRICS_LIMIT);
+    expect(templates.flatMap((t) => Object.keys(t.findResources("AWS::CloudWatch::CompositeAlarm")))).toEqual([]);
+    // The P1 alarms, each on the metrics it read before (supply-checkout-7pe.1 changed only P2)
+    const p1 = Object.fromEntries(alarms.filter((a) => name(a).includes("-p1-")).map((a) => [name(a).replace("supply-checkout-prod-p1-", ""), alarmMetricCount(a)]));
+    expect(p1).toEqual({
+      "functions-failing": 2,
+      "api-errors": 2,
+      "database-errors": 7,
+      "sign-in-trigger-failing": 2,
+      "sign-up-trigger-failing": 2,
+      "email-bouncing": 1,
+      "email-complaints": 1,
+      "checkout-broken": 1,
+      "billing-portal-broken": 1,
+      "webhook-signature-failures": 1,
+      "billing-events-stuck": 1,
+      "closed-team-subscriptions-set-aside-many": 1,
+      "stripe-customer-deletion-stuck": 1,
+      "site-down": 2,
+      "web-router-failing": 3,
+      "rum-events-flood": 1,
+      "operator-audit-changed": 1,
+      "operator-group-changed": 2,
+    });
+  });
+
+  it(`keep the dashboard within the free tier's ${DASHBOARD_METRICS_LIMIT} metrics`, () => {
+    const dashboards = templates.flatMap((t) => Object.values(t.findResources("AWS::CloudWatch::Dashboard")));
+    expect(dashboards).toHaveLength(1);
+    expect(dashboardMetricCount(dashboards[0])).toBeLessThanOrEqual(DASHBOARD_METRICS_LIMIT);
+    expect(DASHBOARD_METRICS_LIMIT).toBe(50);
   });
 });
 
@@ -2167,7 +2101,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     // Only these rules may publish
     const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
     const fromEvents = statements.filter((st) => (st.Principal as { Service?: unknown } | undefined)?.Service === "events.amazonaws.com");
-    expect(fromEvents).toHaveLength(6);
+    expect(fromEvents).toHaveLength(7);
     expect(fromEvents).toEqual(expect.arrayContaining([
       // The support SMTP user's rule, on the P2 topic (tested with the watch)
       expect.objectContaining({ Sid: "AllowSupportSmtpUserAlertToPublish" }),
@@ -2187,6 +2121,8 @@ describe("operator pool alerts (ADR 0015)", () => {
       expect.objectContaining({ Sid: "AllowDeletionsBucketAlertToPublish" }),
       // The backup stack's two change-alert rules, by name (tested in backup.test.ts)
       expect.objectContaining({ Sid: "AllowBackupChangeAlertsToPublish" }),
+      // And its failed backup and copy jobs rule, on the P2 topic, by name (tested in backup.test.ts)
+      expect.objectContaining({ Sid: "AllowBackupJobAlertsToPublish" }),
     ]));
   });
 
@@ -2532,9 +2468,9 @@ describe("operator pool alerts (ADR 0015)", () => {
 
   it("tell P1 when an operator audit alarm is disabled or deleted, or rewritten outside a deploy (supply-checkout-6uw.11)", () => {
     const { alarmChanges } = operatorRules();
-    const alarms = ["supply-checkout-prod-p1-operator-audit-changed", "supply-checkout-prod-p2-operator-audit-watch-failing", "supply-checkout-prod-p2-operator-audit-watch-dropped", "supply-checkout-prod-p2-operator-audit-watch-silent"];
-    const which = ["Changed", "Failing", "Dropped", "Silent"];
-    const resolved = JSON.parse(JSON.stringify(alarmChanges.props.EventPattern).replace(/\{"Ref":"OperatorAuditWatch(Changed|Failing|Dropped|Silent)[0-9A-F]+"\}/g, (_m, w: string) => JSON.stringify(alarms[which.indexOf(w)])));
+    const alarms = ["supply-checkout-prod-p1-operator-audit-changed", "supply-checkout-prod-p2-operator-audit-watch-dropped", "supply-checkout-prod-p2-operator-audit-watch-silent"];
+    const which = ["Changed", "Dropped", "Silent"];
+    const resolved = JSON.parse(JSON.stringify(alarmChanges.props.EventPattern).replace(/\{"Ref":"OperatorAuditWatch(Changed|Dropped|Silent)[0-9A-F]+"\}/g, (_m, w: string) => JSON.stringify(alarms[which.indexOf(w)])));
     expect(resolved).toEqual({
       source: ["aws.monitoring"],
       "detail-type": ["AWS API Call via CloudTrail"],
@@ -2833,7 +2769,7 @@ describe("operator audit watch (supply-checkout-6uw.5)", () => {
     expect(kms?.Condition).toEqual({ StringEquals: { "kms:ViaService": { "Fn::Join": ["", ["dynamodb.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } } });
   });
 
-  it("alarms P1 on any OperatorAuditChanged, and P2 when the watch fails, both on the dashboard", () => {
+  it("alarms P1 on any OperatorAuditChanged, on the dashboard, and not on the watch's own errors (supply-checkout-7pe.1)", () => {
     const t = observability();
     const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
     const changed = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p1-operator-audit-changed");
@@ -2853,12 +2789,10 @@ describe("operator audit watch (supply-checkout-6uw.5)", () => {
     });
     expect(changed?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP1/);
     expect(changed?.OKActions).toEqual(changed?.AlarmActions);
-    const failing = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-operator-audit-watch-failing");
-    expect(failing).toMatchObject({ MetricName: "Errors", Namespace: "AWS/Lambda", Threshold: 0, TreatMissingData: "notBreaching" });
-    expect(failing?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
+    // A batch that fails is retried; one that keeps failing ends in the dead-letter queue (Dropped), and the heartbeats stop (Silent)
+    expect(alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-operator-audit-watch-failing")).toBeUndefined();
     const dashboard = JSON.stringify(Object.values(t.findResources("AWS::CloudWatch::Dashboard"))[0]);
     expect(dashboard).toMatch(/"OperatorAuditWatchChanged[0-9A-F]+","Arn"/);
-    expect(dashboard).toMatch(/"OperatorAuditWatchFailing[0-9A-F]+","Arn"/);
     // Neither exists in the second region
     const west = Object.values(Template.fromStack(build().region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
     expect(west.filter((n) => n.includes("operator-audit"))).toEqual([]);
@@ -2979,7 +2913,7 @@ describe("deletion records watch (supply-checkout-72d.16)", () => {
     });
   });
 
-  it("alarms P2 on any DeletionRecordRewrites, and P2 when the watch fails, both on the dashboard", () => {
+  it("alarms P2 on any DeletionRecordRewrites in an alarm of its own, which no user can hold in ALARM, and P2 when the watch misses an event, both on the dashboard", () => {
     const t = observability();
     const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
     const rewritten = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletion-record-rewritten");
@@ -3000,17 +2934,20 @@ describe("deletion records watch (supply-checkout-72d.16)", () => {
     expect(rewritten?.AlarmDescription).toContain("docs/backups.md, When a deletion record is rewritten");
     expect(rewritten?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
     expect(rewritten?.OKActions).toEqual(rewritten?.AlarmActions);
+    // Its own, not part of an aggregate a user can hold in ALARM (supply-checkout-7pe.1)
+    expect(SECURITY_ATTENTION_METRICS.has(BusinessMetric.DeletionRecordRewrites)).toBe(false);
+    expect(NEEDS_ATTENTION_METRICS.has(BusinessMetric.DeletionRecordRewrites)).toBe(false);
     const failing = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletion-records-watch-failing");
     expect(failing).toMatchObject({ Threshold: 0, ComparisonOperator: "GreaterThanThreshold", TreatMissingData: "notBreaching" });
-    // Its errors, the events Lambda dropped after retries, and invocations EventBridge couldn't make
+    // The events Lambda dropped after retries, and invocations EventBridge couldn't make; an error a retry gets past loses nothing
     const fn = watch(t);
     const metrics = failing?.Metrics as { Id: string; Expression?: string; MetricStat?: { Metric: { Namespace: string; MetricName: string; Dimensions: unknown }; Stat: string } }[];
-    expect(metrics.find((m) => m.Expression)?.Expression).toBe("FILL(errors, 0) + FILL(dropped, 0) + FILL(failed, 0)");
+    expect(metrics.find((m) => m.Expression)?.Expression).toBe("FILL(dropped, 0) + FILL(failed, 0)");
+    expect(metrics.filter((m) => m.MetricStat)).toHaveLength(2);
     const stat = (id: string) => metrics.find((m) => m.Id === id)?.MetricStat;
-    expect(stat("errors")?.Metric).toEqual({ Namespace: "AWS/Lambda", MetricName: "Errors", Dimensions: [{ Name: "FunctionName", Value: { Ref: fn.id } }] });
     expect(stat("dropped")?.Metric).toEqual({ Namespace: "AWS/Lambda", MetricName: "AsyncEventsDropped", Dimensions: [{ Name: "FunctionName", Value: { Ref: fn.id } }] });
     expect(stat("failed")?.Metric).toEqual({ Namespace: "AWS/Events", MetricName: "FailedInvocations", Dimensions: [{ Name: "RuleName", Value: { Ref: expect.stringMatching(/^DeletionRecordsWatchRule/) } }] });
-    for (const id of ["errors", "dropped", "failed"]) expect(stat(id)?.Stat).toBe("Sum");
+    for (const id of ["dropped", "failed"]) expect(stat(id)?.Stat).toBe("Sum");
     expect(failing?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
     const dashboard = JSON.stringify(Object.values(t.findResources("AWS::CloudWatch::Dashboard"))[0]);
     expect(dashboard).toMatch(/"DeletionRecordsWatchRewritten[0-9A-F]+","Arn"/);

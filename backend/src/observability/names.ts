@@ -200,6 +200,22 @@ export const BusinessMetric = {
   LapseCheckoutOverdue: "LapseCheckoutOverdue",
   /** Teams the lapsed-team job couldn't handle this run (a read, write, email or Stripe call failed), or wouldn't close because Stripe disagrees with the team (a live subscription, or the team's subscription or customer missing), or that has no owner to warn or no readable deletion time: "Lapsed-team job failing". */
   LapseFailures: "LapseFailures",
+  /**
+   * Sent beside every non-zero count of a NEEDS_ATTENTION_METRICS metric, with
+   * the same value (count() adds it): one metric for the "Needs attention"
+   * alarm (P2), so each rare event doesn't need an alarm of its own, which
+   * CloudWatch bills per metric (supply-checkout-7pe.1). The specific metric
+   * on the same log line, and its own graph in the metrics console, say which.
+   */
+  NeedsAttention: "NeedsAttention",
+  /**
+   * The same for the security events in SECURITY_ATTENTION_METRICS, for the
+   * "Security attention" alarm (P2): apart from NeedsAttention, so an
+   * ordinary event that keeps happening can't hold one alarm in ALARM, which
+   * emails only when it changes state, and hide a security one behind it
+   * (supply-checkout-7pe.1).
+   */
+  SecurityAttention: "SecurityAttention",
 } as const;
 
 export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMetric];
@@ -250,6 +266,67 @@ export const TEST_SKIPPED_METRICS: ReadonlySet<BusinessMetricName> = new Set<Bus
   BusinessMetric.BillingEventsApplied,
   BusinessMetric.BillingNotices,
   BusinessMetric.SeatQuantityUpdates,
+]);
+
+/**
+ * Counts of events that should almost never happen, each worth a person's
+ * look, which alarm together through NeedsAttention ("Needs attention", P2,
+ * docs/observability.md) instead of one alarm each (supply-checkout-7pe.1).
+ * Every one is a count sent with count(); gauges, volumes with a threshold
+ * and "not running" signals keep alarms of their own. Adding a metric here
+ * adds it to that alarm: its runbook goes in the table under "When Needs
+ * attention fires".
+ */
+export const NEEDS_ATTENTION_METRICS: ReadonlySet<BusinessMetricName> = new Set<BusinessMetricName>([
+  // J1, J0, J3: sign-up, sign-in and email
+  BusinessMetric.WelcomeEmailFailures,
+  BusinessMetric.WelcomeEmailsRefused,
+  BusinessMetric.PasswordResetHintsCapped,
+  BusinessMetric.EmailVerifyFailures,
+  BusinessMetric.EmailUnverifyFailures,
+  BusinessMetric.EmailCodeSendFailures,
+  BusinessMetric.EmailCodeVerifyFailures,
+  // J7, J8: billing
+  BusinessMetric.SeatQuantityDrift,
+  BusinessMetric.EntitlementDrift,
+  // J11 and J7: closing, reopening and purging teams
+  BusinessMetric.TeamClosedNoticeFailures,
+  BusinessMetric.TeamReopenedNoticeFailures,
+  BusinessMetric.ReopenedTeamSubscriptionsEnded,
+  BusinessMetric.ReopenResyncsLate,
+  BusinessMetric.ReopenedTeamSubscriptionsUndecided,
+  BusinessMetric.ClosedTeamRenewalsCharged,
+  BusinessMetric.ClosedTeamSubscriptionsNotFound,
+  BusinessMetric.StripeCustomersAlreadyDeleted,
+  BusinessMetric.HeldTeamsPurged,
+  // J7, J8, J10: the lapsed-team job
+  BusinessMetric.LapseFailures,
+  BusinessMetric.LapseClosuresHeld,
+  BusinessMetric.LapseCheckoutOverdue,
+]);
+
+/**
+ * Not in NEEDS_ATTENTION_METRICS, because a trial user can drive it on every
+ * refused read: the receipts function sends NeedsAttention itself, once per
+ * UTC day, when the account-wide trial cap is first reached
+ * (TrialCapReachedError.firstToday), and ReceiptTrialCapReached on every
+ * refusal ("Receipt trials paused").
+ */
+export const NEEDS_ATTENTION_ONCE_A_DAY: readonly BusinessMetricName[] = [BusinessMetric.ReceiptTrialCapReached];
+
+/**
+ * Security events, which alarm together through SecurityAttention ("Security
+ * attention", P2), the same way NEEDS_ATTENTION_METRICS do through
+ * NeedsAttention, and apart from them (supply-checkout-7pe.1): a sign-out that
+ * left a session valid, an account not told of a security change.
+ * DeletionRecordRewrites isn't one: a user without a verified or deliverable
+ * address can make SecurityNoticeFailures on demand and hold this alarm in
+ * ALARM, so the deletion records watch, which no user can trigger, keeps an
+ * alarm of its own ("Deletion record rewritten") that nothing else can mask.
+ */
+export const SECURITY_ATTENTION_METRICS: ReadonlySet<BusinessMetricName> = new Set<BusinessMetricName>([
+  BusinessMetric.SignOutRevokeFailures,
+  BusinessMetric.SecurityNoticeFailures,
 ]);
 
 /**

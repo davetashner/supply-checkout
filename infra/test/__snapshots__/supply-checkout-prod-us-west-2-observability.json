@@ -912,7 +912,7 @@
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmssignoutnotrevoking30BBFF71": {
+    "JourneyAlarmsneedsattention5FF75F45": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
         "AlarmActions": [
@@ -920,15 +920,15 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Sign-out not revoking (J0, us-west-2). SignOutRevokeFailures at least 3 in 15 minutes: Cognito didn't revoke the refresh tokens of people who signed out, so they stay valid until they expire (30 days). Sign-out still clears the cookie. Usually Cognito unreachable or erroring. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-sign-out-not-revoking",
+        "AlarmDescription": "P2 Needs attention (J0, J1, J3, J5, J7, J8, J10, J11, us-west-2). Any NeedsAttention in 15 minutes, and until 2 hours pass without one: one of the rare events in NEEDS_ATTENTION_METRICS (backend/src/observability/names.ts) happened, each sent beside its own metric, or the trial receipt cap was first reached that UTC day. They should almost never happen and each needs a person to look (a notice not sent, billing drift, a closed team charged, and the rest). An alarm already in ALARM doesn't email again: while one keeps it there, another source shows only on the per-metric graphs. See which in the dashboard's Needs attention row or the metrics console (SupplyCheckout, by Region), or in Logs Insights: filter ispresent(NeedsAttention). Each one's runbook: docs/observability.md, When Needs attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-needs-attention",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
+        "EvaluationPeriods": 8,
         "Metrics": [
           {
             "Id": "m1",
-            "Label": "SignOutRevokeFailures (us-west-2)",
+            "Label": "NeedsAttention (us-west-2)",
             "MetricStat": {
               "Metric": {
                 "Dimensions": [
@@ -937,7 +937,7 @@
                     "Value": "us-west-2"
                   }
                 ],
-                "MetricName": "SignOutRevokeFailures",
+                "MetricName": "NeedsAttention",
                 "Namespace": "SupplyCheckout"
               },
               "Period": 900,
@@ -973,11 +973,11 @@
             "Value": "cdk"
           }
         ],
-        "Threshold": 2,
+        "Threshold": 0,
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmssecuritynoticesfailing933F267B": {
+    "JourneyAlarmssecurityattentionE81422B2": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
         "AlarmActions": [
@@ -985,15 +985,15 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Security notices failing (J0, us-west-2). Any SecurityNoticeFailures over 15 minutes: someone set a password or turned on two-step sign-in and the account's own verified address wasn't told (SES refused the message or took more than 3 seconds, or there's no verified address). The change stands anyway, so an account taken over this way goes unnoticed by its owner (supply-checkout-8jc.15). Also after a password reset (kind passwordReset, via reset, supply-checkout-6uw.32): the post confirmation trigger couldn't sign the account out (reason sign_out: sessions from before the reset may still work, so sign the user out by hand), or record its time (record_reset, also from POST /me/sign-out-everywhere: the API won't refuse sessions from before it; see docs/journeys.md) or couldn't hand over the reset notice (no_user, invoke, deferred), or the notices function couldn't send it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-security-notices-failing",
+        "AlarmDescription": "P2 Security attention (J0, us-west-2). Any SecurityAttention in 15 minutes, and until 2 hours pass without one: one of the security events in SECURITY_ATTENTION_METRICS (backend/src/observability/names.ts) happened: a sign-out whose refresh token Cognito didn't revoke (SignOutRevokeFailures), or an account not told of a security change (SecurityNoticeFailures). A deletion record rewritten has an alarm of its own, which nothing else can hold in ALARM. Apart from Needs attention, so an ordinary event that keeps it in alarm can't hide these: an alarm already in ALARM doesn't email again, so look at each metric, not only the first email. Runbook: docs/observability.md, When Security attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-security-attention",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
+        "EvaluationPeriods": 8,
         "Metrics": [
           {
             "Id": "m1",
-            "Label": "SecurityNoticeFailures (us-west-2)",
+            "Label": "SecurityAttention (us-west-2)",
             "MetricStat": {
               "Metric": {
                 "Dimensions": [
@@ -1002,7 +1002,7 @@
                     "Value": "us-west-2"
                   }
                 ],
-                "MetricName": "SecurityNoticeFailures",
+                "MetricName": "SecurityAttention",
                 "Namespace": "SupplyCheckout"
               },
               "Period": 900,
@@ -1093,186 +1093,6 @@
           }
         ],
         "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsemailverificationnotsaved4250C833": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Email verification not saved (J3, us-west-2). Any EmailVerifyFailures or EmailUnverifyFailures over 15 minutes: the sign-in trigger couldn't copy a Google or Apple user's email_verified, so they stay unverified (and can't accept invites) or, for a downgrade, stay verified; or couldn't unverify or record a linked user's changed email. The sign-in goes ahead (a linked user's failed downgrade fails it) and the next one retries, so the Lambda Errors alarm doesn't see it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-email-verification-not-saved",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Expression": "FILL(v, 0) + FILL(u, 0)",
-            "Id": "expr_1",
-            "Label": "Email verification failures (us-west-2)",
-            "ReturnData": true
-          },
-          {
-            "Id": "v",
-            "Label": "EmailVerifyFailures (us-west-2)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-west-2"
-                  }
-                ],
-                "MetricName": "EmailVerifyFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "u",
-            "Label": "EmailUnverifyFailures (us-west-2)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-west-2"
-                  }
-                ],
-                "MetricName": "EmailUnverifyFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsemailcodesfailing52C84946": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Email codes failing (J3, us-west-2). EmailCodeSendFailures + EmailCodeVerifyFailures at least 3 in 15 minutes: POST /me/email/code or /me/email/verify answered 5xx (Cognito erroring or unreachable, or couldn't deliver the code), so people can't verify their address, and can't accept invites. Refusals (a wrong or expired code, too many attempts) aren't counted. Too few requests for the API errors alarm's 2% to notice. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-email-codes-failing",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Expression": "FILL(s, 0) + FILL(c, 0)",
-            "Id": "expr_1",
-            "Label": "Email code failures (us-west-2)",
-            "ReturnData": true
-          },
-          {
-            "Id": "s",
-            "Label": "EmailCodeSendFailures (us-west-2)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-west-2"
-                  }
-                ],
-                "MetricName": "EmailCodeSendFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "c",
-            "Label": "EmailCodeVerifyFailures (us-west-2)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-west-2"
-                  }
-                ],
-                "MetricName": "EmailCodeVerifyFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 2,
         "TreatMissingData": "notBreaching"
       }
     },
@@ -1725,71 +1545,6 @@
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmsliveupdatesdeferred4F7785C9": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Live updates deferred (J4, us-west-2). Any LiveUpdatesDeferred in each of 3 consecutive 5-minute periods: the stream consumer keeps running out of its per-invocation publish budget (AppSync slow, or big teams busier than a batch's budget fits), so changes reach other devices late. Every invocation still sends the batch's first chunk, so it can't stall; see Live updates delayed and dropped. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-live-updates-deferred",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 3,
-        "EvaluationPeriods": 3,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "LiveUpdatesDeferred (us-west-2)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-west-2"
-                  }
-                ],
-                "MetricName": "LiveUpdatesDeferred",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 300,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
     "JourneyAlarmsliveupdatesdroppedD01A2248": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -2064,71 +1819,6 @@
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmsreceipttrialspaused75D3BF27": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Receipt trials paused (J5, us-west-2). Any ReceiptTrialCapReached in an hour: every trial team in the account together has read RECEIPT_TRIAL_READS_PER_DAY receipts today (supply-checkout-i1d.3), so trial teams can't scan receipts until the next UTC day. Paying teams aren't affected. Either a farm of sign-ups or real trial growth. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-receipt-trials-paused",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "ReceiptTrialCapReached (us-west-2)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-west-2"
-                  }
-                ],
-                "MetricName": "ReceiptTrialCapReached",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
     "JourneyAlarmsbedrockspendhighC7133D85": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -2137,89 +1827,30 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Bedrock spend high (J5, us-west-2). The receipt model's estimated spend above $5 in a day (BEDROCK_SPEND_ALARM_USD_PER_DAY), from Bedrock's own input, output and cache token counts for the receipt model at its list prices: faster than the Bedrock budget, which sees billed cost hours later. A receipt read costs about half a cent. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Bedrock spend high (J5, us-west-2). ReceiptReads above 1000 in a day (RECEIPT_READS_ALARM_PER_DAY): the receipt model's spend near $5 a day (BEDROCK_SPEND_ALARM_USD_PER_DAY) at about half a cent a read. Faster than the Bedrock budget, which sees billed cost hours later. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-bedrock-spend-high",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
-            "Expression": "(FILL(i_us_west_2, 0) * 1 + FILL(o_us_west_2, 0) * 5 + FILL(cr_us_west_2, 0) * 0.1 + FILL(cw_us_west_2, 0) * 1.25) / 1000000",
-            "Id": "expr_1",
-            "Label": "Receipt model spend, USD (us-west-2)",
+            "Id": "m1",
+            "Label": "ReceiptReads (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "ReceiptReads",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 86400,
+              "Stat": "Sum"
+            },
             "ReturnData": true
-          },
-          {
-            "Id": "i_us_west_2",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ModelId",
-                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  }
-                ],
-                "MetricName": "InputTokenCount",
-                "Namespace": "AWS/Bedrock"
-              },
-              "Period": 86400,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "o_us_west_2",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ModelId",
-                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  }
-                ],
-                "MetricName": "OutputTokenCount",
-                "Namespace": "AWS/Bedrock"
-              },
-              "Period": 86400,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "cr_us_west_2",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ModelId",
-                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  }
-                ],
-                "MetricName": "CacheReadInputTokenCount",
-                "Namespace": "AWS/Bedrock"
-              },
-              "Period": 86400,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "cw_us_west_2",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ModelId",
-                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  }
-                ],
-                "MetricName": "CacheWriteInputTokenCount",
-                "Namespace": "AWS/Bedrock"
-              },
-              "Period": 86400,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
           }
         ],
         "OKActions": [
@@ -2249,7 +1880,7 @@
             "Value": "cdk"
           }
         ],
-        "Threshold": 5,
+        "Threshold": 1000,
         "TreatMissingData": "notBreaching"
       }
     },
@@ -2584,266 +2215,6 @@
         ],
         "Period": 300,
         "Statistic": "Maximum",
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsteamclosednoticesfailingA94DEEDE": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Team closure emails failing (J11, us-west-2). Any TeamClosedNoticeFailures over 15 minutes: an owner of a team that just closed wasn't emailed the day it will be deleted (SES refused the message, no address on file, or the owners couldn't be listed). The team closed anyway. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-team-closed-notices-failing",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "TeamClosedNoticeFailures (us-west-2)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-west-2"
-                  }
-                ],
-                "MetricName": "TeamClosedNoticeFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsreopenedteamsubscriptionendedDB6A62CA": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Reopened team's subscription ended (J7, J11, us-west-2). Any ReopenedTeamSubscriptionsEnded over 15 minutes: an owner reopened a closed team while the billing worker or the closed-team purge was asking Stripe to end its subscription, so a team that's open again has a subscription set to cancel (or cancelled). The log line \"Team reopened while its subscription was being ended\" has the team and subscription IDs and the action: resume the subscription in the Stripe Dashboard, or ask an owner to. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-reopened-team-subscription-ended",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "ReopenedTeamSubscriptionsEnded (us-west-2)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-west-2"
-                  }
-                ],
-                "MetricName": "ReopenedTeamSubscriptionsEnded",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsreopenedteamsubscriptionundecidedDDA450A6": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Reopened team's subscription left to cancel (J7, J11, us-west-2). Any ReopenedTeamSubscriptionsUndecided over an hour: the billing worker resynced a reopened team whose Stripe subscription is set to cancel at the period's end, maybe by the closure (no closure stamp, but the purge recorded ending it for that closure, from before the stamp existed) or maybe by an owner, and Stripe gave no time it was set (canceled_at), or the team has no reopen time. It left it set to cancel rather than risk charging an owner who cancelled. The log line \"Reopened team's subscription left set to cancel\" has the team and subscription IDs: contact the team's owners, with what the subscription's history in the Stripe Dashboard shows, and resume it only if an owner asks; don't resume it by default. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-reopened-team-subscription-undecided",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "ReopenedTeamSubscriptionsUndecided (us-west-2)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-west-2"
-                  }
-                ],
-                "MetricName": "ReopenedTeamSubscriptionsUndecided",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsteamreopenednoticesfailingFE94270D": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Team reopened emails failing (J11, us-west-2). Any TeamReopenedNoticeFailures over 15 minutes: an owner of a team that was just reopened wasn't told it will no longer be deleted (SES refused the message, no address on file, or the owners couldn't be listed). The team reopened anyway. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-team-reopened-notices-failing",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "TeamReopenedNoticeFailures (us-west-2)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-west-2"
-                  }
-                ],
-                "MetricName": "TeamReopenedNoticeFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
         "Tags": [
           {
             "Key": "app",

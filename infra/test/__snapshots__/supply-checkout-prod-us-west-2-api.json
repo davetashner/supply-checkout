@@ -1929,6 +1929,7 @@
                         "PK",
                         "SK",
                         "count",
+                        "capReachedAt",
                         "expiresAt"
                       ]
                     },

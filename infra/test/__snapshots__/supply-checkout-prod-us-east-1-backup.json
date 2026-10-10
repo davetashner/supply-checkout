@@ -708,103 +708,31 @@
         ]
       }
     },
-    "backupfailedE6400161": {
-      "Type": "AWS::CloudWatch::Alarm",
+    "JobFailuresFFC9FE81": {
+      "Type": "AWS::Events::Rule",
       "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+        "Description": "Backups (workload account): a backup or copy job of the app table failed, was aborted or expired",
+        "EventPattern": {
+          "source": [
+            "aws.backup"
+          ],
+          "detail-type": [
+            "Backup Job State Change",
+            "Copy Job State Change"
+          ],
+          "detail": {
+            "resourceType": [
+              "DynamoDB"
+            ],
+            "state": [
+              "FAILED",
+              "ABORTED",
+              "EXPIRED"
+            ]
           }
-        ],
-        "AlarmDescription": "P2 Backup failed. A backup or copy job for the app table failed, was aborted or expired in the last hour. Runbook: docs/backups.md, When a backup fails.",
-        "AlarmName": "supply-checkout-prod-p2-backup-failed",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Expression": "FILL(bf, 0) + FILL(ba, 0) + FILL(be, 0) + FILL(cf, 0)",
-            "Id": "expr_1",
-            "Label": "Failed backup and copy jobs",
-            "ReturnData": true
-          },
-          {
-            "Id": "bf",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ResourceType",
-                    "Value": "DynamoDB"
-                  }
-                ],
-                "MetricName": "NumberOfBackupJobsFailed",
-                "Namespace": "AWS/Backup"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "ba",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ResourceType",
-                    "Value": "DynamoDB"
-                  }
-                ],
-                "MetricName": "NumberOfBackupJobsAborted",
-                "Namespace": "AWS/Backup"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "be",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ResourceType",
-                    "Value": "DynamoDB"
-                  }
-                ],
-                "MetricName": "NumberOfBackupJobsExpired",
-                "Namespace": "AWS/Backup"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "cf",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ResourceType",
-                    "Value": "DynamoDB"
-                  }
-                ],
-                "MetricName": "NumberOfCopyJobsFailed",
-                "Namespace": "AWS/Backup"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
-          }
-        ],
+        },
+        "Name": "supply-checkout-prod-backup-jobs-failed",
+        "State": "ENABLED",
         "Tags": [
           {
             "Key": "app",
@@ -827,8 +755,23 @@
             "Value": "cdk"
           }
         ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-type": "$.detail-type",
+                "detail-state": "$.detail.state",
+                "time": "$.time",
+                "resources": "$.resources"
+              },
+              "InputTemplate": "\"Supply Checkout prod P2 Backup failed: <detail-type> <detail-state> at <time> (<resources>). Follow \\\"When a backup fails\\\" in docs/backups.md.\""
+            }
+          }
+        ]
       }
     },
     "norecentbackupF31F773A": {
@@ -983,136 +926,64 @@
             "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
           }
         ],
-        "AlarmDescription": "P2 Deletion records replication stuck. A deletion record has waited to replicate to the backup account's copy for 60 minutes: some were pending, or the oldest was more than that behind, in every 15 minutes of the last hour. Runbook: docs/backups.md, When deletion records stop replicating.",
+        "AlarmDescription": "P2 Deletion records replication stuck. A deletion record has waited to replicate to the backup account's copy for 60 minutes: some were pending in every 15 minutes of the last hour. Runbook: docs/backups.md, When deletion records stop replicating.",
         "AlarmName": "supply-checkout-prod-p2-deletions-replication-stuck",
-        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 4,
-        "EvaluationPeriods": 4,
-        "Metrics": [
+        "Dimensions": [
           {
-            "Expression": "IF(FILL(pending, 0) > 0 OR FILL(latency, 0) > 3600, 1, 0)",
-            "Id": "expr_1",
-            "Label": "Deletion records waiting to replicate",
-            "ReturnData": true
+            "Name": "DestinationBucket",
+            "Value": {
+              "Fn::Join": [
+                "",
+                [
+                  "supply-checkout-prod-deletions-copy-us-east-1-",
+                  {
+                    "Fn::Select": [
+                      4,
+                      {
+                        "Fn::Split": [
+                          ":",
+                          {
+                            "Ref": "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              ]
+            }
           },
           {
-            "Id": "pending",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "DestinationBucket",
-                    "Value": {
-                      "Fn::Join": [
-                        "",
-                        [
-                          "supply-checkout-prod-deletions-copy-us-east-1-",
-                          {
-                            "Fn::Select": [
-                              4,
-                              {
-                                "Fn::Split": [
-                                  ":",
-                                  {
-                                    "Ref": "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter"
-                                  }
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      ]
-                    }
-                  },
-                  {
-                    "Name": "RuleId",
-                    "Value": "deletion-records-to-backup-account"
-                  },
-                  {
-                    "Name": "SourceBucket",
-                    "Value": {
-                      "Fn::Join": [
-                        "",
-                        [
-                          "supply-checkout-prod-deletions-us-east-1-",
-                          {
-                            "Ref": "AWS::AccountId"
-                          }
-                        ]
-                      ]
-                    }
-                  }
-                ],
-                "MetricName": "OperationsPendingReplication",
-                "Namespace": "AWS/S3"
-              },
-              "Period": 900,
-              "Stat": "Maximum"
-            },
-            "ReturnData": false
+            "Name": "RuleId",
+            "Value": "deletion-records-to-backup-account"
           },
           {
-            "Id": "latency",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
+            "Name": "SourceBucket",
+            "Value": {
+              "Fn::Join": [
+                "",
+                [
+                  "supply-checkout-prod-deletions-us-east-1-",
                   {
-                    "Name": "DestinationBucket",
-                    "Value": {
-                      "Fn::Join": [
-                        "",
-                        [
-                          "supply-checkout-prod-deletions-copy-us-east-1-",
-                          {
-                            "Fn::Select": [
-                              4,
-                              {
-                                "Fn::Split": [
-                                  ":",
-                                  {
-                                    "Ref": "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter"
-                                  }
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      ]
-                    }
-                  },
-                  {
-                    "Name": "RuleId",
-                    "Value": "deletion-records-to-backup-account"
-                  },
-                  {
-                    "Name": "SourceBucket",
-                    "Value": {
-                      "Fn::Join": [
-                        "",
-                        [
-                          "supply-checkout-prod-deletions-us-east-1-",
-                          {
-                            "Ref": "AWS::AccountId"
-                          }
-                        ]
-                      ]
-                    }
+                    "Ref": "AWS::AccountId"
                   }
-                ],
-                "MetricName": "ReplicationLatency",
-                "Namespace": "AWS/S3"
-              },
-              "Period": 900,
-              "Stat": "Maximum"
-            },
-            "ReturnData": false
+                ]
+              ]
+            }
           }
         ],
+        "EvaluationPeriods": 4,
+        "MetricName": "OperationsPendingReplication",
+        "Namespace": "AWS/S3",
         "OKActions": [
           {
             "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
           }
         ],
+        "Period": 900,
+        "Statistic": "Maximum",
         "Tags": [
           {
             "Key": "app",
@@ -1135,7 +1006,7 @@
             "Value": "cdk"
           }
         ],
-        "Threshold": 1,
+        "Threshold": 0,
         "TreatMissingData": "notBreaching"
       }
     },

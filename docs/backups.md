@@ -174,12 +174,12 @@ A compromised workload administrator can delete the plan and its alarms in the s
 
 | Where | Alert | Fires when | Goes to |
 | --- | --- | --- | --- |
-| Workload | `supply-checkout-<env>-p2-backup-failed` | A backup or copy job failed, aborted or expired in the last hour | P2 topic |
+| Workload | Rule `supply-checkout-<env>-backup-jobs-failed` ("Backup failed") | AWS Backup's own event for a backup or copy job of the table that failed, was aborted or expired, as it ends (`supply-checkout-7pe.1`: it was an alarm on four job metrics) | P2 topic |
 | Workload | `supply-checkout-<env>-p2-no-recent-backup` | No backup completed in 24 hours | P2 topic |
 | Workload | `supply-checkout-<env>-p2-deletions-replication-failed` | S3 failed to replicate a deletion record to the backup account's copy in the last hour (not with `-c backupCopy=false`) | P2 topic |
-| Workload | `supply-checkout-<env>-p2-deletions-replication-stuck` | A deletion record has waited 60 minutes to replicate (`DELETIONS_REPLICATION_STUCK_MINUTES`): `OperationsPendingReplication` above 0, or `ReplicationLatency` above an hour, in every 15 minutes of the last hour (not with `-c backupCopy=false`) | P2 topic |
-| Workload | `supply-checkout-<env>-p2-deletion-record-rewritten` (observability stack) | A deletion record was written over, deleted or hidden behind a delete marker, or something that isn't a record was written to the bucket | P2 topic |
-| Workload | `supply-checkout-<env>-p2-deletion-records-watch-failing` (observability stack) | The function that checks for those threw, Lambda dropped an event after its retries (`AsyncEventsDropped`), or EventBridge couldn't invoke it (`FailedInvocations`) | P2 topic |
+| Workload | `supply-checkout-<env>-p2-deletions-replication-stuck` | A deletion record has waited 60 minutes to replicate (`DELETIONS_REPLICATION_STUCK_MINUTES`): `OperationsPendingReplication` above 0 in every 15 minutes of the last hour (a record an hour behind is pending all that hour, so `ReplicationLatency` is no longer read, `supply-checkout-7pe.1`) (not with `-c backupCopy=false`) | P2 topic |
+| Workload | `supply-checkout-<env>-p2-deletion-record-rewritten` (observability stack) | A deletion record was written over, deleted or hidden behind a delete marker, or something that isn't a record was written to the bucket. An alarm of its own, never part of an aggregate a user could hold in ALARM (`supply-checkout-7pe.1`) | P2 topic |
+| Workload | `supply-checkout-<env>-p2-deletion-records-watch-failing` (observability stack) | Lambda dropped an event for the function that checks for those after its retries (`AsyncEventsDropped`), or EventBridge couldn't invoke it (`FailedInvocations`). An error a retry gets past loses nothing, so the function's errors alone don't alarm | P2 topic |
 | Workload | Rule `DeletionRecordsWatchBucketChanges` (observability stack) | The deletion records bucket's lifecycle, notifications, policy, replication, ownership controls, public access block, Object Lock configuration or versioning was changed (`DELETIONS_BUCKET_CHANGE_EVENTS`), CloudFormation's calls included | P1 topic |
 | Workload | Rule `supply-checkout-<env>-deletions-rule-tampering` (observability stack) | Either deletion records rule deleted, disabled or its target removed, or rewritten outside a deploy. The operator tampering rules watch this rule in turn | P1 topic |
 | Workload | Rule `supply-checkout-<env>-backup-changes` | A vault's access policy or lock was put or deleted, a vault deleted, the plan updated or deleted, a selection deleted, or the region's opt-in settings changed (`BACKUP_CHANGE_EVENTS`) | P1 topic |
@@ -245,9 +245,9 @@ A change rule fired. If it matches a deploy someone just ran of a backup stack, 
 
 ## When a backup fails
 
-The backup stack has two P2 alarms on the observability stack's P2 topic:
+The backup stack tells the observability stack's P2 topic:
 
-- `supply-checkout-<env>-p2-backup-failed`: a backup or copy job for a DynamoDB resource failed, was aborted or expired in the last hour.
+- "Backup failed", from the rule `supply-checkout-<env>-backup-jobs-failed`: AWS Backup's event for a backup or copy job of a DynamoDB resource that failed, was aborted or expired. The message names the event's type, the state, the time and the job's ARN. It has no "OK" message; the next day's job, and the alarm below, say whether backups work again.
 - `supply-checkout-<env>-p2-no-recent-backup`: no DynamoDB backup completed in the last 24 hours.
 
 1. Find the job and its message: `aws backup list-backup-jobs --by-state FAILED` and `aws backup list-copy-jobs --by-state FAILED` (add `--profile` and `--region`). `describe-backup-job` or `describe-copy-job` gives the `StatusMessage`.

@@ -1,6 +1,6 @@
 # Lapsed teams: the hourly job that warns and closes them
 
-When: **Lapsed-team job failing**, **Lapsed-team job not running**, **Lapsed-team job out of time**, **Lapsed-team closures held**, **Lapsed team held by Checkout** or **Lapsed-team closures high** (all P2) fired, an owner asks why their team was or wasn't deleted, or you need to save a lapsing team. Bead `supply-checkout-qdx`. Background: the access rules in [infrastructure](../infrastructure.md#billing) ("Billing access rules"), [journeys](../journeys.md) (J7, J8, J10), and Terms sections 4, 5.6 and 6.
+When: **Lapsed-team job out of time or not running** or **Lapsed-team closures high** (both P2) fired, or **Needs attention** (P2) fired for `LapseFailures` ("Lapsed-team job failing"), `LapseClosuresHeld` ("Lapsed-team closures held") or `LapseCheckoutOverdue` ("Lapsed team held by Checkout"), which alert through it since `supply-checkout-7pe.1`, an owner asks why their team was or wasn't deleted, or you need to save a lapsing team. Bead `supply-checkout-qdx`. Background: the access rules in [infrastructure](../infrastructure.md#billing) ("Billing access rules"), [journeys](../journeys.md) (J7, J8, J10), and Terms sections 4, 5.6 and 6.
 
 ## What the job does
 
@@ -90,11 +90,15 @@ The job closed its cap of 10 teams in one run and held the rest (`Lapsed-team jo
 3. If they're wrong, save the teams the job closed by mistake: each stays closed for 24 hours before the purge deletes it, so with the job's schedule disabled, reopen each as an operator (`npm run ops -- reopen <teamId> --reason "Closed by mistake: <bead>"`) and comp it if it needs to stay open while the cause is fixed. Fix the cause before turning the schedule back on.
 4. If they're right and more are due, turn the schedule back on (`aws events enable-rule --name "$RULE"`); the job works through them at 10 an hour. To clear a known backlog faster, raise `LAPSE_MAX_CLOSURES_PER_RUN` in `backend/src/ops/names.ts` (and `LAPSE_CLOSURES_ALARM_COUNT` if the volume alarm should stay quiet), with a note on why, and deploy; lower it again afterwards.
 
-## Lapsed-team job out of time
+## Lapsed-team job out of time or not running
+
+One alarm on the `LapseTeamsUnstarted` gauge, which every run that lists the teams sends: above 0 or missing in every hour for 3 hours. Look at the job's log first: if it has runs in those hours, it's out of time (below); if not, it isn't running (the next section).
+
+### Out of time
 
 Every run for 3 hours ran out of its 4 minutes before it started every lapsing team (`Lapsed-team job ran out of time`, with `unstarted`). Each run starts at a random place in the list, so no team is always skipped, but emails and closures run late. Check how many teams it lists (`Lapsed-team job ran` has `listed`) and what's slow: Stripe calls (`Lapsed team check failed` with timeouts) or SES. If the list has simply grown, the job needs batching or a shorter interval (`LAPSE_EVERY_HOURS`); open a bead.
 
-## Lapsed-team job not running
+### Not running
 
 1. Check that the `TeamLapseSchedule` EventBridge rule in the observability stack is there and enabled. A deploy restores it.
 2. Check that the function has invocations in the last hours.

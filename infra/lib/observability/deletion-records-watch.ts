@@ -65,12 +65,16 @@ export interface DeletionRecordsWatchProps {
  *   version or a delete marker (S3's events don't say whether a write replaced
  *   an object, so it lists the key's versions).
  * - `rewritten`: P2 when DeletionRecordRewrites is above 0 in 5 minutes
- *   ("Deletion record rewritten").
- * - `failing`: P2 when the watch itself fails or misses an event ("Deletion
- *   records watch failing"): the function's errors, events Lambda dropped
- *   after its retries (AsyncEventsDropped), and invocations EventBridge
- *   couldn't make (FailedInvocations). After that the event is gone and the
- *   bucket's access log is what's left. No reserved concurrency: a new
+ *   ("Deletion record rewritten"). An alarm of its own, never part of an
+ *   aggregate like "Needs attention" or "Security attention": an alarm in
+ *   ALARM doesn't email again, and users can hold those in ALARM, so this one
+ *   must be the only thing that sets it off (supply-checkout-7pe.1).
+ * - `failing`: P2 when the watch misses an event ("Deletion records watch
+ *   failing"): events Lambda dropped after its retries (AsyncEventsDropped),
+ *   and invocations EventBridge couldn't make (FailedInvocations). After
+ *   that the event is gone and the bucket's access log is what's left. An
+ *   error Lambda's retry gets past loses nothing, so the function's Errors
+ *   alone don't alarm (supply-checkout-7pe.1). No reserved concurrency: a new
  *   account's limit can leave nothing to reserve, and a throttled event waits
  *   in Lambda's queue for up to 6 hours, and alarms if it's dropped.
  * - `bucketChanges`: P1 (the level of the rule-tampering alerts) on
@@ -155,17 +159,16 @@ export class DeletionRecordsWatch extends Construct {
     this.failing = new Alarm(this, "Failing", {
       alarmName: `supply-checkout-${props.envName}-p2-deletion-records-watch-failing`,
       alarmDescription:
-        "P2. Deletion records watch failing: the function that checks deletion records for rewrites threw, so a rewrite could go unseen. " +
+        "P2. Deletion records watch failing: the function that checks deletion records for rewrites gave up on an event after its retries, or EventBridge couldn't invoke it, so a rewrite could go unseen. " +
         "Its log has the error. Runbook: docs/backups.md, When a deletion record is rewritten.",
       metric: new MathExpression({
-        expression: "FILL(errors, 0) + FILL(dropped, 0) + FILL(failed, 0)",
+        expression: "FILL(dropped, 0) + FILL(failed, 0)",
         usingMetrics: {
-          errors: this.fn.metricErrors({ period: FIVE_MINUTES, statistic: "Sum" }),
           dropped: this.fn.metric("AsyncEventsDropped", { period: FIVE_MINUTES, statistic: "Sum" }),
           failed: new Metric({ namespace: "AWS/Events", metricName: "FailedInvocations", dimensionsMap: { RuleName: this.rule.ruleName }, period: FIVE_MINUTES, statistic: "Sum" }),
         },
         period: FIVE_MINUTES,
-        label: "Deletion records watch errors and missed events",
+        label: "Deletion records watch missed events",
       }),
       threshold: 0,
       evaluationPeriods: 1,

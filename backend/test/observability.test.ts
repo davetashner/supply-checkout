@@ -7,7 +7,11 @@ import {
   BusinessMetric,
   createObservability,
   METRICS_NAMESPACE,
+  NEEDS_ATTENTION_METRICS,
+  NEEDS_ATTENTION_ONCE_A_DAY,
   REGION_DIMENSION,
+  SECURITY_ATTENTION_METRICS,
+  TEST_SKIPPED_METRICS,
   withObservability,
 } from "../src/observability/index.js";
 
@@ -108,6 +112,53 @@ describe("business metrics", () => {
     obs.count(BusinessMetric.Checkouts, 2, { teamId: "t-customer" });
     obs.count(BusinessMetric.Checkouts, 1, { teamId: "t-other", test: false });
     expect(emf().slice(2)).toEqual([expect.objectContaining({ Checkouts: 2, teamId: "t-customer" }), expect.objectContaining({ Checkouts: 1, teamId: "t-other", test: "false" })]);
+  });
+
+  it("adds every non-zero count of a rare event to NeedsAttention, on the same line, for the one alarm (supply-checkout-7pe.1)", () => {
+    const obs = createObservability({ service: "team-purge", env });
+    obs.count(BusinessMetric.ClosedTeamRenewalsCharged, 2, { teamId: "t1" });
+    const [withMetadata] = emf();
+    expect(withMetadata).toMatchObject({ ClosedTeamRenewalsCharged: 2, NeedsAttention: 2, teamId: "t1" });
+    expect(withMetadata._aws.CloudWatchMetrics[0].Metrics).toEqual([
+      { Name: "ClosedTeamRenewalsCharged", Unit: "Count" },
+      { Name: "NeedsAttention", Unit: "Count" },
+    ]);
+    expect(withMetadata._aws.CloudWatchMetrics[0].Dimensions).toEqual([[REGION_DIMENSION]]);
+    // Without metadata, two in one flush add up on one line
+    obs.count(BusinessMetric.HeldTeamsPurged);
+    obs.count(BusinessMetric.LapseFailures);
+    obs.flush();
+    expect(emf()[1]).toMatchObject({ HeldTeamsPurged: 1, LapseFailures: 1, NeedsAttention: [1, 1] });
+    // A zero count of one, and any count of a metric that isn't one, add nothing
+    obs.count(BusinessMetric.LapseFailures, 0);
+    obs.count(BusinessMetric.Checkouts, 3);
+    obs.flush();
+    expect(emf()[2]).toMatchObject({ LapseFailures: 0, Checkouts: 3 });
+    expect(emf()[2]).not.toHaveProperty("NeedsAttention");
+    expect(NEEDS_ATTENTION_METRICS.has(BusinessMetric.NeedsAttention)).toBe(false);
+    for (const metric of [...NEEDS_ATTENTION_METRICS, ...SECURITY_ATTENTION_METRICS]) expect(TEST_SKIPPED_METRICS.has(metric), metric).toBe(false);
+    // The trial cap tells it once a day itself (receipts-handler.ts), not on every refused read
+    expect(NEEDS_ATTENTION_METRICS.has(BusinessMetric.ReceiptTrialCapReached)).toBe(false);
+    expect(NEEDS_ATTENTION_ONCE_A_DAY).toEqual([BusinessMetric.ReceiptTrialCapReached]);
+  });
+
+  it("adds every non-zero count of a security event to SecurityAttention instead, so the two alarms can't hide each other (supply-checkout-7pe.1)", () => {
+    const obs = createObservability({ service: "auth", env });
+    obs.count(BusinessMetric.SignOutRevokeFailures, 1, { reason: "cognito" });
+    obs.count(BusinessMetric.SecurityNoticeFailures, 2);
+    obs.count(BusinessMetric.SignOutRevokeFailures, 0);
+    // A deletion record rewritten adds to neither: it has an alarm of its own, which nothing else can hold in ALARM
+    obs.count(BusinessMetric.DeletionRecordRewrites, 3);
+    obs.flush();
+    const [withMetadata, rest] = emf();
+    expect(withMetadata).toMatchObject({ SignOutRevokeFailures: 1, SecurityAttention: 1 });
+    expect(withMetadata).not.toHaveProperty("NeedsAttention");
+    expect(rest).toMatchObject({ SecurityNoticeFailures: 2, SignOutRevokeFailures: 0, DeletionRecordRewrites: 3, SecurityAttention: 2 });
+    expect(rest).not.toHaveProperty("NeedsAttention");
+    expect([...SECURITY_ATTENTION_METRICS].sort()).toEqual([BusinessMetric.SecurityNoticeFailures, BusinessMetric.SignOutRevokeFailures]);
+    expect(SECURITY_ATTENTION_METRICS.has(BusinessMetric.DeletionRecordRewrites)).toBe(false);
+    expect(NEEDS_ATTENTION_METRICS.has(BusinessMetric.DeletionRecordRewrites)).toBe(false);
+    for (const metric of SECURITY_ATTENTION_METRICS) expect(NEEDS_ATTENTION_METRICS.has(metric), metric).toBe(false);
   });
 
   it("does nothing on flush when no metric was counted", () => {

@@ -51,6 +51,7 @@ import {
   refundReceipt,
   takeReceipt,
   takeReceiptRate,
+  TrialCapReachedError,
   type TeamContext,
 } from "../data/index.js";
 import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
@@ -174,6 +175,8 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
       // Every trial team's reads for the day together are used up: until the next UTC day, as a rate limit, whose message the app shows as it is
       if (error instanceof RateLimitedError) {
         deps.obs.count(BusinessMetric.ReceiptTrialCapReached, 1, metadata);
+        // "Needs attention" once a UTC day, at the first refusal: a trial user could otherwise hold it in alarm (supply-checkout-7pe.1)
+        if (error instanceof TrialCapReachedError && error.firstToday) deps.obs.count(BusinessMetric.NeedsAttention, 1, { ...metadata, source: BusinessMetric.ReceiptTrialCapReached });
         log.refused = "trial_cap";
         throw new ApiError(429, "quota_exceeded", error.message, "rate_limited", { "retry-after": String(error.retryAfterSeconds) });
       }

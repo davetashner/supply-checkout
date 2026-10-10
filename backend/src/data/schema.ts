@@ -204,8 +204,13 @@ export const RECEIPT_TRIAL_READS_PER_DAY = 500;
 /** The most RECEIPT_TRIAL_READS_PER_DAY may be set to: a typo shouldn't lift the breaker. */
 export const MAX_RECEIPT_TRIAL_READS_PER_DAY = 100_000;
 
-/** The only attributes the receipts function may name in the `RECEIPTTRIALS` partition: the keys, the day's count and its expiry (TTL). */
-export const RECEIPT_TRIAL_CAP_ATTRIBUTES = [PK, SK, "count", "expiresAt"] as const;
+/**
+ * The only attributes the receipts function may name in the `RECEIPTTRIALS`
+ * partition: the keys, the day's count, when the cap was first reached that
+ * day (so "Needs attention" hears of it once a day, supply-checkout-7pe.1)
+ * and its expiry (TTL).
+ */
+export const RECEIPT_TRIAL_CAP_ATTRIBUTES = [PK, SK, "count", "capReachedAt", "expiresAt"] as const;
 
 /** The only attributes a request may name in an `INVITELIMIT#` partition: the keys, the count, its item type and its expiry. */
 export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;

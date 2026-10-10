@@ -833,6 +833,41 @@
                 "Ref": "AlarmTopicsP213C63151"
               },
               "Sid": "AllowAlertRouteChangesToPublish"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":events:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":rule/supply-checkout-prod-backup-jobs-failed"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP213C63151"
+              },
+              "Sid": "AllowBackupJobAlertsToPublish"
             }
           ],
           "Version": "2012-10-17"
@@ -1459,7 +1494,7 @@
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmssignoutnotrevoking30BBFF71": {
+    "JourneyAlarmsneedsattention5FF75F45": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
         "AlarmActions": [
@@ -1467,15 +1502,15 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Sign-out not revoking (J0, us-east-1). SignOutRevokeFailures at least 3 in 15 minutes: Cognito didn't revoke the refresh tokens of people who signed out, so they stay valid until they expire (30 days). Sign-out still clears the cookie. Usually Cognito unreachable or erroring. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-sign-out-not-revoking",
+        "AlarmDescription": "P2 Needs attention (J0, J1, J3, J5, J7, J8, J10, J11, us-east-1). Any NeedsAttention in 15 minutes, and until 2 hours pass without one: one of the rare events in NEEDS_ATTENTION_METRICS (backend/src/observability/names.ts) happened, each sent beside its own metric, or the trial receipt cap was first reached that UTC day. They should almost never happen and each needs a person to look (a notice not sent, billing drift, a closed team charged, and the rest). An alarm already in ALARM doesn't email again: while one keeps it there, another source shows only on the per-metric graphs. See which in the dashboard's Needs attention row or the metrics console (SupplyCheckout, by Region), or in Logs Insights: filter ispresent(NeedsAttention). Each one's runbook: docs/observability.md, When Needs attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-needs-attention",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
+        "EvaluationPeriods": 8,
         "Metrics": [
           {
             "Id": "m1",
-            "Label": "SignOutRevokeFailures (us-east-1)",
+            "Label": "NeedsAttention (us-east-1)",
             "MetricStat": {
               "Metric": {
                 "Dimensions": [
@@ -1484,7 +1519,7 @@
                     "Value": "us-east-1"
                   }
                 ],
-                "MetricName": "SignOutRevokeFailures",
+                "MetricName": "NeedsAttention",
                 "Namespace": "SupplyCheckout"
               },
               "Period": 900,
@@ -1520,11 +1555,11 @@
             "Value": "cdk"
           }
         ],
-        "Threshold": 2,
+        "Threshold": 0,
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmssecuritynoticesfailing933F267B": {
+    "JourneyAlarmssecurityattentionE81422B2": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
         "AlarmActions": [
@@ -1532,15 +1567,15 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Security notices failing (J0, us-east-1). Any SecurityNoticeFailures over 15 minutes: someone set a password or turned on two-step sign-in and the account's own verified address wasn't told (SES refused the message or took more than 3 seconds, or there's no verified address). The change stands anyway, so an account taken over this way goes unnoticed by its owner (supply-checkout-8jc.15). Also after a password reset (kind passwordReset, via reset, supply-checkout-6uw.32): the post confirmation trigger couldn't sign the account out (reason sign_out: sessions from before the reset may still work, so sign the user out by hand), or record its time (record_reset, also from POST /me/sign-out-everywhere: the API won't refuse sessions from before it; see docs/journeys.md) or couldn't hand over the reset notice (no_user, invoke, deferred), or the notices function couldn't send it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-security-notices-failing",
+        "AlarmDescription": "P2 Security attention (J0, us-east-1). Any SecurityAttention in 15 minutes, and until 2 hours pass without one: one of the security events in SECURITY_ATTENTION_METRICS (backend/src/observability/names.ts) happened: a sign-out whose refresh token Cognito didn't revoke (SignOutRevokeFailures), or an account not told of a security change (SecurityNoticeFailures). A deletion record rewritten has an alarm of its own, which nothing else can hold in ALARM. Apart from Needs attention, so an ordinary event that keeps it in alarm can't hide these: an alarm already in ALARM doesn't email again, so look at each metric, not only the first email. Runbook: docs/observability.md, When Security attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-security-attention",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
+        "EvaluationPeriods": 8,
         "Metrics": [
           {
             "Id": "m1",
-            "Label": "SecurityNoticeFailures (us-east-1)",
+            "Label": "SecurityAttention (us-east-1)",
             "MetricStat": {
               "Metric": {
                 "Dimensions": [
@@ -1549,7 +1584,7 @@
                     "Value": "us-east-1"
                   }
                 ],
-                "MetricName": "SecurityNoticeFailures",
+                "MetricName": "SecurityAttention",
                 "Namespace": "SupplyCheckout"
               },
               "Period": 900,
@@ -1819,201 +1854,6 @@
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmswelcomeemailsfailingAF5FB8E3": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Welcome emails failing (J1, us-east-1). Any WelcomeEmailFailures over an hour: a new account's welcome email wasn't handed to the welcome email function (the invoke failed, or a trigger had no time left), or the function couldn't send it (no verified address, a failed Cognito or DynamoDB call, or a request that isn't the triggers'). SES refusing a message is counted apart (Welcome emails refused). Sign-up went ahead either way (supply-checkout-6uw.25). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-welcome-emails-failing",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "WelcomeEmailFailures (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "WelcomeEmailFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmswelcomeemailsrefused64986D7B": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Welcome emails refused (J1, us-east-1). WelcomeEmailsRefused at least 1 in an hour: SES refused a welcome email (sending paused, or a suppressed address). Counted apart from WelcomeEmailFailures; SES is out of the sandbox, so it no longer refuses unverified addresses and any refusal is worth a look (supply-checkout-6uw.25, supply-checkout-3sv.21). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-welcome-emails-refused",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "WelcomeEmailsRefused (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "WelcomeEmailsRefused",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmspasswordresethintscapped0BF3B381": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Password reset hints capped (J0, us-east-1). Any PasswordResetHintsCapped in an hour: the \"sign in with Google\" (or Apple) hints for password resets asked for in the app reached their cap for the UTC day (PASSWORD_RESET_HINTS_PER_DAY, 500), so no more go out until midnight UTC. They go only to Google or Apple accounts' verified addresses, so this is either real demand or someone pushing many of those addresses through the route (supply-checkout-6uw.26). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-password-reset-hints-capped",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "PasswordResetHintsCapped (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "PasswordResetHintsCapped",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
     "JourneyAlarmswelcomeemailfunctionfailing8BF1DBD8": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -2184,186 +2024,6 @@
           }
         ],
         "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsemailverificationnotsaved4250C833": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Email verification not saved (J3, us-east-1). Any EmailVerifyFailures or EmailUnverifyFailures over 15 minutes: the sign-in trigger couldn't copy a Google or Apple user's email_verified, so they stay unverified (and can't accept invites) or, for a downgrade, stay verified; or couldn't unverify or record a linked user's changed email. The sign-in goes ahead (a linked user's failed downgrade fails it) and the next one retries, so the Lambda Errors alarm doesn't see it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-email-verification-not-saved",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Expression": "FILL(v, 0) + FILL(u, 0)",
-            "Id": "expr_1",
-            "Label": "Email verification failures (us-east-1)",
-            "ReturnData": true
-          },
-          {
-            "Id": "v",
-            "Label": "EmailVerifyFailures (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "EmailVerifyFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "u",
-            "Label": "EmailUnverifyFailures (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "EmailUnverifyFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsemailcodesfailing52C84946": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Email codes failing (J3, us-east-1). EmailCodeSendFailures + EmailCodeVerifyFailures at least 3 in 15 minutes: POST /me/email/code or /me/email/verify answered 5xx (Cognito erroring or unreachable, or couldn't deliver the code), so people can't verify their address, and can't accept invites. Refusals (a wrong or expired code, too many attempts) aren't counted. Too few requests for the API errors alarm's 2% to notice. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-email-codes-failing",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Expression": "FILL(s, 0) + FILL(c, 0)",
-            "Id": "expr_1",
-            "Label": "Email code failures (us-east-1)",
-            "ReturnData": true
-          },
-          {
-            "Id": "s",
-            "Label": "EmailCodeSendFailures (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "EmailCodeSendFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "c",
-            "Label": "EmailCodeVerifyFailures (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "EmailCodeVerifyFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 2,
         "TreatMissingData": "notBreaching"
       }
     },
@@ -2881,71 +2541,6 @@
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmsliveupdatesdeferred4F7785C9": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Live updates deferred (J4, us-east-1). Any LiveUpdatesDeferred in each of 3 consecutive 5-minute periods: the stream consumer keeps running out of its per-invocation publish budget (AppSync slow, or big teams busier than a batch's budget fits), so changes reach other devices late. Every invocation still sends the batch's first chunk, so it can't stall; see Live updates delayed and dropped. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-live-updates-deferred",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 3,
-        "EvaluationPeriods": 3,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "LiveUpdatesDeferred (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "LiveUpdatesDeferred",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 300,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
     "JourneyAlarmsliveupdatesdroppedD01A2248": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -3220,71 +2815,6 @@
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmsreceipttrialspaused75D3BF27": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Receipt trials paused (J5, us-east-1). Any ReceiptTrialCapReached in an hour: every trial team in the account together has read RECEIPT_TRIAL_READS_PER_DAY receipts today (supply-checkout-i1d.3), so trial teams can't scan receipts until the next UTC day. Paying teams aren't affected. Either a farm of sign-ups or real trial growth. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-receipt-trials-paused",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "ReceiptTrialCapReached (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "ReceiptTrialCapReached",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
     "JourneyAlarmsbedrockspendhighC7133D85": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -3293,89 +2823,30 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Bedrock spend high (J5, us-east-1). The receipt model's estimated spend above $5 in a day (BEDROCK_SPEND_ALARM_USD_PER_DAY), from Bedrock's own input, output and cache token counts for the receipt model at its list prices: faster than the Bedrock budget, which sees billed cost hours later. A receipt read costs about half a cent. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Bedrock spend high (J5, us-east-1). ReceiptReads above 1000 in a day (RECEIPT_READS_ALARM_PER_DAY): the receipt model's spend near $5 a day (BEDROCK_SPEND_ALARM_USD_PER_DAY) at about half a cent a read. Faster than the Bedrock budget, which sees billed cost hours later. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-bedrock-spend-high",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
-            "Expression": "(FILL(i_us_east_1, 0) * 1 + FILL(o_us_east_1, 0) * 5 + FILL(cr_us_east_1, 0) * 0.1 + FILL(cw_us_east_1, 0) * 1.25) / 1000000",
-            "Id": "expr_1",
-            "Label": "Receipt model spend, USD (us-east-1)",
+            "Id": "m1",
+            "Label": "ReceiptReads (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "ReceiptReads",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 86400,
+              "Stat": "Sum"
+            },
             "ReturnData": true
-          },
-          {
-            "Id": "i_us_east_1",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ModelId",
-                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  }
-                ],
-                "MetricName": "InputTokenCount",
-                "Namespace": "AWS/Bedrock"
-              },
-              "Period": 86400,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "o_us_east_1",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ModelId",
-                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  }
-                ],
-                "MetricName": "OutputTokenCount",
-                "Namespace": "AWS/Bedrock"
-              },
-              "Period": 86400,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "cr_us_east_1",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ModelId",
-                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  }
-                ],
-                "MetricName": "CacheReadInputTokenCount",
-                "Namespace": "AWS/Bedrock"
-              },
-              "Period": 86400,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "cw_us_east_1",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "ModelId",
-                    "Value": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  }
-                ],
-                "MetricName": "CacheWriteInputTokenCount",
-                "Namespace": "AWS/Bedrock"
-              },
-              "Period": 86400,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
           }
         ],
         "OKActions": [
@@ -3405,7 +2876,7 @@
             "Value": "cdk"
           }
         ],
-        "Threshold": 5,
+        "Threshold": 1000,
         "TreatMissingData": "notBreaching"
       }
     },
@@ -3766,136 +3237,6 @@
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmsseatcountsdrifting21584CD6": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Seat counts drifting (J7, us-east-1). Any SeatQuantityDrift over an hour: the nightly seat reconciliation (primary region) found a team billed for a different number of seats than it has billed members (owners and editors), so the sync after a membership change missed it. The billing worker has already set the quantity right; the log line \"Seat quantity drift\" has the team and subscription IDs and both numbers. Look for a seat sync that couldn't be queued (SeatSyncQueueFailures) or went to the seat syncs dead-letter queue. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-seat-counts-drifting",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "SeatQuantityDrift (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "SeatQuantityDrift",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsentitlementsdrifting1F92AAE5": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Entitlements drifting (J7, J8, us-east-1). Any EntitlementDrift over an hour: the nightly entitlement check (primary region, with the seat reconciliation) found a team whose subscription, status, plan or seats weren't what Stripe has, so a Stripe event was lost or is stuck. The billing worker has already applied Stripe's state (a missing subscription it can't fix); the log line \"Entitlement drift\" has the team and subscription IDs, the fields and both values. Owners weren't emailed about it. See docs/runbooks/billing-dlq-replay.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-entitlements-drifting",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "EntitlementDrift (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "EntitlementDrift",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
     "JourneyAlarmsdeletionoverdueB544DD17": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -3904,7 +3245,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Deletion overdue (J11, us-east-1). ClosedTeamsOverdue above 0 at its maximum over 2 hours: a closed team is still there more than 24 hours after the day it was due to be deleted, which the privacy policy promises. The hourly closed-team purge (primary region) sends the gauge every run and logs each failed team's ID. A team held because its subscription is set aside counts too, until the purge deletes it anyway 14 days after its deletion date (then \"Held team purged with its subscription unresolved\" fires). See docs/journeys.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Deletion overdue or not running (J11, us-east-1). ClosedTeamsOverdue above 0 at its maximum over 3 hours: a closed team is still there more than 24 hours after the day it was due to be deleted, which the privacy policy promises. The hourly closed-team purge (primary region) sends the gauge every run and logs each failed team's ID. A team held because its subscription is set aside counts too, until the purge deletes it anyway 14 days after its deletion date (then Needs attention fires, HeldTeamsPurged). Or no sample at all in those 3 hours (missing data breaches): the purge isn't running (its schedule is disabled or deleted, or every run fails before it reads the closed-teams index), so closed teams aren't being deleted. See docs/journeys.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-deletion-overdue",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
@@ -3924,7 +3265,7 @@
                 "MetricName": "ClosedTeamsOverdue",
                 "Namespace": "SupplyCheckout"
               },
-              "Period": 7200,
+              "Period": 10800,
               "Stat": "Maximum"
             },
             "ReturnData": true
@@ -3958,397 +3299,7 @@
           }
         ],
         "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsteamclosednoticesfailingA94DEEDE": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Team closure emails failing (J11, us-east-1). Any TeamClosedNoticeFailures over 15 minutes: an owner of a team that just closed wasn't emailed the day it will be deleted (SES refused the message, no address on file, or the owners couldn't be listed). The team closed anyway. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-team-closed-notices-failing",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "TeamClosedNoticeFailures (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "TeamClosedNoticeFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsreopenedteamsubscriptionendedDB6A62CA": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Reopened team's subscription ended (J7, J11, us-east-1). Any ReopenedTeamSubscriptionsEnded over 15 minutes: an owner reopened a closed team while the billing worker or the closed-team purge was asking Stripe to end its subscription, so a team that's open again has a subscription set to cancel (or cancelled). The log line \"Team reopened while its subscription was being ended\" has the team and subscription IDs and the action: resume the subscription in the Stripe Dashboard, or ask an owner to. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-reopened-team-subscription-ended",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "ReopenedTeamSubscriptionsEnded (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "ReopenedTeamSubscriptionsEnded",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsreopenresynclate6A4C6C59": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Reopened team's billing not resynced (J7, J11, us-east-1). Any ReopenResyncsLate over an hour: the nightly seat reconciliation (primary region) found a team reopened before the night whose Stripe subscription still hadn't been resynced (stripeResyncFor on its META item): the reopen's seat sync wasn't queued, or failed. The billing worker then resyncs it with the night's message, resuming a subscription its closure set to cancel. If it fires again the next night, that resync is failing too: the log line \"Reopened team's subscription not yet resynced\" has the team ID, and the worker's warnings or the seat syncs dead-letter queue say why. See docs/runbooks/billing-dlq-replay.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-reopen-resync-late",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "ReopenResyncsLate (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "ReopenResyncsLate",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsreopenedteamsubscriptionundecidedDDA450A6": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Reopened team's subscription left to cancel (J7, J11, us-east-1). Any ReopenedTeamSubscriptionsUndecided over an hour: the billing worker resynced a reopened team whose Stripe subscription is set to cancel at the period's end, maybe by the closure (no closure stamp, but the purge recorded ending it for that closure, from before the stamp existed) or maybe by an owner, and Stripe gave no time it was set (canceled_at), or the team has no reopen time. It left it set to cancel rather than risk charging an owner who cancelled. The log line \"Reopened team's subscription left set to cancel\" has the team and subscription IDs: contact the team's owners, with what the subscription's history in the Stripe Dashboard shows, and resume it only if an owner asks; don't resume it by default. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-reopened-team-subscription-undecided",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "ReopenedTeamSubscriptionsUndecided (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "ReopenedTeamSubscriptionsUndecided",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsclosedteamcharged4F2C5715": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Closed team charged (J7, J11, us-east-1). Any ClosedTeamRenewalsCharged over an hour: the hourly closed-team purge (primary region) found a closed team's subscription charged for a period that began after the team closed (a renewal or trial conversion in the hour before the purge set it to end). The log line \"Closed team's subscription renewed after it closed\" has the team and subscription IDs: refund that invoice in the Stripe Dashboard. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-closed-team-charged",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "ClosedTeamRenewalsCharged (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "ClosedTeamRenewalsCharged",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsclosedteamsubscriptionnotfound8172904A": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Closed-team subscription not found in Stripe (J7, J11, us-east-1). Any ClosedTeamSubscriptionsNotFound over an hour: the hourly closed-team purge (primary region) asked Stripe for a closed team's subscription, Stripe said it doesn't exist, and the purge set the team aside (stripeSetAsideFor, reason NotFound) rather than retry it every hour. Usually the subscription went with its customer, but a Stripe key or mode mismatch looks the same for every closed team, with none cancelled. The log line \"Closed team's subscription not found in Stripe\" has the team and subscription IDs: look the subscription up in the Stripe Dashboard, in the purge's mode. Once the key or mode is fixed, removing stripeSetAsideFor from each team's META item has the next run end its subscription. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-closed-team-subscription-not-found",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "ClosedTeamSubscriptionsNotFound (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "ClosedTeamSubscriptionsNotFound",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
+        "TreatMissingData": "breaching"
       }
     },
     "JourneyAlarmsclosedteamsubscriptionsetasideBDCC2570": {
@@ -4478,136 +3429,6 @@
           }
         ],
         "Threshold": 4,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsstripecustomeralreadydeletedBD3BB8FF": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Stripe customer already deleted (J7, J11, us-east-1). Any StripeCustomersAlreadyDeleted over an hour: the hourly closed-team purge (primary region) asked Stripe to delete a purged team's customer and was told it doesn't exist, took it as deleted and purged the team. A run that stopped after deleting the customer does that, but so does a Stripe key or mode mismatch, under which the real customer keeps its details and any subscription keeps billing. The log line \"Stripe customer already deleted\" has the team and customer IDs, and the team's deletion record keeps its customer and subscription IDs: look the customer up in the Stripe Dashboard, in both modes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-stripe-customer-already-deleted",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "StripeCustomersAlreadyDeleted (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "StripeCustomersAlreadyDeleted",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmsheldteampurged59F8C757": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Held team purged with its subscription unresolved (J7, J11, us-east-1). Any HeldTeamsPurged over an hour: the hourly closed-team purge (primary region) deleted a closed team held because its Stripe subscription was set aside (another customer's, not found in Stripe, or an error retrying won't change), 14 days after its deletion date, with nobody having dealt with it. Its subscription may still be live and billing. The log line \"Held team purged with its subscription unresolved\" has the team, customer and subscription IDs and the reason, and the team's deletion record keeps the Stripe IDs: end the subscription by hand in the Stripe Dashboard (check both modes). See docs/journeys.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-held-team-purged",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "HeldTeamsPurged (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "HeldTeamsPurged",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 3600,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
         "TreatMissingData": "notBreaching"
       }
     },
@@ -4741,266 +3562,6 @@
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmsteamreopenednoticesfailingFE94270D": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Team reopened emails failing (J11, us-east-1). Any TeamReopenedNoticeFailures over 15 minutes: an owner of a team that was just reopened wasn't told it will no longer be deleted (SES refused the message, no address on file, or the owners couldn't be listed). The team reopened anyway. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-team-reopened-notices-failing",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "TeamReopenedNoticeFailures (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "TeamReopenedNoticeFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 900,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmslapsejobfailing143EEB1A": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Lapsed-team job failing (J7, J8, J10, us-east-1). Any LapseFailures over 2 hours: the hourly lapsed-team job (primary region) couldn't handle a team whose trial or subscription lapsed (a read, write or Stripe call failed), couldn't deliver a team's deletion warning to any owner (so it won't close it), or wouldn't close a lapsed team because Stripe disagrees with our record (a live subscription for the customer, or the team's subscription or customer missing, maybe a Stripe key or mode mismatch). The team stays read-only and isn't deleted until it's resolved, past the date its owners were told. The log lines \"Lapsed team not closed: Stripe disagrees\", \"Lapsed team's deletion warning not delivered\" and \"Lapsed team check failed\" have the team, subscription and customer IDs. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-lapse-job-failing",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "LapseFailures (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "LapseFailures",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 7200,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmslapseclosuresheld9C0F0BCE": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Lapsed-team closures held (J10, us-east-1). Any LapseClosuresHeld over 2 hours: a run of the hourly lapsed-team job (primary region) found more than 10 lapsed teams due to close for deletion (LAPSE_MAX_CLOSURES_PER_RUN), closed that many and held the rest for the next run. Each run closes up to that many more, so if it's a bug or bad data rather than a real batch of lapsed teams, disable the TeamLapseSchedule rule now. Logs Insights on the job: \"Lapsed team closed for deletion\" lists the teams. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-lapse-closures-held",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "LapseClosuresHeld (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "LapseClosuresHeld",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 7200,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "JourneyAlarmslapsecheckoutheld2C1CBD9D": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Lapsed team held by Checkout (J10, us-east-1). Any LapseCheckoutOverdue over 2 hours: the hourly lapsed-team job (primary region) didn't close a lapsed team 3 or more days (LAPSE_CHECKOUT_MAX_DELAY_DAYS) past its date because an owner started Checkout within LAPSE_CHECKOUT_GUARD_HOURS or Stripe has a session open for its customer. The job never closes a team under a Checkout, so an owner who keeps starting one holds the team indefinitely, past the Terms' 30 days: a person decides. \"Lapsed team held by Checkout too long past its date\" has the team and customer IDs. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-lapse-checkout-held",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "LapseCheckoutOverdue (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "LapseCheckoutOverdue",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 7200,
-              "Stat": "Sum"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
     "JourneyAlarmslapseclosureshigh505F7CD1": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -5074,7 +3635,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Lapsed-team job out of time (J7, J8, J10, us-east-1). LapseTeamsUnstarted above 0 in every hour for 3 hours: each run of the hourly lapsed-team job (primary region) ran out of time before it started every lapsing team, so owners' emails and closures are late. Runs start at a random place in the list, so no team is always left, but the list has outgrown one run. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Lapsed-team job out of time or not running (J7, J8, J10, us-east-1). LapseTeamsUnstarted above 0, or missing, in every hour for 3 hours. Above 0: each run of the hourly lapsed-team job (primary region) ran out of time before it started every lapsing team, so owners' emails and closures are late; runs start at a random place in the list, so no team is always left, but the list has outgrown one run. Missing (missing data breaches): the job isn't running (its schedule is disabled or deleted, or every run fails before it lists the teams, and it sends this gauge with LapseTeamsChecked), so owners of lapsing teams aren't emailed and lapsed teams aren't closed for deletion as the Terms say. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-lapse-job-out-of-time",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 3,
@@ -5128,7 +3689,7 @@
           }
         ],
         "Threshold": 0,
-        "TreatMissingData": "notBreaching"
+        "TreatMissingData": "breaching"
       }
     },
     "WebAlarmssitedownF6F1E7CF": {
@@ -5363,20 +3924,15 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Operator page down (Operators, CloudFront). The operator page's distribution's 5xxErrorRate above 10% for 5 minutes, once it has at least 5 requests: ops. is failing (its router, the bucket, or nothing live on the ops channel). Operators can use npm run ops meanwhile. Runbook: docs/observability.md, When the web app is down.",
+        "AlarmDescription": "P2 Operator page down (Operators, CloudFront). The operator page's distribution's 5xxErrorRate above 10% for 5 minutes, from any number of requests: ops. is failing (its router, the bucket, or nothing live on the ops channel). Operators can use npm run ops meanwhile. Runbook: docs/observability.md, When the web app is down.",
         "AlarmName": "supply-checkout-prod-p2-ops-page-down",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
-            "Expression": "IF(r >= 5, FILL(e, 0), 0)",
-            "Id": "expr_1",
+            "Id": "m1",
             "Label": "Operator page 5xx rate % (CloudFront)",
-            "ReturnData": true
-          },
-          {
-            "Id": "e",
             "MetricStat": {
               "Metric": {
                 "Dimensions": [
@@ -5397,31 +3953,7 @@
               "Period": 300,
               "Stat": "Average"
             },
-            "ReturnData": false
-          },
-          {
-            "Id": "r",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "DistributionId",
-                    "Value": {
-                      "Ref": "SsmParameterValuesupplycheckoutprodwebopsdistributionidC96584B6F00A464EAD1953AFF4B05118Parameter"
-                    }
-                  },
-                  {
-                    "Name": "Region",
-                    "Value": "Global"
-                  }
-                ],
-                "MetricName": "Requests",
-                "Namespace": "AWS/CloudFront"
-              },
-              "Period": 300,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
+            "ReturnData": true
           }
         ],
         "OKActions": [
@@ -5452,130 +3984,6 @@
           }
         ],
         "Threshold": 10,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "WebAlarmsopsrouterfailing73BEBDE0": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Operator page router failing (Operators, CloudFront). The operator page's router CloudFront Function's execution errors, validation errors and throttles at least 1 in 5 minutes: requests to ops. get 5xx. Usually a bad router deploy. Runbook: docs/observability.md, When the web app is down.",
-        "AlarmName": "supply-checkout-prod-p2-ops-router-failing",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Expression": "FILL(x, 0) + FILL(v, 0) + FILL(t, 0)",
-            "Id": "expr_1",
-            "Label": "Operator page router errors and throttles",
-            "ReturnData": true
-          },
-          {
-            "Id": "x",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "FunctionName",
-                    "Value": {
-                      "Ref": "SsmParameterValuesupplycheckoutprodwebopsrouterfunctionnameC96584B6F00A464EAD1953AFF4B05118Parameter"
-                    }
-                  },
-                  {
-                    "Name": "Region",
-                    "Value": "Global"
-                  }
-                ],
-                "MetricName": "FunctionExecutionErrors",
-                "Namespace": "AWS/CloudFront"
-              },
-              "Period": 300,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "v",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "FunctionName",
-                    "Value": {
-                      "Ref": "SsmParameterValuesupplycheckoutprodwebopsrouterfunctionnameC96584B6F00A464EAD1953AFF4B05118Parameter"
-                    }
-                  },
-                  {
-                    "Name": "Region",
-                    "Value": "Global"
-                  }
-                ],
-                "MetricName": "FunctionValidationErrors",
-                "Namespace": "AWS/CloudFront"
-              },
-              "Period": 300,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          },
-          {
-            "Id": "t",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "FunctionName",
-                    "Value": {
-                      "Ref": "SsmParameterValuesupplycheckoutprodwebopsrouterfunctionnameC96584B6F00A464EAD1953AFF4B05118Parameter"
-                    }
-                  },
-                  {
-                    "Name": "Region",
-                    "Value": "Global"
-                  }
-                ],
-                "MetricName": "FunctionThrottles",
-                "Namespace": "AWS/CloudFront"
-              },
-              "Period": 300,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
         "TreatMissingData": "notBreaching"
       }
     },
@@ -7607,71 +6015,6 @@
         }
       }
     },
-    "OpsChecksPurgeNotRunning6728EEA6": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Deletion job not running (J11, us-east-1). No ClosedTeamsOverdue sample from the hourly closed-team purge for 3 hours: its schedule is disabled or deleted, or every run fails before it reads the closed-teams index. Closed teams aren't being deleted, and Deletion overdue can't see it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-deletion-not-running",
-        "ComparisonOperator": "LessThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "ClosedTeamsOverdue (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "ClosedTeamsOverdue",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 10800,
-              "Stat": "SampleCount"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 1,
-        "TreatMissingData": "breaching"
-      }
-    },
     "OpsChecksSeatReconcileLogsE7D71923": {
       "Type": "AWS::Logs::LogGroup",
       "Properties": {
@@ -8682,71 +7025,6 @@
         }
       }
     },
-    "OpsChecksLapseNotRunning088F0F68": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2 Lapsed-team job not running (J7, J8, J10, us-east-1). No LapseTeamsChecked sample from the hourly lapsed-team job for 3 hours: its schedule is disabled or deleted, or every run fails before it lists the teams. Owners of lapsing teams aren't being emailed, and lapsed teams aren't being closed for deletion as the Terms say. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys, and docs/runbooks/lapsed-teams.md.",
-        "AlarmName": "supply-checkout-prod-p2-lapse-not-running",
-        "ComparisonOperator": "LessThanThreshold",
-        "DatapointsToAlarm": 1,
-        "EvaluationPeriods": 1,
-        "Metrics": [
-          {
-            "Id": "m1",
-            "Label": "LapseTeamsChecked (us-east-1)",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "Region",
-                    "Value": "us-east-1"
-                  }
-                ],
-                "MetricName": "LapseTeamsChecked",
-                "Namespace": "SupplyCheckout"
-              },
-              "Period": 10800,
-              "Stat": "SampleCount"
-            },
-            "ReturnData": true
-          }
-        ],
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 1,
-        "TreatMissingData": "breaching"
-      }
-    },
     "OperatorAuditWatchLogsC88D29BF": {
       "Type": "AWS::Logs::LogGroup",
       "Properties": {
@@ -9174,61 +7452,6 @@
             "Ref": "AlarmTopicsP1E7C597D3"
           }
         ],
-        "Tags": [
-          {
-            "Key": "app",
-            "Value": "supply-checkout"
-          },
-          {
-            "Key": "component",
-            "Value": "observability"
-          },
-          {
-            "Key": "env",
-            "Value": "prod"
-          },
-          {
-            "Key": "layer",
-            "Value": "stateless"
-          },
-          {
-            "Key": "managed-by",
-            "Value": "cdk"
-          }
-        ],
-        "Threshold": 0,
-        "TreatMissingData": "notBreaching"
-      }
-    },
-    "OperatorAuditWatchFailing470993DE": {
-      "Type": "AWS::CloudWatch::Alarm",
-      "Properties": {
-        "AlarmActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "AlarmDescription": "P2. Operator audit watch failing: the function that watches operator audit items for changes threw, so a change could go unseen. Its log has the error.",
-        "AlarmName": "supply-checkout-prod-p2-operator-audit-watch-failing",
-        "ComparisonOperator": "GreaterThanThreshold",
-        "Dimensions": [
-          {
-            "Name": "FunctionName",
-            "Value": {
-              "Ref": "OperatorAuditWatchFunctionA8D3267D"
-            }
-          }
-        ],
-        "EvaluationPeriods": 1,
-        "MetricName": "Errors",
-        "Namespace": "AWS/Lambda",
-        "OKActions": [
-          {
-            "Ref": "AlarmTopicsP213C63151"
-          }
-        ],
-        "Period": 300,
-        "Statistic": "Sum",
         "Tags": [
           {
             "Key": "app",
@@ -10443,36 +8666,16 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2. Deletion records watch failing: the function that checks deletion records for rewrites threw, so a rewrite could go unseen. Its log has the error. Runbook: docs/backups.md, When a deletion record is rewritten.",
+        "AlarmDescription": "P2. Deletion records watch failing: the function that checks deletion records for rewrites gave up on an event after its retries, or EventBridge couldn't invoke it, so a rewrite could go unseen. Its log has the error. Runbook: docs/backups.md, When a deletion record is rewritten.",
         "AlarmName": "supply-checkout-prod-p2-deletion-records-watch-failing",
         "ComparisonOperator": "GreaterThanThreshold",
         "EvaluationPeriods": 1,
         "Metrics": [
           {
-            "Expression": "FILL(errors, 0) + FILL(dropped, 0) + FILL(failed, 0)",
+            "Expression": "FILL(dropped, 0) + FILL(failed, 0)",
             "Id": "expr_1",
-            "Label": "Deletion records watch errors and missed events",
+            "Label": "Deletion records watch missed events",
             "ReturnData": true
-          },
-          {
-            "Id": "errors",
-            "MetricStat": {
-              "Metric": {
-                "Dimensions": [
-                  {
-                    "Name": "FunctionName",
-                    "Value": {
-                      "Ref": "DeletionRecordsWatchFunction4B1F6979"
-                    }
-                  }
-                ],
-                "MetricName": "Errors",
-                "Namespace": "AWS/Lambda"
-              },
-              "Period": 300,
-              "Stat": "Sum"
-            },
-            "ReturnData": false
           },
           {
             "Id": "dropped",
@@ -11778,9 +9981,6 @@
                       "Ref": "OperatorAuditWatchChanged4FF93CBF"
                     },
                     {
-                      "Ref": "OperatorAuditWatchFailing470993DE"
-                    },
-                    {
                       "Ref": "OperatorAuditWatchDropped22E7CA0E"
                     },
                     {
@@ -11797,9 +9997,6 @@
                   "alarmName": [
                     {
                       "Ref": "OperatorAuditWatchChanged4FF93CBF"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchFailing470993DE"
                     },
                     {
                       "Ref": "OperatorAuditWatchDropped22E7CA0E"
@@ -14394,7 +12591,7 @@
           "Fn::Join": [
             "",
             [
-              "{\"widgets\":[{\"type\":\"text\",\"width\":24,\"height\":3,\"x\":0,\"y\":0,\"properties\":{\"markdown\":\"# Supply Checkout prod\\n\\nRegions: us-east-1, us-west-2. Every line is labelled with its region.\\n\\nAlarms and thresholds: docs/journeys.md, *Alarms for blocked journeys*.\"}},{\"type\":\"alarm\",\"width\":24,\"height\":4,\"x\":0,\"y\":3,\"properties\":{\"title\":\"Alarms\",\"alarms\":[\"",
+              "{\"widgets\":[{\"type\":\"text\",\"width\":24,\"height\":3,\"x\":0,\"y\":0,\"properties\":{\"markdown\":\"# Supply Checkout prod\\n\\nRegions: us-east-1, us-west-2. Every line is labelled with its region.\\n\\nAlarms and thresholds: docs/journeys.md, *Alarms for blocked journeys*. Every other business metric is in the metrics console (SupplyCheckout, by Region).\"}},{\"type\":\"alarm\",\"width\":24,\"height\":4,\"x\":0,\"y\":3,\"properties\":{\"title\":\"Alarms\",\"alarms\":[\"",
               {
                 "Fn::GetAtt": [
                   "JourneyAlarmsfunctionsfailing65AA3C89",
@@ -14439,14 +12636,14 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
-                  "JourneyAlarmssignoutnotrevoking30BBFF71",
+                  "JourneyAlarmsneedsattention5FF75F45",
                   "Arn"
                 ]
               },
               "\",\"",
               {
                 "Fn::GetAtt": [
-                  "JourneyAlarmssecuritynoticesfailing933F267B",
+                  "JourneyAlarmssecurityattentionE81422B2",
                   "Arn"
                 ]
               },
@@ -14474,27 +12671,6 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
-                  "JourneyAlarmswelcomeemailsfailingAF5FB8E3",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmswelcomeemailsrefused64986D7B",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmspasswordresethintscapped0BF3B381",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
                   "JourneyAlarmswelcomeemailfunctionfailing8BF1DBD8",
                   "Arn"
                 ]
@@ -14510,20 +12686,6 @@
               {
                 "Fn::GetAtt": [
                   "JourneyAlarmsimportsstuck68033DBE",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsemailverificationnotsaved4250C833",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsemailcodesfailing52C84946",
                   "Arn"
                 ]
               },
@@ -14586,13 +12748,6 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
-                  "JourneyAlarmsliveupdatesdeferred4F7785C9",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
                   "JourneyAlarmsliveupdatesdroppedD01A2248",
                   "Arn"
                 ]
@@ -14615,13 +12770,6 @@
               {
                 "Fn::GetAtt": [
                   "JourneyAlarmsreceipttrialsnearlimit55BE5619",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsreceipttrialspaused75D3BF27",
                   "Arn"
                 ]
               },
@@ -14677,63 +12825,7 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
-                  "JourneyAlarmsseatcountsdrifting21584CD6",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsentitlementsdrifting1F92AAE5",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
                   "JourneyAlarmsdeletionoverdueB544DD17",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsteamclosednoticesfailingA94DEEDE",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsreopenedteamsubscriptionendedDB6A62CA",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsreopenresynclate6A4C6C59",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsreopenedteamsubscriptionundecidedDDA450A6",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsclosedteamcharged4F2C5715",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsclosedteamsubscriptionnotfound8172904A",
                   "Arn"
                 ]
               },
@@ -14754,20 +12846,6 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
-                  "JourneyAlarmsstripecustomeralreadydeletedBD3BB8FF",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsheldteampurged59F8C757",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
                   "JourneyAlarmsstripecustomerdeletionretryingB6131BCF",
                   "Arn"
                 ]
@@ -14776,34 +12854,6 @@
               {
                 "Fn::GetAtt": [
                   "JourneyAlarmsstripecustomerdeletionstuckF6F9D163",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmsteamreopenednoticesfailingFE94270D",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmslapsejobfailing143EEB1A",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmslapseclosuresheld9C0F0BCE",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "JourneyAlarmslapsecheckoutheld2C1CBD9D",
                   "Arn"
                 ]
               },
@@ -14845,13 +12895,6 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
-                  "WebAlarmsopsrouterfailing73BEBDE0",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
                   "WebAlarmsrumeventssurge8165FF86",
                   "Arn"
                 ]
@@ -14866,21 +12909,7 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
-                  "OpsChecksPurgeNotRunning6728EEA6",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
                   "OperatorAuditWatchChanged4FF93CBF",
-                  "Arn"
-                ]
-              },
-              "\",\"",
-              {
-                "Fn::GetAtt": [
-                  "OperatorAuditWatchFailing470993DE",
                   "Arn"
                 ]
               },
@@ -14947,39 +12976,43 @@
                   "Arn"
                 ]
               },
-              "\"]}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Traffic: API requests\",\"region\":\"",
+              "\"]}},{\"type\":\"metric\",\"width\":12,\"height\":6,\"x\":0,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Needs attention and Security attention: rare events\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[{\"label\":\"API requests (us-east-1)\",\"expression\":\"SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Count\\\"', 'Sum', 300))\"}],[{\"label\":\"API requests (us-west-2)\",\"expression\":\"SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Count\\\"', 'Sum', 300))\",\"region\":\"us-west-2\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":8,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Traffic: Lambda invocations\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-east-1\",{\"label\":\"NeedsAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-east-1\",{\"label\":\"SecurityAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-west-2\",{\"label\":\"NeedsAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-west-2\",{\"label\":\"SecurityAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"text\",\"width\":12,\"height\":6,\"x\":12,\"y\":7,\"properties\":{\"markdown\":\"### Which event?\\n\\nNeedsAttention: `WelcomeEmailFailures`, `WelcomeEmailsRefused`, `PasswordResetHintsCapped`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures`, `EmailCodeVerifyFailures`, `SeatQuantityDrift`, `EntitlementDrift`, `TeamClosedNoticeFailures`, `TeamReopenedNoticeFailures`, `ReopenedTeamSubscriptionsEnded`, `ReopenResyncsLate`, `ReopenedTeamSubscriptionsUndecided`, `ClosedTeamRenewalsCharged`, `ClosedTeamSubscriptionsNotFound`, `StripeCustomersAlreadyDeleted`, `HeldTeamsPurged`, `LapseFailures`, `LapseClosuresHeld`, `LapseCheckoutOverdue`, `ReceiptTrialCapReached` (the trial cap once a day).\\n\\nSecurityAttention: `SignOutRevokeFailures`, `SecurityNoticeFailures`.\\n\\nAn alarm in ALARM doesn't email again, so look at every metric, not just the first email's. Find it in the metrics console (SupplyCheckout, by Region), or in Logs Insights over the functions' log groups: `filter ispresent(NeedsAttention) or ispresent(SecurityAttention)`. What to do: docs/observability.md, *When Needs attention fires* and *When Security attention fires*.\"}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"API: requests, 4xx and 5xx\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"AWS/Lambda\",\"Invocations\",{\"label\":\"Lambda Invocations (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Invocations\",{\"label\":\"Lambda Invocations (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":16,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Traffic: API 4xx\",\"region\":\"",
+              "\",\"metrics\":[[\"AWS/ApiGateway\",\"Count\",\"ApiId\",\"",
+              {
+                "Ref": "SsmParameterValuesupplycheckoutprodapiapiidC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "\",{\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/ApiGateway\",\"4xx\",\"ApiId\",\"",
+              {
+                "Ref": "SsmParameterValuesupplycheckoutprodapiapiidC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "\",{\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/ApiGateway\",\"5xx\",\"ApiId\",\"",
+              {
+                "Ref": "SsmParameterValuesupplycheckoutprodapiapiidC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "\",{\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[{\"label\":\"API requests (us-west-2)\",\"expression\":\"SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Count\\\"', 'Sum', 300))\",\"region\":\"us-west-2\"}],[{\"label\":\"API 4xx (us-west-2)\",\"expression\":\"SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"4xx\\\"', 'Sum', 300))\",\"region\":\"us-west-2\"}],[{\"label\":\"API 5xx (us-west-2)\",\"expression\":\"SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"5xx\\\"', 'Sum', 300))\",\"region\":\"us-west-2\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":8,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Lambda: invocations, errors and throttles\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[{\"label\":\"API 4xx (us-east-1)\",\"expression\":\"SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"4xx\\\"', 'Sum', 300))\"}],[{\"label\":\"API 4xx (us-west-2)\",\"expression\":\"SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"4xx\\\"', 'Sum', 300))\",\"region\":\"us-west-2\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Errors: API 5xx rate %\",\"region\":\"",
+              "\",\"metrics\":[[\"AWS/Lambda\",\"Invocations\",{\"label\":\"Lambda Invocations (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Errors\",{\"label\":\"Lambda Errors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Throttles\",{\"label\":\"Lambda Throttles (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Invocations\",{\"label\":\"Lambda Invocations (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Errors\",{\"label\":\"Lambda Errors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Throttles\",{\"label\":\"Lambda Throttles (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":16,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"DynamoDB: throttles (system errors: the Database errors alarm)\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[{\"label\":\"API 5xx rate % (us-east-1)\",\"expression\":\"100 * SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"5xx\\\"', 'Sum', 300)) / SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Count\\\"', 'Sum', 300))\"}],[{\"label\":\"API 5xx rate % (us-west-2)\",\"expression\":\"100 * SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"5xx\\\"', 'Sum', 300)) / SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Count\\\"', 'Sum', 300))\",\"region\":\"us-west-2\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":8,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Errors: Lambda errors and throttles\",\"region\":\"",
+              "\",\"metrics\":[[{\"label\":\"DynamoDB throttles (us-east-1)\",\"expression\":\"FILL(r_us_east_1, 0) + FILL(w_us_east_1, 0)\"}],[\"AWS/DynamoDB\",\"ReadThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"r_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"WriteThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"w_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[{\"label\":\"DynamoDB throttles (us-west-2)\",\"expression\":\"FILL(r_us_west_2, 0) + FILL(w_us_west_2, 0)\"}],[\"AWS/DynamoDB\",\"ReadThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"r_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"WriteThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"w_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":19,\"properties\":{\"view\":\"timeSeries\",\"title\":\"API: p95 latency (ms)\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"AWS/Lambda\",\"Errors\",{\"label\":\"Lambda Errors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Throttles\",{\"label\":\"Lambda Throttles (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Errors\",{\"label\":\"Lambda Errors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Throttles\",{\"label\":\"Lambda Throttles (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":16,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Errors: DynamoDB system errors and throttles\",\"region\":\"",
+              "\",\"metrics\":[[\"AWS/ApiGateway\",\"Latency\",\"ApiId\",\"",
               {
-                "Ref": "AWS::Region"
+                "Ref": "SsmParameterValuesupplycheckoutprodapiapiidC96584B6F00A464EAD1953AFF4B05118Parameter"
               },
-              "\",\"metrics\":[[{\"label\":\"DynamoDB system errors (us-east-1)\",\"expression\":\"FILL(e0_us_east_1, 0) + FILL(e1_us_east_1, 0) + FILL(e2_us_east_1, 0) + FILL(e3_us_east_1, 0) + FILL(e4_us_east_1, 0) + FILL(e5_us_east_1, 0) + FILL(e6_us_east_1, 0)\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"GetItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e0_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"PutItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e1_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"UpdateItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e2_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"DeleteItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e3_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"Query\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e4_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"TransactGetItems\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e5_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"TransactWriteItems\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e6_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[{\"label\":\"DynamoDB throttles (us-east-1)\",\"expression\":\"FILL(r_us_east_1, 0) + FILL(w_us_east_1, 0)\"}],[\"AWS/DynamoDB\",\"ReadThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"r_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"WriteThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"w_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[{\"label\":\"DynamoDB system errors (us-west-2)\",\"expression\":\"FILL(e0_us_west_2, 0) + FILL(e1_us_west_2, 0) + FILL(e2_us_west_2, 0) + FILL(e3_us_west_2, 0) + FILL(e4_us_west_2, 0) + FILL(e5_us_west_2, 0) + FILL(e6_us_west_2, 0)\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"GetItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e0_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"PutItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e1_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"UpdateItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e2_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"DeleteItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e3_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"Query\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e4_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"TransactGetItems\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e5_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"TransactWriteItems\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e6_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[{\"label\":\"DynamoDB throttles (us-west-2)\",\"expression\":\"FILL(r_us_west_2, 0) + FILL(w_us_west_2, 0)\"}],[\"AWS/DynamoDB\",\"ReadThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"r_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"WriteThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"w_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":12,\"height\":6,\"x\":0,\"y\":19,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Latency: API p95 (ms)\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[{\"label\":\"API p95 latency (us-east-1)\",\"expression\":\"SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Latency\\\"', 'p95', 300)\"}],[{\"label\":\"API p95 latency (us-west-2)\",\"expression\":\"SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Latency\\\"', 'p95', 300)\",\"region\":\"us-west-2\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":12,\"height\":6,\"x\":12,\"y\":19,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Latency: Lambda duration p95 (ms)\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"AWS/Lambda\",\"Duration\",{\"label\":\"Lambda Duration (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"p95\"}],[\"AWS/Lambda\",\"Duration\",{\"label\":\"Lambda Duration (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"p95\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":25,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Web: CloudFront requests\",\"region\":\"",
+              "\",{\"region\":\"us-east-1\",\"stat\":\"p95\"}],[{\"label\":\"API p95 latency (us-west-2)\",\"expression\":\"SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Latency\\\"', 'p95', 300)\",\"region\":\"us-west-2\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":25,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Web: CloudFront requests and 5xx rate %\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
@@ -14987,19 +13020,11 @@
               {
                 "Ref": "SsmParameterValuesupplycheckoutprodwebdistributionidC96584B6F00A464EAD1953AFF4B05118Parameter"
               },
-              "\",\"Region\",\"Global\",{\"label\":\"Requests (CloudFront)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":8,\"y\":25,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Web: CloudFront 5xx rate % (at least 50 requests)\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[{\"label\":\"Web 5xx rate % (CloudFront)\",\"expression\":\"IF(r >= 50, FILL(e, 0), 0)\"}],[\"AWS/CloudFront\",\"5xxErrorRate\",\"DistributionId\",\"",
+              "\",\"Region\",\"Global\",{\"label\":\"Requests (CloudFront)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/CloudFront\",\"5xxErrorRate\",\"DistributionId\",\"",
               {
                 "Ref": "SsmParameterValuesupplycheckoutprodwebdistributionidC96584B6F00A464EAD1953AFF4B05118Parameter"
               },
-              "\",\"Region\",\"Global\",{\"id\":\"e\",\"visible\":false,\"region\":\"us-east-1\"}],[\"AWS/CloudFront\",\"Requests\",\"DistributionId\",\"",
-              {
-                "Ref": "SsmParameterValuesupplycheckoutprodwebdistributionidC96584B6F00A464EAD1953AFF4B05118Parameter"
-              },
-              "\",\"Region\",\"Global\",{\"id\":\"r\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":16,\"y\":25,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Web: router errors and throttles\",\"region\":\"",
+              "\",\"Region\",\"Global\",{\"label\":\"5xx rate % (CloudFront)\",\"region\":\"us-east-1\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":25,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Web: router errors and throttles\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
@@ -15015,7 +13040,7 @@
               {
                 "Ref": "SsmParameterValuesupplycheckoutprodwebrouterfunctionnameC96584B6F00A464EAD1953AFF4B05118Parameter"
               },
-              "\",\"Region\",\"Global\",{\"id\":\"t\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operator page: CloudFront requests\",\"region\":\"",
+              "\",\"Region\",\"Global\",{\"id\":\"t\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":25,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operator page: requests and 5xx rate %\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
@@ -15023,167 +13048,63 @@
               {
                 "Ref": "SsmParameterValuesupplycheckoutprodwebopsdistributionidC96584B6F00A464EAD1953AFF4B05118Parameter"
               },
-              "\",\"Region\",\"Global\",{\"label\":\"Operator page requests (CloudFront)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":8,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operator page: 5xx rate % (at least 5 requests)\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[{\"label\":\"Operator page 5xx rate % (CloudFront)\",\"expression\":\"IF(r >= 5, FILL(e, 0), 0)\"}],[\"AWS/CloudFront\",\"5xxErrorRate\",\"DistributionId\",\"",
+              "\",\"Region\",\"Global\",{\"label\":\"Operator page requests (CloudFront)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/CloudFront\",\"5xxErrorRate\",\"DistributionId\",\"",
               {
                 "Ref": "SsmParameterValuesupplycheckoutprodwebopsdistributionidC96584B6F00A464EAD1953AFF4B05118Parameter"
               },
-              "\",\"Region\",\"Global\",{\"id\":\"e\",\"visible\":false,\"region\":\"us-east-1\"}],[\"AWS/CloudFront\",\"Requests\",\"DistributionId\",\"",
-              {
-                "Ref": "SsmParameterValuesupplycheckoutprodwebopsdistributionidC96584B6F00A464EAD1953AFF4B05118Parameter"
-              },
-              "\",\"Region\",\"Global\",{\"id\":\"r\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":16,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operator page: router errors and throttles\",\"region\":\"",
+              "\",\"Region\",\"Global\",{\"label\":\"Operator page 5xx rate % (CloudFront)\",\"region\":\"us-east-1\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J4: checkouts and returns\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[{\"label\":\"Operator page router errors and throttles\",\"expression\":\"FILL(x, 0) + FILL(v, 0) + FILL(t, 0)\"}],[\"AWS/CloudFront\",\"FunctionExecutionErrors\",\"FunctionName\",\"",
-              {
-                "Ref": "SsmParameterValuesupplycheckoutprodwebopsrouterfunctionnameC96584B6F00A464EAD1953AFF4B05118Parameter"
-              },
-              "\",\"Region\",\"Global\",{\"id\":\"x\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/CloudFront\",\"FunctionValidationErrors\",\"FunctionName\",\"",
-              {
-                "Ref": "SsmParameterValuesupplycheckoutprodwebopsrouterfunctionnameC96584B6F00A464EAD1953AFF4B05118Parameter"
-              },
-              "\",\"Region\",\"Global\",{\"id\":\"v\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/CloudFront\",\"FunctionThrottles\",\"FunctionName\",\"",
-              {
-                "Ref": "SsmParameterValuesupplycheckoutprodwebopsrouterfunctionnameC96584B6F00A464EAD1953AFF4B05118Parameter"
-              },
-              "\",\"Region\",\"Global\",{\"id\":\"t\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J4: checkouts and returns\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"Checkouts\",\"Region\",\"us-east-1\",{\"label\":\"Checkouts (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Returns\",\"Region\",\"us-east-1\",{\"label\":\"Returns (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Checkouts\",\"Region\",\"us-west-2\",{\"label\":\"Checkouts (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Returns\",\"Region\",\"us-west-2\",{\"label\":\"Returns (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J4: writes and conflicts\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"Checkouts\",\"Region\",\"us-east-1\",{\"label\":\"Checkouts (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Returns\",\"Region\",\"us-east-1\",{\"label\":\"Returns (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Checkouts\",\"Region\",\"us-west-2\",{\"label\":\"Checkouts (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Returns\",\"Region\",\"us-west-2\",{\"label\":\"Returns (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J4: writes and conflicts\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"Writes\",\"Region\",\"us-east-1\",{\"label\":\"Writes (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ConditionalWriteConflicts\",\"Region\",\"us-east-1\",{\"label\":\"ConditionalWriteConflicts (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Writes\",\"Region\",\"us-west-2\",{\"label\":\"Writes (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ConditionalWriteConflicts\",\"Region\",\"us-west-2\",{\"label\":\"ConditionalWriteConflicts (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J4: live updates, failed and deferred\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"Writes\",\"Region\",\"us-east-1\",{\"label\":\"Writes (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ConditionalWriteConflicts\",\"Region\",\"us-east-1\",{\"label\":\"ConditionalWriteConflicts (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Writes\",\"Region\",\"us-west-2\",{\"label\":\"Writes (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ConditionalWriteConflicts\",\"Region\",\"us-west-2\",{\"label\":\"ConditionalWriteConflicts (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt reads and lines\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdateFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdatesDeferred (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdateFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdatesDeferred (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J1: sign-ups; J3: invites sent, accepted and failed\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptReads\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptReads (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptReadFailures\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptReadFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLines\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptLines (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptReads\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptReads (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptReadFailures\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptReadFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLines\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptLines (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt tokens\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"SignUps\",\"Region\",\"us-east-1\",{\"label\":\"SignUps (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesSent\",\"Region\",\"us-east-1\",{\"label\":\"InvitesSent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesAccepted\",\"Region\",\"us-east-1\",{\"label\":\"InvitesAccepted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesFailed\",\"Region\",\"us-east-1\",{\"label\":\"InvitesFailed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SignUps\",\"Region\",\"us-west-2\",{\"label\":\"SignUps (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesSent\",\"Region\",\"us-west-2\",{\"label\":\"InvitesSent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesAccepted\",\"Region\",\"us-west-2\",{\"label\":\"InvitesAccepted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesFailed\",\"Region\",\"us-west-2\",{\"label\":\"InvitesFailed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt reads, failures and lines\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptTokens\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptTokens (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTokens\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptTokens (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt limits\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptReads\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptReads (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptReadFailures\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptReadFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLines\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptLines (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptReads\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptReads (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptReadFailures\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptReadFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLines\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptLines (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt tokens\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptRateLimited\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptRateLimited (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLimitReached\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptLimitReached (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTrialsNearLimit\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptTrialsNearLimit (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptPaidTeamsNearLimit\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptPaidTeamsNearLimit (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTrialCapReached\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptTrialCapReached (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptRateLimited\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptRateLimited (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLimitReached\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptLimitReached (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTrialsNearLimit\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptTrialsNearLimit (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptPaidTeamsNearLimit\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptPaidTeamsNearLimit (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTrialCapReached\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptTrialCapReached (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt model call p95 (ms)\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptTokens\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptTokens (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTokens\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptTokens (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt model call p95 (ms)\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptReadLatency\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptReadLatency (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"p95\"}],[\"SupplyCheckout\",\"ReceiptReadLatency\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptReadLatency (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"p95\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt model spend per hour (USD, estimated)\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptReadLatency\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptReadLatency (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"p95\"}],[\"SupplyCheckout\",\"ReceiptReadLatency\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptReadLatency (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"p95\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt limits (rate, allowance, trials near it)\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[{\"label\":\"Receipt model spend, USD (us-east-1)\",\"expression\":\"(FILL(i_us_east_1, 0) * 1 + FILL(o_us_east_1, 0) * 5 + FILL(cr_us_east_1, 0) * 0.1 + FILL(cw_us_east_1, 0) * 1.25) / 1000000\",\"period\":3600}],[\"AWS/Bedrock\",\"InputTokenCount\",\"ModelId\",\"us.anthropic.claude-haiku-4-5-20251001-v1:0\",{\"id\":\"i_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"period\":3600,\"stat\":\"Sum\"}],[\"AWS/Bedrock\",\"OutputTokenCount\",\"ModelId\",\"us.anthropic.claude-haiku-4-5-20251001-v1:0\",{\"id\":\"o_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"period\":3600,\"stat\":\"Sum\"}],[\"AWS/Bedrock\",\"CacheReadInputTokenCount\",\"ModelId\",\"us.anthropic.claude-haiku-4-5-20251001-v1:0\",{\"id\":\"cr_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"period\":3600,\"stat\":\"Sum\"}],[\"AWS/Bedrock\",\"CacheWriteInputTokenCount\",\"ModelId\",\"us.anthropic.claude-haiku-4-5-20251001-v1:0\",{\"id\":\"cw_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"period\":3600,\"stat\":\"Sum\"}],[{\"label\":\"Receipt model spend, USD (us-west-2)\",\"expression\":\"(FILL(i_us_west_2, 0) * 1 + FILL(o_us_west_2, 0) * 5 + FILL(cr_us_west_2, 0) * 0.1 + FILL(cw_us_west_2, 0) * 1.25) / 1000000\",\"period\":3600}],[\"AWS/Bedrock\",\"InputTokenCount\",\"ModelId\",\"us.anthropic.claude-haiku-4-5-20251001-v1:0\",{\"id\":\"i_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"period\":3600,\"stat\":\"Sum\"}],[\"AWS/Bedrock\",\"OutputTokenCount\",\"ModelId\",\"us.anthropic.claude-haiku-4-5-20251001-v1:0\",{\"id\":\"o_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"period\":3600,\"stat\":\"Sum\"}],[\"AWS/Bedrock\",\"CacheReadInputTokenCount\",\"ModelId\",\"us.anthropic.claude-haiku-4-5-20251001-v1:0\",{\"id\":\"cr_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"period\":3600,\"stat\":\"Sum\"}],[\"AWS/Bedrock\",\"CacheWriteInputTokenCount\",\"ModelId\",\"us.anthropic.claude-haiku-4-5-20251001-v1:0\",{\"id\":\"cw_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"period\":3600,\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J1: sign-ups\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptRateLimited\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptRateLimited (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLimitReached\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptLimitReached (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTrialsNearLimit\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptTrialsNearLimit (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptRateLimited\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptRateLimited (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLimitReached\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptLimitReached (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTrialsNearLimit\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptTrialsNearLimit (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: billing errors\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"SignUps\",\"Region\",\"us-east-1\",{\"label\":\"SignUps (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SignUps\",\"Region\",\"us-west-2\",{\"label\":\"SignUps (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: invites\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-east-1\",{\"label\":\"CheckoutSessionErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingPortalErrors\",\"Region\",\"us-east-1\",{\"label\":\"BillingPortalErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvoiceListErrors\",\"Region\",\"us-east-1\",{\"label\":\"InvoiceListErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-east-1\",{\"label\":\"WebhookSignatureFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-west-2\",{\"label\":\"CheckoutSessionErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingPortalErrors\",\"Region\",\"us-west-2\",{\"label\":\"BillingPortalErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvoiceListErrors\",\"Region\",\"us-west-2\",{\"label\":\"InvoiceListErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-west-2\",{\"label\":\"WebhookSignatureFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8: billing events and owner emails, and not\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"InvitesSent\",\"Region\",\"us-east-1\",{\"label\":\"InvitesSent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesAccepted\",\"Region\",\"us-east-1\",{\"label\":\"InvitesAccepted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesFailed\",\"Region\",\"us-east-1\",{\"label\":\"InvitesFailed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesSent\",\"Region\",\"us-west-2\",{\"label\":\"InvitesSent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesAccepted\",\"Region\",\"us-west-2\",{\"label\":\"InvitesAccepted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesFailed\",\"Region\",\"us-west-2\",{\"label\":\"InvitesFailed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: billing errors\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"BillingEventsApplied\",\"Region\",\"us-east-1\",{\"label\":\"BillingEventsApplied (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNotices\",\"Region\",\"us-east-1\",{\"label\":\"BillingNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"BillingNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingEventsApplied\",\"Region\",\"us-west-2\",{\"label\":\"BillingEventsApplied (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNotices\",\"Region\",\"us-west-2\",{\"label\":\"BillingNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"BillingNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email bounces and complaints\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-east-1\",{\"label\":\"CheckoutSessionErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingPortalErrors\",\"Region\",\"us-east-1\",{\"label\":\"BillingPortalErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvoiceListErrors\",\"Region\",\"us-east-1\",{\"label\":\"InvoiceListErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-east-1\",{\"label\":\"WebhookSignatureFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-west-2\",{\"label\":\"CheckoutSessionErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingPortalErrors\",\"Region\",\"us-west-2\",{\"label\":\"BillingPortalErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvoiceListErrors\",\"Region\",\"us-west-2\",{\"label\":\"InvoiceListErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-west-2\",{\"label\":\"WebhookSignatureFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8: billing events and owner emails\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-east-1\",{\"label\":\"EmailBounces (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-east-1\",{\"label\":\"EmailComplaints (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-west-2\",{\"label\":\"EmailBounces (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-west-2\",{\"label\":\"EmailComplaints (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J11: closed teams overdue for deletion; J7: set aside, oldest Stripe customer deletion queued (hours)\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"BillingEventsApplied\",\"Region\",\"us-east-1\",{\"label\":\"BillingEventsApplied (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNotices\",\"Region\",\"us-east-1\",{\"label\":\"BillingNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"BillingNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingEventsApplied\",\"Region\",\"us-west-2\",{\"label\":\"BillingEventsApplied (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNotices\",\"Region\",\"us-west-2\",{\"label\":\"BillingNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"BillingNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":67,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J4: live updates, failed and deferred\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamsOverdue (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsSetAside\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamsSetAside (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StripeCustomerDeletionOldestHours\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomerDeletionOldestHours (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamsOverdue (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsSetAside\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamsSetAside (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StripeCustomerDeletionOldestHours\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomerDeletionOldestHours (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit watch heartbeats\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdateFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdatesDeferred (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdateFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdatesDeferred (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":73,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: seat updates, seat and entitlement drift, sync failures\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"SeatQuantityUpdates\",\"Region\",\"us-east-1\",{\"label\":\"SeatQuantityUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityDrift\",\"Region\",\"us-east-1\",{\"label\":\"SeatQuantityDrift (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EntitlementDrift\",\"Region\",\"us-east-1\",{\"label\":\"EntitlementDrift (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatSyncQueueFailures\",\"Region\",\"us-east-1\",{\"label\":\"SeatSyncQueueFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityUpdates\",\"Region\",\"us-west-2\",{\"label\":\"SeatQuantityUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityDrift\",\"Region\",\"us-west-2\",{\"label\":\"SeatQuantityDrift (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EntitlementDrift\",\"Region\",\"us-west-2\",{\"label\":\"EntitlementDrift (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatSyncQueueFailures\",\"Region\",\"us-west-2\",{\"label\":\"SeatSyncQueueFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":73,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: teams the nightly seat reconciliation checked\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"SeatReconcileTeams\",\"Region\",\"us-east-1\",{\"label\":\"SeatReconcileTeams (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"SeatReconcileTeams\",\"Region\",\"us-west-2\",{\"label\":\"SeatReconcileTeams (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":79,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email bounces and complaints\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-east-1\",{\"label\":\"EmailBounces (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-east-1\",{\"label\":\"EmailComplaints (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-west-2\",{\"label\":\"EmailBounces (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-west-2\",{\"label\":\"EmailComplaints (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":79,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email verification not saved\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailUnverifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailUnverifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailUnverifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailUnverifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":79,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J0: sign-outs not revoked\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"SignOutRevokeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SignOutRevokeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SignOutRevokeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SignOutRevokeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":79,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J2: stuck imports; J3: SES quota used %\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-east-1\",{\"label\":\"StuckImports (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-east-1\",{\"label\":\"EmailQuotaUsedPercent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-west-2\",{\"label\":\"StuckImports (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-west-2\",{\"label\":\"EmailQuotaUsedPercent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":85,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: teams closed, accounts deleted, teams purged\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"TeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-east-1\",{\"label\":\"AccountsDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-east-1\",{\"label\":\"TeamsPurged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"TeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-west-2\",{\"label\":\"AccountsDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-west-2\",{\"label\":\"TeamsPurged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":85,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: owners emailed that their team closed, and not\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamClosedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamClosedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamClosedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamClosedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamClosedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":85,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: teams reopened, owners emailed about it, and not\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-east-1\",{\"label\":\"TeamsReopened (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-west-2\",{\"label\":\"TeamsReopened (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":85,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J11: closed teams overdue for deletion; J7: set aside, Stripe customer deletions queued (oldest, hours)\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamsOverdue (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsSetAside\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamsSetAside (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StripeCustomerDeletionsPending\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomerDeletionsPending (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StripeCustomerDeletionOldestHours\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomerDeletionOldestHours (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamsOverdue (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsSetAside\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamsSetAside (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StripeCustomerDeletionsPending\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomerDeletionsPending (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StripeCustomerDeletionOldestHours\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomerDeletionOldestHours (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":91,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email codes not sent or checked (5xx)\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeSendFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeSendFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit items changed or deleted (not by TTL)\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit watch heartbeats\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditWatchHeartbeat (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditWatchHeartbeat (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Backups: deletion records rewritten or deleted\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-east-1\",{\"label\":\"DeletionRecordRewrites (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-west-2\",{\"label\":\"DeletionRecordRewrites (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: closed teams' subscriptions ended (reopened teams' ended, resumed, resyncs late, left to cancel; charged after closing, not found, set aside), Stripe customers deleted (already deleted, queued); held teams purged unresolved\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ReopenedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsResumed\",\"Region\",\"us-east-1\",{\"label\":\"ReopenedTeamSubscriptionsResumed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenResyncsLate\",\"Region\",\"us-east-1\",{\"label\":\"ReopenResyncsLate (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsUndecided\",\"Region\",\"us-east-1\",{\"label\":\"ReopenedTeamSubscriptionsUndecided (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamRenewalsCharged\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamRenewalsCharged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsNotFound\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsNotFound (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsSetAside\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsSetAside (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomersDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersAlreadyDeleted\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomersAlreadyDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomerDeletionsQueued\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomerDeletionsQueued (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"HeldTeamsPurged\",\"Region\",\"us-east-1\",{\"label\":\"HeldTeamsPurged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ReopenedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsResumed\",\"Region\",\"us-west-2\",{\"label\":\"ReopenedTeamSubscriptionsResumed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenResyncsLate\",\"Region\",\"us-west-2\",{\"label\":\"ReopenResyncsLate (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsUndecided\",\"Region\",\"us-west-2\",{\"label\":\"ReopenedTeamSubscriptionsUndecided (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamRenewalsCharged\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamRenewalsCharged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsNotFound\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsNotFound (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsSetAside\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsSetAside (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomersDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersAlreadyDeleted\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomersAlreadyDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomerDeletionsQueued\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomerDeletionsQueued (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"HeldTeamsPurged\",\"Region\",\"us-west-2\",{\"label\":\"HeldTeamsPurged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":103,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: group changes, resets and size\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorGroupChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupBaselineReset\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupBaselineReset (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupMembers\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupMembers (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"OperatorGroupChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupBaselineReset\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupBaselineReset (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupMembers\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupMembers (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":109,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J0: security notices emailed, and not\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":109,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J1: welcome emails sent, failed and refused\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"WelcomeEmails\",\"Region\",\"us-east-1\",{\"label\":\"WelcomeEmails (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailFailures\",\"Region\",\"us-east-1\",{\"label\":\"WelcomeEmailFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailsRefused\",\"Region\",\"us-east-1\",{\"label\":\"WelcomeEmailsRefused (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmails\",\"Region\",\"us-west-2\",{\"label\":\"WelcomeEmails (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailFailures\",\"Region\",\"us-west-2\",{\"label\":\"WelcomeEmailFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailsRefused\",\"Region\",\"us-west-2\",{\"label\":\"WelcomeEmailsRefused (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":109,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: lapsing teams' owners emailed (and not), lapsed teams closed for deletion (and held at the cap or by a Checkout), failures\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-east-1\",{\"label\":\"LapseNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"LapsedTeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-east-1\",{\"label\":\"LapseClosuresHeld (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseCheckoutHeld\",\"Region\",\"us-east-1\",{\"label\":\"LapseCheckoutHeld (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseCheckoutOverdue\",\"Region\",\"us-east-1\",{\"label\":\"LapseCheckoutOverdue (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-west-2\",{\"label\":\"LapseNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"LapsedTeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-west-2\",{\"label\":\"LapseClosuresHeld (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseCheckoutHeld\",\"Region\",\"us-west-2\",{\"label\":\"LapseCheckoutHeld (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseCheckoutOverdue\",\"Region\",\"us-west-2\",{\"label\":\"LapseCheckoutOverdue (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":109,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: teams the lapsed-team job checked, read-only for billing, and left for lack of time\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsChecked (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsReadOnly (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsUnstarted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsChecked (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsReadOnly (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsUnstarted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":115,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J0: password reset provider hints, requests limited, and hints capped\",\"region\":\"",
-              {
-                "Ref": "AWS::Region"
-              },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"PasswordResetProviderHints\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetProviderHints (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetsLimited\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetsLimited (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetHintsCapped\",\"Region\",\"us-east-1\",{\"label\":\"PasswordResetHintsCapped (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetProviderHints\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetProviderHints (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetsLimited\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetsLimited (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"PasswordResetHintsCapped\",\"Region\",\"us-west-2\",{\"label\":\"PasswordResetHintsCapped (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditWatchHeartbeat (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditWatchHeartbeat (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },
@@ -15237,10 +13158,6 @@
     "SsmParameterValuesupplycheckoutprodwebopsdistributionidC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",
       "Default": "/supply-checkout/prod/web/ops-distribution-id"
-    },
-    "SsmParameterValuesupplycheckoutprodwebopsrouterfunctionnameC96584B6F00A464EAD1953AFF4B05118Parameter": {
-      "Type": "AWS::SSM::Parameter::Value<String>",
-      "Default": "/supply-checkout/prod/web/ops-router-function-name"
     },
     "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",

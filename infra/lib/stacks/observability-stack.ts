@@ -6,7 +6,7 @@ import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { tableName } from "../../../backend/src/data/schema.js";
 import { operatorGroupSnapshotParameter, opsResourceNames } from "../../../backend/src/ops/names.js";
-import { backupAlertRuleArns } from "../backup-alerts.js";
+import { backupAlertRuleArns, backupJobAlertRuleArn } from "../backup-alerts.js";
 import { type DeploymentConfig, GLOBAL_SERVICES_REGION, stripeModeOf } from "../config.js";
 import { AlarmTopics, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../observability/alarm-topics.js";
 import { apiOutputParameters } from "./api-stack.js";
@@ -468,7 +468,6 @@ export class ObservabilityStack extends SupplyCheckoutStack {
           distributionId: StringParameter.valueForStringParameter(this, webOutputParameters(config.envName).distributionId),
           routerFunctionName: StringParameter.valueForStringParameter(this, webOutputParameters(config.envName).routerFunctionName),
           opsDistributionId: StringParameter.valueForStringParameter(this, webOutputParameters(config.envName).opsDistributionId),
-          opsRouterFunctionName: StringParameter.valueForStringParameter(this, webOutputParameters(config.envName).opsRouterFunctionName),
         }
       : undefined;
     if (webIds) this.web = new WebAlarms(this, "WebAlarms", { envName: config.envName, ...webIds, topics: this.topics });
@@ -529,12 +528,23 @@ export class ObservabilityStack extends SupplyCheckoutStack {
           conditions: { ArnEquals: { "aws:SourceArn": backupAlertRuleArns(config.envName, "workload") } },
         }),
       );
+      // And tells P2 when a backup or copy job fails ("Backup failed", supply-checkout-7pe.1): only that rule, by name
+      this.topics.topics.P2.addToResourcePolicy(
+        new PolicyStatement({
+          sid: "AllowBackupJobAlertsToPublish",
+          principals: [new ServicePrincipal("events.amazonaws.com")],
+          actions: ["sns:Publish"],
+          resources: [this.topics.topics.P2.topicArn],
+          conditions: { ArnEquals: { "aws:SourceArn": backupJobAlertRuleArn(config.envName) } },
+        }),
+      );
       this.dashboard = new OpsDashboard(this, "Dashboard", {
         envName: config.envName,
         regions: config.regions,
         tableName: table,
+        api: { region, apiId },
         web: webIds,
-        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.operatorGroup.changed, this.operatorGroup.silent, this.deletionRecords.rewritten, this.deletionRecords.failing, this.photoDownloads, ...(this.supportSmtp?.sends ? [this.supportSmtp.sends] : []), ...(this.supportSmtp?.dailySends ? [this.supportSmtp.dailySends] : [])],
+        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.operatorAudit.changed, this.operatorAudit.dropped, this.operatorAudit.silent, this.operatorGroup.changed, this.operatorGroup.silent, this.deletionRecords.rewritten, this.deletionRecords.failing, this.photoDownloads, ...(this.supportSmtp?.sends ? [this.supportSmtp.sends] : []), ...(this.supportSmtp?.dailySends ? [this.supportSmtp.dailySends] : [])],
       });
     }
   }
@@ -788,7 +798,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         ],
       },
     });
-    const alarmNames = [watch.changed.alarmName, watch.failing.alarmName, watch.dropped.alarmName, watch.silent.alarmName];
+    const alarmNames = [watch.changed.alarmName, watch.dropped.alarmName, watch.silent.alarmName];
     const alarmChanges = operatorRule("OperatorAlarmChanges", "An operator audit alarm was disabled or deleted, or rewritten outside a deploy (supply-checkout-6uw.11)", {
       source: ["aws.monitoring"],
       ...cloudTrail,
