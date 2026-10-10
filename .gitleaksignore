@@ -6,3 +6,6 @@ b3c6ff6f665407e3919a017e13b409a66d490ebb:backend/test/billing-worker.test.ts:gen
 
 # A made-up test key for scripts/assembly-seal.test.mjs (it seals and opens a fake assembly), not a credential; the next commit spells it so gitleaks doesn't match
 abc5933a19f73b804d430ff7c53cfd42df2ad81f:scripts/assembly-seal.test.mjs:generic-api-key:15
+
+# A made-up AWS access key in a test fixture: the feedback CLI must refuse bead text that contains one (supply-checkout-bmsh.3)
+a743348b15ed20ed99986a7a36bb36b8adf1189a:backend/test/feedback-cli.test.ts:aws-access-token:36
