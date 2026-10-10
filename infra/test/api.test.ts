@@ -662,7 +662,8 @@ describe("receipts function and receipt-access role (ADR 0008)", () => {
     });
     // The only places this role may set a TTL; never in the team's partition
     expect(RECEIPT_RATE_ATTRIBUTES).toEqual(["PK", "SK", "count", "expiresAt"]);
-    expect(RECEIPT_TRIAL_CAP_ATTRIBUTES).toEqual(["PK", "SK", "count", "expiresAt"]);
+    // And, on the day's trial count, when the cap was first reached (one "Needs attention" a day, supply-checkout-7pe.1)
+    expect(RECEIPT_TRIAL_CAP_ATTRIBUTES).toEqual(["PK", "SK", "count", "capReachedAt", "expiresAt"]);
     expect(RECEIPT_USAGE_ATTRIBUTES).not.toContain("expiresAt");
     for (const s of [read, count, rate, trials]) {
       const json = JSON.stringify(s?.Resource);

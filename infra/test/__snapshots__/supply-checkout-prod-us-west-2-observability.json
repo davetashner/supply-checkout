@@ -920,7 +920,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Needs attention (J0, J1, J3, J5, J7, J8, J10, J11, us-west-2). Any NeedsAttention in 15 minutes, and until 2 hours pass without one: one of the rare events in NEEDS_ATTENTION_METRICS (backend/src/observability/names.ts) happened, each sent beside its own metric. They should almost never happen and each needs a person to look (a notice not sent, billing drift, a closed team charged, a deletion record rewritten, and the rest). See which in the dashboard's Needs attention row or the metrics console (SupplyCheckout, by Region), or in Logs Insights: filter ispresent(NeedsAttention). Each one's runbook: docs/observability.md, When Needs attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Needs attention (J0, J1, J3, J5, J7, J8, J10, J11, us-west-2). Any NeedsAttention in 15 minutes, and until 2 hours pass without one: one of the rare events in NEEDS_ATTENTION_METRICS (backend/src/observability/names.ts) happened, each sent beside its own metric, or the trial receipt cap was first reached that UTC day. They should almost never happen and each needs a person to look (a notice not sent, billing drift, a closed team charged, and the rest). An alarm already in ALARM doesn't email again: while one keeps it there, another source shows only on the per-metric graphs. See which in the dashboard's Needs attention row or the metrics console (SupplyCheckout, by Region), or in Logs Insights: filter ispresent(NeedsAttention). Each one's runbook: docs/observability.md, When Needs attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-needs-attention",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
@@ -938,6 +938,71 @@
                   }
                 ],
                 "MetricName": "NeedsAttention",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmssecurityattentionE81422B2": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Security attention (J0, J11, us-west-2). Any SecurityAttention in 15 minutes, and until 2 hours pass without one: one of the security events in SECURITY_ATTENTION_METRICS (backend/src/observability/names.ts) happened: a sign-out whose refresh token Cognito didn't revoke (SignOutRevokeFailures), an account not told of a security change (SecurityNoticeFailures), or a deletion record rewritten (DeletionRecordRewrites). Apart from Needs attention, so an ordinary event that keeps it in alarm can't hide these: an alarm already in ALARM doesn't email again, so look at each metric, not only the first email. Runbook: docs/observability.md, When Security attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-security-attention",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 8,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "SecurityAttention (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "SecurityAttention",
                 "Namespace": "SupplyCheckout"
               },
               "Period": 900,

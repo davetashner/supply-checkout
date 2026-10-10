@@ -7,7 +7,7 @@ import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import { AwsSolutionsChecks } from "cdk-nag";
 import type { Construct } from "constructs";
 import { describe, expect, it } from "vitest";
-import { BusinessMetric, METRICS_NAMESPACE, NEEDS_ATTENTION_METRICS, TEST_SKIPPED_METRICS } from "../../backend/src/observability/names.js";
+import { BusinessMetric, METRICS_NAMESPACE, NEEDS_ATTENTION_METRICS, NEEDS_ATTENTION_ONCE_A_DAY, SECURITY_ATTENTION_METRICS, TEST_SKIPPED_METRICS } from "../../backend/src/observability/names.js";
 import { APPROVED_REGIONS, configFromContext, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
@@ -134,6 +134,7 @@ const ALARM_IDS = [
   "database-errors",
   "database-throttled",
   "needs-attention",
+  "security-attention",
   "security-notices-dropped",
   "sign-in-trigger-failing",
   "sign-up-trigger-failing",
@@ -683,9 +684,22 @@ describe("journey alarms (docs/journeys.md)", () => {
       });
     }
     expect(NEEDS_ATTENTION_PERIOD.toSeconds() * NEEDS_ATTENTION_PERIODS).toBe(2 * 3600);
-    // No alarm of its own on a metric that adds to it
+    // Security events have one of their own, the same shape, so neither can hide the other while it's in ALARM
+    for (const r of [EAST, WEST]) {
+      observability(r).hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: "supply-checkout-prod-p2-security-attention",
+        Threshold: 0,
+        EvaluationPeriods: NEEDS_ATTENTION_PERIODS,
+        DatapointsToAlarm: 1,
+        TreatMissingData: "notBreaching",
+        AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+        AlarmDescription: Match.stringLikeRegexp("doesn't email again.*When Security attention fires"),
+        Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: { Namespace: "SupplyCheckout", MetricName: BusinessMetric.SecurityAttention, Dimensions: [{ Name: "Region", Value: r }] }, Stat: "Sum", Period: NEEDS_ATTENTION_PERIOD.toSeconds() }) })],
+      });
+    }
+    // No alarm of its own on a metric that adds to either
     const read = new Set(Object.values(observability().findResources("AWS::CloudWatch::Alarm")).flatMap((a) => (a.Properties.Metrics ?? []).map((m: { MetricStat?: { Metric: { MetricName: string } } }) => m.MetricStat?.Metric.MetricName)));
-    for (const metric of NEEDS_ATTENTION_METRICS) expect(read.has(metric), metric).toBe(false);
+    for (const metric of [...NEEDS_ATTENTION_METRICS, ...NEEDS_ATTENTION_ONCE_A_DAY, ...SECURITY_ATTENTION_METRICS]) expect(read.has(metric), metric).toBe(false);
   });
 
   it("alarms on a rate only once there is enough traffic", () => {
@@ -972,8 +986,6 @@ describe("alarms added with the email code routes, the live update budget, team 
   it("alarms on the rare events through Needs attention, not an alarm each (supply-checkout-7pe.1)", () => {
     // The events that had alarms of their own, each any in a period but sign-outs not revoked and email code failures (3 in 15 minutes)
     expect([...NEEDS_ATTENTION_METRICS].sort()).toEqual([
-      BusinessMetric.SignOutRevokeFailures,
-      BusinessMetric.SecurityNoticeFailures,
       BusinessMetric.WelcomeEmailFailures,
       BusinessMetric.WelcomeEmailsRefused,
       BusinessMetric.PasswordResetHintsCapped,
@@ -981,7 +993,6 @@ describe("alarms added with the email code routes, the live update budget, team 
       BusinessMetric.EmailUnverifyFailures,
       BusinessMetric.EmailCodeSendFailures,
       BusinessMetric.EmailCodeVerifyFailures,
-      BusinessMetric.ReceiptTrialCapReached,
       BusinessMetric.SeatQuantityDrift,
       BusinessMetric.EntitlementDrift,
       BusinessMetric.TeamClosedNoticeFailures,
@@ -996,8 +1007,10 @@ describe("alarms added with the email code routes, the live update budget, team 
       BusinessMetric.LapseFailures,
       BusinessMetric.LapseClosuresHeld,
       BusinessMetric.LapseCheckoutOverdue,
-      BusinessMetric.DeletionRecordRewrites,
     ].sort());
+    // The trial cap's, once a day, from the receipts function itself; the security events through Security attention
+    expect(NEEDS_ATTENTION_ONCE_A_DAY).toEqual([BusinessMetric.ReceiptTrialCapReached]);
+    expect([...SECURITY_ATTENTION_METRICS].sort()).toEqual([BusinessMetric.DeletionRecordRewrites, BusinessMetric.SecurityNoticeFailures, BusinessMetric.SignOutRevokeFailures]);
     const names = Object.values(observability().findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
     for (const gone of ["sign-out-not-revoking", "security-notices-failing", "welcome-emails-failing", "welcome-emails-refused", "password-reset-hints-capped", "email-verification-not-saved", "email-codes-failing", "receipt-trials-paused", "seat-counts-drifting", "entitlements-drifting", "team-closed-notices-failing", "team-reopened-notices-failing", "reopened-team-subscription-ended", "reopen-resync-late", "reopened-team-subscription-undecided", "closed-team-charged", "closed-team-subscription-not-found", "stripe-customer-already-deleted", "held-team-purged", "lapse-job-failing", "lapse-closures-held", "lapse-checkout-held", "deletion-record-rewritten"]) {
       expect(names.filter((n) => n.endsWith(`-${gone}`)), gone).toEqual([]);
@@ -1593,14 +1606,17 @@ describe("dashboard", () => {
 
   it("shows traffic, errors, latency, Needs attention and the runbooks' business metrics, split by region", () => {
     const text = body(observability());
-    for (const title of ["Needs attention: rare events, any kind", "API: requests, 4xx and 5xx", "Lambda: invocations, errors and throttles", "API: p95 latency (ms)", "Operators: audit watch heartbeats"]) {
+    for (const title of ["Needs attention and Security attention: rare events", "API: requests, 4xx and 5xx", "Lambda: invocations, errors and throttles", "API: p95 latency (ms)", "Operators: audit watch heartbeats"]) {
       expect(text).toContain(title);
     }
     // Which events add to Needs attention, beside its graph
-    for (const name of NEEDS_ATTENTION_METRICS) expect(text).toContain(`\`${name}\``);
+    for (const name of [...NEEDS_ATTENTION_METRICS, ...NEEDS_ATTENTION_ONCE_A_DAY, ...SECURITY_ATTENTION_METRICS]) expect(text).toContain(`\`${name}\``);
     expect(text).toContain("When Needs attention fires");
+    expect(text).toContain("When Security attention fires");
+    expect(text).toContain("doesn't email again");
     const shown = [
       BusinessMetric.NeedsAttention,
+      BusinessMetric.SecurityAttention,
       BusinessMetric.Checkouts,
       BusinessMetric.Returns,
       BusinessMetric.Writes,
@@ -1661,12 +1677,17 @@ describe("dashboard", () => {
  *   1 for an alarm on one metric, else each MetricStat in its Metrics (metric
  *   math expressions themselves are free). An anomaly detection band adds 2,
  *   and a high-resolution alarm (a period under a minute) costs 3 times as much.
+ *   The limit is 76 metrics (about $6.60 a month, half of before) plus 1 for
+ *   "Security attention": the security events have an alarm apart from
+ *   "Needs attention" because an alarm already in ALARM doesn't email again,
+ *   so an ordinary event that keeps Needs attention in ALARM would otherwise
+ *   hide them (the security review of supply-checkout-7pe.1).
  * - A dashboard is free up to DASHBOARD_METRICS_LIMIT metrics (3 of them), and
  *   $3 a month over it: every metric a graph names, each time it's named, an
  *   expression's own metrics included. A SEARCH can match any number, so the
  *   deployed dashboard has none.
  */
-const ALARM_METRICS_LIMIT = 76;
+const ALARM_METRICS_LIMIT = 77;
 
 type Json = Record<string, unknown>;
 
@@ -2889,12 +2910,12 @@ describe("deletion records watch (supply-checkout-72d.16)", () => {
     });
   });
 
-  it("alarms P2 on any DeletionRecordRewrites through Needs attention, and P2 when the watch misses an event, on the dashboard", () => {
+  it("alarms P2 on any DeletionRecordRewrites through Security attention, and P2 when the watch misses an event, on the dashboard", () => {
     const t = observability();
     const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
-    // Its own alarm is gone (supply-checkout-7pe.1): the count adds to NeedsAttention
+    // Its own alarm is gone (supply-checkout-7pe.1): the count adds to SecurityAttention
     expect(alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletion-record-rewritten")).toBeUndefined();
-    expect(NEEDS_ATTENTION_METRICS.has(BusinessMetric.DeletionRecordRewrites)).toBe(true);
+    expect(SECURITY_ATTENTION_METRICS.has(BusinessMetric.DeletionRecordRewrites)).toBe(true);
     const failing = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletion-records-watch-failing");
     expect(failing).toMatchObject({ Threshold: 0, ComparisonOperator: "GreaterThanThreshold", TreatMissingData: "notBreaching" });
     // The events Lambda dropped after retries, and invocations EventBridge couldn't make; an error a retry gets past loses nothing

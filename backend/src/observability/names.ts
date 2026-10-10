@@ -208,6 +208,14 @@ export const BusinessMetric = {
    * on the same log line, and its own graph in the metrics console, say which.
    */
   NeedsAttention: "NeedsAttention",
+  /**
+   * The same for the security events in SECURITY_ATTENTION_METRICS, for the
+   * "Security attention" alarm (P2): apart from NeedsAttention, so an
+   * ordinary event that keeps happening can't hold one alarm in ALARM, which
+   * emails only when it changes state, and hide a security one behind it
+   * (supply-checkout-7pe.1).
+   */
+  SecurityAttention: "SecurityAttention",
 } as const;
 
 export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMetric];
@@ -270,9 +278,7 @@ export const TEST_SKIPPED_METRICS: ReadonlySet<BusinessMetricName> = new Set<Bus
  * attention fires".
  */
 export const NEEDS_ATTENTION_METRICS: ReadonlySet<BusinessMetricName> = new Set<BusinessMetricName>([
-  // J0, J1, J3: sign-in, sign-up and email
-  BusinessMetric.SignOutRevokeFailures,
-  BusinessMetric.SecurityNoticeFailures,
+  // J1, J0, J3: sign-up, sign-in and email
   BusinessMetric.WelcomeEmailFailures,
   BusinessMetric.WelcomeEmailsRefused,
   BusinessMetric.PasswordResetHintsCapped,
@@ -280,8 +286,6 @@ export const NEEDS_ATTENTION_METRICS: ReadonlySet<BusinessMetricName> = new Set<
   BusinessMetric.EmailUnverifyFailures,
   BusinessMetric.EmailCodeSendFailures,
   BusinessMetric.EmailCodeVerifyFailures,
-  // J5: receipts
-  BusinessMetric.ReceiptTrialCapReached,
   // J7, J8: billing
   BusinessMetric.SeatQuantityDrift,
   BusinessMetric.EntitlementDrift,
@@ -299,7 +303,27 @@ export const NEEDS_ATTENTION_METRICS: ReadonlySet<BusinessMetricName> = new Set<
   BusinessMetric.LapseFailures,
   BusinessMetric.LapseClosuresHeld,
   BusinessMetric.LapseCheckoutOverdue,
-  // Backups: the deletion records watch
+]);
+
+/**
+ * Not in NEEDS_ATTENTION_METRICS, because a trial user can drive it on every
+ * refused read: the receipts function sends NeedsAttention itself, once per
+ * UTC day, when the account-wide trial cap is first reached
+ * (TrialCapReachedError.firstToday), and ReceiptTrialCapReached on every
+ * refusal ("Receipt trials paused").
+ */
+export const NEEDS_ATTENTION_ONCE_A_DAY: readonly BusinessMetricName[] = [BusinessMetric.ReceiptTrialCapReached];
+
+/**
+ * Security events, which alarm together through SecurityAttention ("Security
+ * attention", P2), the same way NEEDS_ATTENTION_METRICS do through
+ * NeedsAttention, and apart from them (supply-checkout-7pe.1): a sign-out that
+ * left a session valid, an account not told of a security change, a deletion
+ * record rewritten.
+ */
+export const SECURITY_ATTENTION_METRICS: ReadonlySet<BusinessMetricName> = new Set<BusinessMetricName>([
+  BusinessMetric.SignOutRevokeFailures,
+  BusinessMetric.SecurityNoticeFailures,
   BusinessMetric.DeletionRecordRewrites,
 ]);
 

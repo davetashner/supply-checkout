@@ -1502,7 +1502,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Needs attention (J0, J1, J3, J5, J7, J8, J10, J11, us-east-1). Any NeedsAttention in 15 minutes, and until 2 hours pass without one: one of the rare events in NEEDS_ATTENTION_METRICS (backend/src/observability/names.ts) happened, each sent beside its own metric. They should almost never happen and each needs a person to look (a notice not sent, billing drift, a closed team charged, a deletion record rewritten, and the rest). See which in the dashboard's Needs attention row or the metrics console (SupplyCheckout, by Region), or in Logs Insights: filter ispresent(NeedsAttention). Each one's runbook: docs/observability.md, When Needs attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Needs attention (J0, J1, J3, J5, J7, J8, J10, J11, us-east-1). Any NeedsAttention in 15 minutes, and until 2 hours pass without one: one of the rare events in NEEDS_ATTENTION_METRICS (backend/src/observability/names.ts) happened, each sent beside its own metric, or the trial receipt cap was first reached that UTC day. They should almost never happen and each needs a person to look (a notice not sent, billing drift, a closed team charged, and the rest). An alarm already in ALARM doesn't email again: while one keeps it there, another source shows only on the per-metric graphs. See which in the dashboard's Needs attention row or the metrics console (SupplyCheckout, by Region), or in Logs Insights: filter ispresent(NeedsAttention). Each one's runbook: docs/observability.md, When Needs attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-needs-attention",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
@@ -1520,6 +1520,71 @@
                   }
                 ],
                 "MetricName": "NeedsAttention",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmssecurityattentionE81422B2": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Security attention (J0, J11, us-east-1). Any SecurityAttention in 15 minutes, and until 2 hours pass without one: one of the security events in SECURITY_ATTENTION_METRICS (backend/src/observability/names.ts) happened: a sign-out whose refresh token Cognito didn't revoke (SignOutRevokeFailures), an account not told of a security change (SecurityNoticeFailures), or a deletion record rewritten (DeletionRecordRewrites). Apart from Needs attention, so an ordinary event that keeps it in alarm can't hide these: an alarm already in ALARM doesn't email again, so look at each metric, not only the first email. Runbook: docs/observability.md, When Security attention fires. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-security-attention",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 8,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "SecurityAttention (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "SecurityAttention",
                 "Namespace": "SupplyCheckout"
               },
               "Period": 900,
@@ -12514,6 +12579,13 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmssecurityattentionE81422B2",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmssecuritynoticesdroppedDBC2F8B3",
                   "Arn"
                 ]
@@ -12833,11 +12905,11 @@
                   "Arn"
                 ]
               },
-              "\"]}},{\"type\":\"metric\",\"width\":12,\"height\":6,\"x\":0,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Needs attention: rare events, any kind\",\"region\":\"",
+              "\"]}},{\"type\":\"metric\",\"width\":12,\"height\":6,\"x\":0,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Needs attention and Security attention: rare events\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-east-1\",{\"label\":\"NeedsAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-west-2\",{\"label\":\"NeedsAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"text\",\"width\":12,\"height\":6,\"x\":12,\"y\":7,\"properties\":{\"markdown\":\"### Which event?\\n\\nEach adds to NeedsAttention and to its own metric: `SignOutRevokeFailures`, `SecurityNoticeFailures`, `WelcomeEmailFailures`, `WelcomeEmailsRefused`, `PasswordResetHintsCapped`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures`, `EmailCodeVerifyFailures`, `ReceiptTrialCapReached`, `SeatQuantityDrift`, `EntitlementDrift`, `TeamClosedNoticeFailures`, `TeamReopenedNoticeFailures`, `ReopenedTeamSubscriptionsEnded`, `ReopenResyncsLate`, `ReopenedTeamSubscriptionsUndecided`, `ClosedTeamRenewalsCharged`, `ClosedTeamSubscriptionsNotFound`, `StripeCustomersAlreadyDeleted`, `HeldTeamsPurged`, `LapseFailures`, `LapseClosuresHeld`, `LapseCheckoutOverdue`, `DeletionRecordRewrites`.\\n\\nFind it in the metrics console (SupplyCheckout, by Region), or in Logs Insights over the functions' log groups: `filter ispresent(NeedsAttention)`. What to do for each: docs/observability.md, *When Needs attention fires*.\"}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"API: requests, 4xx and 5xx\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-east-1\",{\"label\":\"NeedsAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-east-1\",{\"label\":\"SecurityAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-west-2\",{\"label\":\"NeedsAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-west-2\",{\"label\":\"SecurityAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"text\",\"width\":12,\"height\":6,\"x\":12,\"y\":7,\"properties\":{\"markdown\":\"### Which event?\\n\\nNeedsAttention: `WelcomeEmailFailures`, `WelcomeEmailsRefused`, `PasswordResetHintsCapped`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures`, `EmailCodeVerifyFailures`, `SeatQuantityDrift`, `EntitlementDrift`, `TeamClosedNoticeFailures`, `TeamReopenedNoticeFailures`, `ReopenedTeamSubscriptionsEnded`, `ReopenResyncsLate`, `ReopenedTeamSubscriptionsUndecided`, `ClosedTeamRenewalsCharged`, `ClosedTeamSubscriptionsNotFound`, `StripeCustomersAlreadyDeleted`, `HeldTeamsPurged`, `LapseFailures`, `LapseClosuresHeld`, `LapseCheckoutOverdue`, `ReceiptTrialCapReached` (the trial cap once a day).\\n\\nSecurityAttention: `SignOutRevokeFailures`, `SecurityNoticeFailures`, `DeletionRecordRewrites`.\\n\\nAn alarm in ALARM doesn't email again, so look at every metric, not just the first email's. Find it in the metrics console (SupplyCheckout, by Region), or in Logs Insights over the functions' log groups: `filter ispresent(NeedsAttention) or ispresent(SecurityAttention)`. What to do: docs/observability.md, *When Needs attention fires* and *When Security attention fires*.\"}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"API: requests, 4xx and 5xx\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

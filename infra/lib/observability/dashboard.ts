@@ -7,7 +7,7 @@ import {
   TextWidget,
 } from "aws-cdk-lib/aws-cloudwatch";
 import { Construct } from "constructs";
-import { BusinessMetric, type BusinessMetricName, NEEDS_ATTENTION_METRICS } from "../../../backend/src/observability/names.js";
+import { BusinessMetric, type BusinessMetricName, NEEDS_ATTENTION_METRICS, NEEDS_ATTENTION_ONCE_A_DAY, SECURITY_ATTENTION_METRICS } from "../../../backend/src/observability/names.js";
 import { apiGateway, apiLatencySearch, apiSearch, business, dynamoDbThrottles, FIVE_MINUTES, lambda } from "./metrics.js";
 import { cloudFront, opsErrorRate, routerFailures } from "./web-alarms.js";
 
@@ -97,12 +97,13 @@ export class OpsDashboard extends Construct {
 
     // Needs attention: the one metric every rare event adds to (backend/src/observability/names.ts)
     this.dashboard.addWidgets(
-      graph("Needs attention: rare events, any kind", each((r) => business(BusinessMetric.NeedsAttention, r)), WIDTH / 2),
+      graph("Needs attention and Security attention: rare events", each((r) => [business(BusinessMetric.NeedsAttention, r), business(BusinessMetric.SecurityAttention, r)]), WIDTH / 2),
       new TextWidget({
         markdown: [
           "### Which event?",
-          `Each adds to NeedsAttention and to its own metric: ${[...NEEDS_ATTENTION_METRICS].map((m) => `\`${m}\``).join(", ")}.`,
-          "Find it in the metrics console (SupplyCheckout, by Region), or in Logs Insights over the functions' log groups: `filter ispresent(NeedsAttention)`. What to do for each: docs/observability.md, *When Needs attention fires*.",
+          `NeedsAttention: ${[...NEEDS_ATTENTION_METRICS, ...NEEDS_ATTENTION_ONCE_A_DAY].map((m) => `\`${m}\``).join(", ")} (the trial cap once a day).`,
+          `SecurityAttention: ${[...SECURITY_ATTENTION_METRICS].map((m) => `\`${m}\``).join(", ")}.`,
+          "An alarm in ALARM doesn't email again, so look at every metric, not just the first email's. Find it in the metrics console (SupplyCheckout, by Region), or in Logs Insights over the functions' log groups: `filter ispresent(NeedsAttention) or ispresent(SecurityAttention)`. What to do: docs/observability.md, *When Needs attention fires* and *When Security attention fires*.",
         ].join("\n\n"),
         width: WIDTH / 2,
         height: 6,

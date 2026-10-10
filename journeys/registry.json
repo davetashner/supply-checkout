@@ -379,13 +379,14 @@
     { "name": "Database errors", "journeys": ["*"], "infra": "database-errors" },
     { "name": "Database throttled", "journeys": ["*"], "infra": "database-throttled" },
     { "name": "Needs attention", "journeys": ["*"], "infra": "needs-attention" },
+    { "name": "Security attention", "journeys": ["*"], "infra": "security-attention" },
     { "name": "Firewall blocking customers", "journeys": ["*"] },
 
     { "name": "Nobody can sign in", "journeys": ["J0"] },
     { "name": "Sign-in throttled", "journeys": ["J0"] },
     { "name": "Social sign-in failing", "journeys": ["J0"] },
-    { "name": "Sign-out not revoking", "journeys": ["J0"], "coveredBy": "Needs attention" },
-    { "name": "Security notices failing", "journeys": ["J0"], "coveredBy": "Needs attention" },
+    { "name": "Sign-out not revoking", "journeys": ["J0"], "coveredBy": "Security attention" },
+    { "name": "Security notices failing", "journeys": ["J0"], "coveredBy": "Security attention" },
     { "name": "Security notices dropped", "journeys": ["J0"], "infra": "security-notices-dropped" },
     { "name": "Sign-in trigger failing", "journeys": ["J0"], "infra": "sign-in-trigger-failing" },
 
