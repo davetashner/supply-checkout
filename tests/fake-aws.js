@@ -351,6 +351,9 @@ export class FakeBackend {
     m = path.match(/^\/teams\/([^/]+)\/reopen$/);
     if (m && method === "POST") return this.reopenTeam(decodeURIComponent(m[1]), call.body, err);
 
+    m = path.match(/^\/teams\/([^/]+)\/feedback$/);
+    if (m && method === "POST") return this.sendFeedback(decodeURIComponent(m[1]), call, err);
+
     m = path.match(/^\/teams\/([^/]+)\/photos$/);
     if (m && method === "GET") return this.teamPhotos(decodeURIComponent(m[1]), err);
 
@@ -560,6 +563,31 @@ export class FakeBackend {
     const cur = mine.checklist || { receipt: false, done: false };
     mine.checklist = { receipt: cur.receipt || !!body.receipt, done: cur.done || !!body.done };
     return [200, { checklist: mine.checklist }];
+  }
+
+  // Report an issue as the API takes it (backend/src/data/feedback.ts): a member of the team,
+  // viewers too; the body's fields and lengths; an Idempotency-Key, whose repeat answers 200
+  // with the same report and doesn't count against the day's 5. Reports are kept in
+  // `reports`, as { id, shortId, team, role, key, ...body }.
+  sendFeedback(team, call, err) {
+    const mine = this.teams.find((t) => t.id === team);
+    if (!mine) return err(403, "permission_denied", "not_member");
+    const key = call.headers["idempotency-key"], b = call.body;
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(key || "")) return err(400, "bad_request");
+    const allowed = ["category", "message", "expected", "contactOk", "context"];
+    if (!b || Object.keys(b).some((k) => !allowed.includes(k))) return err(400, "bad_request");
+    if (!["bug", "idea", "question"].includes(b.category)) return err(400, "bad_request");
+    if (typeof b.message !== "string" || !b.message.trim() || b.message.length > 2000) return err(400, "bad_request");
+    if (b.expected !== undefined && (typeof b.expected !== "string" || b.expected.length > 1000)) return err(400, "bad_request");
+    if (b.contactOk !== undefined && typeof b.contactOk !== "boolean") return err(400, "bad_request");
+    this.reports ||= [];
+    const again = this.reports.find((r) => r.key === key);
+    if (again) return [200, { report: { id: again.id, shortId: again.shortId } }];
+    if (this.reports.length >= 5) return err(429, "quota_exceeded", "feedback_limit");
+    const n = this.reports.length + 1;
+    const report = { id: `rep-${n}`, shortId: `R7K${n}Q2`, team, role: mine.role, key, ...clone(b) };
+    this.reports.push(report);
+    return [201, { report: { id: report.id, shortId: report.shortId } }];
   }
 
   // The team settings as the API runs them (backend/src/data/settings.ts): owners get the
