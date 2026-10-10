@@ -1,8 +1,8 @@
 import { Aws, Duration, RemovalPolicy, TimeZone, Validations } from "aws-cdk-lib";
 import { BackupPlan, BackupPlanRule, BackupResource, BackupVault } from "aws-cdk-lib/aws-backup";
-import { Alarm, ComparisonOperator, MathExpression, Metric, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
+import { Alarm, ComparisonOperator, Metric, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
 import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
-import { Schedule } from "aws-cdk-lib/aws-events";
+import { type Rule, Schedule } from "aws-cdk-lib/aws-events";
 import { AccountPrincipal, Effect, PolicyDocument, PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Key } from "aws-cdk-lib/aws-kms";
 import { Topic } from "aws-cdk-lib/aws-sns";
@@ -18,7 +18,7 @@ import {
   backupVaultName,
   restoreTablePrefix,
 } from "../backup.js";
-import { BackupChangeAlerts } from "../backup-alerts.js";
+import { BackupChangeAlerts, backupJobFailureAlert } from "../backup-alerts.js";
 import { DELETIONS_REPLICATION_RULE_ID, DELETIONS_REPLICATION_STUCK_MINUTES, backupAccountFromCopyVaultArn } from "../deletions.js";
 import { deletionsBucketName, deletionsReplicaBucketName } from "../../../backend/src/deletions/names.js";
 import type { DeploymentConfig } from "../config.js";
@@ -46,8 +46,9 @@ export const COPY_KEY_USE = ["kms:Decrypt", "kms:DescribeKey", "kms:GenerateData
  * - Least-privilege roles: one AWS Backup uses to back up the table and copy
  *   it, and one for restore jobs, which may only create tables named
  *   `<table>-restore-*`.
- * - P2 alarms (the observability stack's P2 topic, from SSM): a backup or
- *   copy job failed, no backup finished in the last day, or (with the copy)
+ * - P2 alerts (the observability stack's P2 topic, from SSM): a backup or
+ *   copy job failed (an EventBridge rule, `jobFailures`, backup-alerts.ts),
+ *   and alarms when no backup finished in the last day, or (with the copy)
  *   a deletion record failed to replicate to the backup account or has
  *   waited DELETIONS_REPLICATION_STUCK_MINUTES to.
  * - P1 alerts (the observability stack's P1 topic, which lets only these
@@ -69,6 +70,8 @@ export class BackupStack extends SupplyCheckoutStack {
   readonly backupRole: Role;
   readonly restoreRole: Role;
   readonly alarms: Alarm[];
+  /** "Backup failed" (P2): a backup or copy job of the table failed, was aborted or expired. */
+  readonly jobFailures: Rule;
   /** P1 alerts on changes to the vault's policy or lock, the plan, a selection or the vault key. */
   readonly changeAlerts: BackupChangeAlerts;
   /** Whether the daily backup is copied to the backup account. */
@@ -311,9 +314,9 @@ export class BackupStack extends SupplyCheckoutStack {
     // DynamoDB resource AWS Backup protects in this account.
     const jobs = (metricName: string, period: Duration) =>
       new Metric({ namespace: "AWS/Backup", metricName, dimensionsMap: { ResourceType: "DynamoDB" }, statistic: "Sum", period });
-    const p2 = new SnsAction(
-      Topic.fromTopicArn(this, "P2Topic", ssm(`/supply-checkout/${config.envName}/observability/alarm-topic-p2-arn`)),
-    );
+    const p2Topic = Topic.fromTopicArn(this, "P2Topic", ssm(`/supply-checkout/${config.envName}/observability/alarm-topic-p2-arn`));
+    const p2 = new SnsAction(p2Topic);
+    this.jobFailures = backupJobFailureAlert(this, "JobFailures", { envName: config.envName, topic: p2Topic });
     const alarm = (id: string, props: Omit<ConstructorParameters<typeof Alarm>[2], "alarmName" | "evaluationPeriods"> & { evaluationPeriods?: number }) => {
       const a = new Alarm(this, id, { evaluationPeriods: 1, ...props, alarmName: `supply-checkout-${config.envName}-p2-${id}` });
       a.addAlarmAction(p2);
@@ -321,25 +324,6 @@ export class BackupStack extends SupplyCheckoutStack {
       return a;
     };
     this.alarms = [
-      alarm("backup-failed", {
-        alarmDescription:
-          "P2 Backup failed. A backup or copy job for the app table failed, was aborted or expired in the last hour. " +
-          "Runbook: docs/backups.md, When a backup fails.",
-        metric: new MathExpression({
-          expression: "FILL(bf, 0) + FILL(ba, 0) + FILL(be, 0) + FILL(cf, 0)",
-          usingMetrics: {
-            bf: jobs("NumberOfBackupJobsFailed", Duration.hours(1)),
-            ba: jobs("NumberOfBackupJobsAborted", Duration.hours(1)),
-            be: jobs("NumberOfBackupJobsExpired", Duration.hours(1)),
-            cf: jobs("NumberOfCopyJobsFailed", Duration.hours(1)),
-          },
-          period: Duration.hours(1),
-          label: "Failed backup and copy jobs",
-        }),
-        threshold: 0,
-        comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
-        treatMissingData: TreatMissingData.NOT_BREACHING,
-      }),
       alarm("no-recent-backup", {
         alarmDescription:
           "P2 No recent backup. No backup of the app table finished in the last 24 hours (the plan runs daily at 2am Eastern). " +
@@ -382,19 +366,13 @@ export class BackupStack extends SupplyCheckoutStack {
         alarm("deletions-replication-stuck", {
           alarmDescription:
             `P2 Deletion records replication stuck. A deletion record has waited to replicate to the backup account's copy for ` +
-            `${DELETIONS_REPLICATION_STUCK_MINUTES} minutes: some were pending, or the oldest was more than that behind, in every ` +
-            "15 minutes of the last hour. Runbook: docs/backups.md, When deletion records stop replicating.",
-          metric: new MathExpression({
-            expression: `IF(FILL(pending, 0) > 0 OR FILL(latency, 0) > ${DELETIONS_REPLICATION_STUCK_MINUTES * 60}, 1, 0)`,
-            usingMetrics: {
-              pending: replication("OperationsPendingReplication", "Maximum", stuckPeriod),
-              latency: replication("ReplicationLatency", "Maximum", stuckPeriod),
-            },
-            period: stuckPeriod,
-            label: "Deletion records waiting to replicate",
-          }),
-          threshold: 1,
-          comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            `${DELETIONS_REPLICATION_STUCK_MINUTES} minutes: some were pending in every 15 minutes of the last hour. ` +
+            "Runbook: docs/backups.md, When deletion records stop replicating.",
+          // Pending alone (supply-checkout-7pe.1): a record behind by that long is pending all that time, so
+          // ReplicationLatency, a second alarm metric, added nothing
+          metric: replication("OperationsPendingReplication", "Maximum", stuckPeriod),
+          threshold: 0,
+          comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
           evaluationPeriods: stuckPeriods,
           datapointsToAlarm: stuckPeriods,
           treatMissingData: TreatMissingData.NOT_BREACHING,

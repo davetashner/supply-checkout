@@ -164,3 +164,56 @@ export function deletionsCopyChangeAlert(scope: Construct, id: string, props: De
   rule.addTarget({ bind: () => ({ arn: props.topic.topicArn, input: message }) });
   return rule;
 }
+
+/** AWS Backup's job states that mean a backup or copy of the table didn't happen. */
+export const BACKUP_JOB_FAILED_STATES = ["FAILED", "ABORTED", "EXPIRED"] as const;
+
+/** AWS Backup's events for its backup and copy jobs. */
+export const BACKUP_JOB_DETAIL_TYPES = ["Backup Job State Change", "Copy Job State Change"] as const;
+
+/**
+ * The workload account's rule on failed backup and copy jobs; fixed so the
+ * P2 topic (observability stack, deployed first) can let only it publish.
+ */
+export function backupJobAlertRuleName(envName: string): string {
+  return `supply-checkout-${envName}-backup-jobs-failed`;
+}
+
+/** Its ARN in this stack's account and region. */
+export function backupJobAlertRuleArn(envName: string): string {
+  return `arn:${Aws.PARTITION}:events:${Aws.REGION}:${Aws.ACCOUNT_ID}:rule/${backupJobAlertRuleName(envName)}`;
+}
+
+export interface BackupJobFailureAlertProps {
+  readonly envName: string;
+  /** The topic told (P2). Its policy must let backupJobAlertRuleName publish. */
+  readonly topic: ITopic;
+}
+
+/**
+ * "Backup failed" (P2): an EventBridge rule on AWS Backup's own events for a
+ * backup or copy job of the table (resource type DynamoDB) that failed, was
+ * aborted or expired. It replaced a CloudWatch alarm on four AWS/Backup job
+ * metrics (supply-checkout-7pe.1): AWS service events are free, where an
+ * alarm is billed per metric it reads, and the event arrives as the job ends
+ * rather than within the hour. It doesn't say when things are fine again; the
+ * next day's job, and "No recent backup", do. The message names the job, not
+ * a person.
+ */
+export function backupJobFailureAlert(scope: Construct, id: string, props: BackupJobFailureAlertProps): Rule {
+  const rule = new Rule(scope, id, {
+    ruleName: backupJobAlertRuleName(props.envName),
+    description: "Backups (workload account): a backup or copy job of the app table failed, was aborted or expired",
+    eventPattern: {
+      source: ["aws.backup"],
+      detailType: [...BACKUP_JOB_DETAIL_TYPES],
+      detail: { resourceType: ["DynamoDB"], state: [...BACKUP_JOB_FAILED_STATES] },
+    },
+  });
+  const message = RuleTargetInput.fromText(
+    `Supply Checkout ${props.envName} P2 Backup failed: ${EventField.fromPath("$.detail-type")} ${EventField.fromPath("$.detail.state")} at ${EventField.fromPath("$.time")} (${EventField.fromPath("$.resources")}). Follow "When a backup fails" in docs/backups.md.`,
+  );
+  // A plain target, as above
+  rule.addTarget({ bind: () => ({ arn: props.topic.topicArn, input: message }) });
+  return rule;
+}

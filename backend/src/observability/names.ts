@@ -200,6 +200,14 @@ export const BusinessMetric = {
   LapseCheckoutOverdue: "LapseCheckoutOverdue",
   /** Teams the lapsed-team job couldn't handle this run (a read, write, email or Stripe call failed), or wouldn't close because Stripe disagrees with the team (a live subscription, or the team's subscription or customer missing), or that has no owner to warn or no readable deletion time: "Lapsed-team job failing". */
   LapseFailures: "LapseFailures",
+  /**
+   * Sent beside every non-zero count of a NEEDS_ATTENTION_METRICS metric, with
+   * the same value (count() adds it): one metric for the "Needs attention"
+   * alarm (P2), so each rare event doesn't need an alarm of its own, which
+   * CloudWatch bills per metric (supply-checkout-7pe.1). The specific metric
+   * on the same log line, and its own graph in the metrics console, say which.
+   */
+  NeedsAttention: "NeedsAttention",
 } as const;
 
 export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMetric];
@@ -250,6 +258,49 @@ export const TEST_SKIPPED_METRICS: ReadonlySet<BusinessMetricName> = new Set<Bus
   BusinessMetric.BillingEventsApplied,
   BusinessMetric.BillingNotices,
   BusinessMetric.SeatQuantityUpdates,
+]);
+
+/**
+ * Counts of events that should almost never happen, each worth a person's
+ * look, which alarm together through NeedsAttention ("Needs attention", P2,
+ * docs/observability.md) instead of one alarm each (supply-checkout-7pe.1).
+ * Every one is a count sent with count(); gauges, volumes with a threshold
+ * and "not running" signals keep alarms of their own. Adding a metric here
+ * adds it to that alarm: its runbook goes in the table under "When Needs
+ * attention fires".
+ */
+export const NEEDS_ATTENTION_METRICS: ReadonlySet<BusinessMetricName> = new Set<BusinessMetricName>([
+  // J0, J1, J3: sign-in, sign-up and email
+  BusinessMetric.SignOutRevokeFailures,
+  BusinessMetric.SecurityNoticeFailures,
+  BusinessMetric.WelcomeEmailFailures,
+  BusinessMetric.WelcomeEmailsRefused,
+  BusinessMetric.PasswordResetHintsCapped,
+  BusinessMetric.EmailVerifyFailures,
+  BusinessMetric.EmailUnverifyFailures,
+  BusinessMetric.EmailCodeSendFailures,
+  BusinessMetric.EmailCodeVerifyFailures,
+  // J5: receipts
+  BusinessMetric.ReceiptTrialCapReached,
+  // J7, J8: billing
+  BusinessMetric.SeatQuantityDrift,
+  BusinessMetric.EntitlementDrift,
+  // J11 and J7: closing, reopening and purging teams
+  BusinessMetric.TeamClosedNoticeFailures,
+  BusinessMetric.TeamReopenedNoticeFailures,
+  BusinessMetric.ReopenedTeamSubscriptionsEnded,
+  BusinessMetric.ReopenResyncsLate,
+  BusinessMetric.ReopenedTeamSubscriptionsUndecided,
+  BusinessMetric.ClosedTeamRenewalsCharged,
+  BusinessMetric.ClosedTeamSubscriptionsNotFound,
+  BusinessMetric.StripeCustomersAlreadyDeleted,
+  BusinessMetric.HeldTeamsPurged,
+  // J7, J8, J10: the lapsed-team job
+  BusinessMetric.LapseFailures,
+  BusinessMetric.LapseClosuresHeld,
+  BusinessMetric.LapseCheckoutOverdue,
+  // Backups: the deletion records watch
+  BusinessMetric.DeletionRecordRewrites,
 ]);
 
 /**

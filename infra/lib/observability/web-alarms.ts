@@ -1,6 +1,7 @@
 import {
   Alarm,
   ComparisonOperator,
+  type IMetric,
   MathExpression,
   Metric,
   TreatMissingData,
@@ -21,15 +22,14 @@ export const ROUTER_FAILING_ABOVE = 4;
 
 /**
  * The operator page's distribution (supply-checkout-8jc.47): a handful of
- * operators make a few requests each, so "Operator page down" looks at the
- * 5xx rate from 5 requests in 5 minutes (one page load is about 5), and alarms
- * above 10% (one failed request of a page load or two). Scanners get the
- * router's 404s, which aren't 5xx.
+ * operators make a few requests each, so "Operator page down" alarms when its
+ * 5xx rate is above 10% over 5 minutes, from any number of requests (one
+ * failed request of a page load or two). Scanners get the router's 404s,
+ * which aren't 5xx. A broken router fails every request with a 5xx, so this
+ * one alarm also covers the ops router, which had an alarm of its own on its
+ * errors and throttles until supply-checkout-7pe.1 (three more alarm metrics).
  */
-export const OPS_DOWN_MIN_REQUESTS = 5;
 export const OPS_DOWN_PERCENT = 10;
-/** The operator page's router fails no request by design: any error or throttle is "Operator page router failing". */
-export const OPS_ROUTER_FAILING_ABOVE = 0;
 
 /**
  * RUM events ingested in an hour above which "RUM events surge" (P2) alarms.
@@ -86,6 +86,11 @@ export function siteErrorRate(distributionId: string, minRequests = SITE_DOWN_MI
   });
 }
 
+/** The operator page's distribution's 5xx rate (%), from any number of requests: one alarm metric. */
+export function opsErrorRate(distributionId: string): Metric {
+  return cloudFront("5xxErrorRate", { DistributionId: distributionId }, "Average", "Operator page 5xx rate % (CloudFront)");
+}
+
 /** The router's execution and validation errors and its throttles, added up. */
 export function routerFailures(functionName: string, label = "Router errors and throttles"): MathExpression {
   const fn = { FunctionName: functionName };
@@ -109,8 +114,6 @@ export interface WebAlarmsProps {
   readonly routerFunctionName: string;
   /** The operator page's distribution ID (the web stack's SSM output). */
   readonly opsDistributionId: string;
-  /** The operator page's router CloudFront Function's name (the web stack's SSM output). */
-  readonly opsRouterFunctionName: string;
   readonly topics: AlarmTopics;
 }
 
@@ -127,10 +130,10 @@ export interface WebAlarmsProps {
  *   FunctionValidationErrors and FunctionThrottles, 5 or more in 5 minutes.
  *   Every request a broken router sees errors, so this fires even when there
  *   are too few requests for Site down, and says where to look.
- * - `opsDown` and `opsRouterFailing` (P2, supply-checkout-8jc.47): the same
- *   two on the operator page's own distribution and router (ops.), with
- *   thresholds for its handful of operators (OPS_DOWN_*,
- *   OPS_ROUTER_FAILING_ABOVE). P2 is enough: operators have the CLI.
+ * - `opsDown` (P2, supply-checkout-8jc.47): the operator page's own
+ *   distribution (ops.), its 5xx rate above OPS_DOWN_PERCENT from any number
+ *   of requests, for its handful of operators; a broken ops router shows here
+ *   too. P2 is enough: operators have the CLI.
  * - `rumSurge` (P2) and `rumFlood` (P1): the RUM app monitor's ingested
  *   events above RUM_EVENTS_SURGE_PER_HOUR and RUM_EVENTS_FLOOD_PER_HOUR in
  *   an hour (supply-checkout-3sv.7). The RUM client's limits bound honest
@@ -146,14 +149,13 @@ export class WebAlarms extends Construct {
   readonly siteDown: Alarm;
   readonly routerFailing: Alarm;
   readonly opsDown: Alarm;
-  readonly opsRouterFailing: Alarm;
   readonly rumSurge: Alarm;
   readonly rumFlood: Alarm;
   readonly alarms: Alarm[];
 
   constructor(scope: Construct, id: string, props: WebAlarmsProps) {
     super(scope, id);
-    const alarm = (alarmId: string, title: string, rule: string, metric: MathExpression, threshold: number, severity: Severity = "P1", journey = "Every journey") => {
+    const alarm = (alarmId: string, title: string, rule: string, metric: IMetric, threshold: number, severity: Severity = "P1", journey = "Every journey") => {
       const a = new Alarm(this, alarmId, {
         alarmName: `supply-checkout-${props.envName}-${severity.toLowerCase()}-${alarmId}`,
         alarmDescription: [
@@ -188,18 +190,9 @@ export class WebAlarms extends Construct {
     this.opsDown = alarm(
       "ops-page-down",
       "Operator page down",
-      `The operator page's distribution's 5xxErrorRate above ${OPS_DOWN_PERCENT}% for 5 minutes, once it has at least ${OPS_DOWN_MIN_REQUESTS} requests: ops. is failing (its router, the bucket, or nothing live on the ops channel). Operators can use npm run ops meanwhile.`,
-      siteErrorRate(props.opsDistributionId, OPS_DOWN_MIN_REQUESTS, "Operator page 5xx rate % (CloudFront)"),
+      `The operator page's distribution's 5xxErrorRate above ${OPS_DOWN_PERCENT}% for 5 minutes, from any number of requests: ops. is failing (its router, the bucket, or nothing live on the ops channel). Operators can use npm run ops meanwhile.`,
+      opsErrorRate(props.opsDistributionId),
       OPS_DOWN_PERCENT,
-      "P2",
-      "Operators",
-    );
-    this.opsRouterFailing = alarm(
-      "ops-router-failing",
-      "Operator page router failing",
-      `The operator page's router CloudFront Function's execution errors, validation errors and throttles at least ${OPS_ROUTER_FAILING_ABOVE + 1} in 5 minutes: requests to ops. get 5xx. Usually a bad router deploy.`,
-      routerFailures(props.opsRouterFunctionName, "Operator page router errors and throttles"),
-      OPS_ROUTER_FAILING_ABOVE,
       "P2",
       "Operators",
     );
@@ -224,6 +217,6 @@ export class WebAlarms extends Construct {
     };
     this.rumSurge = rum("rum-events-surge", "P2", "RUM events surge", RUM_EVENTS_SURGE_PER_HOUR);
     this.rumFlood = rum("rum-events-flood", "P1", "RUM events flood", RUM_EVENTS_FLOOD_PER_HOUR);
-    this.alarms = [this.siteDown, this.routerFailing, this.opsDown, this.opsRouterFailing, this.rumSurge, this.rumFlood];
+    this.alarms = [this.siteDown, this.routerFailing, this.opsDown, this.rumSurge, this.rumFlood];
   }
 }

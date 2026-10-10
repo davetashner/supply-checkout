@@ -7,7 +7,9 @@ import {
   BusinessMetric,
   createObservability,
   METRICS_NAMESPACE,
+  NEEDS_ATTENTION_METRICS,
   REGION_DIMENSION,
+  TEST_SKIPPED_METRICS,
   withObservability,
 } from "../src/observability/index.js";
 
@@ -108,6 +110,31 @@ describe("business metrics", () => {
     obs.count(BusinessMetric.Checkouts, 2, { teamId: "t-customer" });
     obs.count(BusinessMetric.Checkouts, 1, { teamId: "t-other", test: false });
     expect(emf().slice(2)).toEqual([expect.objectContaining({ Checkouts: 2, teamId: "t-customer" }), expect.objectContaining({ Checkouts: 1, teamId: "t-other", test: "false" })]);
+  });
+
+  it("adds every non-zero count of a rare event to NeedsAttention, on the same line, for the one alarm (supply-checkout-7pe.1)", () => {
+    const obs = createObservability({ service: "team-purge", env });
+    obs.count(BusinessMetric.ClosedTeamRenewalsCharged, 2, { teamId: "t1" });
+    const [withMetadata] = emf();
+    expect(withMetadata).toMatchObject({ ClosedTeamRenewalsCharged: 2, NeedsAttention: 2, teamId: "t1" });
+    expect(withMetadata._aws.CloudWatchMetrics[0].Metrics).toEqual([
+      { Name: "ClosedTeamRenewalsCharged", Unit: "Count" },
+      { Name: "NeedsAttention", Unit: "Count" },
+    ]);
+    expect(withMetadata._aws.CloudWatchMetrics[0].Dimensions).toEqual([[REGION_DIMENSION]]);
+    // Without metadata, two in one flush add up on one line
+    obs.count(BusinessMetric.DeletionRecordRewrites);
+    obs.count(BusinessMetric.LapseFailures);
+    obs.flush();
+    expect(emf()[1]).toMatchObject({ DeletionRecordRewrites: 1, LapseFailures: 1, NeedsAttention: [1, 1] });
+    // A zero count of one, and any count of a metric that isn't one, add nothing
+    obs.count(BusinessMetric.LapseFailures, 0);
+    obs.count(BusinessMetric.Checkouts, 3);
+    obs.flush();
+    expect(emf()[2]).toMatchObject({ LapseFailures: 0, Checkouts: 3 });
+    expect(emf()[2]).not.toHaveProperty("NeedsAttention");
+    expect(NEEDS_ATTENTION_METRICS.has(BusinessMetric.NeedsAttention)).toBe(false);
+    for (const metric of NEEDS_ATTENTION_METRICS) expect(TEST_SKIPPED_METRICS.has(metric), metric).toBe(false);
   });
 
   it("does nothing on flush when no metric was counted", () => {

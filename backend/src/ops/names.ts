@@ -74,8 +74,9 @@ export const STRIPE_DELETION_STUCK_DAYS = 7;
 export const STRIPE_FAILURES_BEFORE_QUEUEING = 3;
 
 /**
- * No ClosedTeamsOverdue sample from the purge for this long alarms ("Deletion
- * job not running"): three hourly runs missed, so one slow or skipped run
+ * "Deletion overdue or not running" reads ClosedTeamsOverdue's maximum over
+ * this long: above 0 is a team overdue, and no sample at all means three
+ * hourly runs missed (missing data breaches), so one slow or skipped run
  * doesn't page anyone.
  */
 export const PURGE_SILENT_ALARM_HOURS = 3;
@@ -155,11 +156,13 @@ export const LAPSE_CHECKOUT_MAX_DELAY_DAYS = 3;
 export const LAPSE_CLOSURES_ALARM_COUNT = 20;
 export const LAPSE_CLOSURES_ALARM_HOURS = 6;
 
-/** LapseTeamsUnstarted above 0 in every run for this long alarms ("Lapsed-team job out of time"): one short run is fine, three in a row aren't. */
+/**
+ * LapseTeamsUnstarted above 0, or missing, in every hour for this long alarms
+ * ("Lapsed-team job out of time or not running"): one short or missed run is
+ * fine, three in a row aren't. Every run that can list the teams sends it,
+ * with LapseTeamsChecked.
+ */
 export const LAPSE_UNSTARTED_ALARM_HOURS = 3;
-
-/** No LapseTeamsChecked sample for this long alarms ("Lapsed-team job not running"): three hourly runs missed. */
-export const LAPSE_SILENT_ALARM_HOURS = 3;
 
 /** Functions the observability stack names. */
 export const opsResourceNames = (envName: string) => ({

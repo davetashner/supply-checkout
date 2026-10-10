@@ -36,12 +36,10 @@ import {
   CHECK_EVERY_MINUTES,
   LAPSE_BUDGET_MS,
   LAPSE_EVERY_HOURS,
-  LAPSE_SILENT_ALARM_HOURS,
   OPS_ENV,
   opsResourceNames,
   PURGE_BUDGET_MS,
   PURGE_EVERY_HOURS,
-  PURGE_SILENT_ALARM_HOURS,
   SEAT_RECONCILE_HOUR_UTC,
   SEAT_RECONCILE_SILENT_ALARM_DAYS,
 } from "../../../backend/src/ops/names.js";
@@ -98,8 +96,8 @@ export interface OpsChecksProps {
  *   test mark (TEAM_PURGE_READ_ATTRIBUTES, supply-checkout-o60.12), which
  *   only tags its metrics. The partitions are wildcards because it acts on
  *   whichever teams are due, which only the table's own index names; no
- *   request reaches it. `purgeNotRunning` alarms when its ClosedTeamsOverdue
- *   gauge stops arriving ("Deletion job not running", docs/journeys.md).
+ *   request reaches it. "Deletion overdue or not running" (journey-alarms.ts)
+ *   alarms when its ClosedTeamsOverdue gauge is above 0 or stops arriving.
  *   Once a team is marked, and before it deletes anything, it writes the
  *   team's deletion record: s3:PutObject under `teams/` in the deletion
  *   records bucket only. It also ends closed teams' Stripe subscriptions
@@ -148,26 +146,24 @@ export interface OpsChecksProps {
  *   partitions (its own records) naming only LAPSE_RECORD_ATTRIBUTES; send the app's email (grantSendEmail); and read
  *   the Stripe secret key. No Scan, no DeleteItem, no Query of a team's
  *   partition, so it never reads projects, inventory or members' data.
- *   `lapseNotRunning` alarms when its LapseTeamsChecked gauge stops arriving.
+ *   "Lapsed-team job out of time or not running" (journey-alarms.ts) alarms
+ *   when its LapseTeamsUnstarted gauge is above 0 or missing for 3 hours.
  *   It has no async retries, and one run at a time holds its lease (a
  *   `LAPSE#RUN` record), so a timeout or duplicate never doubles its closures.
  *
  * The checks run every CHECK_EVERY_MINUTES from an EventBridge rule, each with its own
  * log group and a role that writes only to it. A failed run shows in the
- * Lambda errors alarm; the gauge alarms treat missing data as not breaching.
+ * Lambda errors alarm. The gauge alarms on the scheduled checks treat missing
+ * data as not breaching; the purge's and the lapsed-team job's breach on it.
  */
 export class OpsChecks extends Construct {
   readonly stuckImports: NodejsFunction;
   readonly emailQuota: NodejsFunction;
   readonly teamPurge: NodejsFunction;
-  /** "Deletion job not running": no ClosedTeamsOverdue sample for PURGE_SILENT_ALARM_HOURS (J11). */
-  readonly purgeNotRunning: Alarm;
   readonly seatReconcile: NodejsFunction;
   /** "Seat reconciliation not running": no SeatReconcileTeams sample for SEAT_RECONCILE_SILENT_ALARM_DAYS (J7). */
   readonly seatReconcileNotRunning: Alarm;
   readonly teamLapse: NodejsFunction;
-  /** "Lapsed-team job not running": no LapseTeamsChecked sample for LAPSE_SILENT_ALARM_HOURS (J7, J8, J10). */
-  readonly lapseNotRunning: Alarm;
 
   constructor(scope: Construct, id: string, props: OpsChecksProps) {
     super(scope, id);
@@ -358,23 +354,6 @@ export class OpsChecks extends Construct {
       reason: "The purge deletes whichever closed teams are due, named only by the table's own closed-teams index: the TEAM#, USER# and STRIPE# partition wildcards are in dynamodb:LeadingKeys, with dynamodb:Attributes limiting it to keys and closure fields",
     });
 
-    // The purge sends its gauge every run that reads the index. No sample for this long means the
-    // schedule is off or deleted, or every run fails before it can count: missing data breaches.
-    this.purgeNotRunning = new Alarm(this, "PurgeNotRunning", {
-      alarmName: `supply-checkout-${props.envName}-p2-deletion-not-running`,
-      alarmDescription: [
-        `P2 Deletion job not running (J11, ${Stack.of(this).region}).`,
-        `No ClosedTeamsOverdue sample from the hourly closed-team purge for ${PURGE_SILENT_ALARM_HOURS} hours: its schedule is disabled or deleted, or every run fails before it reads the closed-teams index. Closed teams aren't being deleted, and Deletion overdue can't see it.`,
-        "Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-      ].join(" "),
-      metric: business(BusinessMetric.ClosedTeamsOverdue, Stack.of(this).region, Duration.hours(PURGE_SILENT_ALARM_HOURS), "SampleCount"),
-      threshold: 1,
-      comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
-      evaluationPeriods: 1,
-      datapointsToAlarm: 1,
-      treatMissingData: TreatMissingData.BREACHING,
-    });
-    props.topics.notify(this.purgeNotRunning, "P2");
 
     // The nightly seat reconciliation: lists teams from the operators' index, queues checks for the billing worker on the seat sync queue
     const seatQueue = billingResourceNames(props.envName).seatQueue;
@@ -547,22 +526,6 @@ export class OpsChecks extends Construct {
       id: "AwsSolutions-IAM5[Resource::*]",
       reason: "The lapsed-team job reads and closes whichever teams the operators' index lists as lapsing: the TEAM#*, OPS#OWNERS#* and LAPSE#* partition wildcards are in dynamodb:LeadingKeys, with dynamodb:Attributes limiting each to the billing fields, the closure, owners' emails and its own records. LeadingKeys can't limit the sort key, so GetItem and UpdateItem could reach any item in a team's partition, but only those attributes (the code names only the META item, and the closure is conditioned on attribute_exists(PK) and the version)",
     });
-
-    this.lapseNotRunning = new Alarm(this, "LapseNotRunning", {
-      alarmName: `supply-checkout-${props.envName}-p2-lapse-not-running`,
-      alarmDescription: [
-        `P2 Lapsed-team job not running (J7, J8, J10, ${Stack.of(this).region}).`,
-        `No LapseTeamsChecked sample from the hourly lapsed-team job for ${LAPSE_SILENT_ALARM_HOURS} hours: its schedule is disabled or deleted, or every run fails before it lists the teams. Owners of lapsing teams aren't being emailed, and lapsed teams aren't being closed for deletion as the Terms say.`,
-        "Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys, and docs/runbooks/lapsed-teams.md.",
-      ].join(" "),
-      metric: business(BusinessMetric.LapseTeamsChecked, Stack.of(this).region, Duration.hours(LAPSE_SILENT_ALARM_HOURS), "SampleCount"),
-      threshold: 1,
-      comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
-      evaluationPeriods: 1,
-      datapointsToAlarm: 1,
-      treatMissingData: TreatMissingData.BREACHING,
-    });
-    props.topics.notify(this.lapseNotRunning, "P2");
   }
 
   /** A function from backend/src/ops/<name>.ts, run on the schedule (every CHECK_EVERY_MINUTES unless `every` says). */

@@ -45,8 +45,11 @@ export interface OperatorAuditWatchProps {
  *   publisher; DynamoDB advises at most two per shard.
  * - `changed`: P1 when OperatorAuditChanged is above 0 in 5 minutes
  *   ("Operator audit changed").
- * - `failing`: P2 when the watch itself fails, since then a change could go
- *   unseen ("Operator audit watch failing").
+ * - No alarm on the function's own errors (there was one, "Operator audit
+ *   watch failing", until supply-checkout-7pe.1): a batch that fails is
+ *   retried, so an error that passes loses nothing, and one that doesn't
+ *   ends in the dead-letter queue (`dropped`) within its retries, while a
+ *   watch that keeps failing stops counting heartbeats (`silent`).
  * - `deadLetterQueue`: where a batch the watch gave up on after its retries
  *   is recorded (its shard and sequence numbers, never the items), and
  *   `dropped`: P2 when anything is in it ("Operator audit watch dropped
@@ -79,7 +82,6 @@ export class OperatorAuditWatch extends Construct {
   readonly mapping: EventSourceMapping;
   readonly deadLetterQueue: Queue;
   readonly changed: Alarm;
-  readonly failing: Alarm;
   readonly dropped: Alarm;
   readonly silent: Alarm;
   readonly logGroup: LogGroup;
@@ -189,17 +191,6 @@ export class OperatorAuditWatch extends Construct {
       treatMissingData: TreatMissingData.NOT_BREACHING,
     });
     props.topics.notify(this.changed, "P1");
-
-    this.failing = new Alarm(this, "Failing", {
-      alarmName: `supply-checkout-${props.envName}-p2-operator-audit-watch-failing`,
-      alarmDescription: "P2. Operator audit watch failing: the function that watches operator audit items for changes threw, so a change could go unseen. Its log has the error.",
-      metric: this.fn.metricErrors({ period: FIVE_MINUTES, statistic: "Sum" }),
-      threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: TreatMissingData.NOT_BREACHING,
-    });
-    props.topics.notify(this.failing, "P2");
 
     this.dropped = new Alarm(this, "Dropped", {
       alarmName: `supply-checkout-${props.envName}-p2-operator-audit-watch-dropped`,

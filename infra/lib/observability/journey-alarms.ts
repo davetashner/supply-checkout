@@ -10,24 +10,21 @@ import {
 import { Construct } from "constructs";
 import { billingResourceNames } from "../../../backend/src/billing/names.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
-import { PASSWORD_RESET_HINTS_PER_DAY } from "../../../backend/src/data/schema.js";
 import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import {
   HELD_PURGE_GRACE_DAYS,
-  LAPSE_CHECKOUT_MAX_DELAY_DAYS,
   LAPSE_CLOSURES_ALARM_COUNT,
   LAPSE_CLOSURES_ALARM_HOURS,
   LAPSE_EVERY_HOURS,
-  LAPSE_MAX_CLOSURES_PER_RUN,
   LAPSE_UNSTARTED_ALARM_HOURS,
   PURGE_EVERY_HOURS,
   PURGE_OVERDUE_AFTER_HOURS,
+  PURGE_SILENT_ALARM_HOURS,
   STRIPE_DELETION_RETRY_ALARM_HOURS,
   STRIPE_DELETION_STUCK_DAYS,
 } from "../../../backend/src/ops/names.js";
 import { realtimeResourceNames } from "../../../backend/src/realtime/channels.js";
-import { RECEIPT_MODEL_ID, RECEIPT_MODEL_PRICES_PER_MILLION_TOKENS } from "../config.js";
 import type { AlarmTopics, Severity } from "./alarm-topics.js";
 import { apiGateway, business, dynamoDbSystemErrors, dynamoDbThrottles, FIVE_MINUTES, lambda } from "./metrics.js";
 
@@ -52,6 +49,17 @@ export interface JourneyAlarmSpec {
   /** Consecutive periods that must breach before it alarms, for "sustained" rules. Defaults to 1. */
   readonly periods?: number;
   /**
+   * How many of those `periods` must breach, when fewer than all of them
+   * (an M out of N alarm). Defaults to `periods`.
+   */
+  readonly datapoints?: number;
+  /**
+   * Missing data breaches: the metric is a gauge a scheduled job sends every
+   * run, so no data means the job isn't running. Defaults to false (missing
+   * data never alarms).
+   */
+  readonly missingBreaches?: boolean;
+  /**
    * Only in the primary region: the metric comes from something that runs
    * only there (a scheduled check or the closed-team purge, ops-checks.ts),
    * so the alarm would never see data anywhere else.
@@ -71,15 +79,6 @@ export interface JourneyAlarmsProps {
   readonly topics: AlarmTopics;
 }
 
-/**
- * Welcome emails SES refused in an hour at which "Welcome emails refused"
- * alarms (supply-checkout-6uw.25). SES is out of the sandbox (production
- * access, supply-checkout-3sv.18), so it no longer refuses unverified
- * addresses: any refusal is sending paused or a suppressed address, worth a
- * look (supply-checkout-3sv.21).
- */
-export const WELCOME_REFUSALS_ALARM_PER_HOUR = 1;
-
 /** Invites sent in an hour, across every team, that "Invite surge" alarms above. */
 export const INVITE_SURGE_PER_HOUR = 300;
 
@@ -98,38 +97,33 @@ export const RECEIPT_READS_ALARM_PER_HOUR = 300;
 export const RECEIPT_TRIALS_NEAR_LIMIT_ALARM_PER_HOUR = 5;
 
 /**
- * The receipt model's estimated spend in a day, in US dollars, that "Bedrock
- * spend high" alarms above (supply-checkout-i1d.3), from Bedrock's own token
- * counts at RECEIPT_MODEL_PRICES_PER_MILLION_TOKENS. Provisional: a read costs
- * about half a cent, so this is about a thousand reads a day, several times
- * the pilot's use and twice the account-wide trial cap's worst day. Raise it
- * with real traffic.
+ * The receipt model's spend in a day, in US dollars, that "Bedrock spend
+ * high" alarms near (supply-checkout-i1d.3). Provisional: several times the
+ * pilot's use and twice the account-wide trial cap's worst day. Raise it with
+ * real traffic.
  */
 export const BEDROCK_SPEND_ALARM_USD_PER_DAY = 5;
 
+/** What one receipt read costs in model calls, in US dollars, about (supply-checkout-kx8): half a cent. */
+export const RECEIPT_READ_ESTIMATED_USD = 0.005;
+
 /**
- * The receipt model's estimated spend in US dollars, per `period`, from the
- * AWS/Bedrock token counts for RECEIPT_MODEL_ID (the inference profile the
- * receipts function calls) in this region: every call, not only the ones the
- * function counted, priced by kind of token.
+ * Receipt reads in a day above which "Bedrock spend high" alarms: about
+ * BEDROCK_SPEND_ALARM_USD_PER_DAY at RECEIPT_READ_ESTIMATED_USD a read.
+ * ReceiptReads counts every model call the receipts function makes (the only
+ * caller of the model), so one metric stands in for Bedrock's four token
+ * counts, each billed as an alarm metric (supply-checkout-7pe.1).
  */
-export function bedrockSpend(region: string, period: Duration): MathExpression {
-  const tokens = (metricName: string) => new Metric({ namespace: "AWS/Bedrock", metricName, dimensionsMap: { ModelId: RECEIPT_MODEL_ID }, statistic: "Sum", period, region });
-  const p = RECEIPT_MODEL_PRICES_PER_MILLION_TOKENS;
-  // IDs named for the region, so one graph can hold every region's
-  const r = region.replace(/-/g, "_");
-  return new MathExpression({
-    expression: `(FILL(i_${r}, 0) * ${p.input} + FILL(o_${r}, 0) * ${p.output} + FILL(cr_${r}, 0) * ${p.cacheRead} + FILL(cw_${r}, 0) * ${p.cacheWrite}) / 1000000`,
-    usingMetrics: {
-      [`i_${r}`]: tokens("InputTokenCount"),
-      [`o_${r}`]: tokens("OutputTokenCount"),
-      [`cr_${r}`]: tokens("CacheReadInputTokenCount"),
-      [`cw_${r}`]: tokens("CacheWriteInputTokenCount"),
-    },
-    period,
-    label: `Receipt model spend, USD (${region})`,
-  });
-}
+export const RECEIPT_READS_ALARM_PER_DAY = Math.round(BEDROCK_SPEND_ALARM_USD_PER_DAY / RECEIPT_READ_ESTIMATED_USD);
+
+/**
+ * Rare events in this long, at least one, that "Needs attention" alarms on:
+ * 15-minute periods, alarming on the first one with any, and staying in alarm
+ * until 2 hours pass without one, so an event the hourly purge or lapsed-team
+ * job sends every run keeps it in alarm rather than flapping.
+ */
+export const NEEDS_ATTENTION_PERIOD = Duration.minutes(15);
+export const NEEDS_ATTENTION_PERIODS = 8;
 
 /**
  * Closed teams set aside at once that "Many closed-team subscriptions set
@@ -214,25 +208,18 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       metric: dynamoDbThrottles(tableName, region),
       threshold: 0,
     },
-    // J0. Sign in
     {
-      id: "sign-out-not-revoking",
-      title: "Sign-out not revoking",
-      journeys: "J0",
+      id: "needs-attention",
+      title: "Needs attention",
+      journeys: "J0, J1, J3, J5, J7, J8, J10, J11",
       severity: "P2",
-      rule: "SignOutRevokeFailures at least 3 in 15 minutes: Cognito didn't revoke the refresh tokens of people who signed out, so they stay valid until they expire (30 days). Sign-out still clears the cookie. Usually Cognito unreachable or erroring.",
-      metric: business(BusinessMetric.SignOutRevokeFailures, region, FIFTEEN_MINUTES),
-      threshold: 2,
-    },
-    {
-      id: "security-notices-failing",
-      title: "Security notices failing",
-      journeys: "J0",
-      severity: "P2",
-      rule: "Any SecurityNoticeFailures over 15 minutes: someone set a password or turned on two-step sign-in and the account's own verified address wasn't told (SES refused the message or took more than 3 seconds, or there's no verified address). The change stands anyway, so an account taken over this way goes unnoticed by its owner (supply-checkout-8jc.15). Also after a password reset (kind passwordReset, via reset, supply-checkout-6uw.32): the post confirmation trigger couldn't sign the account out (reason sign_out: sessions from before the reset may still work, so sign the user out by hand), or record its time (record_reset, also from POST /me/sign-out-everywhere: the API won't refuse sessions from before it; see docs/journeys.md) or couldn't hand over the reset notice (no_user, invoke, deferred), or the notices function couldn't send it.",
-      metric: business(BusinessMetric.SecurityNoticeFailures, region, FIFTEEN_MINUTES),
+      rule: `Any NeedsAttention in 15 minutes, and until 2 hours pass without one: one of the rare events in NEEDS_ATTENTION_METRICS (backend/src/observability/names.ts) happened, each sent beside its own metric. They should almost never happen and each needs a person to look (a notice not sent, billing drift, a closed team charged, a deletion record rewritten, and the rest). See which in the dashboard's Needs attention row or the metrics console (SupplyCheckout, by Region), or in Logs Insights: filter ispresent(NeedsAttention). Each one's runbook: docs/observability.md, When Needs attention fires.`,
+      metric: business(BusinessMetric.NeedsAttention, region, NEEDS_ATTENTION_PERIOD),
       threshold: 0,
+      periods: NEEDS_ATTENTION_PERIODS,
+      datapoints: 1,
     },
+    // J0. Sign in
     {
       id: "security-notices-dropped",
       title: "Security notices dropped",
@@ -287,36 +274,6 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       primaryOnly: true,
     },
     {
-      id: "welcome-emails-failing",
-      title: "Welcome emails failing",
-      journeys: "J1",
-      severity: "P2",
-      rule: "Any WelcomeEmailFailures over an hour: a new account's welcome email wasn't handed to the welcome email function (the invoke failed, or a trigger had no time left), or the function couldn't send it (no verified address, a failed Cognito or DynamoDB call, or a request that isn't the triggers'). SES refusing a message is counted apart (Welcome emails refused). Sign-up went ahead either way (supply-checkout-6uw.25).",
-      metric: business(BusinessMetric.WelcomeEmailFailures, region, Duration.hours(1)),
-      threshold: 0,
-      primaryOnly: true,
-    },
-    {
-      id: "welcome-emails-refused",
-      title: "Welcome emails refused",
-      journeys: "J1",
-      severity: "P2",
-      rule: `WelcomeEmailsRefused at least ${WELCOME_REFUSALS_ALARM_PER_HOUR} in an hour: SES refused a welcome email (sending paused, or a suppressed address). Counted apart from WelcomeEmailFailures; SES is out of the sandbox, so it no longer refuses unverified addresses and any refusal is worth a look (supply-checkout-6uw.25, supply-checkout-3sv.21).`,
-      metric: business(BusinessMetric.WelcomeEmailsRefused, region, Duration.hours(1)),
-      threshold: WELCOME_REFUSALS_ALARM_PER_HOUR - 1,
-      primaryOnly: true,
-    },
-    {
-      id: "password-reset-hints-capped",
-      title: "Password reset hints capped",
-      journeys: "J0",
-      severity: "P2",
-      rule: `Any PasswordResetHintsCapped in an hour: the "sign in with Google" (or Apple) hints for password resets asked for in the app reached their cap for the UTC day (PASSWORD_RESET_HINTS_PER_DAY, ${PASSWORD_RESET_HINTS_PER_DAY}), so no more go out until midnight UTC. They go only to Google or Apple accounts' verified addresses, so this is either real demand or someone pushing many of those addresses through the route (supply-checkout-6uw.26).`,
-      metric: business(BusinessMetric.PasswordResetHintsCapped, region, Duration.hours(1)),
-      threshold: 0,
-      primaryOnly: true,
-    },
-    {
       id: "welcome-email-function-failing",
       title: "Welcome email function failing",
       journeys: "J1",
@@ -355,40 +312,6 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       primaryOnly: true,
     },
     // J3. Invite the crew
-    {
-      id: "email-verification-not-saved",
-      title: "Email verification not saved",
-      journeys: "J3",
-      severity: "P2",
-      rule: "Any EmailVerifyFailures or EmailUnverifyFailures over 15 minutes: the sign-in trigger couldn't copy a Google or Apple user's email_verified, so they stay unverified (and can't accept invites) or, for a downgrade, stay verified; or couldn't unverify or record a linked user's changed email. The sign-in goes ahead (a linked user's failed downgrade fails it) and the next one retries, so the Lambda Errors alarm doesn't see it.",
-      metric: new MathExpression({
-        expression: "FILL(v, 0) + FILL(u, 0)",
-        usingMetrics: {
-          v: business(BusinessMetric.EmailVerifyFailures, region, FIFTEEN_MINUTES),
-          u: business(BusinessMetric.EmailUnverifyFailures, region, FIFTEEN_MINUTES),
-        },
-        period: FIFTEEN_MINUTES,
-        label: `Email verification failures (${region})`,
-      }),
-      threshold: 0,
-    },
-    {
-      id: "email-codes-failing",
-      title: "Email codes failing",
-      journeys: "J3",
-      severity: "P2",
-      rule: "EmailCodeSendFailures + EmailCodeVerifyFailures at least 3 in 15 minutes: POST /me/email/code or /me/email/verify answered 5xx (Cognito erroring or unreachable, or couldn't deliver the code), so people can't verify their address, and can't accept invites. Refusals (a wrong or expired code, too many attempts) aren't counted. Too few requests for the API errors alarm's 2% to notice.",
-      metric: new MathExpression({
-        expression: "FILL(s, 0) + FILL(c, 0)",
-        usingMetrics: {
-          s: business(BusinessMetric.EmailCodeSendFailures, region, FIFTEEN_MINUTES),
-          c: business(BusinessMetric.EmailCodeVerifyFailures, region, FIFTEEN_MINUTES),
-        },
-        period: FIFTEEN_MINUTES,
-        label: `Email code failures (${region})`,
-      }),
-      threshold: 2,
-    },
     {
       id: "near-sending-limit",
       title: "Near the sending limit",
@@ -488,16 +411,6 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       threshold: 30_000,
     },
     {
-      id: "live-updates-deferred",
-      title: "Live updates deferred",
-      journeys: "J4",
-      severity: "P2",
-      rule: "Any LiveUpdatesDeferred in each of 3 consecutive 5-minute periods: the stream consumer keeps running out of its per-invocation publish budget (AppSync slow, or big teams busier than a batch's budget fits), so changes reach other devices late. Every invocation still sends the batch's first chunk, so it can't stall; see Live updates delayed and dropped.",
-      metric: business(BusinessMetric.LiveUpdatesDeferred, region, FIVE_MINUTES),
-      threshold: 0,
-      periods: 3,
-    },
-    {
       id: "live-updates-dropped",
       title: "Live updates dropped",
       journeys: "J4",
@@ -548,22 +461,13 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       threshold: RECEIPT_TRIALS_NEAR_LIMIT_ALARM_PER_HOUR - 1,
     },
     {
-      id: "receipt-trials-paused",
-      title: "Receipt trials paused",
-      journeys: "J5",
-      severity: "P2",
-      rule: "Any ReceiptTrialCapReached in an hour: every trial team in the account together has read RECEIPT_TRIAL_READS_PER_DAY receipts today (supply-checkout-i1d.3), so trial teams can't scan receipts until the next UTC day. Paying teams aren't affected. Either a farm of sign-ups or real trial growth.",
-      metric: business(BusinessMetric.ReceiptTrialCapReached, region, Duration.hours(1)),
-      threshold: 0,
-    },
-    {
       id: "bedrock-spend-high",
       title: "Bedrock spend high",
       journeys: "J5",
       severity: "P2",
-      rule: `The receipt model's estimated spend above $${BEDROCK_SPEND_ALARM_USD_PER_DAY} in a day (BEDROCK_SPEND_ALARM_USD_PER_DAY), from Bedrock's own input, output and cache token counts for the receipt model at its list prices: faster than the Bedrock budget, which sees billed cost hours later. A receipt read costs about half a cent.`,
-      metric: bedrockSpend(region, Duration.days(1)),
-      threshold: BEDROCK_SPEND_ALARM_USD_PER_DAY,
+      rule: `ReceiptReads above ${RECEIPT_READS_ALARM_PER_DAY} in a day (RECEIPT_READS_ALARM_PER_DAY): the receipt model's spend near $${BEDROCK_SPEND_ALARM_USD_PER_DAY} a day (BEDROCK_SPEND_ALARM_USD_PER_DAY) at about half a cent a read. Faster than the Bedrock budget, which sees billed cost hours later.`,
+      metric: business(BusinessMetric.ReceiptReads, region, Duration.days(1)),
+      threshold: RECEIPT_READS_ALARM_PER_DAY,
     },
     // J7. Subscribe, add seats and see invoices
     {
@@ -641,92 +545,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       }),
       threshold: 0,
     },
-    {
-      id: "seat-counts-drifting",
-      title: "Seat counts drifting",
-      journeys: "J7",
-      severity: "P2",
-      rule: "Any SeatQuantityDrift over an hour: the nightly seat reconciliation (primary region) found a team billed for a different number of seats than it has billed members (owners and editors), so the sync after a membership change missed it. The billing worker has already set the quantity right; the log line \"Seat quantity drift\" has the team and subscription IDs and both numbers. Look for a seat sync that couldn't be queued (SeatSyncQueueFailures) or went to the seat syncs dead-letter queue.",
-      metric: business(BusinessMetric.SeatQuantityDrift, region, Duration.hours(1)),
-      threshold: 0,
-      primaryOnly: true,
-    },
-    {
-      id: "entitlements-drifting",
-      title: "Entitlements drifting",
-      journeys: "J7, J8",
-      severity: "P2",
-      rule: "Any EntitlementDrift over an hour: the nightly entitlement check (primary region, with the seat reconciliation) found a team whose subscription, status, plan or seats weren't what Stripe has, so a Stripe event was lost or is stuck. The billing worker has already applied Stripe's state (a missing subscription it can't fix); the log line \"Entitlement drift\" has the team and subscription IDs, the fields and both values. Owners weren't emailed about it. See docs/runbooks/billing-dlq-replay.md.",
-      metric: business(BusinessMetric.EntitlementDrift, region, Duration.hours(1)),
-      threshold: 0,
-      primaryOnly: true,
-    },
     // J11. Delete an account
     {
       id: "deletion-overdue",
-      title: "Deletion overdue",
+      title: "Deletion overdue or not running",
       journeys: "J11",
       severity: "P2",
-      rule: `ClosedTeamsOverdue above 0 at its maximum over ${2 * PURGE_EVERY_HOURS} hours: a closed team is still there more than ${PURGE_OVERDUE_AFTER_HOURS} hours after the day it was due to be deleted, which the privacy policy promises. The hourly closed-team purge (primary region) sends the gauge every run and logs each failed team's ID. A team held because its subscription is set aside counts too, until the purge deletes it anyway ${HELD_PURGE_GRACE_DAYS} days after its deletion date (then "Held team purged with its subscription unresolved" fires). See docs/journeys.md.`,
-      metric: business(BusinessMetric.ClosedTeamsOverdue, region, TWO_PURGE_RUNS, "Maximum"),
+      rule: `ClosedTeamsOverdue above 0 at its maximum over ${PURGE_SILENT_ALARM_HOURS} hours: a closed team is still there more than ${PURGE_OVERDUE_AFTER_HOURS} hours after the day it was due to be deleted, which the privacy policy promises. The hourly closed-team purge (primary region) sends the gauge every run and logs each failed team's ID. A team held because its subscription is set aside counts too, until the purge deletes it anyway ${HELD_PURGE_GRACE_DAYS} days after its deletion date (then Needs attention fires, HeldTeamsPurged). Or no sample at all in those ${PURGE_SILENT_ALARM_HOURS} hours (missing data breaches): the purge isn't running (its schedule is disabled or deleted, or every run fails before it reads the closed-teams index), so closed teams aren't being deleted. See docs/journeys.md.`,
+      metric: business(BusinessMetric.ClosedTeamsOverdue, region, Duration.hours(PURGE_SILENT_ALARM_HOURS), "Maximum"),
       threshold: 0,
-      primaryOnly: true,
-    },
-    {
-      id: "team-closed-notices-failing",
-      title: "Team closure emails failing",
-      journeys: "J11",
-      severity: "P2",
-      rule: "Any TeamClosedNoticeFailures over 15 minutes: an owner of a team that just closed wasn't emailed the day it will be deleted (SES refused the message, no address on file, or the owners couldn't be listed). The team closed anyway.",
-      metric: business(BusinessMetric.TeamClosedNoticeFailures, region, FIFTEEN_MINUTES),
-      threshold: 0,
-    },
-    {
-      id: "reopened-team-subscription-ended",
-      title: "Reopened team's subscription ended",
-      journeys: "J7, J11",
-      severity: "P2",
-      rule: "Any ReopenedTeamSubscriptionsEnded over 15 minutes: an owner reopened a closed team while the billing worker or the closed-team purge was asking Stripe to end its subscription, so a team that's open again has a subscription set to cancel (or cancelled). The log line \"Team reopened while its subscription was being ended\" has the team and subscription IDs and the action: resume the subscription in the Stripe Dashboard, or ask an owner to.",
-      metric: business(BusinessMetric.ReopenedTeamSubscriptionsEnded, region, FIFTEEN_MINUTES),
-      threshold: 0,
-    },
-    {
-      id: "reopen-resync-late",
-      title: "Reopened team's billing not resynced",
-      journeys: "J7, J11",
-      severity: "P2",
-      rule: "Any ReopenResyncsLate over an hour: the nightly seat reconciliation (primary region) found a team reopened before the night whose Stripe subscription still hadn't been resynced (stripeResyncFor on its META item): the reopen's seat sync wasn't queued, or failed. The billing worker then resyncs it with the night's message, resuming a subscription its closure set to cancel. If it fires again the next night, that resync is failing too: the log line \"Reopened team's subscription not yet resynced\" has the team ID, and the worker's warnings or the seat syncs dead-letter queue say why. See docs/runbooks/billing-dlq-replay.md.",
-      metric: business(BusinessMetric.ReopenResyncsLate, region, Duration.hours(1)),
-      threshold: 0,
-      primaryOnly: true,
-    },
-    {
-      id: "reopened-team-subscription-undecided",
-      title: "Reopened team's subscription left to cancel",
-      journeys: "J7, J11",
-      severity: "P2",
-      rule: "Any ReopenedTeamSubscriptionsUndecided over an hour: the billing worker resynced a reopened team whose Stripe subscription is set to cancel at the period's end, maybe by the closure (no closure stamp, but the purge recorded ending it for that closure, from before the stamp existed) or maybe by an owner, and Stripe gave no time it was set (canceled_at), or the team has no reopen time. It left it set to cancel rather than risk charging an owner who cancelled. The log line \"Reopened team's subscription left set to cancel\" has the team and subscription IDs: contact the team's owners, with what the subscription's history in the Stripe Dashboard shows, and resume it only if an owner asks; don't resume it by default.",
-      metric: business(BusinessMetric.ReopenedTeamSubscriptionsUndecided, region, Duration.hours(1)),
-      threshold: 0,
-    },
-    {
-      id: "closed-team-charged",
-      title: "Closed team charged",
-      journeys: "J7, J11",
-      severity: "P2",
-      rule: "Any ClosedTeamRenewalsCharged over an hour: the hourly closed-team purge (primary region) found a closed team's subscription charged for a period that began after the team closed (a renewal or trial conversion in the hour before the purge set it to end). The log line \"Closed team's subscription renewed after it closed\" has the team and subscription IDs: refund that invoice in the Stripe Dashboard.",
-      metric: business(BusinessMetric.ClosedTeamRenewalsCharged, region, Duration.hours(1)),
-      threshold: 0,
-      primaryOnly: true,
-    },
-    {
-      id: "closed-team-subscription-not-found",
-      title: "Closed-team subscription not found in Stripe",
-      journeys: "J7, J11",
-      severity: "P2",
-      rule: "Any ClosedTeamSubscriptionsNotFound over an hour: the hourly closed-team purge (primary region) asked Stripe for a closed team's subscription, Stripe said it doesn't exist, and the purge set the team aside (stripeSetAsideFor, reason NotFound) rather than retry it every hour. Usually the subscription went with its customer, but a Stripe key or mode mismatch looks the same for every closed team, with none cancelled. The log line \"Closed team's subscription not found in Stripe\" has the team and subscription IDs: look the subscription up in the Stripe Dashboard, in the purge's mode. Once the key or mode is fixed, removing stripeSetAsideFor from each team's META item has the next run end its subscription.",
-      metric: business(BusinessMetric.ClosedTeamSubscriptionsNotFound, region, Duration.hours(1)),
-      threshold: 0,
+      missingBreaches: true,
       primaryOnly: true,
     },
     {
@@ -750,26 +578,6 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       primaryOnly: true,
     },
     {
-      id: "stripe-customer-already-deleted",
-      title: "Stripe customer already deleted",
-      journeys: "J7, J11",
-      severity: "P2",
-      rule: "Any StripeCustomersAlreadyDeleted over an hour: the hourly closed-team purge (primary region) asked Stripe to delete a purged team's customer and was told it doesn't exist, took it as deleted and purged the team. A run that stopped after deleting the customer does that, but so does a Stripe key or mode mismatch, under which the real customer keeps its details and any subscription keeps billing. The log line \"Stripe customer already deleted\" has the team and customer IDs, and the team's deletion record keeps its customer and subscription IDs: look the customer up in the Stripe Dashboard, in both modes.",
-      metric: business(BusinessMetric.StripeCustomersAlreadyDeleted, region, Duration.hours(1)),
-      threshold: 0,
-      primaryOnly: true,
-    },
-    {
-      id: "held-team-purged",
-      title: "Held team purged with its subscription unresolved",
-      journeys: "J7, J11",
-      severity: "P2",
-      rule: `Any HeldTeamsPurged over an hour: the hourly closed-team purge (primary region) deleted a closed team held because its Stripe subscription was set aside (another customer's, not found in Stripe, or an error retrying won't change), ${HELD_PURGE_GRACE_DAYS} days after its deletion date, with nobody having dealt with it. Its subscription may still be live and billing. The log line "Held team purged with its subscription unresolved" has the team, customer and subscription IDs and the reason, and the team's deletion record keeps the Stripe IDs: end the subscription by hand in the Stripe Dashboard (check both modes). See docs/journeys.md.`,
-      metric: business(BusinessMetric.HeldTeamsPurged, region, Duration.hours(1)),
-      threshold: 0,
-      primaryOnly: true,
-    },
-    {
       id: "stripe-customer-deletion-retrying",
       title: "Stripe customer deletion retrying",
       journeys: "J7, J11",
@@ -790,45 +598,6 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       primaryOnly: true,
     },
     {
-      id: "team-reopened-notices-failing",
-      title: "Team reopened emails failing",
-      journeys: "J11",
-      severity: "P2",
-      rule: "Any TeamReopenedNoticeFailures over 15 minutes: an owner of a team that was just reopened wasn't told it will no longer be deleted (SES refused the message, no address on file, or the owners couldn't be listed). The team reopened anyway.",
-      metric: business(BusinessMetric.TeamReopenedNoticeFailures, region, FIFTEEN_MINUTES),
-      threshold: 0,
-    },
-    {
-      id: "lapse-job-failing",
-      title: "Lapsed-team job failing",
-      journeys: "J7, J8, J10",
-      severity: "P2",
-      rule: `Any LapseFailures over ${2 * LAPSE_EVERY_HOURS} hours: the hourly lapsed-team job (primary region) couldn't handle a team whose trial or subscription lapsed (a read, write or Stripe call failed), couldn't deliver a team's deletion warning to any owner (so it won't close it), or wouldn't close a lapsed team because Stripe disagrees with our record (a live subscription for the customer, or the team's subscription or customer missing, maybe a Stripe key or mode mismatch). The team stays read-only and isn't deleted until it's resolved, past the date its owners were told. The log lines "Lapsed team not closed: Stripe disagrees", "Lapsed team's deletion warning not delivered" and "Lapsed team check failed" have the team, subscription and customer IDs. See docs/runbooks/lapsed-teams.md.`,
-      metric: business(BusinessMetric.LapseFailures, region, Duration.hours(2 * LAPSE_EVERY_HOURS)),
-      threshold: 0,
-      primaryOnly: true,
-    },
-    {
-      id: "lapse-closures-held",
-      title: "Lapsed-team closures held",
-      journeys: "J10",
-      severity: "P2",
-      rule: `Any LapseClosuresHeld over ${2 * LAPSE_EVERY_HOURS} hours: a run of the hourly lapsed-team job (primary region) found more than ${LAPSE_MAX_CLOSURES_PER_RUN} lapsed teams due to close for deletion (LAPSE_MAX_CLOSURES_PER_RUN), closed that many and held the rest for the next run. Each run closes up to that many more, so if it's a bug or bad data rather than a real batch of lapsed teams, disable the TeamLapseSchedule rule now. Logs Insights on the job: "Lapsed team closed for deletion" lists the teams. See docs/runbooks/lapsed-teams.md.`,
-      metric: business(BusinessMetric.LapseClosuresHeld, region, Duration.hours(2 * LAPSE_EVERY_HOURS)),
-      threshold: 0,
-      primaryOnly: true,
-    },
-    {
-      id: "lapse-checkout-held",
-      title: "Lapsed team held by Checkout",
-      journeys: "J10",
-      severity: "P2",
-      rule: `Any LapseCheckoutOverdue over ${2 * LAPSE_EVERY_HOURS} hours: the hourly lapsed-team job (primary region) didn't close a lapsed team ${LAPSE_CHECKOUT_MAX_DELAY_DAYS} or more days (LAPSE_CHECKOUT_MAX_DELAY_DAYS) past its date because an owner started Checkout within LAPSE_CHECKOUT_GUARD_HOURS or Stripe has a session open for its customer. The job never closes a team under a Checkout, so an owner who keeps starting one holds the team indefinitely, past the Terms' 30 days: a person decides. "Lapsed team held by Checkout too long past its date" has the team and customer IDs. See docs/runbooks/lapsed-teams.md.`,
-      metric: business(BusinessMetric.LapseCheckoutOverdue, region, Duration.hours(2 * LAPSE_EVERY_HOURS)),
-      threshold: 0,
-      primaryOnly: true,
-    },
-    {
       id: "lapse-closures-high",
       title: "Lapsed-team closures high",
       journeys: "J10",
@@ -840,13 +609,14 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
     },
     {
       id: "lapse-job-out-of-time",
-      title: "Lapsed-team job out of time",
+      title: "Lapsed-team job out of time or not running",
       journeys: "J7, J8, J10",
       severity: "P2",
-      rule: `LapseTeamsUnstarted above 0 in every hour for ${LAPSE_UNSTARTED_ALARM_HOURS} hours: each run of the hourly lapsed-team job (primary region) ran out of time before it started every lapsing team, so owners' emails and closures are late. Runs start at a random place in the list, so no team is always left, but the list has outgrown one run. See docs/runbooks/lapsed-teams.md.`,
+      rule: `LapseTeamsUnstarted above 0, or missing, in every hour for ${LAPSE_UNSTARTED_ALARM_HOURS} hours. Above 0: each run of the hourly lapsed-team job (primary region) ran out of time before it started every lapsing team, so owners' emails and closures are late; runs start at a random place in the list, so no team is always left, but the list has outgrown one run. Missing (missing data breaches): the job isn't running (its schedule is disabled or deleted, or every run fails before it lists the teams, and it sends this gauge with LapseTeamsChecked), so owners of lapsing teams aren't emailed and lapsed teams aren't closed for deletion as the Terms say. See docs/runbooks/lapsed-teams.md.`,
       metric: business(BusinessMetric.LapseTeamsUnstarted, region, Duration.hours(LAPSE_EVERY_HOURS), "Maximum"),
       threshold: 0,
       periods: LAPSE_UNSTARTED_ALARM_HOURS / LAPSE_EVERY_HOURS,
+      missingBreaches: true,
       primaryOnly: true,
     },
   ];
@@ -855,7 +625,8 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
 /**
  * The journey alarms for one region, each notifying its severity's topic.
  * Outside the primary region, the primaryOnly ones are left out. Missing
- * data never alarms: most of these metrics only exist once traffic does.
+ * data never alarms (most of these metrics only exist once traffic does),
+ * except on a scheduled job's gauge (missingBreaches).
  */
 export class JourneyAlarms extends Construct {
   readonly alarms: Alarm[] = [];
@@ -875,8 +646,8 @@ export class JourneyAlarms extends Construct {
         threshold: spec.threshold,
         comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
         evaluationPeriods: spec.periods ?? 1,
-        datapointsToAlarm: spec.periods ?? 1,
-        treatMissingData: TreatMissingData.NOT_BREACHING,
+        datapointsToAlarm: spec.datapoints ?? spec.periods ?? 1,
+        treatMissingData: spec.missingBreaches ? TreatMissingData.BREACHING : TreatMissingData.NOT_BREACHING,
       });
       props.topics.notify(alarm, spec.severity);
       this.alarms.push(alarm);

@@ -21,9 +21,9 @@
 import { Logger } from "@aws-lambda-powertools/logger";
 import { MetricUnit, Metrics } from "@aws-lambda-powertools/metrics";
 import type { Context } from "aws-lambda";
-import { type BusinessMetricName, ENV, METRICS_NAMESPACE, REGION_DIMENSION, TEST_SKIPPED_METRICS } from "./names.js";
+import { BusinessMetric, type BusinessMetricName, ENV, METRICS_NAMESPACE, NEEDS_ATTENTION_METRICS, REGION_DIMENSION, TEST_SKIPPED_METRICS } from "./names.js";
 
-export { BusinessMetric, type BusinessMetricName, METRICS_NAMESPACE, REGION_DIMENSION, TEST_SKIPPED_METRICS } from "./names.js";
+export { BusinessMetric, type BusinessMetricName, METRICS_NAMESPACE, NEEDS_ATTENTION_METRICS, REGION_DIMENSION, TEST_SKIPPED_METRICS } from "./names.js";
 export type { Logger } from "@aws-lambda-powertools/logger";
 
 export interface ObservabilityOptions {
@@ -47,7 +47,9 @@ export interface Observability {
    * Adds `value` to a business metric. Metadata (such as the team ID) is
    * written beside the metric in the log line, not as a dimension. With
    * `test: true` in the metadata (a test account or team), a metric in
-   * TEST_SKIPPED_METRICS is only logged, never sent (skippedForTest).
+   * TEST_SKIPPED_METRICS is only logged, never sent (skippedForTest). A
+   * non-zero count of a metric in NEEDS_ATTENTION_METRICS also adds the same
+   * value to NeedsAttention, on the same line.
    */
   count(metric: BusinessMetricName, value?: number, metadata?: Metadata): void;
   /**
@@ -118,6 +120,8 @@ export function createObservability(options: ObservabilityOptions = {}): Observa
       if (hasMetadata) flush();
       for (const [key, v] of Object.entries(metadata)) metrics.addMetadata(key, String(v));
       metrics.addMetric(metric, MetricUnit.Count, value);
+      // On the same line, so the "Needs attention" alarm's metric and the one that raised it are found together
+      if (value > 0 && NEEDS_ATTENTION_METRICS.has(metric)) metrics.addMetric(BusinessMetric.NeedsAttention, MetricUnit.Count, value);
       pending = true;
       if (hasMetadata) flush();
     },

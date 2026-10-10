@@ -9,12 +9,11 @@ import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup } from "aws-cdk-lib/aws-logs";
 import { Construct } from "constructs";
 import { DELETION_PREFIXES, DELETIONS_ENV, LIFECYCLE_EXPIRATION, deletionsBucketName } from "../../../backend/src/deletions/names.js";
-import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import { opsResourceNames } from "../../../backend/src/ops/names.js";
 import { bundling } from "../stacks/api-stack.js";
 import type { AlarmTopics } from "./alarm-topics.js";
 import { LOG_RETENTION } from "./defaults.js";
-import { business, FIVE_MINUTES } from "./metrics.js";
+import { FIVE_MINUTES } from "./metrics.js";
 
 const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
 
@@ -64,13 +63,15 @@ export interface DeletionRecordsWatchProps {
  *   record's, and any write to a record's key that now has more than one
  *   version or a delete marker (S3's events don't say whether a write replaced
  *   an object, so it lists the key's versions).
- * - `rewritten`: P2 when DeletionRecordRewrites is above 0 in 5 minutes
- *   ("Deletion record rewritten").
- * - `failing`: P2 when the watch itself fails or misses an event ("Deletion
- *   records watch failing"): the function's errors, events Lambda dropped
- *   after its retries (AsyncEventsDropped), and invocations EventBridge
- *   couldn't make (FailedInvocations). After that the event is gone and the
- *   bucket's access log is what's left. No reserved concurrency: a new
+ * - DeletionRecordRewrites alarms through "Needs attention" (P2, its
+ *   NEEDS_ATTENTION_METRICS, journey-alarms.ts), which replaced its own
+ *   "Deletion record rewritten" alarm (supply-checkout-7pe.1).
+ * - `failing`: P2 when the watch misses an event ("Deletion records watch
+ *   failing"): events Lambda dropped after its retries (AsyncEventsDropped),
+ *   and invocations EventBridge couldn't make (FailedInvocations). After
+ *   that the event is gone and the bucket's access log is what's left. An
+ *   error Lambda's retry gets past loses nothing, so the function's Errors
+ *   alone don't alarm (supply-checkout-7pe.1). No reserved concurrency: a new
  *   account's limit can leave nothing to reserve, and a throttled event waits
  *   in Lambda's queue for up to 6 hours, and alarms if it's dropped.
  * - `bucketChanges`: P1 (the level of the rule-tampering alerts) on
@@ -92,7 +93,6 @@ export interface DeletionRecordsWatchProps {
 export class DeletionRecordsWatch extends Construct {
   readonly fn: NodejsFunction;
   readonly rule: Rule;
-  readonly rewritten: Alarm;
   readonly failing: Alarm;
   readonly bucketChanges: Rule;
 
@@ -139,33 +139,19 @@ export class DeletionRecordsWatch extends Construct {
     });
     this.rule.addTarget(new LambdaFunction(this.fn, { retryAttempts: 2, maxEventAge: Duration.hours(1) }));
 
-    this.rewritten = new Alarm(this, "Rewritten", {
-      alarmName: `supply-checkout-${props.envName}-p2-deletion-record-rewritten`,
-      alarmDescription:
-        "P2. Deletion record rewritten: a deletion record was written over, deleted or hidden behind a delete marker, or something that isn't a record was written to the bucket. " +
-        "The watch's log has the version and request IDs. Runbook: docs/backups.md, When a deletion record is rewritten.",
-      metric: business(BusinessMetric.DeletionRecordRewrites, props.region, FIVE_MINUTES),
-      threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: TreatMissingData.NOT_BREACHING,
-    });
-    props.topics.notify(this.rewritten, "P2");
-
     this.failing = new Alarm(this, "Failing", {
       alarmName: `supply-checkout-${props.envName}-p2-deletion-records-watch-failing`,
       alarmDescription:
-        "P2. Deletion records watch failing: the function that checks deletion records for rewrites threw, so a rewrite could go unseen. " +
+        "P2. Deletion records watch failing: the function that checks deletion records for rewrites gave up on an event after its retries, or EventBridge couldn't invoke it, so a rewrite could go unseen. " +
         "Its log has the error. Runbook: docs/backups.md, When a deletion record is rewritten.",
       metric: new MathExpression({
-        expression: "FILL(errors, 0) + FILL(dropped, 0) + FILL(failed, 0)",
+        expression: "FILL(dropped, 0) + FILL(failed, 0)",
         usingMetrics: {
-          errors: this.fn.metricErrors({ period: FIVE_MINUTES, statistic: "Sum" }),
           dropped: this.fn.metric("AsyncEventsDropped", { period: FIVE_MINUTES, statistic: "Sum" }),
           failed: new Metric({ namespace: "AWS/Events", metricName: "FailedInvocations", dimensionsMap: { RuleName: this.rule.ruleName }, period: FIVE_MINUTES, statistic: "Sum" }),
         },
         period: FIVE_MINUTES,
-        label: "Deletion records watch errors and missed events",
+        label: "Deletion records watch missed events",
       }),
       threshold: 0,
       evaluationPeriods: 1,

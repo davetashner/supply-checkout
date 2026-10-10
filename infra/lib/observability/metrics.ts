@@ -118,14 +118,3 @@ export function apiLatencySearch(region: string): MathExpression {
     searchRegion: region,
   });
 }
-
-/** 5xx responses as a percentage of requests, over every HTTP API in the region. */
-export function apiErrorRate(region: string): MathExpression {
-  return new MathExpression({
-    expression: `100 * ${apiSum("5xx")} / ${apiSum("Count")}`,
-    usingMetrics: {},
-    period: FIVE_MINUTES,
-    label: `API 5xx rate % (${region})`,
-    searchRegion: region,
-  });
-}
