@@ -14,6 +14,7 @@
     "test:ddb:coverage": "node scripts/test-ddb.ts --coverage && node ../scripts/vitest-coverage.mjs",
     "check": "npm run lint && npm test",
     "test:ddb": "node scripts/test-ddb.ts",
+    "test:future": "FUTURE_DAYS=${FUTURE_DAYS:-60} node scripts/test-ddb.ts",
     "backfill": "esbuild scripts/backfill.ts --bundle --platform=node --format=esm --packages=external --log-level=warning --outfile=node_modules/.cache/backfill/backfill.mjs && node node_modules/.cache/backfill/backfill.mjs",
     "feedback": "esbuild scripts/feedback.ts --bundle --platform=node --format=esm --packages=external --log-level=warning --outfile=node_modules/.cache/feedback/feedback.mjs && node node_modules/.cache/feedback/feedback.mjs",
     "import-artifact": "esbuild scripts/import-artifact.ts --bundle --platform=node --format=esm --packages=external --log-level=warning --outfile=node_modules/.cache/import-artifact/import-artifact.mjs && node node_modules/.cache/import-artifact/import-artifact.mjs",

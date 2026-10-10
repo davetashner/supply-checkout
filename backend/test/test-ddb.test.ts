@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { ciImage, INSTALL_HELP } from "../scripts/test-ddb.js";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/test-ddb.ts", import.meta.url));
@@ -80,6 +81,11 @@ describe("npm run test:ddb", () => {
   it("uses the DynamoDB Local image from the CI workflow", () => {
     expect(ciImage()).toMatch(/^amazon\/dynamodb-local:\d+\.\d+\.\d+$/);
     expect(() => ciImage("jobs: {}")).toThrow(/dynamodb\.image/);
+  });
+
+  it("is the image the nightly future-clock job uses too", () => {
+    const workflow = parse(readFileSync(fileURLToPath(new URL("../../.github/workflows/ci.yml", import.meta.url)), "utf8"));
+    expect(workflow.jobs["backend-future"].services.dynamodb.image).toBe(ciImage());
   });
 
   it("explains how to install a runtime when there's none", async () => {

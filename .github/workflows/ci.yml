@@ -609,10 +609,50 @@ jobs:
           path: backend/coverage/
           retention-days: 14
 
+  # The backend suite again with the clock 60 days ahead (backend/test/future-clock.ts),
+  # so a test that builds data on a fixed date but checks it against the real
+  # clock fails here, naming the test, before the real clock gets there (#731).
+  # Nightly and manual runs only.
+  backend-future:
+    name: Backend, clock 60 days ahead
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local:3.0.0
+        ports:
+          - 8000:8000
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DYNAMODB_ENDPOINT: http://localhost:8000
+      FUTURE_DAYS: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Wait for DynamoDB Local
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -s -o /dev/null "$DYNAMODB_ENDPOINT"; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::DynamoDB Local did not start"
+          exit 1
+      - run: npm test
+        env:
+          CI: true
+
   ci-passed:
     name: CI passed
     if: always()
-    needs: [pr-title, lint, workflows, scripts, secrets, regions, dependencies, codeql, test, changes, infra, backend]
+    needs: [pr-title, lint, workflows, scripts, secrets, regions, dependencies, codeql, test, changes, infra, backend, backend-future]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
