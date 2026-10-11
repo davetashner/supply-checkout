@@ -558,6 +558,8 @@ test.describe("first sign-in and teams", () => {
   test.describe("campaign tags (supply-checkout-kajm)", () => {
     const KEY = "supplyCheckout.campaign";
     const create = async (page, name = "Bravo Co") => {
+      // Focused by the screen first, or its focus can land after the typing (as the first-sign-in test waits)
+      await expect(page.getByLabel("Team name")).toBeFocused();
       await page.getByLabel("Team name").fill(name);
       await page.getByRole("button", { name: "Create team" }).click();
       await connected(page);
@@ -620,6 +622,7 @@ test.describe("first sign-in and teams", () => {
       await openAws(page, backend, { storage: { local: { [KEY]: JSON.stringify({ tags: { source: "newsletter", campaign: "oct" }, at: Date.now() - 3 * 24 * 3600e3 }) } } });
       await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
       backend.on("POST", "/teams", { status: 500, body: { error: { code: "internal", message: "boom" } } });
+      await expect(page.getByLabel("Team name")).toBeFocused();
       await page.getByLabel("Team name").fill("Bravo Co");
       await page.getByRole("button", { name: "Create team" }).click();
       await expect(alert(page)).toBeVisible();
