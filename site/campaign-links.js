@@ -12,7 +12,7 @@ function withCampaign(url, tags) {
 }
 
 // Links into the app (https://app.<domain>/): the only kind of link this page has to another origin of ours
-const intoApp = (a) => a.protocol === "https:" && a.hostname.startsWith("app.");
+const intoApp = (a) => a.protocol === "https:" && /^app\.[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(a.hostname);
 
 function carryCampaign() {
   const fresh = readCampaign(location.search);
