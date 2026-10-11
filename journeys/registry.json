@@ -24,12 +24,13 @@
       "persona": "Owner",
       "critical": true,
       "steps": [
-        { "id": "J1.1", "text": "Visit supplycheckout.com, read the pricing page, tap **Start free trial**.", "status": "planned", "beads": ["supply-checkout-21q"] },
-        { "id": "J1.2", "text": "Sign up and accept the terms.", "status": "planned", "beads": ["supply-checkout-21q"] },
+        { "id": "J1.1", "text": "Visit supplycheckout.com, read the pricing page, tap **Start free trial**.", "status": "planned", "prodSkip": "planned: bead supply-checkout-21q builds it", "beads": ["supply-checkout-21q"] },
+        { "id": "J1.2", "text": "Sign up and accept the terms.", "status": "planned", "prodSkip": "planned: bead supply-checkout-21q builds it", "beads": ["supply-checkout-21q"] },
         {
           "id": "J1.3",
           "text": "Name the team.",
           "status": "built",
+          "prodDesktopOnly": "each run's throwaway sign-ups and emails are kept few",
           "beads": ["supply-checkout-l5y", "supply-checkout-x0l", "supply-checkout-dhc"],
           "tests": ["backend/test/account-api.test.ts"]
         }
@@ -69,6 +70,7 @@
           "id": "J3.1",
           "text": "The owner opens **Members**, enters a crew member's email and picks **Contributor**.",
           "status": "built",
+          "prodDesktopOnly": "each run's throwaway sign-ups and emails are kept few",
           "beads": ["supply-checkout-5tp", "supply-checkout-dj6"],
           "tests": ["backend/test/invites-api.test.ts"]
         },
@@ -76,6 +78,7 @@
           "id": "J3.2",
           "text": "The crew member gets an email, taps the link on their phone and signs up or signs in.",
           "status": "built",
+          "prodDesktopOnly": "each run's throwaway sign-ups and emails are kept few",
           "beads": ["supply-checkout-5tp", "supply-checkout-5hx"],
           "simulated": "The email (SES) and Managed Login are fakes in the tests",
           "tests": ["backend/test/invites-api.test.ts", "backend/test/email.test.ts"]
@@ -114,13 +117,15 @@
           "id": "J5.1",
           "text": "Tap **Scan receipt** and photograph the receipt.",
           "status": "built",
+          "prodDesktopOnly": "each run's throwaway sign-ups and emails are kept few",
           "simulated": "Receipt reading is claude.ai's, faked by tests/mock-claude.js"
         },
-        { "id": "J5.2", "text": "Check each line: name, quantity, price, and the suggested inventory match.", "status": "built" },
+        { "id": "J5.2", "text": "Check each line: name, quantity, price, and the suggested inventory match.", "status": "built", "prodDesktopOnly": "each run's throwaway sign-ups and emails are kept few" },
         {
           "id": "J5.3",
           "text": "Assign each line to a client (a new or existing project) or to **General inventory**, then tap **Save**. Company equipment bought for a client is charged on their project (the receipt price plus the team's markup, or a price typed instead); in General inventory it adds to storage and isn't charged.",
           "status": "built",
+          "prodSkip": "the prod run discards the review (Stop before Save) so nothing is saved; the local and backend suites cover saving",
           "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
         }
       ],
@@ -147,6 +152,7 @@
           "id": "J7.2",
           "text": "Pay on Stripe Checkout (card, Apple Pay or Google Pay).",
           "status": "built",
+          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
           "beads": ["supply-checkout-x0l", "supply-checkout-2kl", "supply-checkout-8jc.20"],
           "simulated": "Stripe Checkout and Stripe's webhooks are fakes in the tests",
           "tests": ["backend/test/billing-api.test.ts", "backend/test/billing-webhook.test.ts", "backend/test/billing-worker.test.ts", "backend/test/billing-ddb.test.ts"]
@@ -155,6 +161,7 @@
           "id": "J7.3",
           "text": "Later, invite more people (seats go up) and open past invoices.",
           "status": "built",
+          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
           "beads": ["supply-checkout-l50", "supply-checkout-eja"],
           "simulated": "Stripe's invoices and subscriptions are fakes in the tests",
           "tests": ["backend/test/billing-seats.test.ts", "backend/test/billing-api.test.ts", "backend/test/ops-checks.test.ts"]
@@ -171,6 +178,7 @@
           "id": "J8.1",
           "text": "A renewal payment fails.",
           "status": "built",
+          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
           "beads": ["supply-checkout-2kl"],
           "simulated": "Stripe's webhooks are fakes in the tests",
           "tests": ["backend/test/billing-webhook.test.ts", "backend/test/billing-worker.test.ts"]
@@ -179,6 +187,7 @@
           "id": "J8.2",
           "text": "The owner sees a banner and gets an email. The team keeps full access for 7 days.",
           "status": "built",
+          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
           "beads": ["supply-checkout-qdx"],
           "simulated": "Stripe's webhooks and SES are fakes in the tests",
           "tests": ["backend/test/billing-worker.test.ts", "backend/test/account-api.test.ts"]
@@ -187,6 +196,7 @@
           "id": "J8.3",
           "text": "The owner updates their card in the Customer Portal.",
           "status": "built",
+          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
           "beads": ["supply-checkout-121"],
           "simulated": "The Stripe Customer Portal is a fake in the tests",
           "tests": ["backend/test/billing-worker.test.ts"]
@@ -218,15 +228,17 @@
           "id": "J10.1",
           "text": "Open the Customer Portal from **Billing** and cancel.",
           "status": "built",
+          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
           "beads": ["supply-checkout-121"],
           "simulated": "The Stripe Customer Portal is a fake in the tests",
           "tests": ["backend/test/billing-worker.test.ts"]
         },
-        { "id": "J10.2", "text": "Export all projects and inventory.", "status": "built", "beads": ["supply-checkout-zuv"] },
+        { "id": "J10.2", "text": "Export all projects and inventory.", "status": "built", "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9", "beads": ["supply-checkout-zuv"] },
         {
           "id": "J10.3",
           "text": "After 30 days read-only, and at least 7 days after a warning email, the team is closed and its data deleted.",
           "status": "built",
+          "prodSkip": "can't wait 30 days; the backend tests and the lapsed-team alarms cover it",
           "beads": ["supply-checkout-qdx"],
           "simulated": "Stripe and SES are fakes in the tests",
           "tests": ["backend/test/team-lapse.test.ts", "backend/test/team-lapse-ddb.test.ts"]
@@ -243,6 +255,7 @@
           "id": "J11.1",
           "text": "Open **Account → Delete account** in the team bar (or **Delete account** on the first screen) and type DELETE.",
           "status": "built",
+          "prodDesktopOnly": "each run's throwaway sign-ups and emails are kept few",
           "beads": ["supply-checkout-b1h"],
           "tests": ["backend/test/account-deletion-api.test.ts", "backend/test/closing.test.ts"]
         },
@@ -250,6 +263,7 @@
           "id": "J11.2",
           "text": "An owner of a team others are in either makes another member an owner or closes the team (**Members → Close the team**, typing its name) first; the app shows the server's message naming those teams.",
           "status": "built",
+          "prodDesktopOnly": "each run's throwaway sign-ups and emails are kept few",
           "beads": ["supply-checkout-b1h"],
           "tests": ["backend/test/account-deletion-api.test.ts", "backend/test/closing.test.ts"]
         }
