@@ -1,7 +1,8 @@
 {
   "releases": [
     {
-      "version": "upcoming",
+      "version": "1.15.0",
+      "date": "2026-10-11",
       "notes": [
         {
           "title": "Your name on Account",
