@@ -46,10 +46,10 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 | [J4](#j4-check-supplies-out-and-back-in) | Check supplies out and back in | Crew member | Yes | Tested | 3 of 3 |
 | [J5](#j5-read-a-receipt) | Read a receipt | Crew member, owner | No | Tested; still to come: a subscribe link in the trial's receipt limit message, once the in-app plan picker exists | 2 of 3 |
 | [J6](#j6-export-a-project-to-bill-a-client) | Export a project to bill a client | Owner, bookkeeper | No | Tested | 2 of 2 |
-| [J7](#j7-subscribe-add-seats-and-see-invoices) | Subscribe, add seats and see invoices | Owner | Yes | Partly built | 0 of 3 |
+| [J7](#j7-subscribe-add-seats-and-see-invoices) | Subscribe, add seats and see invoices | Owner | Yes | Partly built | 2 of 3 |
 | [J8](#j8-a-payment-fails-and-is-fixed) | A payment fails and is fixed | Owner | Yes | Tested | 0 of 3 |
 | [J9](#j9-a-viewer-can-see-but-not-change) | A viewer can see but not change | Bookkeeper | No | Tested | 1 of 1 |
-| [J10](#j10-cancel-and-take-the-data) | Cancel and take the data | Owner | No | Tested | 0 of 3 |
+| [J10](#j10-cancel-and-take-the-data) | Cancel and take the data | Owner | No | Tested | 2 of 3 |
 | [J11](#j11-delete-an-account) | Delete an account | Anyone | No | Tested | 2 of 2 |
 | [J12](#j12-choose-a-plan-in-the-mobile-app) | Choose a plan in the mobile app | Owner | No | Planned (phase 2) | 0 of 3 |
 | [J13](#j13-take-company-equipment-to-a-job-and-bring-it-back) | Take company equipment to a job and bring it back | Crew member | Yes | Tested | 5 of 5 |
@@ -182,8 +182,8 @@ The project list has a search box that matches a project's client ("General Use"
 
 <!-- journeys:steps J7 -->
 - **J7.1** Before or at the end of the trial, open **Billing** and choose a plan. *Planned: `supply-checkout-8jc.5`.*
-- **J7.2** Pay on Stripe Checkout (card, Apple Pay or Google Pay). *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
-- **J7.3** Later, invite more people (seats go up) and open past invoices. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
+- **J7.2** Pay on Stripe Checkout (card, Apple Pay or Google Pay). *In prod, on desktop only: each run's throwaway sign-ups and emails are kept few.*
+- **J7.3** Later, invite more people (seats go up) and open past invoices. *In prod, on desktop only: each run's throwaway sign-ups and emails are kept few.*
 <!-- /journeys:steps J7 -->
 
 **Expected:** the team shows as active within a minute of paying. Adding or removing an owner or editor, or changing someone between viewer and a billed role, updates the seat count with proration; viewers are free. Invoices are emailed and listed in the app with the company name.
@@ -195,9 +195,9 @@ The project list has a search box that matches a project's client ("General Use"
 **Persona:** owner. **Critical:** if this breaks, paying customers lose access, or we give access away.
 
 <!-- journeys:steps J8 -->
-- **J8.1** A renewal payment fails. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
-- **J8.2** The owner sees a banner and gets an email. The team keeps full access for 7 days. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
-- **J8.3** The owner updates their card in the Customer Portal. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
+- **J8.1** A renewal payment fails. *Not in prod: needs the restricted Stripe sandbox key (JOURNEYS_STRIPE_SANDBOX_KEY, an owner step); the code is in tests/prod/J7-billing.prod.js and runs once the key exists.*
+- **J8.2** The owner sees a banner and gets an email. The team keeps full access for 7 days. *Not in prod: the banner is asserted inside J8.1's step, which runs only with the restricted sandbox key (owner step, docs/journey-tests-plan.md); the email isn't read.*
+- **J8.3** The owner updates their card in the Customer Portal. *Not in prod: needs the restricted Stripe sandbox key (JOURNEYS_STRIPE_SANDBOX_KEY, an owner step); the code is in tests/prod/J7-billing.prod.js and runs once the key exists.*
 <!-- /journeys:steps J8 -->
 
 **Expected:** after 7 days without payment the team becomes read-only. Nothing is deleted. As soon as payment succeeds, full access returns within a minute.
@@ -223,8 +223,8 @@ The project list has a search box that matches a project's client ("General Use"
 **Persona:** owner.
 
 <!-- journeys:steps J10 -->
-- **J10.1** Open the Customer Portal from **Billing** and cancel. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
-- **J10.2** Export all projects and inventory. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
+- **J10.1** Open the Customer Portal from **Billing** and cancel. *In prod, on desktop only: each run's throwaway sign-ups and emails are kept few.*
+- **J10.2** Export all projects and inventory. *In prod, on desktop only: each run's throwaway sign-ups and emails are kept few.*
 - **J10.3** After 30 days read-only, and at least 7 days after a warning email, the team is closed and its data deleted. *Not in prod: can't wait 30 days; the backend tests and the lapsed-team alarms cover it.*
 <!-- /journeys:steps J10 -->
 
