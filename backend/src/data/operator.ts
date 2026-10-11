@@ -22,6 +22,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { BatchGetCommand, type BatchGetCommandOutput, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { CAMPAIGN_TAGS, type Campaign, type CampaignTag, storedCampaign } from "./campaign.js";
 import { type Db, connection } from "./client.js";
 import { ConflictError, InvalidInputError, NotFoundError, TeamDeletingError } from "./errors.js";
 import { gsi3, id, keys, month, operatorAuditPartition, operatorKeys, opsAuditIndexPartition, opsOwnersPartition, strip } from "./keys.js";
@@ -30,7 +31,7 @@ import { type Page, decodeCursor, encodeCursor, queryPage } from "./query.js";
 import { type StuckImport, listStuckImports } from "./imports.js";
 import { FEEDBACK_STATUSES, type FeedbackReport, type FeedbackStatus } from "./feedback.js";
 import { type ApplyFeedbackUpdate, type FeedbackStatusChange, changeFeedbackStatus, DISMISS_REASON_MAX, dismissReasonProblem, feedbackBeadId, feedbackDismissReason, getFeedback, listFeedback } from "./feedback-owner.js";
-import { COMMITTING_IMPORTS_PARTITION, GSI3, GSI3PK, OPERATOR_AUDIT_PREFIX, OPS_TEAMS_PARTITION, PK } from "./schema.js";
+import { CAMPAIGN_ATTRIBUTES, COMMITTING_IMPORTS_PARTITION, GSI3, GSI3PK, OPERATOR_AUDIT_PREFIX, OPS_TEAMS_PARTITION, PK } from "./schema.js";
 
 /** A signed-in operator, verified by the ops function: their `sub` in the operator pool. */
 export interface Operator {
@@ -86,6 +87,7 @@ export type OperatorAction =
   | "ops.teams.list"
   | "ops.team.read"
   | "ops.receipts.usage"
+  | "ops.sources.report"
   | "ops.comp.set"
   | "ops.comp.end"
   | "ops.comp.discount"
@@ -1013,35 +1015,48 @@ async function receiptCounts(db: Db, wanted: { PK: string; SK: string }[]): Prom
   return counts;
 }
 
+/** What an operator reads of a team's META item beyond the operators' index: the test mark and the campaign tags. */
+export interface OpsTeamMarks {
+  readonly test: boolean;
+  readonly campaign?: Campaign;
+}
+
 /**
- * Which of `teamIds` are test teams (their META item's `test` is true:
- * supply-checkout-o60.2), for the operators' Test badge. The operators' index
- * has no room for the mark (GSI3 projects 20 attributes, the most it can), so
- * it's read from the table with BatchGetItem, projecting only the keys and
- * `test` (TEST_MARK_ATTRIBUTES, all the operator-access role allows). Only
- * shows a badge: nothing an operator can do depends on it. Not audited on its
- * own: it's part of the list or record read it goes with.
+ * The test mark (`test` is true: supply-checkout-o60.2, the operators' Test
+ * badge) and the campaign tags (supply-checkout-kajm, campaign.ts) of
+ * `teamIds`, keyed by team ID. The operators' index has no room for them
+ * (GSI3 projects 20 attributes, the most it can), so they're read from the
+ * table with BatchGetItem, projecting only the keys, `test` and the campaign
+ * attributes (TEST_MARK_ATTRIBUTES, all the operator-access role allows). A
+ * team that isn't found has no entry. Only shows a badge and a source:
+ * nothing an operator can do depends on them. Not audited on its own: it's
+ * part of the list, record or report it goes with.
  */
-export async function opsTestTeams(db: Db, operator: Operator, teamIds: readonly string[]): Promise<Set<string>> {
+export async function opsTeamMarks(db: Db, operator: Operator, teamIds: readonly string[]): Promise<Map<string, OpsTeamMarks>> {
   operatorSub(operator);
   const wanted = [...new Set(teamIds)].map((teamId) => keys.team(teamId));
-  const test = new Set<string>();
+  const marks = new Map<string, OpsTeamMarks>();
+  const names: Record<string, string> = { "#test": "test" };
+  CAMPAIGN_ATTRIBUTES.forEach((a, i) => (names[`#c${i}`] = a));
+  const projection = ["PK", "SK", ...Object.keys(names)].join(", ");
   for (let i = 0; i < wanted.length; i += BATCH_GET_KEYS) {
     let Keys: Record<string, unknown>[] | undefined = wanted.slice(i, i + BATCH_GET_KEYS);
     for (let attempt = 1; Keys?.length; attempt++) {
-      if (attempt > 5) throw new Error("Test mark reads kept coming back unprocessed");
+      if (attempt > 5) throw new Error("Team mark reads kept coming back unprocessed");
       const out: BatchGetCommandOutput = await connection(db).doc.send(
-        new BatchGetCommand({ RequestItems: { [db.tableName]: { Keys, ProjectionExpression: "PK, SK, #test", ExpressionAttributeNames: { "#test": "test" }, ConsistentRead: false } } }),
+        new BatchGetCommand({ RequestItems: { [db.tableName]: { Keys, ProjectionExpression: projection, ExpressionAttributeNames: names, ConsistentRead: false } } }),
       );
       for (const item of out.Responses?.[db.tableName] ?? []) {
-        const teamId = keyId(item.PK, "TEAM#");
-        if (teamId && item.SK === "META" && item.test === true) test.add(teamId);
+        // The keys asked for are TEAM#<id> / META, so that's what comes back
+        const teamId = String(item.PK).slice("TEAM#".length);
+        const campaign = storedCampaign(item);
+        marks.set(teamId, { test: item.test === true, ...(campaign ? { campaign } : {}) });
       }
       Keys = out.UnprocessedKeys?.[db.tableName]?.Keys;
       if (Keys?.length) await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
     }
   }
-  return test;
+  return marks;
 }
 
 const countOf = (counts: Map<string, number>, key: { PK: string; SK: string }) => counts.get(`${key.PK} ${key.SK}`) ?? 0;
@@ -1064,6 +1079,38 @@ export async function getOpsReceiptUsage(db: Db, operator: Operator, teamId: str
     }),
     trialReceipts: countOf(counts, trialKey),
   };
+}
+
+/**
+ * Every team in the operators' index, at most MAX_OPS_TEAMS_READ of them
+ * (`complete` is false if there were more). Not audited: the report that
+ * walks the index audits what it returns.
+ */
+async function walkOpsTeams(db: Db): Promise<{ teams: OpsTeam[]; complete: boolean }> {
+  const teams: OpsTeam[] = [];
+  let start: Record<string, unknown> | undefined;
+  let complete = true;
+  do {
+    const page = await connection(db).doc.send(
+      new QueryCommand({
+        TableName: db.tableName,
+        IndexName: GSI3,
+        KeyConditionExpression: "GSI3PK = :pk",
+        // The operator-access role requires it (dynamodb:Select): only what the index projects
+        Select: "ALL_PROJECTED_ATTRIBUTES",
+        ExpressionAttributeValues: { ":pk": OPS_TEAMS_PARTITION },
+        Limit: MAX_OPS_TEAMS_READ - teams.length,
+        ExclusiveStartKey: start,
+      }),
+    );
+    for (const item of page.Items ?? []) {
+      const team = toTeam(item);
+      if (team) teams.push(team);
+    }
+    start = page.LastEvaluatedKey;
+    if (start && teams.length >= MAX_OPS_TEAMS_READ) complete = false;
+  } while (start && complete);
+  return { teams, complete };
 }
 
 /** One team in the month's receipt ranking. */
@@ -1097,29 +1144,7 @@ export async function listOpsReceiptUsage(
   const m = month(options.month);
   const limit = options.limit ?? 20;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new InvalidInputError("limit is a number from 1 to 100");
-  const teams: OpsTeam[] = [];
-  let start: Record<string, unknown> | undefined;
-  let complete = true;
-  do {
-    const page = await connection(db).doc.send(
-      new QueryCommand({
-        TableName: db.tableName,
-        IndexName: GSI3,
-        KeyConditionExpression: "GSI3PK = :pk",
-        // The operator-access role requires it (dynamodb:Select): only what the index projects
-        Select: "ALL_PROJECTED_ATTRIBUTES",
-        ExpressionAttributeValues: { ":pk": OPS_TEAMS_PARTITION },
-        Limit: MAX_OPS_TEAMS_READ - teams.length,
-        ExclusiveStartKey: start,
-      }),
-    );
-    for (const item of page.Items ?? []) {
-      const team = toTeam(item);
-      if (team) teams.push(team);
-    }
-    start = page.LastEvaluatedKey;
-    if (start && teams.length >= MAX_OPS_TEAMS_READ) complete = false;
-  } while (start && complete);
+  const { teams, complete } = await walkOpsTeams(db);
   const wanted = teams.flatMap((t) => [keys.usage(t.teamId, m), keys.trialUsage(t.teamId)]);
   const counts = await receiptCounts(db, wanted);
   const ranked = teams
@@ -1138,6 +1163,107 @@ export async function listOpsReceiptUsage(
     }),
   );
   return { month: m, teams: ranked, teamsRead: teams.length, complete, estimatedCostPerReceiptUsd: ESTIMATED_COST_PER_RECEIPT_USD };
+}
+
+// ----- Sign-ups by source (supply-checkout-kajm) -----
+
+/** How the report groups teams: by `source` alone, `medium`, `campaign`, or all three together. */
+export const SOURCE_GROUPINGS = ["source", "medium", "campaign", "all"] as const;
+export type SourceGrouping = (typeof SOURCE_GROUPINGS)[number];
+
+/** The widest date range the report takes, in days. */
+export const MAX_SOURCE_RANGE_DAYS = 366;
+
+/** One row of the report: a source (any tag not in the grouping, or a team without tags, is null) and what became of its teams. */
+export interface OpsSourceRow {
+  readonly source: string | null;
+  readonly medium: string | null;
+  readonly campaign: string | null;
+  /** Teams created in the range. */
+  readonly teams: number;
+  /** In their free trial: trialing, and not on a live comp. */
+  readonly trialing: number;
+  /** Paying: active or past due on Stripe, and not on a live comp. */
+  readonly paid: number;
+  /** On a live comp. */
+  readonly comped: number;
+  /** Closed by an owner. */
+  readonly closed: number;
+}
+
+/** Orders two optional tags by code unit, tag-less last. */
+const last = (a: string | null, b: string | null) => (a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? -1 : 1);
+
+const DAY_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+const dayStart = (value: unknown, name: string): number => {
+  if (typeof value !== "string" || !DAY_RE.test(value)) throw new InvalidInputError(`${name} is YYYY-MM-DD`);
+  const t = Date.parse(`${value}T00:00:00Z`);
+  if (!Number.isFinite(t) || new Date(t).toISOString().slice(0, 10) !== value) throw new InvalidInputError(`${name} is YYYY-MM-DD`);
+  return t;
+};
+
+/**
+ * The teams created from `from` to `to` (UTC days, both included; `to`
+ * defaults to today and `from` to 29 days before it; at most
+ * MAX_SOURCE_RANGE_DAYS apart), grouped by the campaign tags they came from
+ * (`by`, default source), with how many are in their trial, paying, comped or
+ * closed now. Test teams are left out, like the customer metrics. Teams with
+ * no tags count together, as a row with null tags. It walks the team list
+ * in the operators' index (at most MAX_OPS_TEAMS_READ teams; `complete` is
+ * false if there were more) and reads the tags of those created in the range
+ * with BatchGetItem. Rows are most teams first. Audited
+ * (`ops.sources.report`, in the platform partition) before anything is
+ * returned; the audit holds the range and grouping, no team or tag.
+ */
+export async function listOpsSources(
+  db: Db,
+  operator: Operator,
+  options: { readonly from?: string; readonly to?: string; readonly by?: string },
+  now = new Date(),
+): Promise<{ from: string; to: string; by: SourceGrouping; rows: OpsSourceRow[]; total: number; teamsRead: number; complete: boolean }> {
+  operatorSub(operator);
+  const by = (options.by ?? "source") as SourceGrouping;
+  if (!SOURCE_GROUPINGS.includes(by)) throw new InvalidInputError(`by is one of ${SOURCE_GROUPINGS.join(", ")}`);
+  const today = now.toISOString().slice(0, 10);
+  const to = options.to ?? today;
+  const toMs = dayStart(to, "to");
+  const from = options.from ?? new Date(toMs - 29 * 86_400_000).toISOString().slice(0, 10);
+  const fromMs = dayStart(from, "from");
+  if (fromMs > toMs) throw new InvalidInputError("from is after to");
+  if ((toMs - fromMs) / 86_400_000 >= MAX_SOURCE_RANGE_DAYS) throw new InvalidInputError(`The range is at most ${MAX_SOURCE_RANGE_DAYS} days`);
+  const { teams, complete } = await walkOpsTeams(db);
+  const inRange = teams.filter((t) => typeof t.createdAt === "string" && t.createdAt.slice(0, 10) >= from && t.createdAt.slice(0, 10) <= to);
+  const marks = await opsTeamMarks(db, operator, inRange.map((t) => t.teamId));
+  const groups = new Map<string, { row: { source: string | null; medium: string | null; campaign: string | null; teams: number; trialing: number; paid: number; comped: number; closed: number } }>();
+  const wants = (tag: CampaignTag) => by === "all" || by === tag;
+  let total = 0;
+  for (const team of inRange) {
+    const mark = marks.get(team.teamId);
+    // A team whose marks couldn't be found is counted untagged; a test team is left out
+    if (mark?.test) continue;
+    total++;
+    const tag = (t: CampaignTag): string | null => (wants(t) ? (mark?.campaign?.[t] ?? null) : null);
+    const [source, medium, campaign] = CAMPAIGN_TAGS.map(tag);
+    const key = JSON.stringify([source, medium, campaign]);
+    const group = groups.get(key) ?? { row: { source: source ?? null, medium: medium ?? null, campaign: campaign ?? null, teams: 0, trialing: 0, paid: 0, comped: 0, closed: 0 } };
+    groups.set(key, group);
+    group.row.teams++;
+    if (team.closedAt) group.row.closed++;
+    else if (liveComp(team, now) !== undefined) group.row.comped++;
+    else if (team.status === "trialing") group.row.trialing++;
+    else if (team.status === "active" || team.status === "past_due") group.row.paid++;
+  }
+  const rows = [...groups.values()]
+    .map((g) => g.row)
+    .sort((a, b) => b.teams - a.teams || last(a.source, b.source) || last(a.medium, b.medium) || last(a.campaign, b.campaign));
+  await connection(db).doc.send(
+    new PutCommand({
+      TableName: db.tableName,
+      Item: auditItem(operator, PLATFORM_AUDIT, { action: "ops.sources.report", before: null, after: { from, to, by }, target: "sources" }, now),
+      ConditionExpression: "attribute_not_exists(PK)",
+    }),
+  );
+  return { from, to, by, rows, total, teamsRead: teams.length, complete };
 }
 
 // ----- Reports from Report an issue (supply-checkout-3sv.26) -----

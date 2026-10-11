@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "upcoming",
+      "notes": [],
+      "skip": {
+        "765": "Operator-facing: where each sign-up came from, for the owner's ads and outreach"
+      }
+    },
+    {
       "version": "1.15.0",
       "date": "2026-10-11",
       "notes": [

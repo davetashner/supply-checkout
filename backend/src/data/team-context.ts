@@ -12,6 +12,7 @@
 
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { type Campaign, campaignAttributes, checkedCampaign } from "./campaign.js";
 import { type Db, connection } from "./client.js";
 import { ConflictError, ForbiddenError, LimitReachedError, NotFoundError, SubscriptionEndedError, TeamClosedError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
 import { gsi1, gsi3, id, keys, prefixes, strip } from "./keys.js";
@@ -214,6 +215,20 @@ function notBeingDeleted(db: Db, userId: string) {
   return { ConditionCheck: { TableName: db.tableName, Key: keys.accountDeletion(userId), ConditionExpression: "attribute_not_exists(PK)" } };
 }
 
+/** The update that records an account's first campaign tags (campaign.ts): each only if it has none yet. */
+function campaignRecord(db: Db, userId: string, campaign: Campaign, at: string) {
+  const attributes = Object.entries(campaignAttributes(campaign));
+  const names: Record<string, string> = { "#type": "type", "#at": "capturedAt" };
+  const values: Record<string, unknown> = { ":type": "campaign", ":at": at };
+  const sets = ["#type = if_not_exists(#type, :type)", "#at = if_not_exists(#at, :at)"];
+  attributes.forEach(([name, value], i) => {
+    names[`#a${i}`] = name;
+    values[`:v${i}`] = value;
+    sets.push(`#a${i} = if_not_exists(#a${i}, :v${i})`);
+  });
+  return { TableName: db.tableName, Key: keys.campaign(userId), UpdateExpression: `SET ${sets.join(", ")}`, ExpressionAttributeNames: names, ExpressionAttributeValues: values };
+}
+
 /**
  * Creates a team with the verified caller as its owner, and returns the owner's
  * context. The home region is the region this runs in (ADR 0010), and the
@@ -231,19 +246,25 @@ function notBeingDeleted(db: Db, userId: string) {
  * the user's own partition and moves in the same transaction. A repeat whose
  * name differs from the stored team's is a ConflictError: the key was reused
  * for a different team. A user in MAX_TEAMS_PER_USER teams can't create
- * another (LimitReachedError). That check reads before it writes, so two
+ * another (LimitReachedError).
+ *
+ * `input.campaign` (campaign.ts, supply-checkout-kajm) are the tags the owner's
+ * link carried, already parsed; they're checked again here. They're written on
+ * the team and, if the account has none yet, on the owner's account, in the same
+ * transaction. A repeat of the request writes nothing. That check reads before it writes, so two
  * requests at the same moment can go one over; it bounds work, not billing.
  */
 export async function createTeam(
   db: Db,
   owner: { readonly userId: string; readonly email?: string; readonly name?: string; readonly test?: boolean },
-  input: { readonly name: string; readonly plan?: string; readonly seats?: number; readonly requestKey?: string },
+  input: { readonly name: string; readonly plan?: string; readonly seats?: number; readonly requestKey?: string; readonly campaign?: Campaign },
   now = new Date(),
 ): Promise<{ team: Team; context: TeamContext; created: boolean }> {
   const userId = id(owner.userId, "user ID");
   const name = teamName(input.name);
   const teamId = input.requestKey === undefined ? randomUUID() : teamIdForRequest(userId, input.requestKey);
   const createdAt = now.toISOString();
+  const campaign = checkedCampaign(input.campaign);
   const team: Team = {
     type: "team",
     teamId,
@@ -260,6 +281,8 @@ export async function createTeam(
     checklistStartedAt: createdAt,
     version: 1,
     ...(owner.test === true ? { test: true as const } : {}),
+    // Where it came from (campaign.ts): validated labels only
+    ...campaignAttributes(campaign),
   };
   const ownerName = memberName(owner.name, undefined);
   const member: Member = { type: "member", teamId, userId, role: "owner", email: owner.email, ...(ownerName ? { displayName: ownerName } : {}), joinedAt: createdAt };
@@ -286,6 +309,9 @@ export async function createTeam(
             },
           },
           notBeingDeleted(db, userId),
+          // Last, so the cancellation reasons above keep their places. The account keeps its first team's
+          // tags: if_not_exists never rewrites one, and the update has no condition that can fail
+          ...(campaign ? [{ Update: campaignRecord(db, userId, campaign, createdAt) }] : []),
         ],
       }),
     );

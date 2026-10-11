@@ -15,7 +15,9 @@ import {
   getBillingTeam,
   getOpsTeam,
   listOperatorAudit,
+  listOpsSources,
   listOpsTeams,
+  opsTeamMarks,
   listStuckImportsForOps,
   listSupportActions,
   listTeamsToPurge,
@@ -207,5 +209,31 @@ describe.skipIf(!endpoint)("operators (ADR 0015) on DynamoDB Local", () => {
     await put(newUser(), "viewer");
     await put(newUser(), "contributor");
     expect(await countBilledMembers(table.db, linked.context)).toBe(2);
+  });
+
+  it("stores campaign tags on the team and the account, keeps the account's first, and reports sign-ups by source (supply-checkout-kajm)", async () => {
+    const ownerId = newUser();
+    const label = `ddb-${ownerId.slice(5, 13)}`;
+    const first = await createTeam(table.db, { userId: ownerId }, { name: "Tagged One", campaign: { source: label, medium: "cpc" }, requestKey: "campaign-first-team" }, now);
+    const second = await createTeam(table.db, { userId: ownerId }, { name: "Tagged Two", campaign: { source: `${label}-b`, campaign: "later" }, requestKey: "campaign-second-team" }, now);
+    const plain = await createTeam(table.db, { userId: newUser() }, { name: "Untagged" }, now);
+    expect(await rawItem(table.db, `TEAM#${first.team.teamId}`, "META")).toMatchObject({ utmSource: label, utmMedium: "cpc" });
+    expect(await rawItem(table.db, `TEAM#${second.team.teamId}`, "META")).toMatchObject({ utmSource: `${label}-b`, utmCampaign: "later" });
+    expect(await rawItem(table.db, `TEAM#${plain.team.teamId}`, "META")).not.toHaveProperty("utmSource");
+    // The account keeps the first team's tags and fills in only what it didn't have
+    expect(await rawItem(table.db, `USER#${ownerId}`, "CAMPAIGN")).toMatchObject({ type: "campaign", capturedAt: now.toISOString(), utmSource: label, utmMedium: "cpc", utmCampaign: "later" });
+    // A repeat of a request changes nothing
+    await createTeam(table.db, { userId: ownerId }, { name: "Tagged One", campaign: { source: "other" }, requestKey: "campaign-first-team" }, now);
+    expect(await rawItem(table.db, `USER#${ownerId}`, "CAMPAIGN")).toMatchObject({ utmSource: label });
+
+    const marks = await opsTeamMarks(table.db, op, [first.team.teamId, plain.team.teamId]);
+    expect(marks.get(first.team.teamId)).toEqual({ test: false, campaign: { source: label, medium: "cpc" } });
+    expect(marks.get(plain.team.teamId)).toEqual({ test: false });
+    const day = now.toISOString().slice(0, 10);
+    const report = await listOpsSources(table.db, op, { from: day, to: day }, now);
+    expect(report.rows.filter((r) => r.source?.startsWith(label))).toEqual([
+      { source: label, medium: null, campaign: null, teams: 1, trialing: 1, paid: 0, comped: 0, closed: 0 },
+      { source: `${label}-b`, medium: null, campaign: null, teams: 1, trialing: 1, paid: 0, comped: 0, closed: 0 },
+    ]);
   });
 });

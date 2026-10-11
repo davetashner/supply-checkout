@@ -12,7 +12,7 @@ import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { createSessionCheck } from "../src/api/session-reset.js";
-import { authorizeTeam, createInvite, emailSeenHash, passwordResetAt, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, MEMBERS_PER_TRIAL_TEAM, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
+import { authorizeTeam, createInvite, emailSeenHash, passwordResetAt, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, parseCampaign, MEMBERS_PER_TRIAL_TEAM, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { connection } from "../src/data/client.js";
 import { REGION, accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog } from "./helpers.js";
@@ -273,6 +273,69 @@ describe("POST /teams", () => {
       expect((await call("POST", "/teams", { user: MALLORY, body, headers: { "Idempotency-Key": "valid-key-1" } })).status, JSON.stringify(body)).toBe(400);
     }
     expect(scopes.every((s) => s.userId === MALLORY)).toBe(true);
+  });
+
+  describe("campaign tags (supply-checkout-kajm)", () => {
+    const tagged = (user: string, key: string, campaign: unknown) => call("POST", "/teams", { user, body: { name: "Echo", campaign }, headers: { "Idempotency-Key": key } });
+
+    it("stores valid tags on the team and the owner's account, lower-cased, and nothing in the API's answer", async () => {
+      const { status, body } = await tagged(MALLORY, "campaign-key-1", { source: "Google", medium: "cpc", campaign: "cleaning-local_1" });
+      expect(status).toBe(201);
+      expect(JSON.stringify(body)).not.toMatch(/google|cpc|cleaning/);
+      const id = body.team.id as string;
+      expect(table.get(`TEAM#${id}`, "META")).toMatchObject({ utmSource: "google", utmMedium: "cpc", utmCampaign: "cleaning-local_1" });
+      expect(table.get(`USER#${MALLORY}`, "CAMPAIGN")).toEqual({ PK: `USER#${MALLORY}`, SK: "CAMPAIGN", type: "campaign", capturedAt: new Date(now).toISOString(), utmSource: "google", utmMedium: "cpc", utmCampaign: "cleaning-local_1" });
+    });
+
+    it("keeps the account's first tags when the same user makes another team, and the new team gets its own", async () => {
+      await tagged(MALLORY, "campaign-key-2", { source: "google" });
+      const second = await tagged(MALLORY, "campaign-key-3", { source: "facebook", medium: "paid-social" });
+      expect(table.get(`USER#${MALLORY}`, "CAMPAIGN")).toMatchObject({ utmSource: "google", utmMedium: "paid-social" });
+      expect(table.get(`TEAM#${second.body.team.id}`, "META")).toMatchObject({ utmSource: "facebook", utmMedium: "paid-social" });
+    });
+
+    it("leaves out anything that isn't a short label, and still makes the team", async () => {
+      const res = await tagged(MALLORY, "campaign-bad-1", { source: "https://evil.example/?q=1", medium: "has space", campaign: "a".repeat(65) });
+      expect(res.status).toBe(201);
+      expect(table.get(`TEAM#${res.body.team.id}`, "META")).not.toHaveProperty("utmSource");
+      expect(table.get(`TEAM#${res.body.team.id}`, "META")).not.toHaveProperty("utmMedium");
+      expect(table.get(`TEAM#${res.body.team.id}`, "META")).not.toHaveProperty("utmCampaign");
+      expect(table.get(`USER#${MALLORY}`, "CAMPAIGN")).toBeUndefined();
+    });
+
+    it("accepts only lower-case letters, digits, _ and - up to 64 characters (after lower-casing)", () => {
+      for (const value of ["https://evil.example/?q=1", "has space", "a".repeat(65), "", "é", "a/b", "a?b", "a.b", "a@b.c", "<script>", "a\nb", 7, null, ["google"], { x: 1 }, undefined]) {
+        expect(parseCampaign({ source: value }), JSON.stringify(value)).toBeUndefined();
+      }
+      expect(parseCampaign({ source: "A".repeat(64) })).toEqual({ source: "a".repeat(64) });
+      expect(parseCampaign({ source: "Google-Ads_2", medium: "CPC", campaign: "x" })).toEqual({ source: "google-ads_2", medium: "cpc", campaign: "x" });
+      for (const input of [undefined, null, "google", 3, [], ["source"], {}, { ref: "abc" }]) expect(parseCampaign(input), JSON.stringify(input)).toBeUndefined();
+      // Names that aren't tags (a later referral code, say) are not carried
+      expect(parseCampaign({ source: "a", __proto__: { medium: "b" }, ref: "c" })).toEqual({ source: "a" });
+    });
+
+    it("keeps the valid tags among invalid ones, and ignores names it doesn't know or a campaign that isn't an object", async () => {
+      const mixed = await tagged(PAT, "campaign-mixed-1", { source: "google", medium: "a b", campaign: "ok", ref: "abc", url: "https://x.example" });
+      expect(table.get(`TEAM#${mixed.body.team.id}`, "META")).toMatchObject({ utmSource: "google", utmCampaign: "ok" });
+      const meta = table.get(`TEAM#${mixed.body.team.id}`, "META") as Record<string, unknown>;
+      expect(Object.keys(meta).filter((k) => /medium|ref|url/i.test(k))).toEqual([]);
+      for (const [i, value] of ["google", 3, {}].entries()) {
+        const res = await tagged(MALLORY, `campaign-shape-${i}`, value);
+        expect(res.status).toBe(201);
+        expect(table.get(`TEAM#${res.body.team.id}`, "META")).not.toHaveProperty("utmSource");
+      }
+      expect(table.get(`USER#${MALLORY}`, "CAMPAIGN")).toBeUndefined();
+    });
+
+    it("writes nothing on a repeat of the request, and a team with no tags has none", async () => {
+      await tagged(MALLORY, "campaign-key-4", { source: "google" });
+      const before = JSON.stringify(table.get(`USER#${MALLORY}`, "CAMPAIGN"));
+      expect((await tagged(MALLORY, "campaign-key-4", { source: "bing" })).status).toBe(200);
+      expect(JSON.stringify(table.get(`USER#${MALLORY}`, "CAMPAIGN"))).toBe(before);
+      const plain = await create(PAT, "Plain", "campaign-key-5");
+      expect(table.get(`TEAM#${plain.body.team.id}`, "META")).not.toHaveProperty("utmSource");
+      expect(table.get(`USER#${PAT}`, "CAMPAIGN")).toBeUndefined();
+    });
   });
 
   it("limits how many teams a user creates a day", async () => {

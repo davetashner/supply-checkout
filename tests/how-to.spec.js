@@ -260,3 +260,19 @@ test.describe("each lesson's steps work in the app", { tag: ["@how-to-steps"] },
     });
   }
 });
+
+// Campaign tags (supply-checkout-kajm, site/campaign-links.js): the lessons put the link's utm_* on their links into the app too
+test("the lessons carry a tagged link's campaign tags to the app, in the same tab, and a newer tagged link replaces them", async ({ page }) => {
+  const APP = "https://app.supplycheckout.com/";
+  const appLinks = () => page.locator("a[href^='https://app.']").evaluateAll((links) => links.map((a) => a.href));
+  await open(page, "/how-to/receipts/?utm_source=Facebook&utm_medium=paid-social");
+  const tagged = await appLinks();
+  expect(tagged.length).toBeGreaterThan(0);
+  for (const href of tagged) expect(href).toBe(`${APP}?utm_source=facebook&utm_medium=paid-social`);
+  // The index in the same tab, no tags in its own link
+  await page.getByRole("link", { name: "How-to" }).first().click();
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  for (const href of await appLinks()) expect(href).toBe(`${APP}?utm_source=facebook&utm_medium=paid-social`);
+  await page.goto(`${ORIGIN}/how-to/?utm_source=newsletter`);
+  for (const href of await appLinks()) expect(href).toBe(`${APP}?utm_source=newsletter`);
+});

@@ -564,3 +564,41 @@ test("ranks the month's receipt reads with estimated cost, shows a team's, and a
   await main(["audit"], audit.deps);
   assert.match(audit.logs[0], /ops.receipts.usage team PLATFORM {2}by op-1 receipts 2026-09, 2 teams/);
 });
+
+test("shows where a team came from, in the list and its record, and says so when there are no tags (supply-checkout-kajm)", async () => {
+  const tagged = { ...TEAM, source: "google", medium: "cpc", campaign: "cleaning-local" };
+  const partial = { ...TEAM, id: "team-b", name: "Bravo", source: "newsletter", medium: null, campaign: null };
+  const h = harness({ routes: { "GET /ops/teams": { status: 200, body: { teams: [tagged, partial, { ...TEAM, id: "team-c", name: "Cee", source: null, medium: null, campaign: null }] } }, "GET /ops/teams/team-a": { status: 200, body: { team: tagged } } } });
+  await main(["teams"], h.deps);
+  assert.match(h.logs[0], /Acme\s.*from google\/cpc\/cleaning-local/);
+  assert.match(h.logs[0], /Bravo\s.*from newsletter\/-\/-/);
+  assert.doesNotMatch(h.logs[0].split("\n").find((l) => l.includes("Cee")), /from /);
+  await main(["team", "team-a"], h.deps);
+  assert.match(h.logs[1], /\n {2}came from google\/cpc\/cleaning-local \(source\/medium\/campaign\)\n/);
+  const none = harness({ routes: { "GET /ops/teams/team-a": { status: 200, body: { team: TEAM } } } });
+  await main(["team", "team-a"], none.deps);
+  assert.match(none.logs[0], /\n {2}came from no campaign tags\n/);
+});
+
+test("reports sign-ups by source for a date range (supply-checkout-kajm)", async () => {
+  const row = (source, medium, campaign, teams, trialing, paid, comped, closed) => ({ source, medium, campaign, teams, trialing, paid, comped, closed });
+  const report = { from: "2026-09-01", to: "2026-09-30", by: "source", rows: [row("google", null, null, 5, 3, 1, 0, 1), row(null, null, null, 2, 2, 0, 0, 0)], total: 7, teamsRead: 40, complete: true };
+  const h = harness({ routes: { "GET /ops/sources": (r) => ({ status: 200, body: { ...report, by: r.query.by ?? "source" } }) } });
+  await main(["sources", "--from", "2026-09-01", "--to", "2026-09-30"], h.deps);
+  assert.deepEqual(h.requests[0].query, { from: "2026-09-01", to: "2026-09-30" });
+  assert.match(h.logs[0], /^Teams created 2026-09-01 to 2026-09-30 \(UTC, test teams left out\), by source;/);
+  assert.match(h.logs[0], /source\s+teams\s+trial\s+paid\s+comped\s+closed/);
+  assert.match(h.logs[0], /google\s+5\s+3\s+1\s+0\s+1\n/);
+  assert.match(h.logs[0], /\(none\)\s+2\s+2\s+0\s+0\s+0\n/);
+  assert.match(h.logs[0], /7 teams\.$/);
+  await main(["sources", "--by", "all"], h.deps);
+  assert.deepEqual(h.requests[1].query, { by: "all" });
+  assert.match(h.logs[1], /source\s+medium\s+campaign\s+teams/);
+  const empty = harness({ routes: { "GET /ops/sources": { status: 200, body: { ...report, rows: [], total: 0, complete: false } } } });
+  await main(["sources"], empty.deps);
+  assert.match(empty.logs[0], /No teams were created in that range\.\n0 teams\.\n\(Only the first 40 teams were read: there are more\.\)$/);
+  for (const argv of [["sources", "--from", "Sept"], ["sources", "--to", "2026-9-1"], ["sources", "--by", "everything"]]) await assert.rejects(main(argv, harness().deps), UsageError);
+  const audit = harness({ routes: { "GET /ops/audit": { status: 200, body: { events: [{ ts: "t", action: "ops.sources.report", teamId: "PLATFORM", operatorSub: "op-1", before: null, after: { from: "2026-09-01", to: "2026-09-30", by: "source" } }] } } } });
+  await main(["audit"], audit.deps);
+  assert.match(audit.logs[0], /ops.sources.report team PLATFORM {2}by op-1 sign-ups by source, 2026-09-01 to 2026-09-30/);
+});

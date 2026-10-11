@@ -1339,7 +1339,10 @@
                         "compBy",
                         "compAt",
                         "compMonths",
-                        "photoId"
+                        "photoId",
+                        "utmSource",
+                        "utmMedium",
+                        "utmCampaign"
                       ]
                     }
                   },

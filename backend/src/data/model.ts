@@ -90,6 +90,14 @@ export interface Team {
    */
   readonly test?: true;
   /**
+   * The campaign tags of the link its owner came from (supply-checkout-kajm,
+   * campaign.ts): short labels. Written once, by createTeam, and never
+   * changed. They only tell the operators which channel a team came from.
+   */
+  readonly utmSource?: string;
+  readonly utmMedium?: string;
+  readonly utmCampaign?: string;
+  /**
    * The first-run checklist's progress (checklist.ts, supply-checkout-fs56):
    * when it started (createTeam writes it for every new team; a team without
    * it never had one), and whether an owner saved a scanned receipt and

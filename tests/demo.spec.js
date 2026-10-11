@@ -19,7 +19,7 @@ const THIRD_PARTY = /^https:\/\/fonts\.(googleapis|gstatic)\.com\//;
 const files = builtFiles(DEMO);
 
 // Opens the demo and returns every URL the page requested
-async function openDemo(page) {
+async function openDemo(page, search = "") {
   const requests = [];
   page.on("request", (r) => requests.push(r.url()));
   // Record font requests, but keep tests offline
@@ -31,7 +31,7 @@ async function openDemo(page) {
   });
   // Anything else would be a real network request: fail it loudly
   await page.route((url) => !ALLOWED.includes(url.origin), (r) => r.abort());
-  await page.goto(BASE);
+  await page.goto(BASE + search);
   await expect(page.getByRole("button", { name: /Acme Offices/ })).toBeVisible();
   return requests;
 }
@@ -127,4 +127,11 @@ test("has no Report an issue: the demo sends nothing anywhere", async ({ page })
   await expect(page.getByText("Report an issue")).toHaveCount(0);
   expectOnlyAllowed(requests);
   expect(requests.some((url) => url.includes("feedback"))).toBe(false);
+});
+
+test("keeps the campaign tags of its link for this tab, and nothing else, without leaving the page", async ({ page }) => {
+  const requests = await openDemo(page, "?utm_source=Google&utm_medium=cpc&utm_campaign=bad%20one");
+  expect(JSON.parse(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.campaign"))).tags).toEqual({ source: "google", medium: "cpc" });
+  expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.campaign"))).toBeNull();
+  expectOnlyAllowed(requests);
 });

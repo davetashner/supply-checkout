@@ -10,6 +10,7 @@
 //   npm run ops -- audit [--team <teamId> | --month YYYY-MM]
 //   npm run ops -- stuck-imports
 //   npm run ops -- receipts [--month YYYY-MM] [--limit N]
+//   npm run ops -- sources [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--by source|medium|campaign|all]
 //   npm run ops -- clear-import <teamId> <importId> --reason "Owner re-imported it"
 //   npm run ops -- sign-out
 //
@@ -62,6 +63,9 @@ export const USAGE = `Usage: npm run ops -- <command> [options]
   audit [--team <teamId> | --month YYYY-MM]     The operator audit (default: this month)
   stuck-imports                                 Imports stuck part-way for over an hour (the "Imports stuck" alarm)
   receipts [--month YYYY-MM] [--limit N]        The teams that read the most receipts in a month (default: this one), with estimated cost (audited)
+  sources [--from <date>] [--to <date>] [--by source|medium|campaign|all]
+                                                New teams by the campaign tags they came from, with how many are in trial, paying, comped
+                                                or closed now (default: the last 30 days, by utm_source; audited)
   clear-import <teamId> <importId> --reason <text>
                                                 Take a stuck import out of the check (the job itself stays)
   sign-out                                      Sign out everywhere and forget the cached token
@@ -70,7 +74,7 @@ Options: --env <env> (default prod), --json, --client-id <id>, --profile <aws pr
 
 /** The most requests one `teams --q` makes while its pages come back empty: 20,000 teams read. */
 const SEARCH_REQUESTS = 20;
-const VALUE_FLAGS = new Set(["env", "q", "limit", "cursor", "plan", "until", "months", "reason", "seats", "team", "month", "client-id", "profile"]);
+const VALUE_FLAGS = new Set(["env", "q", "limit", "cursor", "plan", "until", "months", "reason", "seats", "team", "month", "from", "to", "by", "client-id", "profile"]);
 const BOOLEAN_FLAGS = new Set(["json", "help"]);
 
 /** `[command, ...positionals]` and the flags. Refuses unknown flags and flags without a value. */
@@ -290,11 +294,17 @@ export function sortTeams(teams) {
   );
 }
 
+/** ` from google/cpc/cleaning-local` for a team made from a tagged link (supply-checkout-kajm): the tags it has, joined by slashes; empty if none. */
+const sourceText = (team) => {
+  const tags = [team.source, team.medium, team.campaign].map((t) => t ?? "-");
+  return tags.every((t) => t === "-") ? "" : ` from ${tags.join("/")}`;
+};
+
 /** A team as one line of the list. */
 export function teamLine(team) {
   const comp = team.comp ? ` comp:${team.comp.plan} until ${date(team.comp.until)}${team.comp.live ? "" : " (ended)"}` : "";
   const owners = (team.owners ?? []).map((o) => o.email ?? o.userId).join(", ");
-  return `${pad(team.id, 38)} ${pad(`${team.name}${team.test === true ? " [TEST]" : ""}`, 28)} ${pad(`${team.plan}/${team.status}`, 20)} created ${date(team.createdAt)}${team.closedAt ? ` closed ${date(team.closedAt)}` : ""}${comp}${owners ? `  owners: ${owners}` : ""}`;
+  return `${pad(team.id, 38)} ${pad(`${team.name}${team.test === true ? " [TEST]" : ""}`, 28)} ${pad(`${team.plan}/${team.status}`, 20)} created ${date(team.createdAt)}${team.closedAt ? ` closed ${date(team.closedAt)}` : ""}${comp}${sourceText(team)}${owners ? `  owners: ${owners}` : ""}`;
 }
 
 /** An amount in a currency's minor units, as `27.00 USD` (two decimals: the currencies Stripe bills here). */
@@ -340,6 +350,19 @@ function receiptRanking(r) {
   ].join("\n");
 }
 
+function sourceReport(r) {
+  const label = (v) => v ?? "(none)";
+  const columns = { source: ["source"], medium: ["medium"], campaign: ["campaign"], all: ["source", "medium", "campaign"] }[r.by];
+  const head = `${columns.map((c) => pad(c, 24)).join(" ")} ${pad("teams", 6)} ${pad("trial", 6)} ${pad("paid", 6)} ${pad("comped", 7)} closed`;
+  const rows = r.rows.map((row) => `${columns.map((c) => pad(label(row[c]), 24)).join(" ")} ${pad(String(row.teams), 6)} ${pad(String(row.trialing), 6)} ${pad(String(row.paid), 6)} ${pad(String(row.comped), 7)} ${row.closed}`);
+  return [
+    `Teams created ${r.from} to ${r.to} (UTC, test teams left out), by ${r.by}; trial, paid, comped and closed are their state now:`,
+    ...(r.rows.length ? [head, ...rows] : ["No teams were created in that range."]),
+    `${r.total} teams.`,
+    ...(r.complete ? [] : [`(Only the first ${r.teamsRead} teams were read: there are more.)`]),
+  ].join("\n");
+}
+
 /** ", N months left" (whole months, rounded down; "less than a month left" under one) for a comp ending at `until`. */
 export function monthsLeft(until, now) {
   const end = Date.parse(until);
@@ -358,6 +381,7 @@ function teamDetail(team, stripe, receipts, now = Date.now()) {
     `  plan ${team.plan}, status ${team.status}, seats ${team.seats}, owners ${team.ownerCount}${team.closedAt ? `, CLOSED ${team.closedAt} (read-only until it's deleted)` : ""}`,
     `  created ${team.createdAt}${team.trialEndsAt ? `, trial ends ${team.trialEndsAt}` : ""}`,
     `  Stripe customer ${team.stripeCustomerId ?? "none"}`,
+    `  came from ${sourceText(team).slice(6) || "no campaign tags"}${sourceText(team) ? " (source/medium/campaign)" : ""}`,
     team.comp
       ? `  comp ${team.comp.plan}${team.comp.seats ? ` (${team.comp.seats} seats)` : ""} until ${team.comp.until}${team.comp.live ? monthsLeft(team.comp.until, now) : " (ended)"}: ${team.comp.reason}`
       : "  no comp",
@@ -375,6 +399,8 @@ function auditLine(e) {
       ? ` Stripe discount: ${e.after.outcome}${e.after.coupon ? ` (${e.after.coupon} until ${date(e.after.until)})` : ""}`
       : e.action === "ops.import.clear" && e.after
       ? ` import ${e.after.importId}`
+      : e.action === "ops.sources.report" && e.after
+        ? ` sign-ups by ${e.after.by}, ${e.after.from} to ${e.after.to}`
       : e.action === "ops.receipts.usage" && e.after
         ? ` receipts ${e.after.month}, ${e.after.teams.length} teams`
       : e.action === "ops.team.reopen"
@@ -426,7 +452,7 @@ export async function main(argv, deps) {
     if (!id || !ID.test(id)) throw new UsageError(`${command} needs a team ID`);
     return id;
   };
-  const known = { teams: true, team: true, comp: true, uncomp: true, reopen: true, audit: true, "stuck-imports": true, "clear-import": true, receipts: true };
+  const known = { teams: true, team: true, comp: true, uncomp: true, reopen: true, audit: true, "stuck-imports": true, "clear-import": true, receipts: true, sources: true };
   if (!known[command]) throw new UsageError(`Unknown command ${command}`);
 
   let token = readCachedToken(cacheFile, deps.now());
@@ -509,6 +535,11 @@ export async function main(argv, deps) {
   } else if (command === "receipts") {
     if (flags.month !== undefined && !/^\d{4}-(0[1-9]|1[0-2])$/.test(flags.month)) throw new UsageError("--month is YYYY-MM");
     print(await call("GET", "/ops/receipts", { query: { month: flags.month, limit: flags.limit } }), receiptRanking);
+  } else if (command === "sources") {
+    const day = /^\d{4}-\d{2}-\d{2}$/;
+    for (const name of ["from", "to"]) if (flags[name] !== undefined && !day.test(flags[name])) throw new UsageError(`--${name} is YYYY-MM-DD`);
+    if (flags.by !== undefined && !["source", "medium", "campaign", "all"].includes(flags.by)) throw new UsageError("--by is source, medium, campaign or all");
+    print(await call("GET", "/ops/sources", { query: { from: flags.from, to: flags.to, by: flags.by } }), sourceReport);
   } else if (command === "clear-import") {
     const id = teamId();
     const importId = args[1];

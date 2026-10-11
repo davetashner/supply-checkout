@@ -190,6 +190,7 @@ describe("HTTP API routes", () => {
       "GET /ops/imports": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /ops/teams/{teamId}/imports/{importId}/clear": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "GET /ops/receipts": { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 2 },
+      "GET /ops/sources": { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 2 },
       "GET /ops/feedback": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /ops/feedback/{teamId}/{reportId}": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /ops/feedback/{teamId}/{reportId}/dismiss": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
@@ -1182,7 +1183,8 @@ describe("operator-access role (ADR 0015)", () => {
         StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     });
-    expect([...TEST_MARK_ATTRIBUTES]).toEqual(["PK", "SK", "test"]);
+    // The test mark and the campaign tags (supply-checkout-kajm): nothing else of a team's META item
+    expect([...TEST_MARK_ATTRIBUTES]).toEqual(["PK", "SK", "test", "utmSource", "utmMedium", "utmCampaign"]);
     expect(JSON.stringify(testMarks?.Resource)).not.toMatch(/index|\*/);
     // Receipt usage (supply-checkout-wxx): BatchGetItem by key only, the keys and `receipts` only, projected
     expect(receipts).toEqual({

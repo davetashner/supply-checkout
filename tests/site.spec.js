@@ -16,7 +16,7 @@ const files = builtFiles(SITE);
 const CLIPS = JSON.parse(readFileSync(new URL("../site/clips/clips.json", import.meta.url), "utf8")).clips;
 
 // axe reads the page's stylesheets by fetch, which the policy's connect-src refuses: its runs have no policy
-async function open(page, { policy = true } = {}) {
+async function open(page, { policy = true, path = "/" } = {}) {
   await page.addInitScript(() => {
     window.__cspViolations = [];
     document.addEventListener("securitypolicyviolation", (e) => window.__cspViolations.push(`${e.effectiveDirective} blocked ${e.blockedURI || "inline"}`));
@@ -34,7 +34,7 @@ async function open(page, { policy = true } = {}) {
     const end = Math.min(range[2] ? Number(range[2]) : file.body.length - 1, file.body.length - 1);
     return route.fulfill({ status: 206, headers: { ...headers, "content-type": file.contentType, "accept-ranges": "bytes", "content-range": `bytes ${start}-${end}/${file.body.length}` }, body: file.body.subarray(start, end + 1) });
   });
-  await page.goto(`${ORIGIN}/`);
+  await page.goto(`${ORIGIN}${path}`);
   // Every other host is the app's, which the test never reaches
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
 }
@@ -165,4 +165,48 @@ test("a shared link previews with its own title, description and a 1200 x 630 im
   }
   expect(await meta('property="og:image:width"')).toBe("1200");
   expect(await meta('property="og:image:height"')).toBe("630");
+});
+
+// Campaign tags (supply-checkout-kajm): the link's utm_* go on the links into the app, first-party only
+test.describe("campaign tags", () => {
+  const APP = "https://app.supplycheckout.com/";
+  const appLinks = (page) => page.locator("a[href^='https://app.']").evaluateAll((links) => links.map((a) => a.href));
+
+  test("a tagged link puts its cleaned utm values on every link into the app, and on nothing else", async ({ page }) => {
+    const requests = [];
+    page.on("request", (r) => requests.push(r.url()));
+    await open(page, { path: "/?utm_source=Google&utm_medium=CPC&utm_campaign=cleaning-local&utm_term=ignored" });
+    const links = await appLinks(page);
+    expect(links.length).toBeGreaterThanOrEqual(3);
+    for (const href of links) expect(href).toBe(`${APP}?utm_source=google&utm_medium=cpc&utm_campaign=cleaning-local`);
+    // The site's own links stay as they are
+    await expect(page.getByRole("link", { name: "Try the demo", exact: true })).toHaveAttribute("href", "/demo/");
+    // What was kept: the three tags and the time, in this tab only
+    const kept = await page.evaluate(() => ({ session: sessionStorage.getItem("supplyCheckout.campaign"), local: localStorage.getItem("supplyCheckout.campaign"), cookie: document.cookie }));
+    expect(JSON.parse(kept.session).tags).toEqual({ source: "google", medium: "cpc", campaign: "cleaning-local" });
+    expect(Object.keys(JSON.parse(kept.session)).sort()).toEqual(["at", "tags"]);
+    expect(kept.local).toBeNull();
+    expect(kept.cookie).toBe("");
+    // Nothing was sent anywhere because of them: only this origin and the fonts
+    expect(requests.filter((u) => /utm_|cpc|cleaning/i.test(u))).toEqual([`${ORIGIN}/?utm_source=Google&utm_medium=CPC&utm_campaign=cleaning-local&utm_term=ignored`]);
+    const allowed = [ORIGIN, "https://fonts.googleapis.com", "https://fonts.gstatic.com"];
+    expect(requests.filter((u) => !u.startsWith("data:") && !allowed.includes(new URL(u).origin))).toEqual([]);
+    await noViolations(page);
+  });
+
+  test("values that aren't short labels are dropped, and an untagged visit leaves the links as they were", async ({ page }) => {
+    await open(page, { path: `/?utm_source=${encodeURIComponent("https://evil.example/?a=b")}&utm_medium=has%20space&utm_campaign=${"a".repeat(65)}` });
+    for (const href of await appLinks(page)) expect(href).toBe(APP);
+    expect(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.campaign"))).toBeNull();
+    await open(page);
+    for (const href of await appLinks(page)) expect(href).toBe(APP);
+  });
+
+  test("blocked storage leaves the page working, with the tags of its own link on its links", async ({ page }) => {
+    await page.addInitScript(() => Object.defineProperty(window, "sessionStorage", { get() { throw new DOMException("Blocked", "SecurityError"); } }));
+    await open(page, { path: "/?utm_source=google" });
+    for (const href of await appLinks(page)) expect(href).toBe(`${APP}?utm_source=google`);
+    await open(page);
+    for (const href of await appLinks(page)) expect(href).toBe(APP);
+  });
 });

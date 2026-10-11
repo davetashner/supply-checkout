@@ -35,6 +35,7 @@ import { openReport } from "./report.js";
 import { helpLink, wireHelp } from "./help.js";
 import { createPhotos } from "./photos.js";
 import { avatarHTML } from "../avatar.js";
+import { PARAMS as CAMPAIGN_PARAMS, STORAGE_KEY as CAMPAIGN_KEY, loadCampaign, readCampaign, saveCampaign } from "../campaign.js";
 
 const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
 // A screen's promise resolves with this key after the user verifies their email: start the
@@ -98,6 +99,20 @@ function takeInvite() {
   return tab.json(INVITE_KEY);
 }
 const dropInvite = () => tab.remove(INVITE_KEY);
+
+// The campaign tags in the link (utm_source, utm_medium, utm_campaign; src/campaign.js,
+// supply-checkout-kajm): kept in this browser, apart from the rest of the link which stays,
+// until the team is created, which sends them once and forgets them. Never a URL or referrer.
+const campaignStore = { getItem: (k) => local.get(k), setItem: (k, v) => local.set(k, v), removeItem: (k) => local.remove(k) };
+function takeCampaign() {
+  const q = new URLSearchParams(location.search);
+  const names = Object.keys(CAMPAIGN_PARAMS).filter((name) => q.has(name));
+  if (!names.length) return;
+  saveCampaign(campaignStore, readCampaign(location.search));
+  for (const name of names) q.delete(name);
+  const rest = q.toString();
+  history.replaceState(null, "", location.pathname + (rest ? `?${rest}` : "") + location.hash);
+}
 // An invite link with its ID or token missing or mangled (cut short, or broken across lines
 // when copied): the server can't accept it, so say so rather than try. IDs are the API's
 // (1 to 128 letters, digits, - or _); tokens are base64url.
@@ -133,6 +148,7 @@ function claim(userId) {
 const nameOf = (claims) => [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
 
 export async function start(config) {
+  takeCampaign();
   box = document.createElement("section");
   box.id = "account";
   box.className = "account";
@@ -327,7 +343,9 @@ export async function start(config) {
       btn.disabled = true;
       try {
         // A new team comes with the first-run checklist for its owner (firstRun below)
-        const { team } = await session.api("POST", "/teams", { name }, { "Idempotency-Key": key });
+        const campaign = loadCampaign(campaignStore);
+        const { team } = await session.api("POST", "/teams", { name, ...(campaign ? { campaign } : {}) }, { "Idempotency-Key": key });
+        local.remove(CAMPAIGN_KEY);
         resolve(team);
       }
       catch (err) {

@@ -281,6 +281,22 @@ test("searches teams, opens one, and shows its billing and comp", async ({ page 
   await noViolations(page);
 });
 
+test("shows the campaign tags a team came from, in the list and its record (supply-checkout-kajm)", async ({ page }) => {
+  const teams = [{ ...structuredClone(TEAM), source: "google", medium: "cpc", campaign: "cleaning-local" }, { ...structuredClone(TEAM), id: "team_beta", name: "Beta Builders", comp: null, stripeCustomerId: null, owners: [], source: null, medium: null, campaign: null }];
+  await signIn(page, { api: new FakeOpsApi({ teams }) });
+  await expect(page.getByRole("columnheader", { name: "Source" })).toBeVisible();
+  await expect(page.getByRole("row", { name: /Acme Cleaning/ })).toContainText("google / cpc / cleaning-local");
+  await expect(page.getByRole("row", { name: /Beta Builders/ })).not.toContainText("google");
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.getByRole("link", { name: "Acme Cleaning" }).click();
+  await expect(page.locator("dl.facts")).toContainText("Came from");
+  await expect(page.locator("dl.facts")).toContainText("google / cpc / cleaning-local (source / medium / campaign)");
+  await noViolations(page);
+  await page.getByRole("link", { name: "Back to teams" }).click();
+  await page.getByRole("link", { name: "Beta Builders" }).click();
+  await expect(page.locator("dl.facts")).toContainText("No campaign tags");
+});
+
 test("shows a Test badge on a test team, in the list and its record, and nothing else changes (supply-checkout-o60.2)", async ({ page }) => {
   const teams = [{ ...structuredClone(TEAM), test: true }, { ...structuredClone(TEAM), id: "team_beta", name: "Beta Builders", comp: null, stripeCustomerId: null, owners: [], test: false }];
   await signIn(page, { api: new FakeOpsApi({ teams }) });
