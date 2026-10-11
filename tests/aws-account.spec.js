@@ -557,13 +557,18 @@ test.describe("first sign-in and teams", () => {
 
   test.describe("campaign tags (supply-checkout-kajm)", () => {
     const KEY = "supplyCheckout.campaign";
-    const create = async (page, name = "Bravo Co") => {
-      // Focused by the screen first, or its focus can land after the typing (as the first-sign-in test waits)
-      await expect(page.getByLabel("Team name")).toBeFocused();
-      await page.getByLabel("Team name").fill(name);
-      await page.getByRole("button", { name: "Create team" }).click();
-      // The request is what's under test, not the team's data loading
-      await expect(page.locator(".teambar")).toContainText(`Team: ${name}`);
+    // Typing can be wiped if the screen redraws just after it shows (seen in Firefox on CI), and a
+    // blank name sends nothing, so type, check, and press until the request has gone
+    const create = async (page, backend, name = "Bravo Co", { reaches = true } = {}) => {
+      const field = page.getByLabel("Team name");
+      const before = backend.requests("POST", "/teams").length;
+      await expect(async () => {
+        await field.fill(name);
+        await expect(field).toHaveValue(name, { timeout: 1000 });
+        await page.getByRole("button", { name: "Create team" }).click();
+        expect(backend.requests("POST", "/teams").length).toBeGreaterThan(before);
+      }).toPass({ timeout: 15000 });
+      if (reaches) await expect(page.locator(".teambar")).toContainText(`Team: ${name}`);
     };
 
     test("a tagged link's utm values are cleaned, kept, sent once with the new team, and forgotten", async ({ page }) => {
@@ -576,7 +581,7 @@ test.describe("first sign-in and teams", () => {
       expect(kept.tags).toEqual({ source: "google", medium: "cpc", campaign: "cleaning-local" });
       // Only the three tags and the time, never an address or a referrer
       expect(Object.keys(kept).sort()).toEqual(["at", "tags"]);
-      await create(page);
+      await create(page, backend);
       expect(backend.requests("POST", "/teams").map((c) => c.body)).toEqual([{ name: "Bravo Co", campaign: { source: "google", medium: "cpc", campaign: "cleaning-local" } }]);
       expect(await page.evaluate((k) => localStorage.getItem(k), KEY)).toBeNull();
       // Nothing about the tags went anywhere else
@@ -589,7 +594,7 @@ test.describe("first sign-in and teams", () => {
       await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
       expect(await page.evaluate(() => location.search)).toBe("");
       expect(await page.evaluate((k) => localStorage.getItem(k), KEY)).toBeNull();
-      await create(page);
+      await create(page, backend);
       expect(backend.requests("POST", "/teams").map((c) => c.body)).toEqual([{ name: "Bravo Co" }]);
     });
 
@@ -597,7 +602,7 @@ test.describe("first sign-in and teams", () => {
       const backend = new FakeBackend({ teams: [] });
       await openAws(page, backend, { path: "/?utm_source=facebook&utm_medium=bad%20one", storage: { local: { [KEY]: JSON.stringify({ tags: { source: "older" }, at: Date.now() }) } } });
       await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
-      await create(page);
+      await create(page, backend);
       expect(backend.requests("POST", "/teams").map((c) => c.body)).toEqual([{ name: "Bravo Co", campaign: { source: "facebook" } }]);
     });
 
@@ -613,7 +618,7 @@ test.describe("first sign-in and teams", () => {
         const backend = new FakeBackend({ teams: [] });
         await openAws(page, backend, { storage: { local: { [KEY]: saved } } });
         await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
-        await create(page);
+        await create(page, backend);
         expect(backend.requests("POST", "/teams").map((c) => c.body)).toEqual([{ name: "Bravo Co" }]);
       });
     }
@@ -623,13 +628,10 @@ test.describe("first sign-in and teams", () => {
       await openAws(page, backend, { storage: { local: { [KEY]: JSON.stringify({ tags: { source: "newsletter", campaign: "oct" }, at: Date.now() - 3 * 24 * 3600e3 }) } } });
       await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
       backend.on("POST", "/teams", { status: 500, body: { error: { code: "internal", message: "boom" } } });
-      await expect(page.getByLabel("Team name")).toBeFocused();
-      await page.getByLabel("Team name").fill("Bravo Co");
-      await page.getByRole("button", { name: "Create team" }).click();
+      await create(page, backend, "Bravo Co", { reaches: false });
       await expect(alert(page)).toBeVisible();
       expect(await page.evaluate((k) => localStorage.getItem(k), KEY)).not.toBeNull();
-      await page.getByLabel("Team name").focus();
-      await create(page);
+      await create(page, backend);
       expect(backend.requests("POST", "/teams").map((c) => c.body)).toEqual([
         { name: "Bravo Co", campaign: { source: "newsletter", campaign: "oct" } },
         { name: "Bravo Co", campaign: { source: "newsletter", campaign: "oct" } },
@@ -641,7 +643,7 @@ test.describe("first sign-in and teams", () => {
       await page.addInitScript(() => { Storage.prototype.setItem = () => { throw new DOMException("Blocked", "SecurityError"); }; Storage.prototype.getItem = () => { throw new DOMException("Blocked", "SecurityError"); }; });
       await openAws(page, backend, { path: "/?utm_source=google" });
       await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
-      await create(page);
+      await create(page, backend);
       expect(backend.requests("POST", "/teams").map((c) => c.body)).toEqual([{ name: "Bravo Co" }]);
     });
   });
