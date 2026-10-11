@@ -931,6 +931,10 @@ paths:
                 type: object
                 required: [user, teams, invites]
                 properties:
+                  stripeMode:
+                    type: string
+                    enum: [test, live]
+                    description: "Which Stripe the billing functions use: `test` (the sandbox) or `live`. The prod journey tests read it to run their billing steps only against the sandbox. Not a secret; the app doesn't use it."
                   user:
                     type: object
                     required: [id, email, emailVerified, mfa, preferences, photoUrl]

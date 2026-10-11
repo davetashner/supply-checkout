@@ -247,6 +247,8 @@ describe("functions", () => {
       ACCOUNT_ROLE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^AccountAccessRole/), "Arn"] },
       // The test mail domain, fixed in the template (supply-checkout-o60.2): only the account function makes teams
       TEST_MAIL_DOMAIN: "e2e.supplycheckout.com",
+      // /me says the Stripe mode (sandbox until the live account is ready), for the prod journeys (supply-checkout-o60.9)
+      STRIPE_MODE: "test",
     });
     // No other API function needs it: they read a team's mark from its META item
     for (const [id, fn] of resources(template, "AWS::Lambda::Function")) {

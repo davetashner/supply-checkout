@@ -2,7 +2,8 @@
 // client, the per-user DynamoDB clients, the SES client and the logger are
 // built once per container, outside the handler.
 
-import { BILLING_ENV } from "../billing/names.js";
+import { BILLING_ENV, STRIPE_ENV } from "../billing/names.js";
+import { stripeModeFrom } from "../billing/stripe.js";
 import { sqsSeatSyncQueue } from "../billing/seat-queue.js";
 import { TEST_MAIL_DOMAIN_ENV, testMailDomain } from "../data/index.js";
 import { deletionLogFromEnv } from "../deletions/records.js";
@@ -26,5 +27,5 @@ const issuerUrl = required(API_ENV.issuerUrl);
 const obs = createObservability({ service: "account-api" });
 export const handler = withObservability(
   obs,
-  createAccountHandler({ dbFor: accountScopedDbs({ roleArn: required(API_ENV.accountRoleArn) }), userInfo: cognitoUserInfo(issuerUrl), emailCodes: cognitoEmailCodes(issuerUrl), totp: cognitoTotp(issuerUrl), setName: cognitoSetName(issuerUrl), issuerUrl, obs, mailer: mailerFromEnv(), deleteUser: cognitoDeleteUser(issuerUrl), deletions: deletionLogFromEnv(), photos: photoStoreFromEnv(), seats: sqsSeatSyncQueue(required(BILLING_ENV.seatQueueUrl)), testMailDomain: testMailDomain(process.env[TEST_MAIL_DOMAIN_ENV]), sessionCheck: sessionCheckFromEnv() }),
+  createAccountHandler({ dbFor: accountScopedDbs({ roleArn: required(API_ENV.accountRoleArn) }), userInfo: cognitoUserInfo(issuerUrl), emailCodes: cognitoEmailCodes(issuerUrl), totp: cognitoTotp(issuerUrl), setName: cognitoSetName(issuerUrl), issuerUrl, obs, mailer: mailerFromEnv(), deleteUser: cognitoDeleteUser(issuerUrl), deletions: deletionLogFromEnv(), photos: photoStoreFromEnv(), seats: sqsSeatSyncQueue(required(BILLING_ENV.seatQueueUrl)), testMailDomain: testMailDomain(process.env[TEST_MAIL_DOMAIN_ENV]), stripeMode: stripeModeFrom(process.env[STRIPE_ENV.mode]), sessionCheck: sessionCheckFromEnv() }),
 );

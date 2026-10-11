@@ -311,6 +311,7 @@ import {
 import { EmailNotSentError, type Mailer, sendInviteEmail, sendTeamNotice } from "../email/mailer.js";
 import type { EmailInput, SecurityNotice } from "../email/templates.js";
 import type { DeletionLog } from "../deletions/records.js";
+import type { StripeMode } from "../billing/names.js";
 import type { SeatSyncQueue } from "../billing/seat-queue.js";
 import { PhotoRejectedError, stripPhoto } from "../photos/jpeg.js";
 import type { PhotoStore } from "../photos/store.js";
@@ -355,6 +356,13 @@ export interface AccountHandlerDeps {
    * metrics. Absent, no account is a test account.
    */
   readonly testMailDomain?: string;
+  /**
+   * Which Stripe the billing functions use (STRIPE_MODE): `/me` says so, for
+   * the prod journey tests, which run their billing steps only against the
+   * sandbox (supply-checkout-o60.9). Not a secret: the app doesn't use it.
+   * Absent, `/me` leaves it out.
+   */
+  readonly stripeMode?: StripeMode;
   readonly now?: () => number;
 }
 
@@ -603,6 +611,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       user: { id: userId, email: user.email ?? null, emailVerified: email !== undefined, mfa: mfaState(user), preferences, photoUrl: await photoUrl(photo?.photoId) },
       teams,
       invites: invites.filter((i) => !joined.has(i.teamId)).map(inviteBody),
+      ...(deps.stripeMode ? { stripeMode: deps.stripeMode } : {}),
     });
   }
 
