@@ -224,3 +224,18 @@ test("remember() only redacts: a value that's already a GitHub secret is never p
   later.add("after-the-directory");
   assert.deepEqual(readMaskedValues(path.join(dir, "later")), ["after-the-directory"]);
 });
+
+test("ending a sandbox subscription: only a run's throwaway, only a team the run created, never a long-lived team", () => {
+  const owner = throwawayAddress("9-1", "bowner");
+  const longLived = { emails: [at("owner-lived")], teamIds: ["team-desktop-1"] };
+  const base = { action: "cancelSubscription", account: owner, runIds: ["9-1"], longLived, team: { id: "t-bill" }, createdTeams: ["t-bill"] };
+  assert.doesNotThrow(() => assertDestructiveAllowed(base));
+  for (const bad of [
+    { team: { id: "t-other" } },
+    { team: { id: "team-desktop-1" }, createdTeams: ["team-desktop-1"] },
+    { team: undefined },
+    { account: at("owner-lived") },
+    { account: at("someone") },
+    { runIds: ["8-1"] },
+  ]) assert.throws(() => assertDestructiveAllowed({ ...base, ...bad }), GuardError, JSON.stringify(bad));
+});

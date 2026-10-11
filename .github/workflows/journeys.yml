@@ -253,7 +253,17 @@ jobs:
       - name: Run the journey tests
         id: suite
         env: *secrets
-        run: ./node_modules/.bin/playwright test --config playwright.prod.config.mjs
+        run: |
+          status=0
+          ./node_modules/.bin/playwright test --config playwright.prod.config.mjs || status=$?
+          # Steps on trial (journeys/registry.json prodTrial) haven't passed in prod yet: if they
+          # are the only failures, the summary warns and the step succeeds
+          dir="$RUNNER_TEMP/journeys-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if [[ "$status" -ne 0 && -f "$dir/report.json" ]] && node scripts/journeys/prod-summary.mjs --report "$dir/report.json" --trial-only; then
+            echo "::warning::Only steps on trial failed (prodTrial in journeys/registry.json); see the summary"
+            status=0
+          fi
+          exit "$status"
       # Then, whatever happened, in this order, in this job: cleanup (which signs every test
       # account out everywhere, so no token in a trace still works), the summary, the upload
       # Each of the three gets every secret on purpose: cleanup signs in as each account; the

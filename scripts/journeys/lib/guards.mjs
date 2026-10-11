@@ -43,19 +43,25 @@ export function checkMe(me, { email, teamIds, now = Date.now(), requireTeams = f
 }
 
 /**
- * Whether the harness may delete an account or close a team. `account` is the address signed
+ * Whether the harness may delete an account, close a team or end a team's sandbox subscription (`cancelSubscription`). `account` is the address signed
  * in; `runIds` the runs whose throwaways may go (this run, plus crashed runs found in runs/);
  * `longLived` the long-lived accounts' addresses and team IDs; for a team, `createdTeams` the
  * teams those runs recorded creating, and `team` the team as `/me` lists it. Throws GuardError
  * unless every condition holds.
  */
 export function assertDestructiveAllowed({ action, account, runIds, longLived, team, createdTeams }) {
-  if (action !== "deleteAccount" && action !== "closeTeam") throw new GuardError("Unknown destructive action");
+  if (action !== "deleteAccount" && action !== "closeTeam" && action !== "cancelSubscription") throw new GuardError("Unknown destructive action");
   const lower = String(account ?? "").toLowerCase();
   if (longLived.emails.some((e) => e.toLowerCase() === lower)) throw new GuardError("Refusing a destructive call as a long-lived journey account");
   const parsed = parseThrowaway(account);
   if (!parsed) throw new GuardError("Refusing a destructive call as an account that isn't a run's throwaway");
   if (!new Set(runIds).has(parsed.runId)) throw new GuardError("Refusing a destructive call as another run's throwaway account");
+  if (action === "cancelSubscription") {
+    // Ending a sandbox subscription: only a team this run created, as its throwaway, never a long-lived team
+    if (!team || typeof team.id !== "string") throw new GuardError("Refusing to end the subscription of a team that /me doesn't list");
+    if (longLived.teamIds.includes(team.id)) throw new GuardError("Refusing to end the subscription of a long-lived journey team");
+    if (!new Set(createdTeams).has(team.id)) throw new GuardError("Refusing to end the subscription of a team the run didn't create");
+  }
   if (action === "closeTeam") {
     if (!team || typeof team.id !== "string") throw new GuardError("Refusing to close a team that /me doesn't list");
     if (longLived.teamIds.includes(team.id)) throw new GuardError("Refusing to close a long-lived journey team");

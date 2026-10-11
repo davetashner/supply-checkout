@@ -129,6 +129,11 @@ test("the cards, the trial's end, the invoice and the cancellation are the calls
   await assert.rejects(stripe.cancel("sub_1; DELETE"), /Not a Stripe ID/);
 });
 
+test("a list with any live-mode item stops everything too", async () => {
+  const live = fakeStripe([{ body: { data: [{ id: "cus_AbC123xyz", livemode: false }, { id: "cus_DeF456uvw", livemode: true }] } }]);
+  await assert.rejects(createSandboxStripe({ key: KEY, fetch: live.fetch }).customerOfTeam("t1"), (err) => err instanceof GuardError && /live-mode/.test(err.message));
+});
+
 test("an answer from live mode stops everything, and a Stripe error carries its type only", async () => {
   const live = fakeStripe([{ body: { data: [{ id: "cus_AbC123xyz" }], livemode: true } }]);
   await assert.rejects(createSandboxStripe({ key: KEY, fetch: live.fetch }).customerOfTeam("t1"), (err) => err instanceof GuardError && /live-mode/.test(err.message));
@@ -138,32 +143,43 @@ test("an answer from live mode stops everything, and a Stripe error carries its 
   await assert.rejects(stripe.endTrial("sub_AbC123xyz"), (err) => err instanceof StripeError && err.message === "Stripe end trial failed: HTTP 500");
 });
 
-test("a sealed secret opens only with the secret it was sealed under, and says nothing about its contents when it doesn't", () => {
-  const sealed = seal({ password: "Throwaway-pass-1!", totp: "JBSWY3DPEHPK3PXP" }, SECRET);
+const AAD = "runs/9-1/accounts/bowner.json";
+test("a sealed secret opens only with the secret and the record it was sealed for, and says nothing about its contents when it doesn't", () => {
+  const sealed = seal({ password: "Throwaway-pass-1!", totp: "JBSWY3DPEHPK3PXP" }, SECRET, { aad: AAD });
   assert.match(sealed, SEALED);
   assert.ok(!sealed.includes("Throwaway") && !sealed.includes("JBSWY3"));
-  assert.deepEqual(unseal(sealed, SECRET), { password: "Throwaway-pass-1!", totp: "JBSWY3DPEHPK3PXP" });
-  assert.deepEqual(unseal(seal({ password: "Throwaway-pass-1!" }, SECRET), SECRET), { password: "Throwaway-pass-1!" });
-  // A new random value each time
-  assert.notEqual(seal({ password: "p" }, SECRET), seal({ password: "p" }, SECRET));
-  assert.throws(() => unseal(sealed, `${SECRET}x`), (err) => /couldn't be opened/.test(err.message) && !err.message.includes("Throwaway"));
-  const [v, iv, body] = sealed.split(".");
-  const flipped = `${v}.${iv}.${body.slice(0, -2)}${body.endsWith("AA") ? "BB" : "AA"}`;
-  assert.throws(() => unseal(flipped, SECRET), /couldn't be opened/);
-  for (const bad of ["", "v1.x.y", undefined, 7, `v2.${iv}.${body}`]) assert.throws(() => unseal(bad, SECRET), /Not a sealed value/);
-  assert.throws(() => seal({ password: "" }, SECRET), /no password/);
-  assert.throws(() => seal({ password: "p", totp: 5 }, SECRET), /string/);
-  assert.throws(() => seal({ password: "p" }, "short"), /sealing secret/);
-  assert.throws(() => unseal(sealed, undefined), /sealing secret|couldn't be opened/);
+  assert.deepEqual(unseal(sealed, SECRET, { aad: AAD }), { password: "Throwaway-pass-1!", totp: "JBSWY3DPEHPK3PXP" });
+  assert.deepEqual(unseal(seal({ password: "Throwaway-pass-1!" }, SECRET, { aad: AAD }), SECRET, { aad: AAD }), { password: "Throwaway-pass-1!" });
+  // A new random salt and nonce each time, so no two records share a key
+  const again = seal({ password: "p" }, SECRET, { aad: AAD });
+  assert.notEqual(again, seal({ password: "p" }, SECRET, { aad: AAD }));
+  assert.notEqual(again.split(".")[1], seal({ password: "p" }, SECRET, { aad: AAD }).split(".")[1]);
+  assert.throws(() => unseal(sealed, `${SECRET}x`, { aad: AAD }), (err) => /couldn't be opened/.test(err.message) && !err.message.includes("Throwaway"));
+  // Copied into another record (another role or run): it doesn't open
+  for (const other of ["runs/9-1/accounts/bownerretry.json", "runs/8-1/accounts/bowner.json"]) assert.throws(() => unseal(sealed, SECRET, { aad: other }), /couldn't be opened/);
+  const [v, salt, iv, body] = sealed.split(".");
+  const flipped = `${v}.${salt}.${iv}.${body.slice(0, -2)}${body.endsWith("AA") ? "BB" : "AA"}`;
+  assert.throws(() => unseal(flipped, SECRET, { aad: AAD }), /couldn't be opened/);
+  // A swapped salt gives another key
+  assert.throws(() => unseal(`${v}.${again.split(".")[1]}.${iv}.${body}`, SECRET, { aad: AAD }), /couldn't be opened/);
+  for (const bad of ["", "v1.x.y", undefined, 7, `v1.${salt}.${iv}.${body}`]) assert.throws(() => unseal(bad, SECRET, { aad: AAD }), /Not a sealed value/);
+  for (const badAad of [undefined, "", "runs/../x", "bowner"]) {
+    assert.throws(() => seal({ password: "p" }, SECRET, { aad: badAad }), /bound to its record/);
+    assert.throws(() => unseal(sealed, SECRET, { aad: badAad }), /bound to its record/);
+  }
+  assert.throws(() => seal({ password: "" }, SECRET, { aad: AAD }), /no password/);
+  assert.throws(() => seal({ password: "p", totp: 5 }, SECRET, { aad: AAD }), /string/);
+  assert.throws(() => seal({ password: "p" }, "short", { aad: AAD }), /sealing secret/);
+  assert.throws(() => unseal(sealed, undefined, { aad: AAD }), /sealing secret/);
 });
 
 test("a run record may hold a sealed value, and nothing else secret", () => {
   const address = throwawayAddress("9-1", "bowner");
   const base = { runId: "9-1", role: "bowner", address, state: "started" };
-  const sealed = seal({ password: "Throwaway-pass-1!", totp: "JBSWY3DPEHPK3PXP" }, SECRET);
+  const sealed = seal({ password: "Throwaway-pass-1!", totp: "JBSWY3DPEHPK3PXP" }, SECRET, { aad: AAD });
   assert.equal(checkRecord({ ...base, sealed }).sealed, sealed);
   assert.equal(checkRecord({ ...base, sealed: undefined }).sealed, undefined);
-  for (const bad of ["Throwaway-pass-1!", "v1.short.short", 5, ""]) assert.throws(() => checkRecord({ ...base, sealed: bad }), /sealed/, String(bad));
+  for (const bad of ["Throwaway-pass-1!", "v2.short.short.short", 5, ""]) assert.throws(() => checkRecord({ ...base, sealed: bad }), /sealed/, String(bad));
   assert.throws(() => checkRecord({ ...base, password: "x" }), /may not hold password/);
   assert.throws(() => checkRecord({ ...base, totp: "x" }), /may not hold totp/);
 });

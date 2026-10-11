@@ -73,7 +73,7 @@ export function createSandboxStripe({ key, fetch = globalThis.fetch, timeoutMs =
     try { json = await res.json(); } catch {}
     if (!res.ok) throw new StripeError(operation, String(json?.error?.type ?? `HTTP ${res.status}`));
     // Never act on anything that is not the sandbox, whatever the key
-    if (json.livemode === true) throw new GuardError("Stripe answered with a live-mode object: stopping");
+    if (json.livemode === true || (Array.isArray(json.data) && json.data.some((d) => d?.livemode === true))) throw new GuardError("Stripe answered with a live-mode object: stopping");
     return json;
   }
   const id = (value) => {

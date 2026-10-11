@@ -90,6 +90,19 @@ export function results(report) {
   return out;
 }
 
+/** A step on trial (its prod test hasn't passed in prod yet), or run only with an owner secret: its failure warns. */
+const isTrial = (step) => "prodTrial" in step || "prodSkip" in step;
+
+/**
+ * Whether the report has failures and every one is in a step on trial (isTrial): the suite step
+ * then succeeds. A failed test with no step tag, or with any step not on trial, is a real failure.
+ */
+export function onlyTrialFailures(report, registry) {
+  const trial = new Set((registry.journeys ?? []).flatMap((j) => (j.steps ?? []).filter(isTrial).map((s) => s.id)));
+  const failed = results(report).filter((r) => r.outcome === "failed");
+  return failed.length > 0 && failed.every((r) => r.steps.length > 0 && r.steps.every((id) => trial.has(id)));
+}
+
 const firstLine = (text) => String(text ?? "").replace(ANSI, "").split("\n").map((s) => s.trim()).find(Boolean) ?? "";
 const cell = (text) => text.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").slice(0, 200);
 const seconds = (ms) => `${Math.round(ms / 1000)} s`;
@@ -109,6 +122,7 @@ export function summarize(report, registry, { redact = (s) => s, warnings = [] }
   const failed = [];
   const flaky = [];
   const critical = [];
+  const trialFailed = [];
   const rows = [];
   for (const journey of registry.journeys ?? []) {
     for (const step of journey.steps ?? []) {
@@ -126,14 +140,16 @@ export function summarize(report, registry, { redact = (s) => s, warnings = [] }
       });
       PROJECTS.forEach((p, i) => {
         const r = perProject[i];
-        if (r.outcome === "failed") {
+        if (r.outcome === "failed" && isTrial(step)) {
+          trialFailed.push(`${step.id} (${p})`);
+        } else if (r.outcome === "failed") {
           failed.push(`${step.id} (${p})`);
           if (journey.critical) critical.push(`${step.id} (${p})`);
         } else if (r.outcome === "flaky") flaky.push(`${step.id} (${p})`);
       });
       const time = Math.max(...tests.map((t) => t.duration));
       const notes = tests.filter((t) => t.outcome === "failed" && t.error).map((t) => `${t.project}: ${firstLine(redact(t.error))}`);
-      rows.push(`| ${text} | ${perProject.map((r) => (r.outcome ? ICON[r.outcome] : "–")).join(" | ")} | ${seconds(time)} | ${cell(notes.join("; "))} |`);
+      rows.push(`| ${text} | ${perProject.map((r) => (r.outcome === "failed" && isTrial(step) ? "FAIL (on trial)" : r.outcome ? ICON[r.outcome] : "–")).join(" | ")} | ${seconds(time)} | ${cell(notes.join("; "))} |`);
     }
   }
   const untagged = all.filter((r) => !r.steps.length);
@@ -146,6 +162,7 @@ export function summarize(report, registry, { redact = (s) => s, warnings = [] }
     "",
     ok ? `All prod journey tests passed${flaky.length ? `, ${flaky.length} only on a retry (flaky: file a bead today)` : ""}.` : `**Failed:** ${failed.join(", ")}${critical.length ? `. **Critical journeys failed** (${critical.join(", ")}): follow the runbook.` : ""}`,
     "",
+    ...(trialFailed.length ? [`> **Warning:** ${trialFailed.join(", ")} failed, but those steps are on trial (they haven't passed in prod yet), so the deploy isn't failed. Fix them; once they pass, remove their \`prodTrial\` (docs/runbooks/journey-tests-failed.md).`] : []),
     ...allWarnings.map((w) => `> **Warning:** ${w}`),
     ...(allWarnings.length ? [""] : []),
     ...(signInLine(all) ? [signInLine(all), ""] : []),
@@ -157,12 +174,13 @@ export function summarize(report, registry, { redact = (s) => s, warnings = [] }
     lines.push("", "Tests not tagged with a step:", "");
     for (const t of untagged) lines.push(`- ${redact(t.title)} (${t.project}): ${t.outcome}${t.outcome === "failed" && t.error ? `: ${firstLine(redact(t.error))}` : ""}`);
   }
-  return { markdown: lines.join("\n") + "\n", failed, flaky, critical, ok };
+  return { markdown: lines.join("\n") + "\n", failed, flaky, critical, trialFailed, ok };
 }
 
 export function parseArgs(argv) {
   const out = { registry: "journeys/registry.json" };
   for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--trial-only") { out.trialOnly = true; continue; }
     const [flag, value] = [argv[i], argv[i + 1]];
     if (!["--report", "--registry", "--warnings", "--json", "--masked"].includes(flag) || !value) throw new Error(`Unknown or incomplete argument ${flag}`);
     out[flag.slice(2)] = value;
@@ -190,6 +208,8 @@ export function main(argv = process.argv.slice(2), env = process.env) {
   const masker = envMasker(env, args.masked ?? path.join(path.dirname(args.report), MASKED_VALUES_FILE));
   const report = JSON.parse(readFileSync(args.report, "utf8"));
   const registry = JSON.parse(readFileSync(args.registry, "utf8"));
+  // The suite step: exit 0 when the only failures are of steps on trial, else 1 (prints nothing)
+  if (args.trialOnly) return onlyTrialFailures(report, registry) ? 0 : 1;
   let warnings = [];
   if (args.warnings) {
     try { warnings = JSON.parse(readFileSync(args.warnings, "utf8")); } catch {}
@@ -197,7 +217,7 @@ export function main(argv = process.argv.slice(2), env = process.env) {
   const s = summarize(report, registry, { redact: masker.redact, warnings });
   if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, s.markdown);
   else process.stdout.write(s.markdown);
-  if (args.json) writeFileSync(args.json, JSON.stringify({ ok: s.ok, failed: s.failed, flaky: s.flaky, critical: s.critical }));
+  if (args.json) writeFileSync(args.json, JSON.stringify({ ok: s.ok, failed: s.failed, flaky: s.flaky, critical: s.critical, trialFailed: s.trialFailed }));
   return 0;
 }
 

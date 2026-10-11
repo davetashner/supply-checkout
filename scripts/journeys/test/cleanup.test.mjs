@@ -433,15 +433,15 @@ test("cleanup deletes the retry's crew member before its owner, as for the first
 // password and a code from the authenticator secret sealed in its record, not by email code
 const bOwner = throwawayAddress(RUN, "bowner");
 const bCrew = throwawayAddress(RUN, "bcrew");
-const sealedFor = (extra = {}) => seal({ password: "Throwaway-pass-1234!", totp: "JBSWY3DPEHPK3PXP", ...extra }, config.accounts.owner.password);
-const billingMe = { [bOwner]: { user: { email: bOwner, emailVerified: true }, teams: [{ id: "t-bill", name: "Billing team", role: "owner", closedAt: null }] }, [bCrew]: alone(bCrew) };
+const sealedFor = (extra = {}, aad = recordKey(RUN, "bowner")) => seal({ password: "Throwaway-pass-1234!", totp: "JBSWY3DPEHPK3PXP", ...extra }, config.accounts.owner.password, { aad });
+const billingMe = { [bOwner]: { user: { email: bOwner, emailVerified: true }, teams: [{ id: "t-bill", name: "Billing team", role: "owner", closedAt: null, billingAccount: true }] }, [bCrew]: alone(bCrew) };
 const billingRecords = (extra = {}) => [
   { runId: RUN, role: "bowner", address: bOwner, state: "started", teamIds: ["t-bill"], sealed: sealedFor(), ...extra },
   { runId: RUN, role: "bcrew", address: bCrew, state: "started" },
 ];
 /** A fake sandbox Stripe that records what it's asked, in the world's log. */
-const fakeSandbox = (w, { sub = { id: "sub_AbC123xyz", status: "active" }, fail = false } = {}) => ({
-  async customerOfTeam(teamId) { w.log.push(["stripe customerOfTeam", teamId]); return "cus_AbC123xyz"; },
+const fakeSandbox = (w, { sub = { id: "sub_AbC123xyz", status: "active" }, fail = false, noCustomer = false } = {}) => ({
+  async customerOfTeam(teamId) { w.log.push(["stripe customerOfTeam", teamId]); return noCustomer ? null : "cus_AbC123xyz"; },
   async subscriptionOf() { w.log.push(["stripe subscriptionOf"]); return sub; },
   async cancel(id) { w.log.push(["stripe cancel", id]); if (fail) throw new Error("Stripe cancel failed: api_error"); },
 });
@@ -498,10 +498,28 @@ test("cleanup asks Stripe about only the teams the run recorded creating, and si
 });
 
 test("cleanup leaves a billing throwaway whose sealed value can't be opened, and says so without the value", async () => {
-  const w = world({ records: billingRecords({ sealed: seal({ password: "Throwaway-pass-1234!" }, "another-secret-entirely-1234") }), meFor: billingMe });
+  const w = world({ records: billingRecords({ sealed: seal({ password: "Throwaway-pass-1234!" }, "another-secret-entirely-1234", { aad: recordKey(RUN, "bowner") }) }), meFor: billingMe });
   const r = await run(w, { totpFor: async () => "123456" });
   assert.equal(r.left.length, 1);
   assert.match(r.left[0], /A throwaway bowner of this run: not deleted: A sealed value couldn't be opened/);
   assert.ok(!w.log.some(([op, who]) => op === "signIn" && who === bOwner));
   assert.equal(recordState(w, "bowner"), "started");
+});
+
+test("cleanup reports a team with a Stripe customer the search didn't find yet as left, and one without a billing account as nothing to end", async () => {
+  const w = world({ records: billingRecords(), meFor: billingMe });
+  const r = await run(w, { stripe: fakeSandbox(w, { noCustomer: true }), totpFor: async () => "123456" });
+  assert.deepEqual(r.left, ["A throwaway bowner of this run: its team has a Stripe customer that the search didn't find yet, so its sandbox subscription may still be there"]);
+  assert.ok(!r.done.join("\n").includes("ended its sandbox subscription"));
+  assert.ok(w.log.some(([op, who]) => op === "deleteMe" && who === bOwner), "the account is still deleted");
+  const none = { ...billingMe, [bOwner]: { ...billingMe[bOwner], teams: [{ ...billingMe[bOwner].teams[0], billingAccount: false }] } };
+  const w2 = world({ records: billingRecords(), meFor: none });
+  const r2 = await run(w2, { stripe: fakeSandbox(w2, { noCustomer: true }), totpFor: async () => "123456" });
+  assert.deepEqual(r2.left, []);
+});
+
+test("cleanup moves a sealed value from another record to left, not to a sign-in", async () => {
+  const w = world({ records: billingRecords({ sealed: sealedFor({}, recordKey(RUN, "bownerretry")) }), meFor: billingMe });
+  const r = await run(w, { totpFor: async () => "123456" });
+  assert.match(r.left[0], /A sealed value couldn't be opened/);
 });

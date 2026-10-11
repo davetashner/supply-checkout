@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { PROD, runDir } from "../../scripts/journeys/lib/config.mjs";
 import { parseTotpKey } from "../../scripts/journeys/lib/billing.mjs";
 import { checkMe } from "../../scripts/journeys/lib/guards.mjs";
+import { recordKey } from "../../scripts/journeys/lib/runs.mjs";
 import { seal } from "../../scripts/journeys/lib/seal.mjs";
 import { formatScreen } from "../../scripts/journeys/lib/screen.mjs";
 import { isSandboxCheckoutUrl, isSandboxPortalUrl } from "../../scripts/journeys/lib/stripe-sandbox.mjs";
@@ -48,7 +49,7 @@ export async function described(page, harness, what, fn) {
  * session of the account has ended. Returns the authenticator secret (masked).
  */
 export async function turnOnTwoStep(page, { harness, account, password }) {
-  const sealWith = (secrets) => account.keeper.update({ sealed: seal(secrets, harness.config.accounts.owner.password) });
+  const sealWith = (secrets) => account.keeper.update({ sealed: seal(secrets, harness.config.accounts.owner.password, { aad: recordKey(harness.runId, account.role) }) });
   harness.masker.add(password);
   await page.locator("#accountOpen").click();
   await modal(page).locator("#twoStepOpen").click();

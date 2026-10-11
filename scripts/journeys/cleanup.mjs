@@ -46,7 +46,7 @@ import { createSessionPool } from "./lib/sessions.mjs";
 import { MASKED_VALUES_FILE, createMasker } from "./lib/mask.mjs";
 import { unseal } from "./lib/seal.mjs";
 import { createSandboxStripe } from "./lib/stripe-sandbox.mjs";
-import { readRecords, writeRecord } from "./lib/runs.mjs";
+import { readRecords, recordKey, writeRecord } from "./lib/runs.mjs";
 import { resetMarkup } from "./lib/settings.mjs";
 import { createS3 } from "./lib/s3.mjs";
 import { freshTotp } from "./lib/totp.mjs";
@@ -174,7 +174,7 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
         let tokens;
         if (record.sealed) {
           // Two-step may be on (a billing throwaway): its password, and a code from its own secret
-          const sealed = unseal(record.sealed, config.accounts.owner.password);
+          const sealed = unseal(record.sealed, config.accounts.owner.password, { aad: recordKey(record.runId, record.role) });
           masker.add(sealed.password);
           if (sealed.totp) masker.add(sealed.totp);
           tokens = await cognito.signInWithPassword(record.address, sealed.password, sealed.totp && totpFor ? () => totpFor(sealed.totp, record.role) : undefined);
@@ -221,12 +221,18 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
         checkMe(me, { email: record.address, teamIds: createdTeams });
         for (const team of me.teams) {
           if (team.role !== "owner") continue;
-          // The run's own teams only (assertDestructiveAllowed's rule for closing), closed or not
+          // The run's own teams only (assertDestructiveAllowed's rule for ending a subscription), closed or not
           if (stripe && createdTeams.includes(team.id)) {
             try {
+              assertDestructiveAllowed({ action: "cancelSubscription", account: record.address, runIds, longLived, team, createdTeams });
               const customer = await stripe.customerOfTeam(team.id);
-              const sub = customer && await stripe.subscriptionOf(customer);
-              if (sub) { await stripe.cancel(sub.id); done.push(`${label}: ended its sandbox subscription`); }
+              if (!customer && team.billingAccount) {
+                // The team has a Stripe customer, but the search doesn't show it yet (it lags by up to a minute): not done
+                left.push(`${label}: its team has a Stripe customer that the search didn't find yet, so its sandbox subscription may still be there`);
+              } else {
+                const sub = customer && await stripe.subscriptionOf(customer);
+                if (sub) { await stripe.cancel(sub.id); done.push(`${label}: ended its sandbox subscription`); }
+              }
             } catch (err) { left.push(`${label}: couldn't end its sandbox subscription: ${message(err)}`); }
           }
           if (team.closedAt) continue;

@@ -244,6 +244,16 @@ test("a prodSkip for a step that has a prod test, and a prod test for a planned 
   ]);
 });
 
+test("prodTrial is a reason, for a built step with a prod test, so not with prodSkip", () => {
+  const reg = registry();
+  reg.journeys[0].steps[0].prodTrial = "not passed in prod yet";
+  assert.deepEqual(validateRegistry(reg), ["J0.1: prodTrial is for a built step with a prod test, so not with prodSkip"]);
+  delete reg.journeys[0].steps[0].prodSkip;
+  assert.deepEqual(validateRegistry(reg), []);
+  reg.journeys[0].steps[1].prodTrial = " ";
+  assert.deepEqual(validateRegistry(reg), ["J0.2: prodTrial is a reason", "J0.2: prodTrial is for a built step with a prod test, so not with prodSkip"]);
+});
+
 test("prodDesktopOnly needs a prod test and a built step, and excludes prodSkip", () => {
   const reg = registry();
   reg.journeys[0].steps[0].prodDesktopOnly = "throwaway accounts";

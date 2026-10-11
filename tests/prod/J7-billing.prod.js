@@ -47,6 +47,7 @@
 import { runName } from "../../scripts/journeys/lib/addresses.mjs";
 import { isSubscribed, invoicesAnswerOk, newPassword } from "../../scripts/journeys/lib/billing.mjs";
 import { PROD } from "../../scripts/journeys/lib/config.mjs";
+import { assertDestructiveAllowed } from "../../scripts/journeys/lib/guards.mjs";
 import { createSandboxStripe } from "../../scripts/journeys/lib/stripe-sandbox.mjs";
 import { checkNewTeam, isInviteLink, isWelcomeLink } from "../../scripts/journeys/lib/throwaway.mjs";
 import { goToProjects, modal } from "../ui/index.js";
@@ -226,6 +227,8 @@ test("a new owner turns on two-step sign-in, subscribes in the sandbox, adds a s
     await test.step("Clean-up: end the sandbox subscription, delete the crew member's account, close the team, delete the owner's", async () => {
       if (stripe) {
         const sub = await sandboxSubscription();
+        // Only a team this run created, as this run's throwaway
+        assertDestructiveAllowed({ action: "cancelSubscription", account: owner.address, runIds: [harness.runId], longLived: { emails: Object.values(harness.config.accounts).map((a) => a.email), teamIds: Object.values(harness.config.teams) }, team: { id: teamId }, createdTeams: [...harness.createdTeams] });
         await stripe.cancel(sub.id);
       }
       await crewSide.page.locator("#accountOpen").click();
