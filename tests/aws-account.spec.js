@@ -562,7 +562,8 @@ test.describe("first sign-in and teams", () => {
       await expect(page.getByLabel("Team name")).toBeFocused();
       await page.getByLabel("Team name").fill(name);
       await page.getByRole("button", { name: "Create team" }).click();
-      await connected(page);
+      // The request is what's under test, not the team's data loading
+      await expect(page.locator(".teambar")).toContainText(`Team: ${name}`);
     };
 
     test("a tagged link's utm values are cleaned, kept, sent once with the new team, and forgotten", async ({ page }) => {
