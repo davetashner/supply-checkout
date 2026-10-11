@@ -350,7 +350,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Functions failing | Every journey | P1 | Lambda `Errors` ÷ `Invocations` across every function in the region, at least 20 invocations. Per-function alarms come with the functions. |
 | Functions throttled | Every journey | P2 | Lambda `Throttles` across every function in the region |
 | API errors | Every journey | P1 | API Gateway `5xx` ÷ `Count` for the HTTP API (`supply-checkout-d8b`), at least 20 requests. Across all routes, not per route: per-route metrics need detailed metrics, billed per route, and the access logs have the route. |
-| API slow | Every journey | P2 | API Gateway `Latency` p95 for the HTTP API over 10 minutes |
+| API slow | Every journey | P2 | API Gateway `Latency` p95 for the HTTP API, above 2 seconds in each of 3 consecutive 5-minute periods (more than 10 minutes) |
 | Database errors | Every journey | P1 | DynamoDB `SystemErrors` on the app table, summed over the operations the data module uses |
 | Database throttled | Every journey | P2 | DynamoDB `ReadThrottleEvents` + `WriteThrottleEvents` on the app table |
 | Needs attention | Every journey | P2 | `NeedsAttention`, any in 15 minutes, staying in alarm until 2 hours pass without one (1 of 8 periods, so the hourly jobs' events don't make it flap). In every region. It covers the events in J1, J3, J5, J7, J8, J10 and J11 marked "through **Needs attention**" below, which were alarms of their own until `supply-checkout-7pe.1`: Password reset hints capped, Welcome emails failing, Welcome emails refused, Email verification not saved, Email codes failing, Receipt trials paused, Seat counts drifting, Entitlements drifting, Lapsed-team job failing, Lapsed-team closures held, Lapsed team held by Checkout, Reopened team's subscription ended, Reopened team's billing not resynced, Reopened team's subscription left to cancel, Closed team charged, Closed-team subscription not found in Stripe, Stripe customer already deleted, Held team purged with its subscription unresolved, Team closure emails failing and Team reopened emails failing; Receipt trials paused once a UTC day. An alarm in ALARM doesn't email again, so check every source's graph. [Runbook](observability.md#when-needs-attention-fires) |
@@ -395,7 +395,7 @@ Every other alarm on this page waits for the resource or code it watches, and is
 | **RUM events flood** | The same | above 1,000,000 in an hour | P1 |
 | **Report received** | `FeedbackReceived`, a count of reports users send from the app, summed over 5 minutes. Not a blocked journey: it tells the owner a report is waiting (`npm run feedback list`) | 1 or more, notifying on ALARM only | P2 |
 | **API errors** | API Gateway `5xx` per route | above 2% of requests for 5 minutes (at least 20 requests) | P1 |
-| **API slow** | API Gateway `Latency` p95 | above 2 seconds for 10 minutes | P2 |
+| **API slow** | API Gateway `Latency` p95 | above 2 seconds in each of 3 consecutive 5-minute periods (more than 10 minutes) | P2 |
 | **API unhealthy** | Route 53 health check on `/health` in us-east-1 | unhealthy for 2 minutes | P1 |
 | **Functions failing** | Lambda `Errors` per function | above 1% for 5 minutes | P1 |
 | **Functions throttled** | Lambda `Throttles` per function | any, for 5 minutes | P2 |
