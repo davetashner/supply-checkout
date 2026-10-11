@@ -127,6 +127,9 @@ function claim(userId) {
   if (forgetLocal()) local.set(OWNER_KEY, userId);
 }
 
+// Who the ID token's claims say is signed in: their name, else their email
+const nameOf = (claims) => [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
+
 export async function start(config) {
   box = document.createElement("section");
   box.id = "account";
@@ -238,6 +241,19 @@ export async function start(config) {
   const twoStep = (me, options) => openTwoStep(session, me.user.email, twoStepOn, options);
   // Takes the What's New banner away once Account turns it off; nothing until it's shown
   let hideWhatsNew = () => {};
+  // Shows a name Account just saved in the bar under the header; nothing until a team is open
+  let renamed = () => {};
+  // The user's first and last name, for Account's Name section (name.js): the ID token's. Once
+  // it's saved, new tokens carry it (a failed refresh leaves the old one until the next), and
+  // the team bar shows it
+  const ownName = (me) => {
+    // Account is only offered while signed in, so there are claims
+    const claims = session.claims();
+    return {
+      given: claims.given_name || "", family: claims.family_name || "", provider: me.user.mfa === "provider",
+      saved: async () => { await session.refresh().catch(() => {}); renamed(); },
+    };
+  };
   // The user's own photo, for Account: the team's list's link once a team is open, else /me's.
   // Nothing from an API without photos (no photoUrl in /me).
   const ownPhoto = (me, name) => me.user.photoUrl === undefined ? null : {
@@ -250,7 +266,7 @@ export async function start(config) {
     mfa: me.user.mfa,
     setUp: (moving) => twoStep(me, { moving }),
     changePassword: () => openChangePassword(session, me.user.email, passwordChanged, { required: me.user.mfa === "totp" }),
-  }, { prefs: me.user.preferences, off: () => hideWhatsNew() }, ownPhoto(me, name));
+  }, { prefs: me.user.preferences, off: () => hideWhatsNew() }, ownPhoto(me, name), ownName(me));
 
   // Who's signed in, with a way out, on the screens before a team is open
   const whoami = (me) => `<p class="whoami">Signed in as ${esc(me.user.email || "you")}. <button type="button" class="btn ghost" id="accountSignOut">Sign out</button> <button type="button" class="btn ghost" id="accountDelete">Delete account</button></p>`;
@@ -663,7 +679,7 @@ export async function start(config) {
     box.innerHTML = "";
     const fr = firstRun(me, team);
     // Who is signed in: their name, else their email (shown on the team bar, and as their profile)
-    const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
+    let name = nameOf(claims);
     // Asked for now, so the team bar and the projects have them as soon as they can
     if (me.user.photoUrl !== undefined) photos = createPhotos(session.api, team.id, me.user.id, me.user.photoUrl);
     let bar = teamBar(me, team, fr, name);
@@ -692,6 +708,17 @@ export async function start(config) {
       viewOnly = viewOnlyFor(team);
     })(); };
     const profile = { id: me.user.id, name, isMe: true };
+    // A name saved on Account: on the team bar's chip, and as their own profile from now on.
+    // Nothing once the session has ended meanwhile (the sign-in screen has taken over)
+    renamed = () => {
+      const now = session.claims();
+      if (!now) return;
+      name = profile.name = nameOf(now);
+      const chip = bar.querySelector("#accountOpen");
+      chip.insertAdjacentHTML("afterend", identity(name, team, me.user.id));
+      chip.remove();
+      bar.querySelector("#accountOpen").addEventListener("click", () => account(me, name));
+    };
     db = createDb({
       api: session.api, config, teamId: team.id, userId: me.user.id, token: session.token,
       onRemoved: () => removed(team),

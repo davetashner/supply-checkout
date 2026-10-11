@@ -291,3 +291,37 @@ export function cognitoTotp(issuerUrl: string, doFetch: typeof fetch = fetch): T
     },
   };
 }
+
+/**
+ * Sets or clears the caller's own `given_name` and `family_name`: an empty
+ * part is deleted, any other is set (supply-checkout-bt3g).
+ */
+export type SetOwnName = (accessToken: string, givenName: string, familyName: string) => Promise<void>;
+
+/**
+ * UpdateUserAttributes and DeleteUserAttributes with the caller's own access
+ * token, like GetUser: authorized by the token alone, so the account function
+ * needs no IAM permission on the pool, and it can only ever change the user
+ * who sent the request. Cognito also refuses any attribute the web client
+ * can't write (its writeAttributes: email, given_name and family_name, never
+ * email_verified or a custom attribute), and this sends only the two names.
+ * Neither the token nor the name is ever logged.
+ */
+export function cognitoSetName(issuerUrl: string, doFetch: typeof fetch = fetch): SetOwnName {
+  const endpoint = poolEndpoint(issuerUrl);
+  const call = async (action: string, body: Record<string, unknown>) => {
+    const { ok, status, type } = await callCognito(endpoint, doFetch, action, body);
+    if (ok) return;
+    if (status === 400 && (type === "NotAuthorizedException" || type === "UserNotFoundException")) throw signInAgain();
+    if (status === 400 && (type === "TooManyRequestsException" || type === "LimitExceededException")) throw tooMany();
+    // Only the status and the error's name: never the token, the name or Cognito's message
+    throw new Error(`${action} failed: ${status} ${type}`);
+  };
+  return async (accessToken, givenName, familyName) => {
+    const parts: [string, string][] = [["given_name", givenName], ["family_name", familyName]];
+    const set = parts.filter(([, value]) => value !== "");
+    const cleared = parts.filter(([, value]) => value === "").map(([name]) => name);
+    if (set.length) await call("UpdateUserAttributes", { AccessToken: accessToken, UserAttributes: set.map(([Name, Value]) => ({ Name, Value })) });
+    if (cleared.length) await call("DeleteUserAttributes", { AccessToken: accessToken, UserAttributeNames: cleared });
+  };
+}

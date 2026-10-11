@@ -275,6 +275,7 @@ export class FakeBackend {
     if (path === "/me" && method === "DELETE") return this.deleteAccount(call.body, err);
     if (path === "/me") return [200, { user: this.user.photoUrl === undefined ? this.user : { ...this.user, photoUrl: this.photoLink(this.user.id) }, teams: this.teams, invites: this.invites }];
     if (path === "/me/photo") return this.ownPhoto(method, call.body);
+    if (path === "/me/name" && method === "PUT") return this.ownName(call.body, err);
     // The user's own preferences (supply-checkout-005.17), as the account API checks them: either
     // field, of the right type. Only for a user that has them (an API from before them has no route)
     if (path === "/me/preferences" && method === "PATCH") {
@@ -484,6 +485,21 @@ export class FakeBackend {
 
   // The user's own photo as the API takes it (backend/src/api/account-handler.ts): a base64
   // JPEG of exactly 256 × 256, up to 64 KB, 20 a day
+  // The user's own name (supply-checkout-bt3g), as the account API checks it: both parts, strings
+  // on one line with no control or invisible characters, at most 100 characters together. Saved
+  // in the ID token's claims, as Cognito does, so the next refresh carries it; an empty part goes
+  ownName(body, err) {
+    const { givenName, familyName, ...rest } = body || {};
+    const part = (v) => typeof v === "string" && v.length <= 200 && !/[\p{Cc}\u200B-\u200F\u2028-\u202E\u2060-\u2064\uFEFF]/u.test(v);
+    if (Object.keys(rest).length) return err(400, "bad_request");
+    if (!part(givenName) || !part(familyName) || `${givenName.trim()} ${familyName.trim()}`.trim().length > 100) return err(400, "bad_request", "name_invalid");
+    const claims = { ...this.claims, given_name: givenName.trim(), family_name: familyName.trim() };
+    for (const k of ["given_name", "family_name"]) if (!claims[k]) delete claims[k];
+    this.claims = claims;
+    const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ");
+    return [200, { name: name || null }];
+  }
+
   ownPhoto(method, body) {
     const no = (status, reason) => [status, { error: { code: status === 400 ? "bad_request" : "quota_exceeded", message: reason, reason } }];
     if (method === "DELETE") { this.photos.delete(this.user.id); return [204]; }

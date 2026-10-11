@@ -173,6 +173,7 @@ describe("HTTP API routes", () => {
       "PATCH /me/preferences": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "PUT /me/photo": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "DELETE /me/photo": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "PUT /me/name": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /teams/{teamId}/photos": { ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100 },
       "POST /teams/{teamId}/billing/checkout": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /teams/{teamId}/billing/portal": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },

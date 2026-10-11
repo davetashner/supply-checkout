@@ -55,6 +55,9 @@ export type ErrorCode =
  * for the UTC day are used up).
  * Reports (supply-checkout-bmsh.1): `feedback_limit` (429: the caller's
  * reports for the UTC day are used up).
+ * The caller's name (supply-checkout-bt3g): `name_invalid` (400: a part
+ * isn't a string, isn't on one line, has a control or invisible character,
+ * or the name is over 100 characters).
  */
 export type ErrorReason =
   | "view_only"
@@ -91,7 +94,8 @@ export type ErrorReason =
   | "photo_invalid"
   | "photo_too_large"
   | "photo_limit"
-  | "feedback_limit";
+  | "feedback_limit"
+  | "name_invalid";
 
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {

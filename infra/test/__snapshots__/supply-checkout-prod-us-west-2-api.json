@@ -6592,6 +6592,56 @@
         }
       }
     },
+    "HttpApiPUTmenameAccountIntegrationPermissionA49C2636": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/me/name"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPUTmename95F01089": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "PUT /me/name",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiGETteamsteamIdphotosAccountIntegrationPermissionDFACA623": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {
@@ -7331,6 +7381,10 @@
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
           },
+          "PUT /me/name": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
+          },
           "GET /teams/{teamId}/photos": {
             "ThrottlingRateLimit": 50,
             "ThrottlingBurstLimit": 100
@@ -7445,6 +7499,8 @@
         "HttpApiPOSTteamsteamIdreopen4AB88F46",
         "HttpApiPOSTteamsAccountIntegrationPermission37B4CDE2",
         "HttpApiPOSTteams93EBE9A5",
+        "HttpApiPUTmenameAccountIntegrationPermissionA49C2636",
+        "HttpApiPUTmename95F01089",
         "HttpApiPUTmephotoAccountIntegrationPermission07295F83",
         "HttpApiPUTmephoto03AAB534"
       ]

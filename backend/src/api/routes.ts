@@ -192,6 +192,7 @@ export interface AccountRoute {
     | "setPreferences"
     | "setPhoto"
     | "deletePhoto"
+    | "setName"
     | "listPhotos"
     | "sendFeedback";
   /**
@@ -213,7 +214,8 @@ export interface AccountRoute {
  * verifying the user's email address with a code Cognito emails them. And
  * two-step sign-in, which owners need for billing: setting a password and an
  * authenticator app (TOTP) up (supply-checkout-8jc.12). And the caller's
- * own app preferences, such as the What's New banner (supply-checkout-005.17).
+ * own app preferences, such as the What's New banner (supply-checkout-005.17),
+ * and their own name (supply-checkout-bt3g).
  * And profile photos (supply-checkout-6uw.30): the caller's own, and their
  * teammates' for any member of a team. And a member's report of an issue
  * (supply-checkout-bmsh.1), which any role may send.
@@ -257,6 +259,8 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   // the tightest; each user also has a daily limit (PHOTO_UPLOADS_PER_USER_PER_DAY)
   { method: "PUT", path: "/me/photo", action: "setPhoto", throttle: { rate: 5, burst: 10 } },
   { method: "DELETE", path: "/me/photo", action: "deletePhoto", throttle: { rate: 2, burst: 5 } },
+  // The caller's own name (supply-checkout-bt3g): rare, a change on Account. Two Cognito calls at most
+  { method: "PUT", path: "/me/name", action: "setName", throttle: { rate: 5, burst: 10 } },
   // Presigned URLs for the team's members' photos, for any member: signed locally, no S3 call
   { method: "GET", path: "/teams/{teamId}/photos", action: "listPhotos", throttle: { rate: 50, burst: 100 } },
   // "Report an issue" (supply-checkout-bmsh.1): any member, a viewer included. Stored privately,
