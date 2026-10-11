@@ -113,6 +113,22 @@ describe("router (CloudFront Function)", () => {
       }
     });
 
+    it("serves the how-to lessons, /how-to/ and one folder under it, and nothing else under /how-to", async () => {
+      expect((await withSite(APEX, "/how-to/")).uri).toBe("/releases/site-20261005-120000-abc1234/how-to/index.html");
+      expect((await withSite(APEX, "/how-to/check-out-and-return/")).uri).toBe("/releases/site-20261005-120000-abc1234/how-to/check-out-and-return/index.html");
+      expect((await withSite(APEX, "/how-to/quick-take-2/")).uri).toBe("/releases/site-20261005-120000-abc1234/how-to/quick-take-2/index.html");
+      const res = await withSite(APEX, "/how-to");
+      expectRedirect(res, 301, "/how-to/");
+      expect(res.headers?.["cache-control"]?.value).toBe("max-age=86400");
+      for (const uri of ["/how-to/index.html", "/how-to/quick-take", "/how-to/quick-take/index.html", "/how-to/a/b/", "/how-to/../config.json", "/how-to/..%2f/", "/how-to/Quick-Take/", "/how-to//", "/how-to/shots/x.jpg", "/how-tos/", "/How-to/"]) {
+        expectRedirect(await withSite(APEX, uri), 302, `https://${APP}/`);
+      }
+      // On www., to the apex's home page, as every other www. path
+      expectRedirect(await withSite(WWW, "/how-to/"), 301, `https://${APEX}/`);
+      // With nothing live on the site, to the app, as / does
+      expectRedirect(await router({ app: "1.4.0" })(APEX, "/how-to/"), 302, `https://${APP}/`);
+    });
+
     it("leaves the app, the demo and www. as they were", async () => {
       expect((await withSite(APP, "/")).uri).toBe("/releases/1.4.0/index.html");
       expect((await withSite(APEX, "/demo/")).uri).toBe("/releases/demo-20260926-abc1234/index.html");

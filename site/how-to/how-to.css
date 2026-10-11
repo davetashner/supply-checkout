@@ -1,0 +1,51 @@
+/* The how-to lessons (site/how-to/): large type, one step at a time, a phone-sized screenshot
+   beside each step (under it on a phone). The tokens and header come from site.css. */
+.lesson, .lesson-index { font-size: 19px; line-height: 1.6; padding-bottom: 48px; }
+.lesson h1, .lesson-index h1 { font-size: clamp(38px, 8vw, 60px); margin: 8px 0 20px; }
+.crumb { margin: 8px 0 0; color: var(--muted); font-weight: 600; }
+.crumb a { color: var(--accent-text); }
+
+.about dl { display: grid; gap: 12px; margin: 0 0 32px; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+.about dl div { display: grid; gap: 2px; }
+.about dt { font-weight: 700; }
+.about dd { margin: 0; }
+
+.steps { list-style: none; margin: 0; padding: 0; }
+.steps > li { display: grid; gap: 20px; padding-block: 32px; border-top: 1px solid var(--line); }
+.steps h2, .clip h2, .stuck h2 { font-size: clamp(28px, 6vw, 38px); margin: 0 0 12px; }
+.progress { margin: 0 0 6px; font: 700 17px/1.2 var(--display); text-transform: uppercase; letter-spacing: .1em; color: var(--accent-text); }
+.copy p { margin: 0 0 12px; }
+/* A control the step names: what it says on the screen */
+.copy b { font-weight: 700; background: var(--accent-soft); padding: 0 6px; border-radius: 6px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.steps figure, .clip figure { margin: 0; justify-self: center; width: min(320px, 100%); }
+.steps img, .clip video { display: block; width: 100%; height: auto; border-radius: 20px; border: 1px solid var(--line); box-shadow: var(--shadow); background: #EDF1EE; }
+
+.clip { padding-block: 32px; border-top: 1px solid var(--line); }
+.clip figcaption { margin-top: 14px; color: var(--muted); font-size: 17px; }
+
+.stuck { margin-block: 16px 32px; padding: 20px 22px; background: var(--surface); border: 2px solid var(--accent); border-radius: 14px; }
+.stuck ul { margin: 0; padding-left: 1.2em; }
+.stuck li { margin-bottom: 10px; }
+
+.next { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; }
+.next .btn { white-space: normal; text-align: center; }
+
+.lesson-index .lead { color: var(--muted); max-width: 34em; margin: 0 0 28px; }
+.lessons { list-style: none; margin: 0 0 28px; padding: 0; display: grid; gap: 14px; }
+.lessons a { display: flex; gap: 16px; align-items: flex-start; padding: 18px 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; text-decoration: none; }
+.lessons a:hover { border-color: var(--muted); }
+.lessons .num { flex: none; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font: 700 24px/1 var(--display); }
+.lessons .what { display: grid; gap: 4px; }
+.lessons strong { font-size: 21px; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; }
+.lessons .what span { color: var(--muted); }
+.more a { color: var(--accent-text); font-weight: 600; }
+
+@media (min-width: 820px) {
+  .steps > li { grid-template-columns: 1fr 300px; gap: 56px; align-items: start; }
+  .steps figure { width: 300px; }
+  .clip figure { justify-self: start; width: 300px; }
+}
+
+/* Body-size text in the accent colour: a darker green than the buttons' in light mode, for 4.5:1 */
+:root { --accent-text: #0B5747; }
+@media (prefers-color-scheme: dark) { :root { --accent-text: #43C3A0; } }
