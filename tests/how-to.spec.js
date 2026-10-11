@@ -6,8 +6,8 @@
 // note and a Next lesson link; no accessibility violations in light or dark mode; nothing scrolls
 // sideways at phone width; any clip has controls, doesn't autoplay and has a text description.
 //
-// In desktop Chrome only (the @how-to-steps tests): each lesson's steps are played in the demo
-// build at phone size (tests/how-to-lessons.js), and every control a step names in bold must be
+// In desktop Chrome only (the @how-to-steps tests): each lesson's steps are played in the app at
+// phone size (tests/how-to-lessons.js: the demo build, or the web build against the fake backend), and every control a step names in bold must be
 // on screen at that step, so a lesson fails here when the app renames or drops a control it
 // names. With HOW_TO_SHOTS=1 (npm run how-to:shots) the same run writes each step's screenshot
 // to site/how-to/shots/<lesson>-<step>.jpg, with the step's controls outlined; commit them.
@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { allowConsoleError, test, expect } from "./helpers.js";
 import { DEMO, SITE, builtFiles } from "../scripts/builds.mjs";
 import { contentSecurityPolicy } from "../infra/lib/web/content-security-policy.ts";
-import { RUM_REGION } from "./fake-aws.js";
+import { RUM_REGION, openAws, connected } from "./fake-aws.js";
 import { LESSONS } from "./how-to-lessons.js";
 
 const ORIGIN = "https://site.supply-checkout.test";
@@ -91,7 +91,7 @@ for (const [index, slug] of SLUGS.entries()) {
 
     const steps = await readSteps(page);
     // One step on the page for each step the demo plays, so the two can't drift apart
-    expect(steps).toHaveLength(LESSONS[slug].length);
+    expect(steps).toHaveLength(LESSONS[slug].steps.length);
     for (const [i, step] of steps.entries()) {
       const n = i + 1;
       expect(step.progress, `step ${n}`).toBe(`Step ${n} of ${steps.length}`);
@@ -182,49 +182,80 @@ async function outline(locator, on) {
   }, on);
 }
 
-test.describe("each lesson's steps work in the demo", { tag: ["@how-to-steps"] }, () => {
+// Hides what isn't the app's (the demo's banner) and what would cover a shot (toasts, animations, the caret)
+const STILL = ".demo-banner, #toast { display: none !important; } *, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }";
+
+// Opens the lesson's app: the demo build with its demo data, or the web build against the fake backend
+// (`ready`: what to wait for in the web build, when it isn't the team's data loading)
+async function openLessonApp(page, lesson, backend, { ready = connected, ...opts } = {}) {
+  if (lesson.app === "web") {
+    await openAws(page, backend, opts);
+    await ready(page);
+  } else {
+    const demo = builtFiles(DEMO);
+    await page.route(`${DEMO_ORIGIN}/**`, (r) => {
+      const file = fileAt(demo, new URL(r.request().url()).pathname);
+      return file ? r.fulfill(file) : r.fulfill({ status: 404 });
+    });
+    await page.goto(`${DEMO_ORIGIN}/`);
+    await expect(page.getByRole("button", { name: /Acme Offices/ })).toBeVisible();
+  }
+  await page.addStyleTag({ content: STILL });
+}
+
+test.describe("each lesson's steps work in the app", { tag: ["@how-to-steps"] }, () => {
   test.use({ viewport: PHONE, deviceScaleFactor: 2 });
 
   for (const slug of SLUGS) {
-    test(`${slug}: every control a step names is on screen at that step`, async ({ page }, testInfo) => {
+    test(`${slug}: every control a step names is on screen at that step`, async ({ page, browser }, testInfo) => {
       test.skip(testInfo.project.name !== "desktop-chrome", "Played once, in desktop Chrome at phone size");
+      const lesson = LESSONS[slug];
       await open(page, `/how-to/${slug}/`);
       const steps = await readSteps(page);
-      expect(steps).toHaveLength(LESSONS[slug].length);
+      expect(steps).toHaveLength(lesson.steps.length);
 
-      // The demo build, without its banner, and with no toast over what the shot shows
-      const demo = builtFiles(DEMO);
-      await page.route(`${DEMO_ORIGIN}/**`, (r) => {
-        const file = fileAt(demo, new URL(r.request().url()).pathname);
-        return file ? r.fulfill(file) : r.fulfill({ status: 404 });
-      });
-      await page.goto(`${DEMO_ORIGIN}/`);
-      await expect(page.getByRole("button", { name: /Acme Offices/ })).toBeVisible();
-      await page.addStyleTag({ content: ".demo-banner, #toast { display: none !important; } *, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }" });
+      const backend = lesson.app === "web" ? lesson.backend() : null;
+      await openLessonApp(page, lesson, backend);
       if (WRITE_SHOTS) mkdirSync(SHOTS, { recursive: true });
 
+      // A step seen by someone else opens their own browser, which fails the test on any page error too
+      const others = [];
+      const newPage = async (theirs, opts) => {
+        const context = await browser.newContext({ viewport: PHONE, deviceScaleFactor: 2 });
+        const other = await context.newPage();
+        const errors = [];
+        other.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+        other.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource/.test(m.text())) errors.push(`console: ${m.text()}`); });
+        others.push({ context, errors });
+        await openLessonApp(other, lesson, theirs, opts);
+        return other;
+      };
+
+      let shown = page;
       for (const [i, step] of steps.entries()) {
         const n = i + 1;
         await test.step(`Step ${n}: ${step.heading}`, async () => {
-          await LESSONS[slug][i](page);
+          shown = (await lesson.steps[i](shown, { backend, newPage })) || shown;
           const found = [];
           for (const c of step.controls) {
-            const { inModal, onPage } = control(page, c);
+            const { inModal, onPage } = control(shown, c);
             const locator = (await inModal.count()) ? inModal.first() : onPage.first();
             await expect(locator, `step ${n} names "${c.name}", which isn't on screen`).toBeVisible();
             found.push(locator);
           }
-          for (const l of found) {
-            await l.scrollIntoViewIfNeeded();
-            // ...and all of them in the shot
-            await expect(l, `step ${n}: what it names fits on one screen`).toBeInViewport();
-          }
+          for (const l of found) await l.scrollIntoViewIfNeeded();
+          // ...and all of them in the shot
+          for (const [k, l] of found.entries()) await expect(l, `step ${n}: "${step.controls[k].name}" isn't on the same screen as the rest`).toBeInViewport();
           for (const l of found) await outline(l, true);
           const file = `${SHOTS}${slug}-${n}.jpg`;
-          if (WRITE_SHOTS) await page.screenshot({ path: file, type: "jpeg", quality: 70 });
+          if (WRITE_SHOTS) await shown.screenshot({ path: file, type: "jpeg", quality: 70 });
           else expect(existsSync(file), `${slug}-${n}.jpg is committed (npm run how-to:shots)`).toBe(true);
           for (const l of found) await outline(l, false);
         });
+      }
+      for (const { context, errors } of others) {
+        await context.close();
+        expect(errors, "page errors").toEqual([]);
       }
     });
   }

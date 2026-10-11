@@ -17,6 +17,8 @@
 .account .whoami .btn{padding:4px 8px}
 .teambar{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;margin-block:-4px 14px;font-size:14px;color:var(--muted);overflow-wrap:anywhere}
 .teambar strong{color:var(--ink);font-weight:600}
+/* Help is a link (a new tab), drawn like the buttons beside it */
+.teambar a.btn{color:inherit}
 .teambar label{font-weight:600}
 .teambar .team-pick{display:contents}
 .teambar select{flex:0 1 260px}
