@@ -7,7 +7,7 @@ import { join } from "node:path";
 import {
   validateRegistry, journeyStatus, playwrightTests, stepNames, trace, generateDoc, renderTable,
   checkHeadings, docAlarms, checkAlarms, renderTrace, main, slug, ROOT, listErrors, listPlaywrightTests,
-  checkTestsLines, checkStatusLines, testCalls, quotedTitles,
+  checkTestsLines, checkStatusLines, testCalls, quotedTitles, prodCoverage, listProdTests,
 } from "./journeys.mjs";
 
 // A small registry: J0 is critical, J1 is phase 2
@@ -16,8 +16,8 @@ const registry = () => ({
     {
       id: "J0", name: "Check out", persona: "Crew member", critical: true,
       steps: [
-        { id: "J0.1", text: "Open a project.", status: "built" },
-        { id: "J0.2", text: "Scan an item.", status: "built", tests: ["backend/test/commands.test.ts"] },
+        { id: "J0.1", text: "Open a project.", status: "built", prodSkip: "needs a real camera" },
+        { id: "J0.2", text: "Scan an item.", status: "built", tests: ["backend/test/commands.test.ts"], prodSkip: "backend tests only" },
         { id: "J0.3", text: "Sign the project.", status: "planned", beads: ["supply-checkout-sig"] },
       ],
     },
@@ -215,6 +215,82 @@ test("a built step with no test fails the trace; a tagged test or a listed file 
   assert.deepEqual(result.everyJourneyAlarms, [{ name: "API errors", state: "built" }]);
 });
 
+const prodSpec = (title, tags) => ({ title, file: "J0.prod.js", line: 3, tags: [...tags, "prod"] });
+const prodTests = (...specs) => playwrightTests({ suites: [{ title: "J0.prod.js", file: "J0.prod.js", specs, suites: [] }] });
+
+test("a built step needs a prod test or a prodSkip reason; phase 2 and planned steps don't", () => {
+  const reg = registry();
+  delete reg.journeys[0].steps[0].prodSkip;
+  let result = trace(reg, playwrightTests(listing([spec("opens", ["J0.1"])])));
+  assert.deepEqual(result.problems, ["J0.1 is built but has no prod test. Tag a test in tests/prod with @J0.1, or record why there's none as prodSkip in journeys/registry.json"]);
+  assert.equal(result.journeys[0].steps[0].prod, "Yes");
+  result = trace(reg, playwrightTests(listing([spec("opens", ["J0.1"])])), { prodTests: prodTests(prodSpec("signs in", ["J0.1"])) });
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.journeys[0].steps[0].prodTests, [{ file: "tests/J0.prod.js", line: 3, title: "signs in" }]);
+  assert.deepEqual(result.journeys.map((j) => j.steps.map((s) => s.prod)), [["Yes", "No: backend tests only", "Planned"], ["Phase 2"]]);
+  assert.match(renderTrace(result), /\| J0\.1 \| built \| a\.spec\.js \| Yes \|/);
+  assert.match(renderTrace(result), /\| J0\.2 \| built \| backend: commands\.test\.ts \| No: backend tests only \|/);
+});
+
+test("a prodSkip for a step that has a prod test, and a prod test for a planned step, fail the trace", () => {
+  const reg = registry();
+  const tests = playwrightTests(listing([spec("opens", ["J0.1"])]));
+  const result = trace(reg, tests, { prodTests: prodTests(prodSpec("signs in", ["J0.1"]), prodSpec("signs", ["J0.3"]), prodSpec("typo", ["J0.9", "J0.x"])) });
+  assert.deepEqual(result.problems, [
+    `tests/J0.prod.js: "typo" has tag @J0.9, which isn't in journeys/registry.json`,
+    `tests/J0.prod.js: "typo" has tag @J0.x; journey tags look like @J4 or @J4.2`,
+    "J0.1 has a prod test now: remove its prodSkip reason",
+    "J0.3 is planned, but 1 prod test(s) are tagged @J0.3. If it's built now, mark it built",
+  ]);
+});
+
+test("prodDesktopOnly needs a prod test and a built step, and excludes prodSkip", () => {
+  const reg = registry();
+  reg.journeys[0].steps[0].prodDesktopOnly = "throwaway accounts";
+  assert.deepEqual(validateRegistry(reg), ["J0.1 has both prodSkip and prodDesktopOnly; a step with no prod test isn't desktop only"]);
+  delete reg.journeys[0].steps[0].prodSkip;
+  reg.journeys[0].steps[2].prodDesktopOnly = "x";
+  reg.journeys[0].steps[1].prodSkip = " ";
+  assert.deepEqual(validateRegistry(reg), ["J0.2: prodSkip is a reason", "J0.3: prodDesktopOnly is only for a built step"]);
+  delete reg.journeys[0].steps[2].prodDesktopOnly;
+  delete reg.journeys[0].steps[1].prodSkip;
+  const tests = playwrightTests(listing([spec("opens", ["J0.1"])]));
+  assert.deepEqual(trace(reg, tests, { prodTests: prodTests(prodSpec("signs in", ["J0.1"])) }).problems, ["J0.2 is built but has no prod test. Tag a test in tests/prod with @J0.2, or record why there's none as prodSkip in journeys/registry.json"]);
+  reg.journeys[0].steps[1].prodSkip = "backend only";
+  const result = trace(reg, tests, { prodTests: prodTests(prodSpec("signs in", ["J0.1"])) });
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.journeys[0].steps[0].prod, "Desktop only");
+  assert.deepEqual(trace(reg, tests, {}).problems, [
+    "J0.1 is built but has no prod test. Tag a test in tests/prod with @J0.1, or record why there's none as prodSkip in journeys/registry.json",
+    "J0.1 is marked prodDesktopOnly, but has no prod test",
+  ]);
+});
+
+test("the In prod text in the doc is generated from the registry", () => {
+  const reg = registry();
+  reg.journeys[0].steps[0] = { ...reg.journeys[0].steps[0], prodSkip: undefined, prodDesktopOnly: "throwaway accounts." };
+  delete reg.journeys[0].steps[0].prodSkip;
+  assert.deepEqual([reg.journeys[0].steps[0], ...reg.journeys[0].steps.slice(1)].map((s) => prodCoverage(reg.journeys[0], s)), ["Desktop only", "No: backend tests only", "Planned"]);
+  const { md } = generateDoc(doc(), reg);
+  assert.match(md, /\| 1 of 3 \|/);
+  assert.match(md, /- \*\*J0\.1\*\* Open a project\. \*In prod, on desktop only: throwaway accounts\.\*/);
+  assert.match(md, /- \*\*J0\.2\*\* Scan an item\. \*Not in prod: backend tests only\.\*/);
+  assert.match(md, /- \*\*J0\.3\*\* Sign the project\. \*Planned: `supply-checkout-sig`\.\*\n/);
+  assert.match(md, /- \*\*J1\.1\*\* Open the app\. \*Planned\.\*\n/);
+  reg.journeys[0].steps[1] = { ...reg.journeys[0].steps[1], prodSkip: undefined };
+  delete reg.journeys[0].steps[1].prodSkip;
+  assert.match(generateDoc(doc(), reg).md, /- \*\*J0\.2\*\* Scan an item\. \*In prod\.\*/);
+});
+
+test("the prod suite is listed with its own config, and a broken listing says why", () => {
+  const calls = [];
+  const out = JSON.stringify(listing([spec("signs in", ["J0.1"])]));
+  assert.equal(listProdTests("/r", { run: (...a) => (calls.push(a), out) }).suites.length, 1);
+  assert.deepEqual(calls[0][1].slice(0, 5), ["playwright", "test", "--config", "playwright.prod.config.mjs", "--list"]);
+  assert.throws(() => listProdTests("/r", { run: () => JSON.stringify({ errors: [{ message: "bad import" }] }) }), /Couldn't list the prod Playwright tests:\nbad import/);
+  assert.throws(() => listProdTests("/r", { run: () => { throw Object.assign(new Error("x"), { stdout: "", stderr: "boom" }); } }), /Couldn't list the prod Playwright tests:\nboom/);
+});
+
 test("an untested reason lets a built step pass, until it has a test", () => {
   const reg = registry();
   reg.journeys[0].steps[0].untested = "needs a real camera";
@@ -261,7 +337,7 @@ test("the doc's table and step lists are generated between their markers", () =>
   assert.deepEqual(problems, []);
   assert.match(md, /\| \[J0\]\(#j0-check-out\) \| Check out \| Crew member \| Yes \| Partly built \|/);
   assert.match(md, /\| \[J1\]\(#j1-use-the-app\) \| Use the app \| Owner \| No \| Planned \(phase 2\) \|/);
-  assert.match(md, /<!-- journeys:steps J0 -->\n- \*\*J0\.1\*\* Open a project\.\n- \*\*J0\.2\*\* Scan an item\.\n- \*\*J0\.3\*\* Sign the project\. \*Planned: `supply-checkout-sig`\.\*\n<!-- \/journeys:steps J0 -->/);
+  assert.match(md, /<!-- journeys:steps J0 -->\n- \*\*J0\.1\*\* Open a project\. \*Not in prod: needs a real camera\.\*\n- \*\*J0\.2\*\* Scan an item\. \*Not in prod: backend tests only\.\*\n- \*\*J0\.3\*\* Sign the project\. \*Planned: `supply-checkout-sig`\.\*\n<!-- \/journeys:steps J0 -->/);
   assert.match(md, /- \*\*J1\.1\*\* Open the app\. \*Planned\.\*/);
   assert.doesNotMatch(md, /old steps/);
   // Generating again changes nothing
@@ -378,6 +454,7 @@ function repo({ reg = registry(), md = doc(), tags = [["J0.1"]] } = {}) {
   writeFileSync(join(root, "backend/test/commands.test.ts"), "");
   writeFileSync(join(root, "infra/lib/observability/alarms.ts"), `alarmName: \`supply-checkout-\${env}-p1-api-errors\``);
   writeFileSync(join(root, ".beads/issues.jsonl"), `${JSON.stringify({ id: "supply-checkout-sig", status: "closed" })}\n\nnot json\n`);
+  writeFileSync(join(root, "prod.json"), JSON.stringify(listing([])));
   writeFileSync(join(root, "list.json"), JSON.stringify(listing(tags.map((t, k) => spec(`test ${k}`, t)))));
   return root;
 }
@@ -389,7 +466,7 @@ function run(argv, root) {
   console.log = (...a) => out.push(a.join(" "));
   console.error = (...a) => err.push(a.join(" "));
   try {
-    return { code: main([...argv, "--tests", join(root, "list.json")], root), out: out.join("\n"), err: err.join("\n") };
+    return { code: main([...argv, "--tests", join(root, "list.json"), "--prod-tests", join(root, "prod.json")], root), out: out.join("\n"), err: err.join("\n") };
   } finally {
     Object.assign(console, { log, error });
   }
@@ -406,7 +483,7 @@ test("main writes the doc, then passes, prints the trace and writes JSON", () =>
   r = run(["--write", "--json", join(root, "trace.json")], root);
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /docs\/journeys\.md is up to date/);
-  assert.match(r.out, /\| \*\*J0 Check out\*\* \(critical\): Partly built \| J0\.1 \| built \| a\.spec\.js \| Checkouts stopped \(planned\), Export failing \(covered by API errors\) \|/);
+  assert.match(r.out, /\| \*\*J0 Check out\*\* \(critical\): Partly built \| J0\.1 \| built \| a\.spec\.js \| No: needs a real camera \| Checkouts stopped \(planned\), Export failing \(covered by API errors\) \|/);
   assert.match(r.out, /Warnings \(checked against \.beads\/issues\.jsonl\):\n- J0\.3 is planned, but its beads are closed/);
   assert.match(r.out, /journeys: 2 journeys, 4 steps, all traced/);
   const json = JSON.parse(readFileSync(join(root, "trace.json"), "utf8"));

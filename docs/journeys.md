@@ -4,7 +4,7 @@ These are the journeys Supply Checkout must never break. Each one lists who does
 
 Each step has an ID (J4.2 is the second step of J4). The journeys, their steps and their alarms live in [`journeys/registry.json`](../journeys/registry.json), and the journeys table and step lists below are generated from it. See [Keeping this page current](#keeping-this-page-current).
 
-End-to-end tests of every journey against a deployed environment are `supply-checkout-o60` ([the plan](journey-tests-plan.md): against prod, with test teams, after each release). Until then, "tests" below means the Playwright suites that run against the mock runtime and the fake API (`tests/`), and the backend's tests (`backend/test/`).
+"Tests" below means the Playwright suites that run against the mock runtime and the fake API (`tests/`), and the backend's tests (`backend/test/`). The **prod journey suite** (`tests/prod/`, [the plan](journey-tests-plan.md)) also walks the built steps against the live app with test teams after every deploy, and marks the release passed or failed; when it fails, follow [the runbook](runbooks/journey-tests-failed.md). The **In prod** column and the step lists below say which steps it covers, and the reason for each one it doesn't.
 
 ## Keeping this page current
 
@@ -12,8 +12,9 @@ When you add or change a feature, update the journey, its tests and its alarms i
 
 1. Change the journey's steps, a step's status (`built` or `planned`) or its alarms in [`journeys/registry.json`](../journeys/registry.json), then run `npm run journeys:docs` to regenerate the journeys table and step lists here. The Status column is computed from the steps; don't edit it by hand.
 2. Tag the Playwright tests that prove a step with the step's ID, `test("…", { tag: ["@J4.2"] }, …)`, or tag a whole `test.describe`. A test that belongs to a journey without proving one step gets the journey's tag, `@J4`. In a test that walks through several steps, name its `test.step` blocks by step: `test.step("J4.2 Scan an item and choose how many", …)`. Backend tests go in the step's `tests` list in the registry, by path.
+   For prod, tag the test in `tests/prod/` the same way (`@J4.2` and `@prod`). A built step with no prod test gets a `prodSkip` reason in the registry ("can't wait 30 days; backend tests"); a step whose prod test runs on desktop only gets a `prodDesktopOnly` reason. Remove a `prodSkip` when you add the test.
 3. Add a new alarm to the registry with the journeys it watches, and to this page's alarm tables; once it's built, give it its `infra` ID and add it to [Which alarms exist](#which-alarms-exist).
-4. Run `npm run journeys:trace`. It prints each step with its tests and alarms, and fails when a built step has no test, a critical journey has no alarm of its own, a tag names a step that doesn't exist, or this page doesn't match the registry. A built step that really has no automated test yet gets an `untested` reason in the registry instead of a fake tag. CI's lint job runs it.
+4. Run `npm run journeys:trace`. It prints each step with its tests and alarms, and fails when a built step has no test, a critical journey has no alarm of its own, a tag names a step that doesn't exist, or this page doesn't match the registry. A built step that really has no automated test yet gets an `untested` reason in the registry instead of a fake tag. It also fails when a built step has neither a prod test nor a `prodSkip` reason, or has both. CI's lint job runs it.
 
 To run one journey's tests: `npx playwright test --grep "@J4\b" --project=desktop-chrome` (the `\b` keeps `@J1` from matching `@J10`), or one step's: `--grep "@J4.2\b"`. To watch them, `npm run journeys:video -- --only J4` records a video of J4 from the tests tagged with its steps, with each step's result ([Journey videos](testing.md#journey-videos)).
 
@@ -34,24 +35,26 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 - **Partly built**: some steps are built and tested; the steps marked *Planned* aren't built yet.
 - **Planned**: no step is built yet. The beads listed build it.
 
-| # | Journey | Persona | Critical | Status |
-| --- | --- | --- | --- | --- |
-| [J0](#j0-sign-in) | Sign in | Everyone | Yes | Tested |
-| [J1](#j1-sign-up-and-start-a-trial) | Sign up and start a trial | Owner | Yes | Partly built |
-| [J2](#j2-set-up-the-inventory) | Set up the inventory | Owner | No | Tested |
-| [J3](#j3-invite-the-crew) | Invite the crew | Owner, crew member | No | Tested; still to come: opening the mobile app from the invite link (phase 2) |
-| [J4](#j4-check-supplies-out-and-back-in) | Check supplies out and back in | Crew member | Yes | Tested |
-| [J5](#j5-read-a-receipt) | Read a receipt | Crew member, owner | No | Tested; still to come: a subscribe link in the trial's receipt limit message, once the in-app plan picker exists |
-| [J6](#j6-export-a-project-to-bill-a-client) | Export a project to bill a client | Owner, bookkeeper | No | Tested |
-| [J7](#j7-subscribe-add-seats-and-see-invoices) | Subscribe, add seats and see invoices | Owner | Yes | Partly built |
-| [J8](#j8-a-payment-fails-and-is-fixed) | A payment fails and is fixed | Owner | Yes | Tested |
-| [J9](#j9-a-viewer-can-see-but-not-change) | A viewer can see but not change | Bookkeeper | No | Tested |
-| [J10](#j10-cancel-and-take-the-data) | Cancel and take the data | Owner | No | Tested |
-| [J11](#j11-delete-an-account) | Delete an account | Anyone | No | Tested |
-| [J12](#j12-choose-a-plan-in-the-mobile-app) | Choose a plan in the mobile app | Owner | No | Planned (phase 2) |
-| [J13](#j13-take-company-equipment-to-a-job-and-bring-it-back) | Take company equipment to a job and bring it back | Crew member | Yes | Tested |
-| [J14](#j14-take-supplies-without-a-job) | Take supplies without a job | Crew member | Yes | Tested |
-| [J15](#j15-reorder-before-running-out) | Reorder before running out | Owner, crew member | No | Tested |
+**In prod**: the steps that the prod journey suite ([`tests/prod/`](../tests/prod), run after each deploy) walks, out of all the journey's steps. Each step's list entry says how it's covered, or why it isn't.
+
+| # | Journey | Persona | Critical | Status | In prod |
+| --- | --- | --- | --- | --- | --- |
+| [J0](#j0-sign-in) | Sign in | Everyone | Yes | Tested | 3 of 3 |
+| [J1](#j1-sign-up-and-start-a-trial) | Sign up and start a trial | Owner | Yes | Partly built | 1 of 3 |
+| [J2](#j2-set-up-the-inventory) | Set up the inventory | Owner | No | Tested | 5 of 5 |
+| [J3](#j3-invite-the-crew) | Invite the crew | Owner, crew member | No | Tested; still to come: opening the mobile app from the invite link (phase 2) | 2 of 2 |
+| [J4](#j4-check-supplies-out-and-back-in) | Check supplies out and back in | Crew member | Yes | Tested | 3 of 3 |
+| [J5](#j5-read-a-receipt) | Read a receipt | Crew member, owner | No | Tested; still to come: a subscribe link in the trial's receipt limit message, once the in-app plan picker exists | 2 of 3 |
+| [J6](#j6-export-a-project-to-bill-a-client) | Export a project to bill a client | Owner, bookkeeper | No | Tested | 2 of 2 |
+| [J7](#j7-subscribe-add-seats-and-see-invoices) | Subscribe, add seats and see invoices | Owner | Yes | Partly built | 0 of 3 |
+| [J8](#j8-a-payment-fails-and-is-fixed) | A payment fails and is fixed | Owner | Yes | Tested | 0 of 3 |
+| [J9](#j9-a-viewer-can-see-but-not-change) | A viewer can see but not change | Bookkeeper | No | Tested | 1 of 1 |
+| [J10](#j10-cancel-and-take-the-data) | Cancel and take the data | Owner | No | Tested | 0 of 3 |
+| [J11](#j11-delete-an-account) | Delete an account | Anyone | No | Tested | 2 of 2 |
+| [J12](#j12-choose-a-plan-in-the-mobile-app) | Choose a plan in the mobile app | Owner | No | Planned (phase 2) | 0 of 3 |
+| [J13](#j13-take-company-equipment-to-a-job-and-bring-it-back) | Take company equipment to a job and bring it back | Crew member | Yes | Tested | 5 of 5 |
+| [J14](#j14-take-supplies-without-a-job) | Take supplies without a job | Crew member | Yes | Tested | 4 of 4 |
+| [J15](#j15-reorder-before-running-out) | Reorder before running out | Owner, crew member | No | Tested | 4 of 4 |
 <!-- /journeys:table -->
 
 ---
@@ -61,9 +64,9 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 **Persona:** everyone. **Critical:** every other journey starts here.
 
 <!-- journeys:steps J0 -->
-- **J0.1** Open the app on a phone or laptop.
-- **J0.2** Sign in with an email code, a passkey, Apple or Google.
-- **J0.3** If the person belongs to more than one team, pick the team.
+- **J0.1** Open the app on a phone or laptop. *In prod.*
+- **J0.2** Sign in with an email code, a passkey, Apple or Google. *In prod.*
+- **J0.3** If the person belongs to more than one team, pick the team. *In prod.*
 <!-- /journeys:steps J0 -->
 
 **Expected:** the team's projects appear within 3 seconds. Staying signed in lasts 30 days on the same device. Signing in with Apple or Google using the verified email of an existing account, at an address that provider runs (Gmail or the account's own Workspace domain; iCloud or an Apple relay address), opens that same account and its teams (`supply-checkout-0b1`: `backend/test/account-link.test.ts`, and the retry in `tests/aws-account.spec.js`). A person removed from a team no longer sees it on their next request.
@@ -75,9 +78,9 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 **Persona:** owner. **Critical:** no sign-ups, no new customers.
 
 <!-- journeys:steps J1 -->
-- **J1.1** Visit supplycheckout.com, read the pricing page, tap **Start free trial**. *Planned: `supply-checkout-21q`.*
-- **J1.2** Sign up and accept the terms. *Planned: `supply-checkout-21q`.*
-- **J1.3** Name the team.
+- **J1.1** Visit supplycheckout.com, read the pricing page, tap **Start free trial**. *Planned: `supply-checkout-21q`.* *Not in prod: planned: bead supply-checkout-21q builds it.*
+- **J1.2** Sign up and accept the terms. *Planned: `supply-checkout-21q`.* *Not in prod: planned: bead supply-checkout-21q builds it.*
+- **J1.3** Name the team. *In prod, on desktop only: each run's throwaway sign-ups and emails are kept few.*
 <!-- /journeys:steps J1 -->
 
 **Expected:** an empty team ready to use in under a minute, with a 14-day trial and no card needed. The terms acceptance time is stored. Every new account, however it signed up (an email code, Google or Apple), gets one welcome email within a minute: greeting them by name if the account has one, linking to the app, with the next step (create a team, with its 14-day trial and no card needed; or, for someone invited, accept the invite) and the support address. A password reset or a later sign-in never sends another, and a failed send never holds up sign-up (`supply-checkout-6uw.25`: `backend/test/welcome.test.ts`). In the web app, the new team opens with a short **Get your team started** checklist above the projects and inventory: add supplies (by hand, or import a CSV using the import's template), invite the crew from Members, create a first project, and scan a receipt (shown only where receipt reading is available; it ticks once a scanned receipt is saved, `supply-checkout-5o2m`). Each step ticks itself off from what's saved (the invite step also when the team has other members or a pending invite), and the checklist shows to the team's owners until every step is done or one of them dismisses it. Its progress is kept for the team on the server, so it's the same on every device (`supply-checkout-fs56`: `PATCH /teams/{teamId}/checklist`, `backend/test/checklist-api.test.ts`) (`supply-checkout-dhc`: `tests/aws-first-run.spec.js`, including accessibility in light and dark mode and a phone-width layout).
@@ -89,11 +92,11 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 **Persona:** owner.
 
 <!-- journeys:steps J2 -->
-- **J2.1** Open **Inventory**, tap **+ Add item**.
-- **J2.2** Type or scan a barcode (or leave it blank), then enter the name, price and how many are in storage.
-- **J2.3** Edit or delete items later by tapping their row.
-- **J2.4** Or import an existing inventory: **Import CSV** in **Inventory** checks the file, shows a preview, and imports it.
-- **J2.5** In the web app, an owner sets the markup charged on company equipment bought for a client in **Team settings** (0% until set). Only owners see it.
+- **J2.1** Open **Inventory**, tap **+ Add item**. *In prod.*
+- **J2.2** Type or scan a barcode (or leave it blank), then enter the name, price and how many are in storage. *In prod.*
+- **J2.3** Edit or delete items later by tapping their row. *In prod.*
+- **J2.4** Or import an existing inventory: **Import CSV** in **Inventory** checks the file, shows a preview, and imports it. *In prod.*
+- **J2.5** In the web app, an owner sets the markup charged on company equipment bought for a client in **Team settings** (0% until set). Only owners see it. *In prod.*
 <!-- /journeys:steps J2 -->
 
 **Expected:** items appear in the list with storage counts, value per item and totals. Items without a barcode can be found by name when checking out.
@@ -107,8 +110,8 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 **Persona:** owner, then crew member.
 
 <!-- journeys:steps J3 -->
-- **J3.1** The owner opens **Members**, enters a crew member's email and picks **Contributor**.
-- **J3.2** The crew member gets an email, taps the link on their phone and signs up or signs in.
+- **J3.1** The owner opens **Members**, enters a crew member's email and picks **Contributor**. *In prod, on desktop only: each run's throwaway sign-ups and emails are kept few.*
+- **J3.2** The crew member gets an email, taps the link on their phone and signs up or signs in. *In prod, on desktop only: each run's throwaway sign-ups and emails are kept few.*
 <!-- /journeys:steps J3 -->
 
 **Expected:** the email arrives within a minute. The link works once and expires after 7 days. The crew member sees the team's projects right away, and the seat count on the subscription goes up.
@@ -120,9 +123,9 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 **Persona:** crew member. **Critical:** this is the job the app does every morning.
 
 <!-- journeys:steps J4 -->
-- **J4.1** Create a project for the client and date, or open today's project.
-- **J4.2** Scan each item's barcode with the phone camera (or type the number, or pick an item that has no barcode) and choose how many.
-- **J4.3** Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return** (which first asks where any company equipment still out is, J13.4).
+- **J4.1** Create a project for the client and date, or open today's project. *In prod.*
+- **J4.2** Scan each item's barcode with the phone camera (or type the number, or pick an item that has no barcode) and choose how many. *In prod.*
+- **J4.3** Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return** (which first asks where any company equipment still out is, J13.4). *In prod.*
 <!-- /journeys:steps J4 -->
 
 **Expected:** each checkout takes storage counts down and each return puts them back. The project shows taken, returned, used and the charge. Other people's phones show the changes within 2 seconds. Nothing is lost if two people work on the same project. On a slow or flaky connection, a checkout or return never shows as saved before the server confirms it, a double tap or a retry never counts twice, and one that didn't save keeps what was entered and says so, with Try again.
@@ -145,9 +148,9 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 **Persona:** crew member or owner, after buying supplies.
 
 <!-- journeys:steps J5 -->
-- **J5.1** Tap **Scan receipt** and photograph the receipt.
-- **J5.2** Check each line: name, quantity, price, and the suggested inventory match.
-- **J5.3** Assign each line to a client (a new or existing project) or to **General inventory**, then tap **Save**. Company equipment bought for a client is charged on their project (the receipt price plus the team's markup, or a price typed instead); in General inventory it adds to storage and isn't charged.
+- **J5.1** Tap **Scan receipt** and photograph the receipt. *In prod, on desktop only: each run's throwaway sign-ups and emails are kept few.*
+- **J5.2** Check each line: name, quantity, price, and the suggested inventory match. *In prod, on desktop only: each run's throwaway sign-ups and emails are kept few.*
+- **J5.3** Assign each line to a client (a new or existing project) or to **General inventory**, then tap **Save**. Company equipment bought for a client is charged on their project (the receipt price plus the team's markup, or a price typed instead); in General inventory it adds to storage and isn't charged. *Not in prod: the prod run discards the review (Stop before Save) so nothing is saved; the local and backend suites cover saving.*
 <!-- /journeys:steps J5 -->
 
 **Expected:** lines appear within 60 seconds. Nothing is saved until **Save**. A line that matches company equipment, assigned to a client, says "Company equipment · bought for this client" and goes on their project as its own charged line, "<item> (bought for this client)", never returned or asked about at Finished Return; in the web app the server charges the receipt price plus the team's markup (only owners see the percentage), and in the claude.ai app the receipt price; the reviewer can type a price instead, and the project says who typed it ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md), section 2a). In General inventory it adds to storage and isn't charged. An item that comes in packs of n shows "1 case = n each" and adds eaches (cases × n) at a cost of the case price ÷ n, rounded to cents, unless the line is switched to **Priced per each**. Where the price differs from the item's, the line offers **Charge the receipt price** or **Keep the client price**, and keeps the client price by default when the item's cost is below its price (ADR 0014). Client items go on the projects at the chosen price, with the receipt's cost; storage items raise storage counts; and the receipt's cost each is saved to the item. If reading fails, the person can enter the items by hand.
@@ -161,8 +164,8 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 **Persona:** owner or bookkeeper.
 
 <!-- journeys:steps J6 -->
-- **J6.1** Open a finished project.
-- **J6.2** Tap **Download CSV**.
+- **J6.1** Open a finished project. *In prod.*
+- **J6.2** Tap **Download CSV**. *In prod.*
 <!-- /journeys:steps J6 -->
 
 **Expected:** a CSV named after the client and date, with each item's price, taken, returned, used and charge, and a total row. Company equipment on loan isn't in it: it isn't charged (J13).
@@ -179,8 +182,8 @@ The project list has a search box that matches a project's client ("General Use"
 
 <!-- journeys:steps J7 -->
 - **J7.1** Before or at the end of the trial, open **Billing** and choose a plan. *Planned: `supply-checkout-8jc.5`.*
-- **J7.2** Pay on Stripe Checkout (card, Apple Pay or Google Pay).
-- **J7.3** Later, invite more people (seats go up) and open past invoices.
+- **J7.2** Pay on Stripe Checkout (card, Apple Pay or Google Pay). *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
+- **J7.3** Later, invite more people (seats go up) and open past invoices. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
 <!-- /journeys:steps J7 -->
 
 **Expected:** the team shows as active within a minute of paying. Adding or removing an owner or editor, or changing someone between viewer and a billed role, updates the seat count with proration; viewers are free. Invoices are emailed and listed in the app with the company name.
@@ -192,9 +195,9 @@ The project list has a search box that matches a project's client ("General Use"
 **Persona:** owner. **Critical:** if this breaks, paying customers lose access, or we give access away.
 
 <!-- journeys:steps J8 -->
-- **J8.1** A renewal payment fails.
-- **J8.2** The owner sees a banner and gets an email. The team keeps full access for 7 days.
-- **J8.3** The owner updates their card in the Customer Portal.
+- **J8.1** A renewal payment fails. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
+- **J8.2** The owner sees a banner and gets an email. The team keeps full access for 7 days. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
+- **J8.3** The owner updates their card in the Customer Portal. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
 <!-- /journeys:steps J8 -->
 
 **Expected:** after 7 days without payment the team becomes read-only. Nothing is deleted. As soon as payment succeeds, full access returns within a minute.
@@ -206,7 +209,7 @@ The project list has a search box that matches a project's client ("General Use"
 **Persona:** bookkeeper.
 
 <!-- journeys:steps J9 -->
-- **J9.1** Sign in and open projects and inventory.
+- **J9.1** Sign in and open projects and inventory. *In prod.*
 <!-- /journeys:steps J9 -->
 
 **Expected:** everything is visible. No scan, edit, delete or receipt controls appear, and the server refuses any write that is attempted anyway.
@@ -220,9 +223,9 @@ The project list has a search box that matches a project's client ("General Use"
 **Persona:** owner.
 
 <!-- journeys:steps J10 -->
-- **J10.1** Open the Customer Portal from **Billing** and cancel.
-- **J10.2** Export all projects and inventory.
-- **J10.3** After 30 days read-only, and at least 7 days after a warning email, the team is closed and its data deleted.
+- **J10.1** Open the Customer Portal from **Billing** and cancel. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
+- **J10.2** Export all projects and inventory. *Not in prod: billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9.*
+- **J10.3** After 30 days read-only, and at least 7 days after a warning email, the team is closed and its data deleted. *Not in prod: can't wait 30 days; the backend tests and the lapsed-team alarms cover it.*
 <!-- /journeys:steps J10 -->
 
 **Expected:** access continues to the end of the paid period, then the team is read-only for 30 days with export available. After that the data is deleted, as the privacy policy says.
@@ -234,8 +237,8 @@ The project list has a search box that matches a project's client ("General Use"
 **Persona:** anyone. (Required by the App Store and promised in the privacy policy.)
 
 <!-- journeys:steps J11 -->
-- **J11.1** Open **Account → Delete account** in the team bar (or **Delete account** on the first screen) and type DELETE.
-- **J11.2** An owner of a team others are in either makes another member an owner or closes the team (**Members → Close the team**, typing its name) first; the app shows the server's message naming those teams.
+- **J11.1** Open **Account → Delete account** in the team bar (or **Delete account** on the first screen) and type DELETE. *In prod, on desktop only: each run's throwaway sign-ups and emails are kept few.*
+- **J11.2** An owner of a team others are in either makes another member an owner or closes the team (**Members → Close the team**, typing its name) first; the app shows the server's message naming those teams. *In prod, on desktop only: each run's throwaway sign-ups and emails are kept few.*
 <!-- /journeys:steps J11 -->
 
 **Expected:** done without contacting support. The user is out of every team, a team they were alone in is closed, invites to their address and their sign-in are gone, and a closed team's data is deleted 30 days after it closed. Closing a subscribed team sets its Stripe subscription to cancel at the period's end within seconds (the billing worker, `supply-checkout-8jc.30`), or within about an hour if that fails (the hourly purge, `supply-checkout-t0en`), and the purge deletes its Stripe customer with its data. The data is deleted on schedule even when Stripe is down: the customer's deletion is then queued and retried every hour until Stripe takes it (`supply-checkout-8jc.42`). Reopening it resumes that subscription within seconds (the billing worker, `supply-checkout-85qp`), or, if it has already ended, leaves the team read-only with Subscribe for its owners.
@@ -261,11 +264,11 @@ The project list has a search box that matches a project's client ("General Use"
 **Persona:** crew member. **Critical:** it's part of the morning checkout, and the owner relies on it to know where the company's ladders and vacuums are.
 
 <!-- journeys:steps J13 -->
-- **J13.1** In **Inventory**, mark items that go to jobs and come back (ladders, vacuums, cords) as **Company equipment**, with what each is worth.
-- **J13.2** Check equipment out on a project like any item. It's listed under **Equipment (not charged)**, apart from the supplies, and isn't in the project's total or the client's CSV.
-- **J13.3** Back from the job, switch to **Return** and scan what came back.
-- **J13.4** Tap **Finished Return**: for each piece still out, say it's back, still at the job, or lost or broken (with an optional charge to the client).
-- **J13.5** See what's out, on which project, who took it and when, in **Inventory → Equipment → Out on jobs**.
+- **J13.1** In **Inventory**, mark items that go to jobs and come back (ladders, vacuums, cords) as **Company equipment**, with what each is worth. *In prod.*
+- **J13.2** Check equipment out on a project like any item. It's listed under **Equipment (not charged)**, apart from the supplies, and isn't in the project's total or the client's CSV. *In prod.*
+- **J13.3** Back from the job, switch to **Return** and scan what came back. *In prod.*
+- **J13.4** Tap **Finished Return**: for each piece still out, say it's back, still at the job, or lost or broken (with an optional charge to the client). *In prod.*
+- **J13.5** See what's out, on which project, who took it and when, in **Inventory → Equipment → Out on jobs**. *In prod.*
 <!-- /journeys:steps J13 -->
 
 **Expected:** equipment checked out on a project takes storage counts down and its return puts them back, as for supplies, but the client isn't charged for it: it's listed apart, under **Equipment (not charged)**, isn't in the project's taken, used or charge totals, and isn't in the project's CSV ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md)). Unreturned equipment is still out, not used. **Inventory → Equipment → Out on jobs** lists every piece still out on an open project, with who took it last and when. The owner's **Export data** keeps equipment rows, with a **Kind** column.
@@ -279,10 +282,10 @@ The project list has a search box that matches a project's client ("General Use"
 **Persona:** crew member. **Critical:** a box of gloves for the van, or supplies for several small jobs, is taken every week, and without it storage counts drift.
 
 <!-- journeys:steps J14 -->
-- **J14.1** On the project list, tap **Quick take** and scan (or pick) what you're taking, and how many. It goes on **General Use (no job)**, shown above the other projects.
-- **J14.2** Bringing something back, tap **Return** on the project list and scan it: it goes back to the project it's out on, or you pick the project when it's out on more than one.
-- **J14.3** To bill a client for something taken ad hoc, open **General Use (no job)**, tap the line and **Move to a project**.
-- **J14.4** When the van is restocked, tap **Finished Return** on **General Use (no job)**. The next quick take starts a new one.
+- **J14.1** On the project list, tap **Quick take** and scan (or pick) what you're taking, and how many. It goes on **General Use (no job)**, shown above the other projects. *In prod.*
+- **J14.2** Bringing something back, tap **Return** on the project list and scan it: it goes back to the project it's out on, or you pick the project when it's out on more than one. *In prod.*
+- **J14.3** To bill a client for something taken ad hoc, open **General Use (no job)**, tap the line and **Move to a project**. *In prod.*
+- **J14.4** When the van is restocked, tap **Finished Return** on **General Use (no job)**. The next quick take starts a new one. *In prod.*
 <!-- /journeys:steps J14 -->
 
 **Expected:** a quick take checks items out as a checkout does, storage counts going down, onto the team's one open General Use project ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md), sections 4 to 6). The first starts it (`adhoc-<n>`), and two people's first takes at once end on the same project. The General Use project is a card of its own above the client projects ("Ad hoc · Since Sep 30 · 6 items out"), and shows no money: nothing on it is charged to anyone. It takes returns but no checkouts, edits of its details or receipt lines. **Return** on the project list finds every open project the item is still out on, and a client project's "Not on this project" offers to return it where it's out. Moving a line takes the whole line with its counts to the client project, which keeps its own price if it already has the item, without moving stock, and a retried move counts once. **Finished Return** asks about equipment as on a client project, with no charge, and a finished General Use project can be reopened only while no other one is open.
@@ -296,10 +299,10 @@ The project list has a search box that matches a project's client ("General Use"
 **Persona:** owner, crew member.
 
 <!-- journeys:steps J15 -->
-- **J15.1** In **Inventory**, tap an item and set **Reorder at** (the count that means it's running low) and, if you like, **Usual order**.
-- **J15.2** Items at or below their reorder level show **Low** in Inventory, and the **Inventory** tab and **Running low** say how many nobody has acknowledged yet.
-- **J15.3** Open **Running low** to copy or download the reorder list, and tap **Acknowledge** once an item is ordered. It's flagged again if stock falls further, or once it's restocked above the level and runs low again.
-- **J15.4** Or tap **Mark ordered**, with how many and when (the usual order and today to start). It shows **On order** and isn't flagged until it's restocked above the level and runs low again, or you tap **Cancel order**.
+- **J15.1** In **Inventory**, tap an item and set **Reorder at** (the count that means it's running low) and, if you like, **Usual order**. *In prod.*
+- **J15.2** Items at or below their reorder level show **Low** in Inventory, and the **Inventory** tab and **Running low** say how many nobody has acknowledged yet. *In prod.*
+- **J15.3** Open **Running low** to copy or download the reorder list, and tap **Acknowledge** once an item is ordered. It's flagged again if stock falls further, or once it's restocked above the level and runs low again. *In prod.*
+- **J15.4** Or tap **Mark ordered**, with how many and when (the usual order and today to start). It shows **On order** and isn't flagged until it's restocked above the level and runs low again, or you tap **Cancel order**. *In prod.*
 <!-- /journeys:steps J15 -->
 
 **Expected:** an item is **Low** when it's counted and its storage count is at or below its reorder level (whole single items, [ADR 0014](adr/0014-units-cost-and-rounding.md)). Owners and contributors set the level and acknowledge; viewers see what's low and the list but can't acknowledge. An acknowledgment is the team's, kept on the item (`ackedAtStock`, the count when it was acknowledged): the alert stays quiet while the count is at or above that, comes back when it falls below it, and ends when a return, a receipt, a count or an import takes the count above the reorder level, so the next fall to the level alerts again. Saving a new reorder level also starts afresh. **Mark ordered** (supply-checkout-005.14) records how many were ordered and when (`orderedQty`, `orderedOn`), shared by the team on the item like an acknowledgment, and replaces any acknowledgment. While it's on order the item isn't flagged however far stock falls; the reorder list shows "On order: 24 since Oct 1, 2026". The same restocks that end an acknowledgment end the order, as does no longer counting the item; **Cancel order** brings the alert back. A new reorder level keeps the order. The reorder list (copy as text, or download as CSV) has the item's name, its brand if it has one, barcode, count, reorder level, usual order and whether it's acknowledged. Alerts are in the app only for now; an email digest is a later bead.

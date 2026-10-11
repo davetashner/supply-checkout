@@ -2,18 +2,23 @@
 // steps and its alarms; this script ties them to the tests and to docs/journeys.md.
 //
 //   npm run journeys:trace   check everything below, then print the table (journey, step,
-//                            status, tests, alarms). Exits 1 on any problem. CI's lint job runs it.
+//                            status, tests, prod, alarms). Exits 1 on any problem. CI's lint job runs it.
 //   npm run journeys:docs    rewrite the generated parts of docs/journeys.md from the registry
 //
 // Options: --json <file> also writes the trace as JSON (for journey videos and evidence packs),
 // --tests <file> reads Playwright's `--list --reporter=json` output from a file instead of
-// listing the tests (which needs a build: npm run build:web).
+// listing the tests (which needs a build: npm run build:web), and --prod-tests <file> does the same
+// for the prod suite's listing (playwright.prod.config.mjs, which needs no build).
 //
 // What it checks:
 // - the registry is well formed: step IDs J<n>.<m> in order, a status of built or planned
 // - every built step of a journey that isn't phase 2 has a test: a Playwright test tagged with
 //   the step (@J4.2), or a test file listed in the step's `tests` (backend tests), or else an
 //   `untested` reason in the registry. A planned step has no tests tagged with it.
+// - every built step of a journey that isn't phase 2 is covered in prod: a test in tests/prod tagged
+//   with the step, or a `prodSkip` reason in the registry. A prodSkip for a step that has a prod
+//   test is a problem too (remove the reason), and so is a prod test for a planned step.
+//   `prodDesktopOnly` is a reason for a step whose prod test runs on desktop only.
 // - every critical journey has at least one alarm of its own (not counting Every journey's)
 // - every tag and test.step ID in tests/ names a journey or step in the registry
 // - each alarm with `infra` exists in infra/lib/observability, and the alarms agree with the
@@ -55,6 +60,13 @@ export function validateRegistry(reg) {
         problems.push(`${s.id}: untested is a reason, and only for a built step`);
       }
     }
+    for (const s of j.steps || []) {
+      for (const field of ["prodSkip", "prodDesktopOnly"]) {
+        if (field in s && (typeof s[field] !== "string" || !s[field].trim())) problems.push(`${s.id}: ${field} is a reason`);
+      }
+      if ("prodSkip" in s && "prodDesktopOnly" in s) problems.push(`${s.id} has both prodSkip and prodDesktopOnly; a step with no prod test isn't desktop only`);
+      if ("prodDesktopOnly" in s && s.status !== "built") problems.push(`${s.id}: prodDesktopOnly is only for a built step`);
+    }
     for (const p of j.planned || []) if (!p.what) problems.push(`${j.id} has a planned item without what`);
   }
   const names = new Set();
@@ -83,6 +95,15 @@ export const journeyAlarms = (reg, id) =>
     name: a.name,
     state: a.infra ? "built" : a.coveredBy ? `covered by ${a.coveredBy}` : "planned",
   }));
+
+// How a step is covered in prod, from the registry alone (journeys:trace checks it against the
+// tests): "Yes", "Desktop only", "Planned", "Phase 2", or "No: <reason>"
+export function prodCoverage(j, s) {
+  if (s.prodSkip) return `No: ${s.prodSkip}`;
+  if (j.phase2) return "Phase 2";
+  if (s.status !== "built") return "Planned";
+  return s.prodDesktopOnly ? "Desktop only" : "Yes";
+}
 
 export function journeyStatus(j) {
   if (j.phase2) return "Planned (phase 2)";
@@ -218,16 +239,23 @@ export function renderTable(reg) {
     "- **Partly built**: some steps are built and tested; the steps marked *Planned* aren't built yet.",
     "- **Planned**: no step is built yet. The beads listed build it.",
     "",
-    "| # | Journey | Persona | Critical | Status |",
-    "| --- | --- | --- | --- | --- |",
-    ...reg.journeys.map((j) => `| [${j.id}](#${slug(heading(j))}) | ${j.name} | ${j.persona} | ${j.critical ? "Yes" : "No"} | ${journeyStatus(j)} |`),
+    "**In prod**: the steps that the prod journey suite ([`tests/prod/`](../tests/prod), run after each deploy) walks, out of all the journey's steps. Each step's list entry says how it's covered, or why it isn't.",
+    "",
+    "| # | Journey | Persona | Critical | Status | In prod |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...reg.journeys.map((j) => `| [${j.id}](#${slug(heading(j))}) | ${j.name} | ${j.persona} | ${j.critical ? "Yes" : "No"} | ${journeyStatus(j)} | ${prodCount(j)} |`),
   ].join("\n");
 }
+
+const inProd = (j, s) => !s.prodSkip && !j.phase2 && s.status === "built";
+export const prodCount = (j) => `${j.steps.filter((s) => inProd(j, s)).length} of ${j.steps.length}`;
 
 export function renderSteps(j) {
   return j.steps.map((s) => {
     const planned = s.status === "planned" ? ` *Planned${s.beads?.length ? `: ${beadList(s.beads)}` : ""}.*` : "";
-    return `- **${s.id}** ${s.text}${planned}`;
+    const cover = prodCoverage(j, s);
+    const prod = cover === "Planned" || cover === "Phase 2" ? "" : cover.startsWith("No: ") ? ` *Not in prod: ${cover.slice(4).replace(/\.$/, "")}.*` : s.prodDesktopOnly ? ` *In prod, on desktop only: ${s.prodDesktopOnly.replace(/\.$/, "")}.*` : " *In prod.*";
+    return `- **${s.id}** ${s.text}${planned}${prod}`;
   }).join("\n");
 }
 
@@ -390,11 +418,18 @@ export function checkTestsLines(md, reg, tests, fileExists = () => true) {
 // ---------------------------------------------------------------------------
 // The trace
 
-export function trace(reg, tests, { steps = [], fileExists = () => true, beads = null } = {}) {
+export function trace(reg, tests, { steps = [], fileExists = () => true, beads = null, prodTests = [] } = {}) {
   const problems = [], warnings = [];
   const stepIds = new Set(reg.journeys.flatMap((j) => j.steps.map((s) => s.id)));
   const journeyIds = new Set(reg.journeys.map((j) => j.id));
   for (const t of tests) {
+    for (const tag of t.tags) {
+      const m = JOURNEY_TAG.exec(tag);
+      if (!m && /^J\d/.test(tag)) problems.push(`${t.file}: "${t.title}" has tag @${tag}; journey tags look like @J4 or @J4.2`);
+      else if (m && !(m[2] ? stepIds.has(tag) : journeyIds.has(tag))) problems.push(`${t.file}: "${t.title}" has tag @${tag}, which isn't in ${REGISTRY}`);
+    }
+  }
+  for (const t of prodTests) {
     for (const tag of t.tags) {
       const m = JOURNEY_TAG.exec(tag);
       if (!m && /^J\d/.test(tag)) problems.push(`${t.file}: "${t.title}" has tag @${tag}; journey tags look like @J4 or @J4.2`);
@@ -424,6 +459,13 @@ export function trace(reg, tests, { steps = [], fileExists = () => true, beads =
       if (s.status === "built" && !j.phase2 && !tagged.length && !other.length && !s.untested) {
         problems.push(`${s.id} is built but has no test. Tag a test that covers it with @${s.id}, or record why there's none as untested in ${REGISTRY}`);
       }
+      const inProdTests = prodTests.filter((t) => t.tags.includes(s.id));
+      if (s.status === "planned" && inProdTests.length) problems.push(`${s.id} is planned, but ${inProdTests.length} prod test(s) are tagged @${s.id}. If it's built now, mark it built`);
+      if (s.status === "built" && !j.phase2 && !inProdTests.length && !s.prodSkip) {
+        problems.push(`${s.id} is built but has no prod test. Tag a test in tests/prod with @${s.id}, or record why there's none as prodSkip in ${REGISTRY}`);
+      }
+      if (s.prodSkip && inProdTests.length) problems.push(`${s.id} has a prod test now: remove its prodSkip reason`);
+      if (s.prodDesktopOnly && !inProdTests.length) problems.push(`${s.id} is marked prodDesktopOnly, but has no prod test`);
       if (s.untested && (tagged.length || other.length)) problems.push(`${s.id} has tests now: remove its untested reason`);
       if (beads && s.beads?.length) {
         const known = s.beads.filter((b) => status(b));
@@ -433,6 +475,8 @@ export function trace(reg, tests, { steps = [], fileExists = () => true, beads =
       return {
         id: s.id, text: s.text, status: s.status, simulated: s.simulated, untested: s.untested,
         tests: tagged.map(({ file, line, title }) => ({ file, line, title })), otherTests: other,
+        prod: prodCoverage(j, s), prodSkip: s.prodSkip,
+        prodTests: inProdTests.map(({ file, line, title }) => ({ file, line, title })),
       };
     });
     if (beads) {
@@ -466,11 +510,11 @@ function summarizeAlarms(alarms) {
 }
 
 export function renderTrace(result) {
-  const lines = ["| Journey | Step | Status | Tests | Alarms |", "| --- | --- | --- | --- | --- |"];
+  const lines = ["| Journey | Step | Status | Tests | In prod | Alarms |", "| --- | --- | --- | --- | --- | --- |"];
   for (const j of result.journeys) {
     for (const [k, s] of j.steps.entries()) {
       const journey = k ? "" : `**${j.id} ${j.name}**${j.critical ? " (critical)" : ""}: ${j.status}`;
-      lines.push(`| ${journey} | ${s.id} | ${s.status} | ${summarizeTests(s)} | ${k ? "" : summarizeAlarms(j.alarms)} |`);
+      lines.push(`| ${journey} | ${s.id} | ${s.status} | ${summarizeTests(s)} | ${s.prod} | ${k ? "" : summarizeAlarms(j.alarms)} |`);
     }
   }
   lines.push("", `Every journey's alarms: ${summarizeAlarms(result.everyJourneyAlarms)}`);
@@ -499,6 +543,21 @@ function infraSource(root) {
   return readdirSync(dir).filter((f) => f.endsWith(".ts")).map((f) => readFileSync(join(dir, f), "utf8")).join("\n");
 }
 
+// The prod suite's listing: its config only lists the specs (it needs no build or secrets)
+export function listProdTests(root = ROOT, { run = execFileSync } = {}) {
+  let out;
+  try {
+    out = run("npx", ["playwright", "test", "--config", "playwright.prod.config.mjs", "--list", "--reporter=json"], {
+      cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (e) {
+    throw new Error(`Couldn't list the prod Playwright tests:\n${listErrors(e.stdout) || e.stderr || e.message}`, { cause: e });
+  }
+  const list = JSON.parse(out);
+  if (list.errors?.length) throw new Error(`Couldn't list the prod Playwright tests:\n${listErrors(out)}`);
+  return list;
+}
+
 export function main(argv, root = ROOT) {
   const arg = (name) => { const k = argv.indexOf(name); return k >= 0 ? argv[k + 1] : undefined; };
   const reg = JSON.parse(readFileSync(join(root, REGISTRY), "utf8"));
@@ -521,7 +580,10 @@ export function main(argv, root = ROOT) {
 
   const testsFile = arg("--tests");
   const list = testsFile ? JSON.parse(readFileSync(testsFile, "utf8")) : listPlaywrightTests(root);
+  const prodFile = arg("--prod-tests");
+  const prodTests = playwrightTests(prodFile ? JSON.parse(readFileSync(prodFile, "utf8")) : listProdTests(root));
   const result = trace(reg, playwrightTests(list), {
+    prodTests,
     steps: stepNames(specSources(root)),
     fileExists: (p) => existsSync(join(root, p)),
     beads: readBeads(root),
