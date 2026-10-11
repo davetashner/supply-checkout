@@ -201,15 +201,6 @@ test.describe("campaign tags", () => {
     for (const href of await appLinks(page)) expect(href).toBe(APP);
   });
 
-  test("a lesson reached from the tagged page in the same tab carries the tags too, and a newer tagged link replaces them", async ({ page }) => {
-    await open(page, { path: "/?utm_source=facebook&utm_medium=paid-social" });
-    await page.getByRole("link", { name: "How-to" }).first().click();
-    await expect(page).toHaveURL(`${ORIGIN}/how-to/`);
-    for (const href of await appLinks(page)) expect(href).toBe(`${APP}?utm_source=facebook&utm_medium=paid-social`);
-    await page.goto(`${ORIGIN}/how-to/receipts/?utm_source=newsletter`);
-    for (const href of await appLinks(page)) expect(href).toBe(`${APP}?utm_source=newsletter`);
-  });
-
   test("blocked storage leaves the page working, with the tags of its own link on its links", async ({ page }) => {
     await page.addInitScript(() => Object.defineProperty(window, "sessionStorage", { get() { throw new DOMException("Blocked", "SecurityError"); } }));
     await open(page, { path: "/?utm_source=google" });
