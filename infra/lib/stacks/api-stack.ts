@@ -286,7 +286,8 @@ export class ApiStack extends SupplyCheckoutStack {
       memorySize: 512,
       description: "The signed-in user's teams and invites; creates teams, manages members and invites, and accepts invites",
       // TEST_MAIL_DOMAIN: a team a verified address there creates is a test team, for metrics only (supply-checkout-o60.2)
-      environment: { [API_ENV.tableName]: table, [API_ENV.issuerUrl]: ssm(identity.issuerUrl), [TEST_MAIL_DOMAIN_ENV]: names.testMail },
+      // STRIPE_MODE: /me says which Stripe the billing functions use, so the prod journeys run billing steps only in the sandbox (supply-checkout-o60.9)
+      environment: { [API_ENV.tableName]: table, [API_ENV.issuerUrl]: ssm(identity.issuerUrl), [TEST_MAIL_DOMAIN_ENV]: names.testMail, [STRIPE_ENV.mode]: stripeModeOf(config) },
     });
     const tableKeyStatement = () =>
       new PolicyStatement({

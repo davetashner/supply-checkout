@@ -284,6 +284,14 @@ describe("POST /teams", () => {
 });
 
 describe("GET /me", () => {
+  it("says which Stripe mode the billing functions use, only when it's configured (the prod journeys read it)", async () => {
+    expect((await call("GET", "/me", { user: PAT })).body).not.toHaveProperty("stripeMode");
+    for (const mode of ["test", "live"] as const) {
+      handler = createAccountHandler({ ...deps, stripeMode: mode });
+      expect((await call("GET", "/me", { user: PAT })).body.stripeMode).toBe(mode);
+    }
+  });
+
   it("lists every team the caller is in, with role and trial status, for the switcher", async () => {
     const created = (await create(PAT, "Bravo Co", "pat-team-1")).body.team;
     const { status, body } = await call("GET", "/me", { user: PAT });
