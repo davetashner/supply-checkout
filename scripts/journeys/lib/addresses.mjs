@@ -15,15 +15,29 @@ import { PROD } from "./config.mjs";
  */
 export const THROWAWAY_ROLES = Object.freeze(["owner", "crew", "ownerretry", "crewretry"]);
 
-/** The throwaway roles for a test's try: `owner` and `crew`, then `ownerretry` and `crewretry`. */
-export function attemptRoles(retry) {
-  if (retry === 0) return { owner: "owner", crew: "crew" };
-  if (retry === 1) return { owner: "ownerretry", crew: "crewretry" };
+/**
+ * The billing journey's own pair (J7, J8, J10; supply-checkout-o60.9), and its retry's: a team
+ * of their own, so J1's J11 can close its team without waiting for billing. The owner turns
+ * two-step on, so cleanup signs it in by password and code (a sealed record, lib/seal.mjs).
+ */
+export const BILLING_ROLES = Object.freeze(["bowner", "bcrew", "bownerretry", "bcrewretry"]);
+
+/** Every role global setup makes an address for. */
+export const ALL_ROLES = Object.freeze([...THROWAWAY_ROLES, ...BILLING_ROLES]);
+
+/**
+ * The throwaway roles for a test's try: `owner` and `crew`, then `ownerretry` and `crewretry`;
+ * with `billing`, `bowner` and `bcrew`, then `bownerretry` and `bcrewretry`.
+ */
+export function attemptRoles(retry, { billing = false } = {}) {
+  const prefix = billing ? "b" : "";
+  if (retry === 0) return { owner: `${prefix}owner`, crew: `${prefix}crew` };
+  if (retry === 1) return { owner: `${prefix}ownerretry`, crew: `${prefix}crewretry` };
   throw new Error("The throwaway journeys have addresses for one try and one retry only");
 }
 
 /** Whether a throwaway role is an owner's (cleanup deletes members before owners). */
-export const isOwnerRole = (role) => role === "owner" || role === "ownerretry";
+export const isOwnerRole = (role) => /^b?owner(retry)?$/.test(role);
 
 const ROLE = /^[a-z]{1,12}$/;
 const THROWAWAY = /^run-([A-Za-z0-9]{1,24}(?:-[A-Za-z0-9]{1,8})?)-([a-z]{1,12})-([0-9a-f]{32})$/;

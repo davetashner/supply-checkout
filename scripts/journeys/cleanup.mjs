@@ -25,6 +25,10 @@
 //    expires it (30 days). An owner that died between POST /teams and recording the team's ID
 //    has the team's name in its record (written before POST /teams): the one team it owns
 //    with exactly that name counts as the run's.
+//    A billing throwaway (`bowner`) has two-step on, so Cognito takes no email code from it: its
+//    record holds its password and authenticator secret sealed (lib/seal.mjs), which cleanup
+//    opens with the owner secret and signs in with. If the sandbox key is set, it also ends the
+//    sandbox subscription of each team the run made, before closing the team.
 // 4. Last, always: signs every long-lived account (and any throwaway it couldn't delete) out
 //    everywhere (Cognito GlobalSignOut), so no token in a trace in the results bucket still works.
 //
@@ -40,7 +44,9 @@ import { assertDestructiveAllowed, checkMe, isRunScoped } from "./lib/guards.mjs
 import { MailTimeout, sweepInbox, waitForMail } from "./lib/mailbox.mjs";
 import { createSessionPool } from "./lib/sessions.mjs";
 import { MASKED_VALUES_FILE, createMasker } from "./lib/mask.mjs";
-import { readRecords, writeRecord } from "./lib/runs.mjs";
+import { unseal } from "./lib/seal.mjs";
+import { createSandboxStripe } from "./lib/stripe-sandbox.mjs";
+import { readRecords, recordKey, writeRecord } from "./lib/runs.mjs";
 import { resetMarkup } from "./lib/settings.mjs";
 import { createS3 } from "./lib/s3.mjs";
 import { freshTotp } from "./lib/totp.mjs";
@@ -75,7 +81,7 @@ export async function cleanTeam(api, teamId, { runId, now }) {
  * The whole cleanup, with every dependency injected. Returns `{ done, left }`: lists of what it
  * did and what it couldn't, as masked text.
  */
-export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, log = () => {}, mail = waitForMail, totpCode, now = Date.now, savedSessions = null }) {
+export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, log = () => {}, mail = waitForMail, totpCode, totpFor = null, stripe = null, now = Date.now, savedSessions = null }) {
   const done = [];
   const left = [];
   const sessions = [];
@@ -165,28 +171,38 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
           done.push(`${label}: never signed up (Cognito has no such account), so there was nothing to delete`);
           continue;
         }
-        let challenge, code;
-        try {
-          const since = now();
-          challenge = await cognito.startEmailCode(record.address);
-          ({ code } = await mail({ s3: mailS3, to: record.address, since, want: "code", masker, log }));
-        } catch (err) {
-          if (record.state === "signup" && err?.type === "UserNotFoundException") {
-            await writeRecord(mailS3, { ...record, state: "deleted" });
-            done.push(`${label}: never signed up (Cognito has no such account), so there was nothing to delete`);
-            continue;
+        let tokens;
+        if (record.sealed) {
+          // Two-step may be on (a billing throwaway): its password, and a code from its own secret
+          const sealed = unseal(record.sealed, config.accounts.owner.password, { aad: recordKey(record.runId, record.role) });
+          masker.add(sealed.password);
+          if (sealed.totp) masker.add(sealed.totp);
+          tokens = await cognito.signInWithPassword(record.address, sealed.password, sealed.totp && totpFor ? () => totpFor(sealed.totp, record.role) : undefined);
+        } else {
+          let challenge, code;
+          try {
+            const since = now();
+            challenge = await cognito.startEmailCode(record.address);
+            ({ code } = await mail({ s3: mailS3, to: record.address, since, want: "code", masker, log }));
+          } catch (err) {
+            if (record.state === "signup" && err?.type === "UserNotFoundException") {
+              await writeRecord(mailS3, { ...record, state: "deleted" });
+              done.push(`${label}: never signed up (Cognito has no such account), so there was nothing to delete`);
+              continue;
+            }
+            // No code at all for a sign-up that may never have reached Cognito (it answers an
+            // unknown address as it would a real one): the record stays `signup`, so the next
+            // cleanup tries again, until the record expires with runs/ (30 days). Such an account,
+            // if it exists, is unconfirmed: no team, no data, and it can't sign in
+            if (confirmation === "no code" && err instanceof MailTimeout) {
+              done.push(`${label}: no confirmation or sign-in code came, so it may never have signed up; kept for the next cleanup to try again`);
+              continue;
+            }
+            throw err;
           }
-          // No code at all for a sign-up that may never have reached Cognito (it answers an
-          // unknown address as it would a real one): the record stays `signup`, so the next
-          // cleanup tries again, until the record expires with runs/ (30 days). Such an account,
-          // if it exists, is unconfirmed: no team, no data, and it can't sign in
-          if (confirmation === "no code" && err instanceof MailTimeout) {
-            done.push(`${label}: no confirmation or sign-in code came, so it may never have signed up; kept for the next cleanup to try again`);
-            continue;
-          }
-          throw err;
+          tokens = await cognito.answerEmailCode(challenge, code);
         }
-        const api = signedIn(label, await cognito.answerEmailCode(challenge, code));
+        const api = signedIn(label, tokens);
         const createdTeams = teamsOfRun(record.runId);
         const me = await api.me();
         masker.add(me?.user?.id);
@@ -204,14 +220,29 @@ export async function cleanup({ config, runId, cognito, apiFor, mailS3, masker, 
         }
         checkMe(me, { email: record.address, teamIds: createdTeams });
         for (const team of me.teams) {
-          if (team.role !== "owner" || team.closedAt) continue;
+          if (team.role !== "owner") continue;
+          // The run's own teams only (assertDestructiveAllowed's rule for ending a subscription), closed or not
+          if (stripe && createdTeams.includes(team.id)) {
+            try {
+              assertDestructiveAllowed({ action: "cancelSubscription", account: record.address, runIds, longLived, team, createdTeams });
+              const customer = await stripe.customerOfTeam(team.id);
+              if (!customer && team.billingAccount) {
+                // The team has a Stripe customer, but the search doesn't show it yet (it lags by up to a minute): not done
+                left.push(`${label}: its team has a Stripe customer that the search didn't find yet, so its sandbox subscription may still be there`);
+              } else {
+                const sub = customer && await stripe.subscriptionOf(customer);
+                if (sub) { await stripe.cancel(sub.id); done.push(`${label}: ended its sandbox subscription`); }
+              }
+            } catch (err) { left.push(`${label}: couldn't end its sandbox subscription: ${message(err)}`); }
+          }
+          if (team.closedAt) continue;
           assertDestructiveAllowed({ action: "closeTeam", account: record.address, runIds, longLived, team, createdTeams });
           await api.closeTeam(team.id, team.name);
         }
         assertDestructiveAllowed({ action: "deleteAccount", account: record.address, runIds, longLived });
         await api.deleteMe();
         sessions.pop();
-        await writeRecord(mailS3, { ...record, ...adopted, state: "deleted" });
+        await writeRecord(mailS3, { ...record, ...adopted, state: "deleted", sealed: undefined });
         done.push(`${label}: deleted`);
       } catch (err) {
         left.push(`${label}: not deleted: ${message(err)}`);
@@ -268,8 +299,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const { clientId } = await appConfig();
     const cognito = createCognito({ region: PROD.region, clientId });
     const totpCode = () => freshTotp(config.accounts.owner.totp, { stateFile: path.join(dir, "totp-step") });
+    const totpFor = (secret, role) => freshTotp(secret, { stateFile: path.join(dir, `totp-step-${role}`) });
+    const stripe = config.stripeSandboxKey ? createSandboxStripe({ key: config.stripeSandboxKey }) : null;
     const log = (line) => console.log(masker.redact(line));
-    const { done, left } = await cleanup({ config, runId, cognito, apiFor: (token) => createApi({ token }), mailS3: createS3(config.buckets.mail), masker, log, totpCode, savedSessions: createSessionPool(dir) });
+    const { done, left } = await cleanup({ config, runId, cognito, apiFor: (token) => createApi({ token }), mailS3: createS3(config.buckets.mail), masker, log, totpCode, totpFor, stripe, savedSessions: createSessionPool(dir) });
     for (const d of done) console.log(`cleanup: ${d}`);
     for (const l of left) console.log(`cleanup: LEFT ${l}`);
     console.log(left.length ? `cleanup: ${left.length} thing${left.length === 1 ? "" : "s"} left` : "cleanup: nothing left");

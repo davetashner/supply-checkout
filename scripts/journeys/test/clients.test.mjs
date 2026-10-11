@@ -204,12 +204,31 @@ test("global setup: guards first, then /me for every long-lived account, then pl
   const result = await setup(deps);
   assert.deepEqual(signedIn, [[env.JOURNEYS_OWNER_EMAIL, "function"], [env.JOURNEYS_CREW_EMAIL, "undefined"], [env.JOURNEYS_VIEWER_EMAIL, "undefined"]]);
   assert.equal(result.env.JOURNEYS_CLIENT_ID, CLIENT);
+  // No /me says the Stripe mode (before the api that reports it is deployed): unknown, so no billing journey runs
+  assert.equal(result.env.JOURNEYS_STRIPE_MODE, "unknown");
+  // The billing journey's pair and its retry's are planned too
+  for (const role of ["bowner", "bcrew", "bownerretry", "bcrewretry"]) {
+    assert.deepEqual(parseThrowaway(result.env[`JOURNEYS_THROWAWAY_${role.toUpperCase()}`]), { runId: "9-1", role });
+    assert.equal(JSON.parse(s3.store.get(recordKey("9-1", role)).body).state, "planned");
+  }
   assert.deepEqual(parseThrowaway(result.env.JOURNEYS_THROWAWAY_OWNER), { runId: "9-1", role: "owner" });
   assert.deepEqual(parseThrowaway(result.env.JOURNEYS_THROWAWAY_CREW), { runId: "9-1", role: "crew" });
   assert.equal(JSON.parse(s3.store.get(recordKey("9-1", "owner")).body).state, "planned");
   assert.ok(masker.has(result.env.JOURNEYS_THROWAWAY_OWNER) && masker.has(env.JOURNEYS_OWNER_PASSWORD) && masker.has("refresh-x"));
   assert.equal(result.warnings.length, 1);
   assert.match(result.warnings[0], /Journeys desktop/);
+
+  // The mode is test or live only if every account's /me says the same; any disagreement, or a mode that isn't one, is unknown
+  const modeOf = (modes) => setup({ ...deps, mailS3: fakeS3(), apiFor: (token) => {
+    const email = [env.JOURNEYS_OWNER_EMAIL, env.JOURNEYS_CREW_EMAIL, env.JOURNEYS_VIEWER_EMAIL].find((e) => token.includes(e.slice(0, 3)));
+    const mode = modes[[env.JOURNEYS_OWNER_EMAIL, env.JOURNEYS_CREW_EMAIL, env.JOURNEYS_VIEWER_EMAIL].indexOf(email)];
+    return { me: async () => ({ ...meFor(email), ...(mode === undefined ? {} : { stripeMode: mode }) }) };
+  } }).then((r) => r.env.JOURNEYS_STRIPE_MODE);
+  assert.equal(await modeOf(["test", "test", "test"]), "test");
+  assert.equal(await modeOf(["live", "live", "live"]), "live");
+  assert.equal(await modeOf(["test", "test", "live"]), "unknown");
+  assert.equal(await modeOf(["test", "test", undefined]), "unknown");
+  assert.equal(await modeOf(["sandbox", "sandbox", "sandbox"]), "unknown");
 
   // Each guard stops it before anything signs in
   for (const bad of [{ env: fakeEnv() }, { baseUrls: ["https://evil.example"] }, { env: { ...env, JOURNEYS_OWNER_EMAIL: "real.person@example.com" } }]) {

@@ -36,7 +36,12 @@ export const ENV = Object.freeze({
   },
   teams: { desktop: "JOURNEYS_DESKTOP_TEAM_ID", phone: "JOURNEYS_PHONE_TEAM_ID" },
   buckets: { mail: "JOURNEYS_MAIL_BUCKET", results: "JOURNEYS_RESULTS_BUCKET" },
+  /** Optional: the restricted Stripe sandbox key (billing journeys J8, and the cleanup of their subscription). Absent, those steps are skipped. */
+  stripeSandboxKey: "JOURNEYS_STRIPE_SANDBOX_KEY",
 });
+
+/** A restricted Stripe sandbox key, and nothing else: never a secret key, never a live one. */
+export const SANDBOX_KEY = /^rk_test_[A-Za-z0-9]{20,}$/;
 
 /** The browser project each long-lived team belongs to. */
 export const TEAM_FOR_PROJECT = Object.freeze({ "desktop-chrome": "desktop", "iphone-safari": "phone" });
@@ -139,16 +144,18 @@ export function readConfig(env) {
     buckets[which] = need(name);
     if (buckets[which] && !BUCKET.test(buckets[which])) problems.push(`${name} is not a bucket name`);
   }
+  const stripeSandboxKey = env[ENV.stripeSandboxKey] || undefined;
+  if (stripeSandboxKey !== undefined && !SANDBOX_KEY.test(stripeSandboxKey)) problems.push(`${ENV.stripeSandboxKey} must be a restricted sandbox key (rk_test_…) or not set`);
   const emails = Object.values(accounts).map((a) => a.email?.toLowerCase());
   if (new Set(emails).size !== emails.length) problems.push("The owner, crew and viewer accounts must be different accounts");
   if (problems.length) throw new ConfigError(`The journey suite's configuration is incomplete:\n- ${problems.join("\n- ")}`);
-  return { accounts, teams, buckets };
+  return { accounts, teams, buckets, ...(stripeSandboxKey ? { stripeSandboxKey } : {}) };
 }
 
 /** Every secret value in the configuration, for masking. */
 export function secretValues(config) {
   const out = [];
   for (const a of Object.values(config.accounts)) out.push(a.email, a.password, a.totp);
-  out.push(...Object.values(config.teams), ...Object.values(config.buckets));
+  out.push(...Object.values(config.teams), ...Object.values(config.buckets), config.stripeSandboxKey);
   return out.filter(Boolean);
 }

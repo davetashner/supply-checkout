@@ -18,7 +18,8 @@
 // - every built step of a journey that isn't phase 2 is covered in prod: a test in tests/prod tagged
 //   with the step, or a `prodSkip` reason in the registry. A prodSkip for a step that has a prod
 //   test is a problem too (remove the reason), and so is a prod test for a planned step.
-//   `prodDesktopOnly` is a reason for a step whose prod test runs on desktop only.
+//   `prodDesktopOnly` is a reason for a step whose prod test runs on desktop only. `prodTrial` is a
+//   reason for a step whose prod test hasn't passed in prod yet: a failure there only warns.
 // - every critical journey has at least one alarm of its own (not counting Every journey's)
 // - every tag and test.step ID in tests/ names a journey or step in the registry
 // - each alarm with `infra` exists in infra/lib/observability, and the alarms agree with the
@@ -61,10 +62,11 @@ export function validateRegistry(reg) {
       }
     }
     for (const s of j.steps || []) {
-      for (const field of ["prodSkip", "prodDesktopOnly"]) {
+      for (const field of ["prodSkip", "prodDesktopOnly", "prodTrial"]) {
         if (field in s && (typeof s[field] !== "string" || !s[field].trim())) problems.push(`${s.id}: ${field} is a reason`);
       }
       if ("prodSkip" in s && "prodDesktopOnly" in s) problems.push(`${s.id} has both prodSkip and prodDesktopOnly; a step with no prod test isn't desktop only`);
+      if ("prodTrial" in s && ("prodSkip" in s || s.status !== "built")) problems.push(`${s.id}: prodTrial is for a built step with a prod test, so not with prodSkip`);
       if ("prodDesktopOnly" in s && s.status !== "built") problems.push(`${s.id}: prodDesktopOnly is only for a built step`);
     }
     for (const p of j.planned || []) if (!p.what) problems.push(`${j.id} has a planned item without what`);

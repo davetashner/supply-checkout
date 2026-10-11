@@ -5,12 +5,15 @@
 // POST /teams, the name of the team it's about to create, `E2E <runId> …`), and where it got
 // to: `planned` (address made, not yet signed up), `signup` (SignUp about to be sent: an
 // unconfirmed account may exist), `started` (signed up and confirmed, or, for a run from before
-// `signup`, sign-up begun), `deleted`. Only those fields: never a password, code, token or anything else, and a
-// record with any other field is refused, writing or reading.
+// `signup`, sign-up begun), `deleted`. Only those fields: never a password, code or token in the clear, and a record with
+// any other field is refused, writing or reading. The one exception is `sealed`, a billing
+// throwaway's password and authenticator secret encrypted under a secret the bucket never holds
+// (lib/seal.mjs), so cleanup can sign in the account whose two-step is on.
 import { parseThrowaway, runOf } from "./addresses.mjs";
+import { SEALED } from "./seal.mjs";
 
 export const STATES = Object.freeze(["planned", "signup", "started", "deleted"]);
-const FIELDS = new Set(["runId", "role", "address", "state", "userId", "teamIds", "teamName", "updatedAt"]);
+const FIELDS = new Set(["runId", "role", "address", "state", "userId", "teamIds", "teamName", "sealed", "updatedAt"]);
 const KEY = /^runs\/([A-Za-z0-9-]{1,40})\/accounts\/([a-z]{1,12})\.json$/;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -25,6 +28,7 @@ export function checkRecord(record) {
   if (!STATES.includes(record.state)) throw new Error("A run record's state is planned, signup, started or deleted");
   if (record.userId !== undefined && !ID.test(record.userId)) throw new Error("A run record's userId isn't an ID");
   if (record.teamName !== undefined && !(typeof record.teamName === "string" && record.teamName.length <= 200 && /^[\x20-\x7e]+$/.test(record.teamName) && runOf({ name: record.teamName }) === record.runId)) throw new Error("A run record's teamName isn't a name of its run");
+  if (record.sealed !== undefined && !(typeof record.sealed === "string" && SEALED.test(record.sealed))) throw new Error("A run record's sealed value isn't one");
   if (record.teamIds !== undefined && !(Array.isArray(record.teamIds) && record.teamIds.every((t) => ID.test(t)))) throw new Error("A run record's teamIds aren't IDs");
   return Object.fromEntries(Object.entries(record).filter(([k]) => FIELDS.has(k)));
 }

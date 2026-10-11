@@ -22,7 +22,7 @@
 /* global document, location -- readScreen's function runs in the page */
 import { test as base, expect } from "@playwright/test";
 import path from "node:path";
-import { THROWAWAY_ROLES } from "../../scripts/journeys/lib/addresses.mjs";
+import { ALL_ROLES } from "../../scripts/journeys/lib/addresses.mjs";
 import { createCognito } from "../../scripts/journeys/lib/cognito.mjs";
 import { PROD, TEAM_FOR_PROJECT, readConfig, runDir, runId, secretValues } from "../../scripts/journeys/lib/config.mjs";
 import { GuardError, assertDestructiveAllowed, checkMe } from "../../scripts/journeys/lib/guards.mjs";
@@ -60,7 +60,7 @@ export const test = base.extend({
     const masker = createMasker({ persist: path.join(dir, MASKED_VALUES_FILE) });
     for (const v of secretValues(config)) masker.remember(v);
     // Global setup made them (lib/setup.mjs): an owner and a crew member, and a pair for a retry
-    const throwaways = Object.fromEntries(THROWAWAY_ROLES.map((role) => [role, env[`JOURNEYS_THROWAWAY_${role.toUpperCase()}`]]));
+    const throwaways = Object.fromEntries(ALL_ROLES.map((role) => [role, env[`JOURNEYS_THROWAWAY_${role.toUpperCase()}`]]));
     for (const a of Object.values(throwaways)) masker.add(a);
     const mailS3 = createS3(config.buckets.mail);
     await use({

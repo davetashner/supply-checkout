@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { envMasker, main, notFoundLine, parseArgs, results, signInLine, summarize } from "../prod-summary.mjs";
+import { envMasker, main, notFoundLine, onlyTrialFailures, parseArgs, results, signInLine, summarize } from "../prod-summary.mjs";
 import { fakeEnv } from "./helpers.mjs";
 
 const registry = {
@@ -114,7 +114,7 @@ test("the CLI writes the job summary and the verdict file", () => {
   assert.equal(main(["--report", files.report, "--registry", files.registry, "--warnings", files.warnings, "--json", files.json], { ...env, GITHUB_STEP_SUMMARY: files.summary }), 0);
   assert.match(readFileSync(files.summary, "utf8"), /from setup/);
   assert.ok(!readFileSync(files.summary, "utf8").includes("run-runtime-secret-value"));
-  assert.deepEqual(JSON.parse(readFileSync(files.json, "utf8")), { ok: false, failed: ["J9.1 (desktop-chrome)"], flaky: ["J0.2 (iphone-safari)"], critical: [] });
+  assert.deepEqual(JSON.parse(readFileSync(files.json, "utf8")), { ok: false, failed: ["J9.1 (desktop-chrome)"], flaky: ["J0.2 (iphone-safari)"], critical: [], trialFailed: [] });
   // A missing warnings file is no warnings
   assert.equal(main(["--report", files.report, "--registry", files.registry, "--warnings", path.join(dir, "none.json")], { GITHUB_STEP_SUMMARY: files.summary }), 0);
   assert.deepEqual(parseArgs(["--report", "r"]), { report: "r", registry: "journeys/registry.json" });
@@ -161,4 +161,43 @@ test("the summary counts 404s for a project or item as a warning, and they don't
   assert.match(notFoundLine(results(one)), /^1 fetch of a project or item got a 404 /);
   assert.equal(notFoundLine(results({ suites: [] })), "");
   assert.doesNotMatch(summarize({ suites: [] }, { journeys: [] }).markdown, /got a 404/);
+});
+
+// Steps on trial (prodTrial): a failure warns and fails neither the verdict nor the suite step
+const trialRegistry = {
+  journeys: [
+    { id: "J7", name: "Billing", critical: true, steps: [{ id: "J7.2", text: "Pay.", status: "built", prodTrial: "not passed in prod yet" }, { id: "J8.1", text: "Fails.", status: "built", prodSkip: "needs the key" }] },
+    { id: "J9", name: "Viewer", critical: true, steps: [{ id: "J9.1", text: "Open.", status: "built" }] },
+  ],
+};
+const trialReport = (...specs) => ({ suites: [{ specs: specs.map(([tags, status, steps = []]) => ({ title: tags.join(" "), tags, tests: [{ projectName: "desktop-chrome", status, results: [{ status: status === "expected" ? "passed" : "failed", duration: 1000, retry: 0, ...(status === "unexpected" ? { error: { message: "Stripe page changed" } } : {}), steps: steps.map((title) => ({ title })) }] }] })) }] });
+
+test("a failed step on trial is a warning: not in failed or critical, the verdict stays ok", () => {
+  const s = summarize(trialReport([["@J7.2", "@prod"], "unexpected", ["J8.1 Payment fails"]]), trialRegistry);
+  assert.deepEqual([s.failed, s.critical, s.trialFailed, s.ok], [[], [], ["J7.2 (desktop-chrome)", "J8.1 (desktop-chrome)"], true]);
+  assert.match(s.markdown, /Warning:\*\* J7\.2 \(desktop-chrome\), J8\.1 \(desktop-chrome\) failed, but those steps are on trial/);
+  assert.match(s.markdown, /FAIL \(on trial\)/);
+  // A step not on trial, in the same run, still fails the verdict
+  const both = summarize(trialReport([["@J7.2"], "unexpected"], [["@J9.1"], "unexpected"]), trialRegistry);
+  assert.deepEqual([both.failed, both.critical, both.ok], [["J9.1 (desktop-chrome)"], ["J9.1 (desktop-chrome)"], false]);
+});
+
+test("onlyTrialFailures: true only when every failure is in steps on trial", () => {
+  assert.equal(onlyTrialFailures(trialReport([["@J7.2"], "unexpected", ["J8.1 x"]]), trialRegistry), true);
+  assert.equal(onlyTrialFailures(trialReport([["@J7.2"], "unexpected"], [["@J7.2"], "expected"]), trialRegistry), true);
+  assert.equal(onlyTrialFailures(trialReport([["@J7.2"], "unexpected"], [["@J9.1"], "unexpected"]), trialRegistry), false);
+  assert.equal(onlyTrialFailures(trialReport([["@J7.2", "@J9.1"], "unexpected"]), trialRegistry), false);
+  // A failure with no step tag is a real failure; no failure at all isn't a trial failure
+  assert.equal(onlyTrialFailures(trialReport([["@prod"], "unexpected"]), trialRegistry), false);
+  assert.equal(onlyTrialFailures(trialReport([["@J7.2"], "expected"]), trialRegistry), false);
+});
+
+test("--trial-only exits 0 for trial-only failures and 1 otherwise, printing nothing", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "trial-"));
+  const regFile = path.join(dir, "registry.json");
+  writeFileSync(regFile, JSON.stringify(trialRegistry));
+  const run = (rep) => { const f = path.join(dir, "report.json"); writeFileSync(f, JSON.stringify(rep)); return main(["--report", f, "--registry", regFile, "--trial-only"], env); };
+  assert.equal(run(trialReport([["@J7.2"], "unexpected"])), 0);
+  assert.equal(run(trialReport([["@J9.1"], "unexpected"])), 1);
+  assert.throws(() => parseArgs(["--trial-only"]), /--report/);
 });

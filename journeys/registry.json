@@ -152,7 +152,8 @@
           "id": "J7.2",
           "text": "Pay on Stripe Checkout (card, Apple Pay or Google Pay).",
           "status": "built",
-          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
+          "prodTrial": "the Stripe sandbox pages have not passed in prod yet: a failure is a warning, not a failed deploy; remove this once it has passed once (docs/runbooks/journey-tests-failed.md, Trial steps)",
+          "prodDesktopOnly": "each run's throwaway sign-ups and emails are kept few",
           "beads": ["supply-checkout-x0l", "supply-checkout-2kl", "supply-checkout-8jc.20"],
           "simulated": "Stripe Checkout and Stripe's webhooks are fakes in the tests",
           "tests": ["backend/test/billing-api.test.ts", "backend/test/billing-webhook.test.ts", "backend/test/billing-worker.test.ts", "backend/test/billing-ddb.test.ts"]
@@ -161,7 +162,8 @@
           "id": "J7.3",
           "text": "Later, invite more people (seats go up) and open past invoices.",
           "status": "built",
-          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
+          "prodTrial": "the Stripe sandbox pages have not passed in prod yet: a failure is a warning, not a failed deploy; remove this once it has passed once (docs/runbooks/journey-tests-failed.md, Trial steps)",
+          "prodDesktopOnly": "each run's throwaway sign-ups and emails are kept few",
           "beads": ["supply-checkout-l50", "supply-checkout-eja"],
           "simulated": "Stripe's invoices and subscriptions are fakes in the tests",
           "tests": ["backend/test/billing-seats.test.ts", "backend/test/billing-api.test.ts", "backend/test/ops-checks.test.ts"]
@@ -178,7 +180,7 @@
           "id": "J8.1",
           "text": "A renewal payment fails.",
           "status": "built",
-          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
+          "prodSkip": "needs the restricted Stripe sandbox key (JOURNEYS_STRIPE_SANDBOX_KEY, an owner step); the code is in tests/prod/J7-billing.prod.js and runs once the key exists",
           "beads": ["supply-checkout-2kl"],
           "simulated": "Stripe's webhooks are fakes in the tests",
           "tests": ["backend/test/billing-webhook.test.ts", "backend/test/billing-worker.test.ts"]
@@ -187,7 +189,7 @@
           "id": "J8.2",
           "text": "The owner sees a banner and gets an email. The team keeps full access for 7 days.",
           "status": "built",
-          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
+          "prodSkip": "the banner is asserted inside J8.1's step, which runs only with the restricted sandbox key (owner step, docs/journey-tests-plan.md); the email isn't read",
           "beads": ["supply-checkout-qdx"],
           "simulated": "Stripe's webhooks and SES are fakes in the tests",
           "tests": ["backend/test/billing-worker.test.ts", "backend/test/account-api.test.ts"]
@@ -196,7 +198,7 @@
           "id": "J8.3",
           "text": "The owner updates their card in the Customer Portal.",
           "status": "built",
-          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
+          "prodSkip": "needs the restricted Stripe sandbox key (JOURNEYS_STRIPE_SANDBOX_KEY, an owner step); the code is in tests/prod/J7-billing.prod.js and runs once the key exists",
           "beads": ["supply-checkout-121"],
           "simulated": "The Stripe Customer Portal is a fake in the tests",
           "tests": ["backend/test/billing-worker.test.ts"]
@@ -228,12 +230,13 @@
           "id": "J10.1",
           "text": "Open the Customer Portal from **Billing** and cancel.",
           "status": "built",
-          "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9",
+          "prodTrial": "the Stripe sandbox pages have not passed in prod yet: a failure is a warning, not a failed deploy; remove this once it has passed once (docs/runbooks/journey-tests-failed.md, Trial steps)",
+          "prodDesktopOnly": "each run's throwaway sign-ups and emails are kept few",
           "beads": ["supply-checkout-121"],
           "simulated": "The Stripe Customer Portal is a fake in the tests",
           "tests": ["backend/test/billing-worker.test.ts"]
         },
-        { "id": "J10.2", "text": "Export all projects and inventory.", "status": "built", "prodSkip": "billing journeys in the Stripe sandbox aren't built yet: bead supply-checkout-o60.9", "beads": ["supply-checkout-zuv"] },
+        { "id": "J10.2", "text": "Export all projects and inventory.", "status": "built", "prodTrial": "the Stripe sandbox pages have not passed in prod yet: a failure is a warning, not a failed deploy; remove this once it has passed once (docs/runbooks/journey-tests-failed.md, Trial steps)", "prodDesktopOnly": "each run's throwaway sign-ups and emails are kept few", "beads": ["supply-checkout-zuv"] },
         {
           "id": "J10.3",
           "text": "After 30 days read-only, and at least 7 days after a warning email, the team is closed and its data deleted.",

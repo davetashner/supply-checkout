@@ -34,8 +34,8 @@ export function createRecordKeeper({ runId, role, address, write }) {
 }
 
 /** The two throwaways of a test's try (attemptRoles), with their addresses from global setup. */
-export function throwawayPair({ runId, retry, addresses, write }) {
-  const roles = attemptRoles(retry);
+export function throwawayPair({ runId, retry, addresses, write, billing = false }) {
+  const roles = attemptRoles(retry, { billing });
   const make = (role) => {
     const address = addresses[role];
     if (!address) throw new Error(`Global setup made no throwaway address for ${role}`);
