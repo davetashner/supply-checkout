@@ -14,7 +14,8 @@
 // subscription says when it ends. Billing needs
 // two-step sign-in (an authenticator app, mfa.js), which Account sets up; when the server
 // refuses billing for want of it, the setup opens. Account also changes the password
-// (password.js). Report an issue (report.js) sits beside Sign out, and on the "Couldn't connect" screen.
+// (password.js). Help (help.js), the how-to lesson for the screen, and Report an issue (report.js) sit
+// beside Sign out; Report an issue is on the "Couldn't connect" screen too.
 import { esc, visibleText } from "../format.js";
 import { armButton, closeModal, openModal, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
@@ -31,6 +32,7 @@ import { openReset } from "./reset-password.js";
 import { openInvoices } from "./invoices.js";
 import { showWhatsNew } from "./whats-new.js";
 import { openReport } from "./report.js";
+import { helpLink, wireHelp } from "./help.js";
 import { createPhotos } from "./photos.js";
 import { avatarHTML } from "../avatar.js";
 
@@ -510,7 +512,7 @@ export async function start(config) {
     // Invoices: owners of a team with a Stripe customer, closed or not, so a closed team's owners can save them
     // before it's deleted (the server refuses once the deletion is due)
     const invoices = owner && team.billingAccount;
-    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button>` : ""}${invoices ? `<button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}${identity(who, team, me.user.id)}<button type="button" class="btn ghost" id="reportIssue">Report an issue</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
+    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button>` : ""}${invoices ? `<button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}${identity(who, team, me.user.id)}${helpLink()}<button type="button" class="btn ghost" id="reportIssue">Report an issue</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
       + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "")
       + (!team.closedAt && !ended && team.cancelsAt ? `<p class="closed-note" role="status" id="cancelNote">This team's subscription was canceled. Everything works until ${esc(day(team.cancelsAt))}; then the team becomes read-only.${billing ? " To keep it, renew it from Billing." : " Ask an owner to renew it to keep it."}</p>` : "")
       + (!team.closedAt && !ended && team.paymentGraceEndsAt ? `<p class="closed-note" role="status" id="graceNote">A payment for this team didn't go through. Everything works until ${esc(moment(team.paymentGraceEndsAt))}; then the team becomes read-only until it's paid.${owner ? " Update the payment method in Billing to keep it working." : " Ask an owner to update the payment method."}</p>` : "")
@@ -519,6 +521,7 @@ export async function start(config) {
     drawSwitcher(bar.querySelector(".team-pick"), me.teams, team);
     bar.querySelector("#signOut").addEventListener("click", signOut);
     bar.querySelector("#reportIssue").addEventListener("click", (e) => openReport(session.api, { teamId: team.id, role: team.role, opener: e.currentTarget }));
+    wireHelp(bar);
     bar.querySelector("#accountOpen").addEventListener("click", () => account(me, who));
     // Verifying here needs nothing else to change: the team is open, and invites only matter
     // before one is. The button goes once it's done.
