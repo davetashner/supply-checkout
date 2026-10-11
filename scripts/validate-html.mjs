@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { HtmlValidate, formatterFactory } from "html-validate";
 import { distDir } from "./builds.mjs";
 
@@ -17,8 +17,11 @@ const pages = {
   "dist/web/index.html": readFileSync(distDir("web") + "index.html", "utf8"),
   "dist/demo/index.html": readFileSync(distDir("demo") + "index.html", "utf8"),
   "dist/ops/index.html": readFileSync(distDir("ops") + "index.html", "utf8"),
-  "dist/site/index.html": readFileSync(distDir("site") + "index.html", "utf8"),
 };
+// The site's pages: the home page and the how-to lessons
+for (const path of readdirSync(distDir("site"), { recursive: true }).filter((p) => p.endsWith(".html")).sort()) {
+  pages[`dist/site/${path}`] = readFileSync(distDir("site") + path, "utf8");
+}
 let valid = true;
 for (const [name, html] of Object.entries(pages)) {
   const report = await validator.validateString(html, name);

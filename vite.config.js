@@ -12,6 +12,7 @@
 //
 // Each writes hidden source maps (no sourceMappingURL comment in the output), which
 // the coverage run uses to report by src/ file and line.
+import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import browserslist from "browserslist";
 import { defineConfig } from "vite";
@@ -137,6 +138,14 @@ const siteShareImage = () => ({
     page.source = String(page.source).replace(/(content=")(\/assets\/share-[\w-]+\.png")/g, `$1${SITE_ORIGIN}$2`);
   },
 });
+// The site's pages: the home page and every index.html under site/ (the how-to lessons,
+// site/how-to/<lesson>/index.html), each served at its folder's path ending in "/"
+export function sitePages(root = fileURLToPath(new URL("site", import.meta.url))) {
+  return readdirSync(root, { recursive: true })
+    .filter((path) => path === "index.html" || path.endsWith("/index.html"))
+    .sort()
+    .map((path) => `${root}/${path}`);
+}
 const siteConfig = () => ({
   root: fileURLToPath(new URL("site", import.meta.url)),
   base: "/",
@@ -148,7 +157,7 @@ const siteConfig = () => ({
     target: browserTargets(),
     modulePreload: { polyfill: false },
     assetsInlineLimit: 0,
-    rollupOptions: { input: fileURLToPath(new URL("site/index.html", import.meta.url)) },
+    rollupOptions: { input: sitePages() },
   },
 });
 

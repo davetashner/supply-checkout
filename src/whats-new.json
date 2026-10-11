@@ -17,7 +17,10 @@
             757
           ]
         }
-      ]
+      ],
+      "skip": {
+        "758": "On the website, not in the app: how-to lessons at supplycheckout.com/how-to/"
+      }
     },
     {
       "version": "1.14.0",

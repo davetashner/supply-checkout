@@ -29,7 +29,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `src/receipt-prompt.js` | The receipt-reading prompt and its error messages. |
 | `vite.config.js` | The builds: `web`, `demo`, `ops` and `site` (below). |
 | `demo/` | The demo build's entry (`main.js`: the in-memory runtime and the banner's styles) and the demo data (`data.js`), which `npm run dev` also uses. |
-| `site/` | The marketing home page for the apex (`npm run build:site`, [the web app](docs/web-app.md#the-web-app)): its clips (`site/clips/`, recorded by `npm run journeys:video -- --marketing`), styles and one small script. |
+| `site/` | The marketing home page for the apex (`npm run build:site`, [the web app](docs/web-app.md#the-web-app)): its clips (`site/clips/`, recorded by `npm run journeys:video -- --marketing`), styles and one small script, and the how-to lessons (`site/how-to/`, with screenshots made by `npm run how-to:shots`). |
 | `ops/` | The operator page for `ops.<env domain>` (`npm run build:ops`, ADR 0015 §9): sign-in through the operator pool, teams, comps, reports from Report an issue (the Feedback tab) and the operator audit, with no customer app code. Unit tests: `ops/test/` (`npm run test:ops`, 100% coverage of `ops/lib/`); browser tests: `tests/ops.spec.js`. See [The operator page](docs/infrastructure.md#the-operator-page) and the [runbook](docs/runbooks/operator-page.md). |
 | `dist/` | Build output (not committed). |
 | `scripts/builds.mjs` | Builds and serves the builds for the tests. |

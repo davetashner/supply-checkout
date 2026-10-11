@@ -278,6 +278,9 @@ export function routerChecks(aliases) {
     // The home page once published; until then the redirect to the app
     { host: apex, uri: "/", expect: "site" },
     { host: apex, uri: "/assets/check-router.js", expect: "site" },
+    // The how-to lessons, on the site channel too, and their folder without its "/"
+    { host: apex, uri: "/how-to/", expect: "site" },
+    { host: apex, uri: "/how-to", expect: 301 },
     { host: apex, uri: "/anything-else", expect: 302 },
     { host: www, uri: "/", expect: 301 },
   ];
