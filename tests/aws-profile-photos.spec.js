@@ -278,9 +278,9 @@ test.describe("everyone's photos", () => {
       docs: { ...project("p1", "u-sam", "Sam's job"), ...project("p2", "u-ana", "Ana's job") },
     }));
     expect(backend.requests("GET", PHOTOS)).toHaveLength(1);
-    // Sam's photo, with the name the app has for them; Ana has no photo and no name it can show
+    // Sam's photo and name (supply-checkout-w5x0); Ana has no photo and no name it can show
     await loaded(card(page, "Sam's job").locator(".who img.avatar"));
-    await expect(card(page, "Sam's job").locator(".who")).toHaveText("Someone");
+    await expect(card(page, "Sam's job").locator(".who")).toHaveText("Sam Ortiz");
     await expect(card(page, "Ana's job").locator(".who .avatar")).toHaveCount(0);
     await expect(card(page, "Ana's job").locator(".who")).toHaveText("Someone");
     await expect(chip(page).locator("span.avatar")).toHaveText("PL");

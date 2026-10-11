@@ -148,9 +148,12 @@ export interface Member {
    * Their name from Cognito (given_name and family_name, from sign-up or from
    * Google or Apple), as memberName() makes it; absent when they have none.
    * Copied when they create a team or accept an invite, and kept current on
-   * /me (supply-checkout-lx7). Only the team's owners see it (GET /members),
-   * as they see the email. The person can change it themselves, so it's shown
-   * beside the email, never instead of it, and never logged. Not called
+   * /me (supply-checkout-lx7), and set on Account (PUT /me/name,
+   * supply-checkout-bt3g). Owners see it beside the email (GET /members);
+   * every member of the team sees it, without the email, next to the photos
+   * (GET /photos, supply-checkout-w5x0). The person can change it
+   * themselves, so owners see it beside the email, never instead of it, and
+   * it's never logged. Not called
    * `name`: the team's META item has one, and the operators' index and the
    * billing and lapse roles may read that attribute anywhere in a team's
    * partition (OPS_INDEX_ATTRIBUTES, BILLING_READ_ATTRIBUTES,
