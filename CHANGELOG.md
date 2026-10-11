@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.15.0](https://github.com/davetashner/supply-checkout/compare/v1.14.0...v1.15.0) (2026-10-11)
+
+
+### Features
+
+* how-to lessons on supplycheckout.com, with screenshots from the demo ([#758](https://github.com/davetashner/supply-checkout/issues/758)) ([80a6381](https://github.com/davetashner/supply-checkout/commit/80a6381e6ac1fee8bbc8fbd970716a44fe674744))
+* let people set their own name on Account ([#756](https://github.com/davetashner/supply-checkout/issues/756)) ([fc60b66](https://github.com/davetashner/supply-checkout/commit/fc60b668b0db86baa12c0515d01aa274aa172692))
+* show teammates' names, not Someone, to every member ([#757](https://github.com/davetashner/supply-checkout/issues/757)) ([e13da39](https://github.com/davetashner/supply-checkout/commit/e13da39d644cb1bffb9fbe20abcc07bd98a051a2))
+* the rest of the how-to lessons, and Help in the app opens the lesson for the screen ([#759](https://github.com/davetashner/supply-checkout/issues/759)) ([83b4c00](https://github.com/davetashner/supply-checkout/commit/83b4c00794ce480f5879982d2a99725cebf2805a))
+
 ## [1.14.0](https://github.com/davetashner/supply-checkout/compare/v1.13.0...v1.14.0) (2026-10-10)
 
 
