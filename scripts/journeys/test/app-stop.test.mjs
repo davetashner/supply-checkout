@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PROD } from "../lib/config.mjs";
-import { AUTH_WAIT_MS, RefreshInFlight, isAbandonedRequestError, stopApp, trackRequests } from "../lib/app-stop.mjs";
+import { AUTH_WAIT_MS, RefreshInFlight, allowReloadCutOff, isAbandonedRequestError, stopApp, trackRequests } from "../lib/app-stop.mjs";
 import { fakeBrowserContext as fakeContext, fakeRequest as request } from "./helpers.mjs";
 
 const opts = (sleep = async () => {}) => ({ apiOrigin: PROD.api, settleMs: 0, sleep });
@@ -185,4 +185,33 @@ test("a finished or failed request is no longer in flight", async () => {
   ctx.onGoto = () => { during = isAbandonedRequestError(ctx, `${PROD.api}/teams/t1/products due to access control checks.`); };
   await stopApp(ctx, opts());
   assert.equal(during, false, "nothing was in flight, so nothing is allowed");
+});
+
+test("a team switch's reload allows the cut-off of the lists in flight, only until it is done", async () => {
+  const ctx = fakeContext();
+  trackRequests(ctx, PROD.api);
+  const products = `${PROD.api}/teams/t1/products`, projects = `${PROD.api}/teams/t1/projects?since=2026-01-01`;
+  ctx.emit("request", request(products));
+  ctx.emit("request", request(projects));
+  ctx.emit("request", request(`${PROD.api}/auth/refresh`));
+  const cut = (url) => isAbandonedRequestError(ctx, `/${new URL(url).host}${new URL(url).pathname}${new URL(url).search} due to access control checks.`);
+  assert.equal(cut(products), false, "not before the reload");
+  await allowReloadCutOff(ctx, { apiOrigin: PROD.api }, async () => {
+    assert.equal(cut(products), true);
+    assert.equal(cut(projects), true);
+    assert.equal(isAbandonedRequestError(ctx, `${PROD.api}/teams/t1/products due to access control checks.`), true, "the whole URL too");
+    assert.equal(cut(`${PROD.api}/auth/refresh`), false, "a refresh is never let through");
+    assert.equal(cut(`${PROD.api}/teams/t1/photos`), false, "nor a request that wasn't in flight");
+    ctx.emit("request", request(`${PROD.api}/teams/t1/photos`));
+    assert.equal(cut(`${PROD.api}/teams/t1/photos`), false, "nor one started after the reload began");
+  });
+  assert.equal(cut(products), false, "closed again afterwards");
+});
+
+test("a failed reload closes the allowance too", async () => {
+  const ctx = fakeContext();
+  trackRequests(ctx, PROD.api);
+  ctx.emit("request", request(`${PROD.api}/teams/t1/products`));
+  await assert.rejects(allowReloadCutOff(ctx, { apiOrigin: PROD.api }, async () => { throw new Error("no load"); }), /no load/);
+  assert.equal(isAbandonedRequestError(ctx, `${PROD.api}/teams/t1/products due to access control checks.`), false);
 });
