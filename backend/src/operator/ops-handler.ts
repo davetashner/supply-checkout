@@ -9,6 +9,9 @@
 //                                       its receipt reads by month and in its trial
 //   GET    /ops/receipts?month=&limit=  The teams that read the most receipts in a month,
 //                                       with their estimated cost (audited)
+//   GET    /ops/sources?from=&to=&by=   Teams created in a date range by the campaign tags
+//                                       they came from, with how many are trialing, paying,
+//                                       comped or closed (audited)
 //   PUT    /ops/teams/{teamId}/comp     Comp a team or change or extend its comp
 //   DELETE /ops/teams/{teamId}/comp     End a comp early
 //   POST   /ops/teams/{teamId}/reopen   Reopen a closed team, through the
@@ -87,7 +90,10 @@ import {
   liveComp,
   listOperatorAudit,
   listOpsOwnersOf,
-  opsTestTeams,
+  type Campaign,
+  opsTeamMarks,
+  listOpsSources,
+  type OpsTeamMarks,
   listOpsReceiptUsage,
   listOpsTeams,
   listStuckImportsForOps,
@@ -174,12 +180,16 @@ export function errorFor(error: unknown): ApiError {
 }
 
 /** A team as the ops routes return it. */
-export function opsTeamBody(team: OpsTeam, now: Date, owners?: OpsOwner[], test: boolean | null = false) {
+export function opsTeamBody(team: OpsTeam, now: Date, owners?: OpsOwner[], test: boolean | null = false, campaign: Campaign | null = null) {
   return {
     id: team.teamId,
     name: team.name,
     // A test team (supply-checkout-o60.2), or null if the mark couldn't be read: only a badge, nothing an operator can do depends on it
     test,
+    // The campaign tags of the link its owner came from (supply-checkout-kajm), or null: none, or they couldn't be read
+    source: campaign?.source ?? null,
+    medium: campaign?.medium ?? null,
+    campaign: campaign?.campaign ?? null,
     plan: team.plan,
     seats: team.seats,
     status: team.status,
@@ -333,18 +343,22 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
   }
 
   /**
-   * The test teams among `teamIds` (opsTestTeams), or undefined if the marks
-   * can't be read: the badge is left unknown (null), and the list or record
-   * still comes back. Never throws.
+   * The test mark and campaign tags of `teamIds` (opsTeamMarks), or undefined
+   * if they can't be read: the badge and the source are left unknown (null),
+   * and the list or record still comes back. Never throws.
    */
-  async function testTeams(db: ReturnType<DbForOps>, op: Operator, teamIds: readonly string[]): Promise<Set<string> | undefined> {
+  async function teamMarks(db: ReturnType<DbForOps>, op: Operator, teamIds: readonly string[]): Promise<Map<string, OpsTeamMarks> | undefined> {
     try {
-      return await opsTestTeams(db, op, teamIds);
+      return await opsTeamMarks(db, op, teamIds);
     } catch (error) {
       obs.logger.warn("Test marks unavailable", { teams: teamIds.length, code: String((error as { name?: unknown } | null)?.name ?? "Error").slice(0, 64) });
       return undefined;
     }
   }
+
+  /** A team's body with its marks: the test badge is false for a team with no marks found, null if they couldn't be read. */
+  const withMarks = (team: OpsTeam, at: Date, owners: OpsOwner[], marks: Map<string, OpsTeamMarks> | undefined) =>
+    opsTeamBody(team, at, owners, marks ? (marks.get(team.teamId)?.test ?? false) : null, marks?.get(team.teamId)?.campaign ?? null);
 
   const actions: Record<OpsRoute["action"], (event: OpsEvent, op: Operator) => Promise<Result>> = {
     async listTeams(event, op) {
@@ -353,8 +367,8 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
       const at = new Date(now());
       const page = await listOpsTeams(db, op, { q: q.q, cursor: q.cursor, limit: limitFrom(q.limit) }, at);
       const ids = page.teams.map((t) => t.teamId);
-      const [owners, test] = await Promise.all([listOpsOwnersOf(db, op, ids), testTeams(db, op, ids)]);
-      const teams = page.teams.map((team) => opsTeamBody(team, at, owners.get(team.teamId) ?? [], test ? test.has(team.teamId) : null));
+      const [owners, marks] = await Promise.all([listOpsOwnersOf(db, op, ids), teamMarks(db, op, ids)]);
+      const teams = page.teams.map((team) => withMarks(team, at, owners.get(team.teamId) ?? [], marks));
       return { response: json(200, { teams, ...(page.cursor ? { cursor: page.cursor } : {}) }) };
     },
     async getTeam(event, op) {
@@ -370,8 +384,8 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
         obs.logger.warn("Receipt usage unavailable", { teamId, code: String((error as { name?: unknown } | null)?.name ?? "Error").slice(0, 64) });
         return null;
       });
-      const test = await testTeams(db, op, [teamId]);
-      return { teamId, response: json(200, { team: opsTeamBody(team, at, owners, test ? test.has(teamId) : null), stripe, receipts }) };
+      const marks = await teamMarks(db, op, [teamId]);
+      return { teamId, response: json(200, { team: withMarks(team, at, owners, marks), stripe, receipts }) };
     },
     async setComp(event, op) {
       const teamId = teamIdFrom(event);
@@ -418,6 +432,12 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new ApiError(400, "bad_request", "month is YYYY-MM");
       const usage = await listOpsReceiptUsage(deps.dbFor(op.sub), op, { month, limit: limitFrom(q.limit) }, at);
       return { response: json(200, usage) };
+    },
+    async listSources(event, op) {
+      if (event.body) jsonBody(event, []);
+      const q = event.queryStringParameters ?? {};
+      const report = await listOpsSources(deps.dbFor(op.sub), op, { from: q.from, to: q.to, by: q.by }, new Date(now()));
+      return { response: json(200, report) };
     },
     async listFeedback(event, op) {
       if (event.body) jsonBody(event, []);

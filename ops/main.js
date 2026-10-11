@@ -207,13 +207,13 @@ async function drawTeams({ search } = {}) {
     const rows = teamsView.teams.map((team) => {
       const row = teamRow(team, now);
       const name = TEAM_ID.test(String(team.id)) ? h("a", { href: `#/team/${team.id}` }, row.name) : row.name;
-      return h("tr", {}, h("td", {}, name, row.test ? [" ", testBadge()] : null), h("td", { className: "mono" }, row.id), h("td", {}, row.plan), h("td", {}, row.comp), h("td", {}, row.owners), h("td", {}, row.created));
+      return h("tr", {}, h("td", {}, name, row.test ? [" ", testBadge()] : null), h("td", { className: "mono" }, row.id), h("td", {}, row.plan), h("td", {}, row.comp), h("td", {}, row.source), h("td", {}, row.owners), h("td", {}, row.created));
     });
     const more = h("button", { type: "button", className: "secondary" }, "More");
     more.addEventListener("click", () => load(teamsView.cursor));
     results.replaceChildren(
       rows.length
-        ? h("table", {}, h("thead", {}, h("tr", {}, ["Name", "ID", "Plan / status", "Comp", "Owners", "Created"].map((c) => h("th", { scope: "col" }, c)))), h("tbody", {}, rows))
+        ? h("table", {}, h("thead", {}, h("tr", {}, ["Name", "ID", "Plan / status", "Comp", "Source", "Owners", "Created"].map((c) => h("th", { scope: "col" }, c)))), h("tbody", {}, rows))
         : h("p", {}, teamsView.cursor ? "No teams yet (the search isn't finished: press More)." : "No teams."),
       teamsView.cursor ? more : "",
     );

@@ -1392,7 +1392,7 @@ describe("test teams' badge (supply-checkout-o60.2)", () => {
     expect(reads.length).toBeGreaterThan(0);
     for (const r of reads) {
       const [request] = Object.values(r.input.RequestItems as Record<string, { Keys: { PK: string; SK: string }[]; ProjectionExpression: string }>);
-      expect(request?.ProjectionExpression).toBe("PK, SK, #test");
+      expect(request?.ProjectionExpression).toBe("PK, SK, #test, #c0, #c1, #c2");
       expect(request?.Keys.every((k) => k.PK.startsWith("TEAM#") && k.SK === "META")).toBe(true);
     }
     expect(denied).toEqual([]);
@@ -1424,5 +1424,113 @@ describe("test teams' badge (supply-checkout-o60.2)", () => {
     expect(record.statusCode).toBe(200);
     expect(JSON.parse(record.body as string).team.test).toBeNull();
     expect(JSON.stringify(logs)).toContain('"Test marks unavailable",{"teams":1,"code":"AccessDeniedException"}');
+  });
+});
+
+describe("sign-ups by source (supply-checkout-kajm)", () => {
+  /** A team made by `user` at `at`, from a link with `campaign`. */
+  async function made(user: string, name: string, at: number, campaign?: { source?: string; medium?: string; campaign?: string }, extra: Record<string, unknown> = {}) {
+    const { team } = await createTeam(table.db(), { userId: user }, { name, campaign }, new Date(at));
+    Object.assign(teamOf(team.teamId), extra);
+    return team.teamId;
+  }
+
+  it("shows a team's tags in the list and its record, null when it has none", async () => {
+    const tagged = await made("user-c", "Charlie Clean", NOW - DAY, { source: "google", medium: "cpc", campaign: "cleaning-local" });
+    const list = await call("GET", "/ops/teams");
+    const byId = Object.fromEntries(list.body.teams.map((t: { id: string; source: string | null; medium: string | null; campaign: string | null }) => [t.id, [t.source, t.medium, t.campaign]]));
+    expect(byId).toEqual({ [teamA]: [null, null, null], [teamB]: [null, null, null], [tagged]: ["google", "cpc", "cleaning-local"] });
+    expect((await call("GET", `/ops/teams/${tagged}`)).body.team).toMatchObject({ source: "google", medium: "cpc", campaign: "cleaning-local" });
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.team).toMatchObject({ source: null, medium: null, campaign: null });
+    expect(denied).toEqual([]);
+  });
+
+  it("leaves a team's source null when the tags can't be read, and still answers", async () => {
+    const failing = createOpsHandler({
+      dbFor: (_operatorSub, teamId) => table.guarded((command, input) => command !== "BatchGetCommand" && opsPolicy(teamId ?? ".", denied)(command, input)),
+      directory,
+      reopen: async () => { throw new Error("unused"); },
+      issuerUrl: OPS_ISSUER,
+      clientId: OPS_CLIENT,
+      obs: fakeObservability(),
+      now: () => now,
+    });
+    const list = await failing(event("GET", "/ops/teams"));
+    expect(list.statusCode).toBe(200);
+    expect(JSON.parse(list.body as string).teams[0]).toMatchObject({ source: null, test: null });
+  });
+
+  it("counts new teams, trials, paid, comped and closed by source for a date range, leaving out test teams, and audits it", async () => {
+    const day = (n: number) => NOW - n * DAY;
+    // Google: two teams, one has paid since; Facebook: one in trial; no tags: teamA and teamB (older, outside the default range? no: 2 and 1 days old)
+    await made("user-g1", "G1", day(5), { source: "google", medium: "cpc", campaign: "cleaning-local" }, { status: "active", plan: "team" });
+    await made("user-g2", "G2", day(4), { source: "google", medium: "cpc", campaign: "janitorial" });
+    await made("user-f1", "F1", day(3), { source: "facebook", medium: "paid-social" }, { compPlan: "team", compUntil: new Date(NOW + 30 * DAY).toISOString() });
+    await made("user-f2", "F2", day(3), { source: "facebook", medium: "paid-social" }, { closedAt: new Date(day(1)).toISOString() });
+    await made("user-t", "Probe", day(2), { source: "google" }, {});
+    const probe = [...table.items.values()].find((i) => i.SK === "META" && i.name === "Probe") as Record<string, unknown>;
+    probe.test = true;
+    await made("user-old", "Old", day(40), { source: "google" });
+    const res = await call("GET", "/ops/sources");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      from: "2026-08-28",
+      to: "2026-09-26",
+      by: "source",
+      rows: [
+        { source: "facebook", medium: null, campaign: null, teams: 2, trialing: 0, paid: 0, comped: 1, closed: 1 },
+        { source: "google", medium: null, campaign: null, teams: 2, trialing: 1, paid: 1, comped: 0, closed: 0 },
+        { source: null, medium: null, campaign: null, teams: 2, trialing: 2, paid: 0, comped: 0, closed: 0 },
+      ],
+      total: 6,
+      teamsRead: 8,
+      complete: true,
+    });
+    const all = await call("GET", "/ops/sources", { query: { by: "all", from: "2026-09-20", to: "2026-09-26" } });
+    expect(all.body.rows).toEqual([
+      { source: "facebook", medium: "paid-social", campaign: null, teams: 2, trialing: 0, paid: 0, comped: 1, closed: 1 },
+      { source: null, medium: null, campaign: null, teams: 2, trialing: 2, paid: 0, comped: 0, closed: 0 },
+      { source: "google", medium: "cpc", campaign: "cleaning-local", teams: 1, trialing: 0, paid: 1, comped: 0, closed: 0 },
+      { source: "google", medium: "cpc", campaign: "janitorial", teams: 1, trialing: 1, paid: 0, comped: 0, closed: 0 },
+    ]);
+    expect((await call("GET", "/ops/sources", { query: { by: "campaign", from: "2026-09-20", to: "2026-09-26" } })).body.rows.map((r: { campaign: string | null; teams: number }) => [r.campaign, r.teams]))
+      .toEqual([[null, 4], ["cleaning-local", 1], ["janitorial", 1]]);
+    expect((await call("GET", "/ops/sources", { query: { by: "medium", from: "2026-09-20", to: "2026-09-26" } })).body.rows.map((r: { medium: string | null }) => r.medium)).toEqual(["cpc", "paid-social", null]);
+    const audits = auditItems("PLATFORM").filter((a) => a.action === "ops.sources.report");
+    expect(audits[0]).toMatchObject({ operatorSub: OPERATOR, target: "sources", after: { from: "2026-08-28", to: "2026-09-26", by: "source" } });
+    expect(JSON.stringify(audits)).not.toMatch(/google|facebook|G1/);
+    expect(denied).toEqual([]);
+    expect(JSON.stringify(logs)).not.toMatch(/google|facebook/);
+  });
+
+  it("asks again for tag reads DynamoDB leaves unprocessed", async () => {
+    await made("user-u", "Unprocessed", NOW - DAY, { source: "google" });
+    table.unprocessed = 2;
+    expect((await call("GET", "/ops/sources")).body.rows.map((r: { source: string | null }) => r.source)).toEqual([null, "google"]);
+    expect(table.requests.filter((r) => r.command === "BatchGetCommand")).toHaveLength(2);
+  });
+
+  it("includes both end dates, reads tags only of teams in the range, and says when there were more teams than one request reads", async () => {
+    await made("user-e1", "Edge start", Date.parse("2026-09-01T00:00:00Z"), { source: "a" });
+    await made("user-e2", "Edge end", Date.parse("2026-09-02T23:59:59Z"), { source: "b" });
+    await made("user-e3", "Outside", Date.parse("2026-09-03T00:00:00Z"), { source: "c" });
+    const res = await call("GET", "/ops/sources", { query: { from: "2026-09-01", to: "2026-09-02" } });
+    expect(res.body.rows.map((r: { source: string }) => r.source).sort()).toEqual(["a", "b"]);
+    const reads = table.requests.filter((r) => r.command === "BatchGetCommand");
+    expect(JSON.stringify(reads)).not.toContain("Outside");
+    expect(reads.flatMap((r) => (Object.values(r.input.RequestItems as Record<string, { Keys: unknown[] }>)[0] as { Keys: unknown[] }).Keys)).toHaveLength(2);
+    for (let i = 0; i < MAX_OPS_TEAMS_READ; i++) table.put({ PK: `TEAM#bulk-${String(i).padStart(4, "0")}`, SK: "META", GSI3PK: "OPS#TEAMS", GSI3SK: `bulk-${String(i).padStart(4, "0")}`, name: `Bulk ${i}`, plan: "trial", status: "trialing", seats: 1, owners: 1, createdAt: "2026-09-01T00:00:00.000Z", version: 1 });
+    expect((await call("GET", "/ops/sources", { query: { from: "2026-09-01", to: "2026-09-02" } })).body).toMatchObject({ teamsRead: MAX_OPS_TEAMS_READ, complete: false });
+  });
+
+  it("refuses bad dates, groupings and a range over a year, and keeps it to operators", async () => {
+    for (const query of [{ from: "2026-9-1" }, { to: "yesterday" }, { to: "2026-02-30" }, { from: "2026-09-27", to: "2026-09-26" }, { from: "2025-01-01", to: "2026-09-26" }, { by: "everything" }, { by: "__proto__" }] as Record<string, string>[]) {
+      expect((await call("GET", "/ops/sources", { query })).status, JSON.stringify(query)).toBe(400);
+    }
+    expect((await call("GET", "/ops/sources", { query: { from: "2025-09-26", to: "2026-09-25" } })).status).toBe(200);
+    expect(auditItems("PLATFORM").filter((a) => a.action === "ops.sources.report")).toHaveLength(1);
+    groups.set("member-only", []);
+    expect((await call("GET", "/ops/sources", { claims: { sub: "member-only" } })).status).toBe(403);
+    expect((await call("GET", "/ops/sources", { claims: { iss: CUSTOMER_ISSUER, client_id: WEB_CLIENT } })).status).toBe(401);
   });
 });

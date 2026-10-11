@@ -6,6 +6,9 @@
 import "./demo.css";
 import { demoState } from "./data.js";
 import { installMockClaude } from "../tests/mock-claude.js";
+// Campaign tags (supply-checkout-kajm): the link's utm_* are kept for this tab, which the site (the same
+// origin) reads, and go on any link into the app. Nothing leaves the browser.
+import "../site/campaign-links.js";
 
 installMockClaude({
   ...demoState(),

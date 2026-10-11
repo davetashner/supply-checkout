@@ -1,3 +1,6 @@
+// Campaign tags (supply-checkout-kajm): the link's utm_* go on the links into the app
+import "./campaign-links.js";
+
 // The clips play muted and loop, and only while on screen (without this script, or for anyone
 // who prefers reduced motion, the poster shows). With reduced motion there's a button to play
 // and pause each clip. A clip is described by the figure's hidden caption.

@@ -427,7 +427,7 @@ describe("who reads the mark", () => {
       // count() skips a customer-activity metric whose metadata says test: true
       ["observability/index.ts", /^return metadata\.test === true && TEST_SKIPPED_METRICS\.has\(metric\);$/],
       // The ops badge
-      ["data/operator.ts", /item\.test === true\) test\.add\(teamId\);$/],
+      ["data/operator.ts", /marks\.set\(teamId, \{ test: item\.test === true, /],
       // The background jobs carry it from META into what they read, for their metrics only (supply-checkout-o60.12)
       ["data/billing.ts", /^\.\.\.\(Item\.test === true \? \{ test: true as const \} : \{\}\),$/],
       ["data/team-lapse.ts", /^if \(Item\.test === true\) team\.test = true;$/],

@@ -49,6 +49,7 @@ Please don't put sensitive information in the Service, such as payment card numb
 | Error and performance reports | In the web app, JavaScript errors (the error message and where in our code it happened) and page speed measurements, tagged with the app version, through Amazon CloudWatch RUM. Before a report leaves your browser we remove web address query strings and anything that looks like an email address or sign-in token. Reports aren't linked to your account, and RUM records the browser, operating system and device type and may derive a coarse location (such as country) from your IP address. We don't record clicks, keystrokes or screen recordings. |
 | Security records | Records of sign-ins, sign-in failures, and administrative actions in our cloud account, used to protect the Service and investigate problems. |
 | Usage counts | Totals such as how many receipts a team read this month (for the plan's receipt limit), and how many teams were created or closed. |
+| Which link brought you here | If you arrive from a link or ad we made with campaign tags (`utm_source`, `utm_medium` and `utm_campaign`, for example `google`, `cpc` and the name of the ad), your browser keeps those short labels for up to 7 days, and we save them with your account and your first team when you create it, so we can tell which channel a sign-up came from. We store only those three labels, never the full web address, the page you came from or anything about the ad network's profile of you, and we don't use them to follow you across sites. No ad network or analytics provider gets a pixel, script or cookie from us. |
 
 Barcodes are read on your device. Barcode photos are not sent to us.
 
@@ -114,6 +115,7 @@ A current list of the service providers that handle customer data is at [SUBPROC
 | Invitations | Until accepted or revoked, or 7 days, whichever comes first. They're deleted when the team is closed. |
 | The team's activity history (for example, who closed or reopened a team) | 1 year, or until the team is deleted if that's sooner. It names people by internal ID, not email. |
 | Records of support actions on a team | 2 years, including after the team is deleted. They name support staff and the team by internal ID. |
+| Campaign tags (which link a sign-up came from) | With the account and the team they were saved with: deleted with the account (the account's copy) and with the team (the team's copy). |
 | Short-lived records (in-progress imports and stock changes, sign-in code checks, daily limits) | From a few hours to 7 days |
 | Deletion records | 400 days. When an account or team is deleted, we keep a record of its internal ID and the time (and for a team, the IDs Stripe gave its customer and subscription), and nothing else, so that restoring a backup can't bring it back and a deleted team's Stripe customer can still be found. |
 | **Backups** | **Up to 35 days.** Deleted data stays in backups for up to 35 days after it's deleted, then the backups holding it expire. We use backups only to recover from mistakes and outages, and if we restore one we delete again every account and team deleted since it was taken. |
@@ -146,6 +148,7 @@ We don't use advertising or tracking cookies, and we don't use third-party analy
 | `supplyCheckout.owner` | Which account the saved team and receipt drafts belong to, so the next person to sign in can't see them | Until you sign out |
 | `supplyCheckout.firstRun.<team>` | Whether you've finished or dismissed the getting-started checklist | Until you clear your browser's data |
 | `supplyCheckout.theme` | Light or dark mode, if you chose one | Until you clear your browser's data |
+| `supplyCheckout.campaign` | The campaign tags (`utm_source`, `utm_medium`, `utm_campaign`) from the link you arrived by, kept until you create your team, then removed. On our website and demo it's kept for the tab only. | Up to 7 days, or until the tab is closed on the website |
 | `supplyCheckout.signIn`, `supplyCheckout.invite` (this tab only) | Finishing a sign-in, and an invitation link you opened, across the trip to the sign-in page | Until the tab is closed or sign-in finishes |
 | `cwr_i`, `cwr_c` | Anonymous, short-lived credentials the error reporter uses to send reports. They don't identify you. | Until they expire or you clear your browser's data |
 
@@ -234,3 +237,4 @@ Support: support@supplycheckout.com
 15. **Children.** The Terms require users to be 18, so the draft says we don't knowingly collect data from anyone under 18 (stricter than COPPA's 13). Confirm.
 16. **Law enforcement requests.** The draft promises to tell owners first where the law allows. Confirm we want to commit to that.
 17. **Correcting name and email.** There's no change-of-email flow in the app yet, so the draft says to contact us. Update when there is one.
+18. **Campaign tags (bead `supply-checkout-kajm`).** Section 2 and section 8 describe first-party campaign tags kept on the account and the team, with no third-party pixels. Confirm the wording on "up to 7 days", that they are deleted with the account's own record and the team, and whether the Terms or an ad platform's own policy need a line about the tags. If a referral code is added (bead `supply-checkout-6os6`) it is stored the same way: update sections 2 and 8.

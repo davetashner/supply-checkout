@@ -71,6 +71,7 @@ test("teamRow and teamFacts", () => {
     test: false,
     plan: "pro / active",
     comp: "",
+    source: "",
     owners: "o@example.test, u2, -",
     created: "2026-01-01",
   });
@@ -84,6 +85,12 @@ test("teamRow and teamFacts", () => {
   assert.match(Object.fromEntries(teamFacts({ ...team, test: true }, NOW))["Test team"], /^Yes: made by the prod journey tests/);
   assert.equal(Object.fromEntries(teamFacts({ ...team, test: null }, NOW))["Test team"], undefined);
 
+  // Where it came from (supply-checkout-kajm): the tags it has, "-" for the rest, nothing without any
+  assert.equal(teamRow({ ...team, source: "google", medium: "cpc", campaign: "cleaning-local" }, NOW).source, "google / cpc / cleaning-local");
+  assert.equal(teamRow({ ...team, source: "newsletter", medium: null }, NOW).source, "newsletter / - / -");
+  assert.equal(teamRow({ ...team, source: null, medium: "", campaign: 7 }, NOW).source, "");
+  assert.equal(Object.fromEntries(teamFacts({ ...team, source: "google", medium: "cpc", campaign: null }, NOW))["Came from"], "google / cpc / - (source / medium / campaign)");
+  assert.equal(Object.fromEntries(teamFacts(team, NOW))["Came from"], "No campaign tags");
   const facts = Object.fromEntries(teamFacts(team, NOW));
   assert.equal(facts.Comp, "No comp");
   assert.equal(facts.Version, "7");
@@ -134,6 +141,7 @@ test("auditChange and auditRow, for every action", () => {
   assert.equal(auditChange({ action: "ops.import.clear", after: { importId: "i1" } }), "import i1");
   assert.equal(auditChange({ action: "ops.receipts.usage", after: { month: "2026-09", teams: [1, 2] } }), "receipts 2026-09, 2 teams");
   assert.equal(auditChange({ action: "ops.receipts.usage", after: { month: "2026-09" } }), "receipts 2026-09, 0 teams");
+  assert.equal(auditChange({ action: "ops.sources.report", after: { by: "source", from: "2026-09-01", to: "2026-09-30" } }), "sign-ups by source, 2026-09-01 to 2026-09-30");
   assert.equal(auditChange({ action: "ops.team.reopen", before: { closedAt: "2026-09-30" } }), "closed 2026-09-30 -> open");
   assert.equal(auditChange({ action: "ops.team.reopen" }), "closed - -> open");
   assert.equal(auditChange({ action: "ops.comp.set", after: { plan: "free", until: "2026-12-02T00:00:00Z", months: 2 } }), "-> free until 2026-12-02 (2 months)");

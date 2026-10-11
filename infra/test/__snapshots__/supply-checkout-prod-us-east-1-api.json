@@ -1339,7 +1339,10 @@
                         "compBy",
                         "compAt",
                         "compMonths",
-                        "photoId"
+                        "photoId",
+                        "utmSource",
+                        "utmMedium",
+                        "utmCampaign"
                       ]
                     }
                   },
@@ -7392,6 +7395,56 @@
         }
       }
     },
+    "HttpApiGETopssourcesOpsIntegrationPermission824296C5": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "OpsFunctionLive79C895FB"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/ops/sources"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETopssourcesAB798DAD": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiOpsCognitoJwtEE918F68"
+        },
+        "RouteKey": "GET /ops/sources",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETopsteamsOpsIntegrationD9495125"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiGETopsfeedbackOpsIntegrationPermissionC3324B83": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {
@@ -8128,6 +8181,10 @@
             "ThrottlingRateLimit": 1,
             "ThrottlingBurstLimit": 2
           },
+          "GET /ops/sources": {
+            "ThrottlingRateLimit": 1,
+            "ThrottlingBurstLimit": 2
+          },
           "GET /ops/feedback": {
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
@@ -8190,6 +8247,8 @@
         "HttpApiGETopsimports3CEA7B94",
         "HttpApiGETopsreceiptsOpsIntegrationPermissionFD0468C0",
         "HttpApiGETopsreceipts99EC6342",
+        "HttpApiGETopssourcesOpsIntegrationPermission824296C5",
+        "HttpApiGETopssourcesAB798DAD",
         "HttpApiGETopsteamsteamIdOpsIntegrationPermission824867CA",
         "HttpApiGETopsteamsteamIdB43A1596",
         "HttpApiGETopsteamsOpsIntegrationPermissionBE2F3BC1",
@@ -8836,7 +8895,10 @@
                       "dynamodb:Attributes": [
                         "PK",
                         "SK",
-                        "test"
+                        "test",
+                        "utmSource",
+                        "utmMedium",
+                        "utmCampaign"
                       ]
                     },
                     "StringEquals": {

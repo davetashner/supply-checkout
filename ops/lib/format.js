@@ -40,6 +40,12 @@ export function compLine(comp, now) {
 }
 
 /** A team as one row of the list. */
+/** The campaign tags a team came from (supply-checkout-kajm): `google / cpc / cleaning-local`, "-" for one it has no value for; empty if none. */
+export function sourceLabel(team) {
+  const tags = [team.source, team.medium, team.campaign].map((t) => (typeof t === "string" && t ? text(t) : "-"));
+  return tags.every((t) => t === "-") ? "" : tags.join(" / ");
+}
+
 export function teamRow(team, now) {
   return {
     id: text(team.id),
@@ -48,6 +54,7 @@ export function teamRow(team, now) {
     test: team.test === true,
     plan: `${text(team.plan)} / ${text(team.status)}${team.closedAt ? ` (closed ${date(team.closedAt)})` : ""}`,
     comp: team.comp ? compLine(team.comp, now) : "",
+    source: sourceLabel(team),
     owners: (Array.isArray(team.owners) ? team.owners : []).map((o) => text(o?.email ?? o?.userId)).join(", "),
     created: date(team.createdAt),
   };
@@ -63,6 +70,7 @@ export function teamFacts(team, now) {
     ["Seats", text(team.seats)],
     ["Owners", text(team.ownerCount)],
     ["Created", text(team.createdAt)],
+    ["Came from", sourceLabel(team) ? `${sourceLabel(team)} (source / medium / campaign)` : "No campaign tags"],
     ...(team.trialEndsAt ? [["Trial ends", text(team.trialEndsAt)]] : []),
     ["Stripe customer", text(team.stripeCustomerId ?? "none")],
     ["Comp", compLine(team.comp, now)],
@@ -122,6 +130,7 @@ export function auditChange(e) {
   if (e.action === "ops.comp.discount" && after) return `Stripe discount: ${text(after.outcome)}${after.coupon ? ` (${after.coupon} until ${date(after.until)})` : ""}`;
   if (e.action === "ops.import.clear" && after) return `import ${text(after.importId)}`;
   if (e.action === "ops.receipts.usage" && after) return `receipts ${text(after.month)}, ${Array.isArray(after.teams) ? after.teams.length : 0} teams`;
+  if (e.action === "ops.sources.report" && after) return `sign-ups by ${text(after.by)}, ${text(after.from)} to ${text(after.to)}`;
   if (e.action === "ops.team.reopen") return `closed ${text(e.before?.closedAt)} -> open`;
   if (e.action === "ops.feedback.list" && after) return `reports ${text(after.status)}, ${Array.isArray(after.reports) ? after.reports.length : 0} listed`;
   if ((e.action === "ops.feedback.read" || e.action === "ops.feedback.email") && after) return `${text(e.target)}${after.emailLookup ? ", email looked up" : ""}`;

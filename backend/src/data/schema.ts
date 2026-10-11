@@ -155,11 +155,22 @@ export const INVITE_LIMIT_PREFIX = "INVITELIMIT#";
 export const RECEIPT_USAGE_ATTRIBUTES = [PK, SK, "receipts"] as const;
 
 /**
- * The only attributes the operator-access role may name when it reads teams'
- * test marks (supply-checkout-o60.2, opsTestTeams): BatchGetItem of META
- * items, projecting the keys and `test`, for the Test badge. Read only.
+ * The campaign tags a team came from (supply-checkout-kajm, campaign.ts):
+ * utm_source, utm_medium and utm_campaign, each a short label. Written once,
+ * on a team's META item, by createTeam, and never changed. Plain labels the
+ * owner chose for their own links: no URL, referrer or address. A referral
+ * code (supply-checkout-6os6) is added here the same way.
  */
-export const TEST_MARK_ATTRIBUTES = [PK, SK, "test"] as const;
+export const CAMPAIGN_ATTRIBUTES = ["utmSource", "utmMedium", "utmCampaign"] as const;
+
+/**
+ * The only attributes the operator-access role may name when it reads teams'
+ * marks (opsTeamMarks): BatchGetItem of META items, projecting the keys, the
+ * test mark (supply-checkout-o60.2, for the Test badge) and the campaign
+ * tags (supply-checkout-kajm, for the source shown with a team and the
+ * sign-ups by source report). GSI3 has no room for them. Read only.
+ */
+export const TEST_MARK_ATTRIBUTES = [PK, SK, "test", ...CAMPAIGN_ATTRIBUTES] as const;
 
 /**
  * The partition prefix of the per-user receipt rate counters (supply-checkout-wxx):
@@ -439,6 +450,7 @@ export const DATA_ROLE_DENIED_ATTRIBUTES = [
   ...COMP_FIELDS,
   COMP_MONTHS,
   "photoId",
+  ...CAMPAIGN_ATTRIBUTES,
 ] as const;
 
 /**
@@ -730,6 +742,14 @@ export const PREFERENCES_SK = "PREFERENCES";
  * it (after its photos, api/account-handler.ts).
  */
 export const PHOTO_SK = "PHOTO";
+
+/**
+ * The sort key of the item in a user's own `USER#<sub>` partition that holds
+ * the campaign tags their first team came from (supply-checkout-kajm,
+ * campaign.ts): CAMPAIGN_ATTRIBUTES and `capturedAt`. Not a `LIMIT#` key, so
+ * deleting an account removes it.
+ */
+export const CAMPAIGN_SK = "CAMPAIGN";
 
 /**
  * The only attributes the billing-access role may name in the caller's own

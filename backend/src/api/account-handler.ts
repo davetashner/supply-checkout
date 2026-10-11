@@ -230,6 +230,7 @@ import {
   countEmailCode,
   createInvite,
   createTeam,
+  parseCampaign,
   checklistOf,
   deleteInviteForEmail,
   deleteUserRows,
@@ -682,12 +683,12 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   async function newTeam(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     const key = header(event, IDEMPOTENCY_HEADER);
     if (!key || !REQUEST_KEY.test(key)) throw new ApiError(400, "bad_request", "Send an Idempotency-Key header: 8 to 128 letters, digits, - or _, new for each team");
-    const body = jsonBody(event, ["name"]);
+    const body = jsonBody(event, ["name", "campaign"]);
     const user = await cognitoUser(event, userId);
     const db = dbFor({ userId, teamId: teamIdForRequest(userId, key) });
     // A test account (its verified address, from Cognito, at the test mail domain) makes a test team: metrics only
     const test = isTestAccount(user, deps.testMailDomain);
-    const { team, context, created } = await createTeam(db, { userId, email: verifiedEmail(user), name: user.name, test }, { name: body.name as string, requestKey: key }, new Date(now()));
+    const { team, context, created } = await createTeam(db, { userId, email: verifiedEmail(user), name: user.name, test }, { name: body.name as string, requestKey: key, campaign: parseCampaign(body.campaign) }, new Date(now()));
     if (created) obs.count(BusinessMetric.SignUps, 1, { teamId: team.teamId, ...testMark(team.test) });
     return json(created ? 201 : 200, { team: teamBody(team, context.role) });
   }

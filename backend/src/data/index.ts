@@ -8,6 +8,7 @@
 
 export { closeDb, createDb, type Db, type DbOptions } from "./client.js";
 export { AdhocOpenError, ConflictError, EquipmentOutError, ForbiddenError, InvalidInputError, LastOwnerError, LimitReachedError, NotFoundError, RateLimitedError, StockChangedError, SubscriptionEndedError, TeamClosedError, TeamDeletingError, TeamFullError, TooLargeError } from "./errors.js";
+export { CAMPAIGN_TAGS, type Campaign, type CampaignTag, parseCampaign, storedCampaign } from "./campaign.js";
 export { localRegion, writeRegionFor, type HomedTeam } from "./region.js";
 export {
   acceptInvite,
