@@ -92,6 +92,10 @@ test("refuses a name over 100 characters before sending it, and says why the API
   await expect(fail(page)).toHaveText("Enter a first and last name of up to 100 characters together.");
   await expect(save(page)).toBeEnabled();
   await expect(chip(page).locator(".who-name")).toHaveText("Pat Lee");
+  // Cognito refused the value
+  backend.on("PUT", "/me/name", { status: 400, body: { error: { code: "bad_request", message: "bad_request", reason: "name_refused" } } });
+  await save(page).click();
+  await expect(fail(page)).toHaveText("That name couldn't be saved. If you sign in with Google or Apple, change your name there.");
   // Anything else: try again
   backend.on("PUT", "/me/name", { status: 500, body: { error: { code: "internal", message: "internal" } } });
   await save(page).click();

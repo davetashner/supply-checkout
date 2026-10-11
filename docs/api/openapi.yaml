@@ -1388,7 +1388,7 @@ paths:
                 properties:
                   name: { type: [string, "null"], description: "The name as teammates see it (first and last, on one line), or null once both are cleared." }
         "400":
-          description: "`bad_request` with `reason: \"name_invalid\"`: a part isn't a string, isn't one line, has a control or invisible character, or the name is over 100 characters. Or the body isn't `{ givenName, familyName }`."
+          description: "`bad_request` with `reason: \"name_invalid\"`: a part isn't a string, isn't one line, has a control or invisible character, or the name is over 100 characters. Or the body isn't `{ givenName, familyName }`. Or `name_refused`: Cognito refused the value (for example a Google or Apple user's mapped attribute); change it with the provider."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "413":
@@ -3625,7 +3625,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_reset, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output, photo_invalid, photo_too_large, photo_limit, feedback_limit, name_invalid]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_reset, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output, photo_invalid, photo_too_large, photo_limit, feedback_limit, name_invalid, name_refused]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -3679,7 +3679,9 @@ components:
                 64 KB) and `photo_limit` (the day's uploads are used up).
                 Reports: `feedback_limit` (the day's reports are used up).
                 The caller's name: `name_invalid` (not one line, a control or
-                invisible character, or over 100 characters).
+                invisible character, or over 100 characters) and `name_refused`
+                (Cognito refused the value, such as a Google or Apple user's
+                mapped attribute).
   responses:
     FeedbackSent:
       description: The report, stored now (201) or by an earlier request with the same Idempotency-Key (200). The IDs only; the text isn't returned.

@@ -57,7 +57,8 @@ export type ErrorCode =
  * reports for the UTC day are used up).
  * The caller's name (supply-checkout-bt3g): `name_invalid` (400: a part
  * isn't a string, isn't on one line, has a control or invisible character,
- * or the name is over 100 characters).
+ * or the name is over 100 characters) and `name_refused` (400: Cognito
+ * refused the value, such as a Google or Apple user's mapped attribute).
  */
 export type ErrorReason =
   | "view_only"
@@ -95,7 +96,8 @@ export type ErrorReason =
   | "photo_too_large"
   | "photo_limit"
   | "feedback_limit"
-  | "name_invalid";
+  | "name_invalid"
+  | "name_refused";
 
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {

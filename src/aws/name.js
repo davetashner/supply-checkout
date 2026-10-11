@@ -10,6 +10,8 @@ export const NAME_MAX = 100;
 
 const TOO_LONG = `Enter a first and last name of up to ${NAME_MAX} characters together.`;
 const FAILED = "Couldn't save your name. Check your connection and try again.";
+// Cognito refused the value (a name Google or Apple provides, for some accounts)
+const REFUSED = "That name couldn't be saved. If you sign in with Google or Apple, change your name there.";
 
 // `name.given` and `name.family` are the ID token's; `name.provider`: a Google or Apple user,
 // whose provider may set the name back when they next sign in with it
@@ -45,7 +47,7 @@ export function wireName(m, api, name) {
       await name.saved();
       toast(first || last ? "Your name is saved" : "Your name is cleared");
     } catch (err) {
-      say(err.reason === "name_invalid" ? TOO_LONG : FAILED);
+      say(err.reason === "name_invalid" ? TOO_LONG : err.reason === "name_refused" ? REFUSED : FAILED);
     }
     save.disabled = false;
     save.textContent = "Save name";

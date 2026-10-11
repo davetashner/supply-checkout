@@ -302,10 +302,18 @@ export type SetOwnName = (accessToken: string, givenName: string, familyName: st
  * UpdateUserAttributes and DeleteUserAttributes with the caller's own access
  * token, like GetUser: authorized by the token alone, so the account function
  * needs no IAM permission on the pool, and it can only ever change the user
- * who sent the request. Cognito also refuses any attribute the web client
- * can't write (its writeAttributes: email, given_name and family_name, never
- * email_verified or a custom attribute), and this sends only the two names.
- * Neither the token nor the name is ever logged.
+ * who sent the request. Cognito also refuses any attribute outside the web
+ * client's writeAttributes: email, given_name and family_name, and, while
+ * Google or Apple sign-in is configured, custom:idp_email_verified and
+ * custom:idp_hd too (identity-stack.ts), never email_verified,
+ * custom:linked_email or custom:downgrade_pending. This route can't reach
+ * the two custom ones, or email: the only attribute names it sends are the
+ * hard-coded given_name and family_name. (The pre token generation and
+ * linking triggers read the custom ones only right after a provider sign-in
+ * has rewritten them, email-verified-handler.ts and account-link-handler.ts.)
+ * InvalidParameterException (Cognito refusing a value, such as a mapped
+ * attribute for some federated users) is a 400 `name_refused`. Neither the
+ * token nor the name is ever logged.
  */
 export function cognitoSetName(issuerUrl: string, doFetch: typeof fetch = fetch): SetOwnName {
   const endpoint = poolEndpoint(issuerUrl);
@@ -314,6 +322,8 @@ export function cognitoSetName(issuerUrl: string, doFetch: typeof fetch = fetch)
     if (ok) return;
     if (status === 400 && (type === "NotAuthorizedException" || type === "UserNotFoundException")) throw signInAgain();
     if (status === 400 && (type === "TooManyRequestsException" || type === "LimitExceededException")) throw tooMany();
+    // Cognito's message isn't passed on: it can echo the value
+    if (status === 400 && type === "InvalidParameterException") throw new ApiError(400, "bad_request", "That name couldn't be saved", "name_refused");
     // Only the status and the error's name: never the token, the name or Cognito's message
     throw new Error(`${action} failed: ${status} ${type}`);
   };

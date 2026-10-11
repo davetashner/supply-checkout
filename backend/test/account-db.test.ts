@@ -332,7 +332,11 @@ describe("cognitoSetName", () => {
     await expect(set(reply(400, { __type: "UserNotFoundException" }))).rejects.toMatchObject({ status: 401 });
     await expect(set(reply(400, { __type: "TooManyRequestsException" }))).rejects.toMatchObject({ status: 429 });
     await expect(set(reply(400, { __type: "LimitExceededException" }))).rejects.toMatchObject({ status: 429 });
-    await expect(set(reply(400, { __type: "com.amazonaws#InvalidParameterException", message: "given_name Pat" }))).rejects.toThrow(/^UpdateUserAttributes failed: 400 InvalidParameterException$/);
+    // Cognito refusing the value: a 400 with a reason, and never its message (which can echo the name)
+    const refused = await set(reply(400, { __type: "com.amazonaws#InvalidParameterException", message: "given_name Pat" })).catch((e: unknown) => e);
+    expect(refused).toMatchObject({ status: 400, reason: "name_refused" });
+    expect(String((refused as Error).message)).not.toMatch(/Pat/);
+    await expect(set(reply(400, { __type: "InternalErrorException", message: "given_name Pat" }))).rejects.toThrow(/^UpdateUserAttributes failed: 400 InternalErrorException$/);
     await expect(cognitoSetName(ISSUER, vi.fn(async () => new Response("<html>", { status: 503 })))("t", "", "")).rejects.toThrow(/^DeleteUserAttributes failed: 503/);
   });
 
