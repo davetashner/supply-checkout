@@ -627,6 +627,7 @@ test.describe("first sign-in and teams", () => {
       await page.getByRole("button", { name: "Create team" }).click();
       await expect(alert(page)).toBeVisible();
       expect(await page.evaluate((k) => localStorage.getItem(k), KEY)).not.toBeNull();
+      await page.getByLabel("Team name").focus();
       await create(page);
       expect(backend.requests("POST", "/teams").map((c) => c.body)).toEqual([
         { name: "Bravo Co", campaign: { source: "newsletter", campaign: "oct" } },
