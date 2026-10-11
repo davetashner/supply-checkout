@@ -15,9 +15,12 @@ import { assertNotTracing } from "../../scripts/journeys/lib/tracing.mjs";
 import { expect, guardDestructiveCalls, managedLoginByCode, readScreen } from "./fixtures.mjs";
 import { newDeviceContext, watchAppErrors } from "./steps.mjs";
 
-/** This try's owner and crew member: `{ role, address, keeper }` each (their run records). */
-export function throwaways(harness, testInfo) {
-  return throwawayPair({ runId: harness.runId, retry: testInfo.retry, addresses: harness.throwaways, write: (role, record) => harness.record(role, record) });
+/**
+ * This try's owner and crew member: `{ role, address, keeper }` each (their run records).
+ * `billing`: the billing journey's own pair (bowner, bcrew), not J1's.
+ */
+export function throwaways(harness, testInfo, { billing = false } = {}) {
+  return throwawayPair({ runId: harness.runId, retry: testInfo.retry, addresses: harness.throwaways, write: (role, record) => harness.record(role, record), billing });
 }
 
 /** Signs the throwaway up (Cognito SignUp, no password) and confirms it with the mailed code. */

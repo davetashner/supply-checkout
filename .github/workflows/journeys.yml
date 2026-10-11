@@ -217,6 +217,8 @@ jobs:
           JOURNEYS_PHONE_TEAM_ID: ${{ secrets.JOURNEYS_PHONE_TEAM_ID }}
           JOURNEYS_MAIL_BUCKET: ${{ secrets.JOURNEYS_MAIL_BUCKET }}
           JOURNEYS_RESULTS_BUCKET: ${{ secrets.JOURNEYS_RESULTS_BUCKET }}
+          # Optional: a restricted Stripe sandbox key (rk_test_…) for the billing journeys' payment failure (J8) and the cleanup of their sandbox subscription. Empty until the owner creates it; those steps then skip
+          JOURNEYS_STRIPE_SANDBOX_KEY: ${{ secrets.JOURNEYS_STRIPE_SANDBOX_KEY }}
         run: node scripts/journeys/workflow.mjs check-secrets
       - name: Check the journeys role's ARN
         env:

@@ -90,11 +90,11 @@ export function watchBearer(page, harness) {
   };
 }
 
-/** One API call as the page's user: `{ status, body }`, never thrown. */
-export async function apiCall(page, token, method, path, data) {
+/** One API call as the page's user: `{ status, body }`, never thrown. `headers`: more request headers (an Idempotency-Key). */
+export async function apiCall(page, token, method, path, data, headers = {}) {
   const res = await page.request.fetch(`${PROD.api}${path}`, {
     method,
-    headers: { Authorization: `Bearer ${token}`, ...(data ? { "Content-Type": "application/json" } : {}) },
+    headers: { Authorization: `Bearer ${token}`, ...(data ? { "Content-Type": "application/json" } : {}), ...headers },
     data: data ? JSON.stringify(data) : undefined,
     failOnStatusCode: false,
   });

@@ -8,6 +8,7 @@ import { CognitoError } from "../lib/cognito.mjs";
 import { MailTimeout } from "../lib/mailbox.mjs";
 import { createMasker } from "../lib/mask.mjs";
 import { recordKey } from "../lib/runs.mjs";
+import { seal } from "../lib/seal.mjs";
 import { BASELINE_MARKUP, MARKUP_SENTINEL, resetMarkup } from "../lib/settings.mjs";
 import { cleanTeam, cleanup, main, parseArgs } from "../cleanup.mjs";
 import { at, fakeEnv, fakeS3, sesMessage } from "./helpers.mjs";
@@ -426,4 +427,81 @@ test("cleanup deletes the retry's crew member before its owner, as for the first
   assert.ok(at2("deleteMe", crewRetry) >= 0 && at2("deleteMe", crewRetry) < at2("startEmailCode", ownerRetry));
   assert.ok(w.log.some(([op, who, team]) => op === "closeTeam" && who === ownerRetry && team === "t-retry"));
   assert.deepEqual(r.left, []);
+});
+
+// The billing journey's owner has two-step on (supply-checkout-o60.9): cleanup signs it in with the
+// password and a code from the authenticator secret sealed in its record, not by email code
+const bOwner = throwawayAddress(RUN, "bowner");
+const bCrew = throwawayAddress(RUN, "bcrew");
+const sealedFor = (extra = {}) => seal({ password: "Throwaway-pass-1234!", totp: "JBSWY3DPEHPK3PXP", ...extra }, config.accounts.owner.password);
+const billingMe = { [bOwner]: { user: { email: bOwner, emailVerified: true }, teams: [{ id: "t-bill", name: "Billing team", role: "owner", closedAt: null }] }, [bCrew]: alone(bCrew) };
+const billingRecords = (extra = {}) => [
+  { runId: RUN, role: "bowner", address: bOwner, state: "started", teamIds: ["t-bill"], sealed: sealedFor(), ...extra },
+  { runId: RUN, role: "bcrew", address: bCrew, state: "started" },
+];
+/** A fake sandbox Stripe that records what it's asked, in the world's log. */
+const fakeSandbox = (w, { sub = { id: "sub_AbC123xyz", status: "active" }, fail = false } = {}) => ({
+  async customerOfTeam(teamId) { w.log.push(["stripe customerOfTeam", teamId]); return "cus_AbC123xyz"; },
+  async subscriptionOf() { w.log.push(["stripe subscriptionOf"]); return sub; },
+  async cancel(id) { w.log.push(["stripe cancel", id]); if (fail) throw new Error("Stripe cancel failed: api_error"); },
+});
+
+test("cleanup signs a billing owner in by its sealed password and code, ends its sandbox subscription, closes its team and deletes it", async () => {
+  const w = world({ records: billingRecords(), meFor: billingMe });
+  const codes = [];
+  const signIn = w.cognito.signInWithPassword;
+  w.cognito.signInWithPassword = async (email, password, totp) => {
+    if (email === bOwner) { assert.equal(password, "Throwaway-pass-1234!"); codes.push(await totp()); }
+    return signIn(email, password, totp);
+  };
+  const r = await run(w, { stripe: fakeSandbox(w), totpFor: async (secret, role) => `${role}:${secret}` });
+  assert.deepEqual(codes, ["bowner:JBSWY3DPEHPK3PXP"]);
+  assert.ok(!w.log.some(([op, who]) => op === "startEmailCode" && who === bOwner), "no email code for the account with two-step on");
+  const order = w.log.map(([op]) => op);
+  assert.ok(order.indexOf("stripe cancel") >= 0 && order.indexOf("stripe cancel") < order.indexOf("closeTeam"), "the subscription ends before the team closes");
+  assert.deepEqual(w.log.find(([op]) => op === "stripe customerOfTeam"), ["stripe customerOfTeam", "t-bill"]);
+  assert.deepEqual(w.log.find(([op]) => op === "stripe cancel"), ["stripe cancel", "sub_AbC123xyz"]);
+  assert.ok(w.log.some(([op, who, team]) => op === "closeTeam" && who === bOwner && team === "t-bill"));
+  assert.ok(w.log.some(([op, who]) => op === "deleteMe" && who === bOwner));
+  // The crew member first, by email code; and the owner's record is deleted with its sealed value dropped
+  assert.ok(w.log.findIndex(([op, who]) => op === "deleteMe" && who === bCrew) < w.log.findIndex(([op, who]) => op === "signIn" && who === bOwner));
+  assert.equal(recordState(w, "bowner"), "deleted");
+  assert.equal(JSON.parse(w.mailS3.store.get(recordKey(RUN, "bowner")).body.toString()).sealed, undefined);
+  assert.deepEqual(r.left, []);
+  assert.match(r.done.join("\n"), /A throwaway bowner of this run: ended its sandbox subscription/);
+  assert.match(r.done.join("\n"), /A throwaway bowner of this run: deleted/);
+});
+
+test("cleanup without a sandbox key still closes and deletes a billing throwaway, and a failed cancel is left but doesn't stop the deletion", async () => {
+  const w = world({ records: billingRecords(), meFor: billingMe });
+  const r = await run(w, { totpFor: async () => "123456" });
+  assert.ok(!w.log.some(([op]) => op.startsWith("stripe")));
+  assert.ok(w.log.some(([op, who]) => op === "deleteMe" && who === bOwner));
+  assert.deepEqual(r.left, []);
+  const w2 = world({ records: billingRecords(), meFor: billingMe });
+  const r2 = await run(w2, { stripe: fakeSandbox(w2, { fail: true }), totpFor: async () => "123456" });
+  assert.deepEqual(r2.left, ["A throwaway bowner of this run: couldn't end its sandbox subscription: Stripe cancel failed: api_error"]);
+  assert.ok(w2.log.some(([op, who]) => op === "deleteMe" && who === bOwner));
+});
+
+test("cleanup asks Stripe about only the teams the run recorded creating, and signs in by password alone before two-step was on", async () => {
+  // No teamIds in the record: the team isn't known to be the run's, so Stripe isn't asked (and the guard refuses to close it)
+  const w = world({ records: billingRecords({ teamIds: undefined, sealed: sealedFor({ totp: undefined }) }), meFor: billingMe });
+  const seen = [];
+  const signIn = w.cognito.signInWithPassword;
+  w.cognito.signInWithPassword = async (email, password, totp) => { if (email === bOwner) seen.push(totp); return signIn(email, password, totp); };
+  const r = await run(w, { stripe: fakeSandbox(w), totpFor: async () => "123456" });
+  assert.deepEqual(seen, [undefined], "no authenticator secret sealed yet: password only");
+  assert.ok(!w.log.some(([op]) => op.startsWith("stripe")));
+  assert.equal(r.left.length, 1);
+  assert.match(r.left[0], /A throwaway bowner of this run: not deleted: /);
+});
+
+test("cleanup leaves a billing throwaway whose sealed value can't be opened, and says so without the value", async () => {
+  const w = world({ records: billingRecords({ sealed: seal({ password: "Throwaway-pass-1234!" }, "another-secret-entirely-1234") }), meFor: billingMe });
+  const r = await run(w, { totpFor: async () => "123456" });
+  assert.equal(r.left.length, 1);
+  assert.match(r.left[0], /A throwaway bowner of this run: not deleted: A sealed value couldn't be opened/);
+  assert.ok(!w.log.some(([op, who]) => op === "signIn" && who === bOwner));
+  assert.equal(recordState(w, "bowner"), "started");
 });

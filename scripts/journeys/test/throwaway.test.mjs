@@ -3,7 +3,7 @@
 // throwaway roles, against fakes.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { THROWAWAY_ROLES, attemptRoles, isOwnerRole, parseThrowaway, throwawayAddress } from "../lib/addresses.mjs";
+import { ALL_ROLES, BILLING_ROLES, THROWAWAY_ROLES, attemptRoles, isOwnerRole, parseThrowaway, throwawayAddress } from "../lib/addresses.mjs";
 import { CognitoError, createCognito } from "../lib/cognito.mjs";
 import { PROD } from "../lib/config.mjs";
 import { checkRecord, readRecords, recordKey, writeRecord } from "../lib/runs.mjs";
@@ -12,7 +12,7 @@ import { at, fakeFetch, fakeS3 } from "./helpers.mjs";
 
 const RUN = "9-1";
 const CLIENT = "abcdefghijklmnopqrstuvwxy1";
-const addresses = Object.fromEntries(THROWAWAY_ROLES.map((role) => [role, throwawayAddress(RUN, role)]));
+const addresses = Object.fromEntries(ALL_ROLES.map((role) => [role, throwawayAddress(RUN, role)]));
 
 /** A record writer into a fake bucket, as the fixtures' harness.record is. */
 const recorder = (s3 = fakeS3()) => ({ s3, write: (role, record) => writeRecord(s3, { ...record, runId: RUN, role, address: addresses[role] }) });
@@ -25,6 +25,16 @@ test("a try's throwaway roles: owner and crew, then a fresh pair for the retry, 
   assert.throws(() => attemptRoles(2), /one try and one retry/);
   for (const role of THROWAWAY_ROLES) assert.deepEqual(parseThrowaway(throwawayAddress(RUN, role)), { runId: RUN, role });
   assert.deepEqual(THROWAWAY_ROLES.filter(isOwnerRole), ["owner", "ownerretry"]);
+  // The billing journey's own pair and its retry's (supply-checkout-o60.9)
+  assert.deepEqual(BILLING_ROLES, ["bowner", "bcrew", "bownerretry", "bcrewretry"]);
+  assert.deepEqual(ALL_ROLES, [...THROWAWAY_ROLES, ...BILLING_ROLES]);
+  assert.deepEqual(attemptRoles(0, { billing: true }), { owner: "bowner", crew: "bcrew" });
+  assert.deepEqual(attemptRoles(1, { billing: true }), { owner: "bownerretry", crew: "bcrewretry" });
+  assert.throws(() => attemptRoles(2, { billing: true }), /one try and one retry/);
+  assert.deepEqual(BILLING_ROLES.filter(isOwnerRole), ["bowner", "bownerretry"]);
+  for (const role of BILLING_ROLES) assert.deepEqual(parseThrowaway(throwawayAddress(RUN, role)), { runId: RUN, role });
+  assert.equal(isOwnerRole("bcrew"), false);
+  assert.equal(isOwnerRole("viewer"), false);
 });
 
 test("run records take the signup state, and nothing new besides", () => {
@@ -57,6 +67,14 @@ test("the record keeper refuses an address that isn't this run's throwaway for t
   assert.throws(() => createRecordKeeper({ runId: RUN, role: "owner", address: addresses.crew, write }), /Not this run's/);
   assert.throws(() => createRecordKeeper({ runId: "8-1", role: "owner", address: addresses.owner, write }), /Not this run's/);
   assert.throws(() => createRecordKeeper({ runId: RUN, role: "owner", address: at("owner-lived"), write }), /Not this run's/);
+});
+
+test("throwawayPair gives the billing journey its own pair, and its retry another", () => {
+  const { write } = recorder();
+  const first = throwawayPair({ runId: RUN, retry: 0, addresses, write, billing: true });
+  assert.deepEqual([first.owner.role, first.owner.address, first.crew.role, first.crew.address], ["bowner", addresses.bowner, "bcrew", addresses.bcrew]);
+  const retry = throwawayPair({ runId: RUN, retry: 1, addresses, write, billing: true });
+  assert.deepEqual([retry.owner.address, retry.crew.address], [addresses.bownerretry, addresses.bcrewretry]);
 });
 
 test("throwawayPair gives each try its own pair of addresses from global setup", () => {
