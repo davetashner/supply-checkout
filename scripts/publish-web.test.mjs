@@ -430,6 +430,7 @@ function workingRouter({ app = "1.3.0", demo = "demo-1", ops = "ops-1" } = {}) {
     if (host.startsWith("app.")) return serve(app, uri);
     if (host.startsWith("www.")) return { response: { statusCode: 301 } };
     if (uri.startsWith("/demo/")) return serve(demo, "/");
+    if (uri === "/how-to") return { response: { statusCode: 301 } };
     return { response: { statusCode: 302 } };
   };
 }
@@ -470,6 +471,8 @@ test("check-router runs the live router on a request to each host", () => {
     { host: "supplycheckout.com", uri: "/demo/" },
     { host: "supplycheckout.com", uri: "/" },
     { host: "supplycheckout.com", uri: "/assets/check-router.js" },
+    { host: "supplycheckout.com", uri: "/how-to/" },
+    { host: "supplycheckout.com", uri: "/how-to" },
     { host: "supplycheckout.com", uri: "/anything-else" },
     { host: "www.supplycheckout.com", uri: "/" },
     { host: "ops.supplycheckout.com", uri: "/" },
@@ -480,6 +483,8 @@ test("check-router runs the live router on a request to each host", () => {
     "ok  supplycheckout.com/demo/ -> /releases/demo-1/index.html",
     "ok  supplycheckout.com/ -> 302 (no home page live: the app)",
     "ok  supplycheckout.com/assets/check-router.js -> 302 (no home page live: the app)",
+    "ok  supplycheckout.com/how-to/ -> 302 (no home page live: the app)",
+    "ok  supplycheckout.com/how-to -> 301",
     "ok  supplycheckout.com/anything-else -> 302",
     "ok  www.supplycheckout.com/ -> 301",
     "The live router (router-fn) works.",
@@ -490,7 +495,7 @@ test("check-router runs the live router on a request to each host", () => {
   const fns = aws.calls.filter(([, op]) => op === "describe-function").map((fn) => fn[fn.indexOf("--name") + 1]);
   assert.deepEqual(fns, ["router-fn", "ops-router-fn"]);
   const tested = aws.calls.filter(([, op]) => op === "test-function").map((fn) => fn[fn.indexOf("--name") + 1]);
-  assert.deepEqual(tested, ["router-fn", "router-fn", "router-fn", "router-fn", "router-fn", "router-fn", "ops-router-fn", "ops-router-fn"]);
+  assert.deepEqual(tested, ["router-fn", "router-fn", "router-fn", "router-fn", "router-fn", "router-fn", "router-fn", "router-fn", "ops-router-fn", "ops-router-fn"]);
   // Nothing live on a channel is a 503, which the router means
   const empty = fakeCloudFront({ router: workingRouter({ app: null }) });
   main(["check-router"], empty.deps);
@@ -498,10 +503,11 @@ test("check-router runs the live router on a request to each host", () => {
 });
 
 test("check-router accepts the home page served from its release as well as the redirect", () => {
-  const served = fakeCloudFront({ router: ({ host, uri }) => (host === "supplycheckout.com" && (uri === "/" || uri.startsWith("/assets/")) ? { request: { uri: `/releases/site-1${uri === "/" ? "/index.html" : uri}` } } : workingRouter()({ host, uri })) });
+  const served = fakeCloudFront({ router: ({ host, uri }) => (host === "supplycheckout.com" && (uri === "/" || uri === "/how-to/" || uri.startsWith("/assets/")) ? { request: { uri: `/releases/site-1${uri.endsWith("/") ? `${uri}index.html` : uri}` } } : workingRouter()({ host, uri })) });
   main(["check-router"], served.deps);
   assert.ok(served.log.includes("ok  supplycheckout.com/ -> /releases/site-1/index.html"));
   assert.ok(served.log.includes("ok  supplycheckout.com/assets/check-router.js -> /releases/site-1/assets/check-router.js"));
+  assert.ok(served.log.includes("ok  supplycheckout.com/how-to/ -> /releases/site-1/how-to/index.html"));
   // But not a 503, and not the home page's release for a path it doesn't have
   const down = fakeCloudFront({ router: ({ host, uri }) => (host === "supplycheckout.com" && uri === "/" ? { response: { statusCode: 503 } } : workingRouter()({ host, uri })) });
   assert.throws(() => main(["check-router"], down.deps), /answered supplycheckout\.com\/ with 503, not a release or a 302/);
@@ -515,7 +521,10 @@ test("check-router fails when the router throws or answers wrong", () => {
   const redirectsApp = fakeCloudFront({ router: () => ({ response: { statusCode: 302 } }) });
   assert.throws(() => main(["check-router"], redirectsApp.deps), /answered app\.supplycheckout\.com\/ with 302, not a release/);
   const servesWww = fakeCloudFront({ router: ({ host }) => (host.startsWith("www.") ? { request: { uri: "/x" } } : workingRouter()({ host, uri: "/demo/" })) });
-  assert.throws(() => main(["check-router"], servesWww.deps), /answered supplycheckout\.com\/anything-else with \/releases\/.*, not 302/);
+  assert.throws(() => main(["check-router"], servesWww.deps), /answered supplycheckout\.com\/how-to with \/releases\/.*, not 301/);
+  // A router from before the how-to lessons sends /how-to to the app, not to /how-to/
+  const noHowTo = fakeCloudFront({ router: ({ host, uri }) => (uri === "/how-to" ? { response: { statusCode: 302 } } : workingRouter()({ host, uri })) });
+  assert.throws(() => main(["check-router"], noHowTo.deps), /answered supplycheckout\.com\/how-to with 302, not 301/);
   const garbled = fakeCloudFront({ router: () => undefined });
   assert.throws(() => main(["check-router"], garbled.deps), /no readable output/);
   assert.throws(() => main(["check-router"], fakeCloudFront({ params: PARAMS }).deps), /deploy the web stack first\): \/supply-checkout\/prod\/web\/router-function-name/);
@@ -528,7 +537,7 @@ test("check-router fails when the router throws or answers wrong", () => {
 });
 
 test("check-router needs the app., www. and apex aliases", () => {
-  assert.equal(routerChecks(["a.test", "www.a.test", "app.a.test"]).length, 6);
+  assert.equal(routerChecks(["a.test", "www.a.test", "app.a.test"]).length, 8);
   assert.throws(() => routerChecks(["www.a.test", "app.a.test"]), /Expected app\., www\. and apex aliases/);
   assert.throws(() => routerChecks([]), /\(got none\)/);
   assert.deepEqual(routerTestEvent("a.test", "/").request.headers, { host: { value: "a.test" } });
