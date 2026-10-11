@@ -1468,27 +1468,40 @@ paths:
     get:
       tags: [members]
       operationId: listPhotos
-      summary: Presigned URLs for the profile photos of the team's members. Any member.
+      summary: The names and profile photos of the team's members. Any member.
       description: |
-        For every current member of the team who has a photo, by user ID; a
-        member without one isn't listed, and someone removed from the team
-        is gone from it. Only user IDs and URLs: no names or emails. Each URL
+        `photos`: for every current member of the team who has a photo, by
+        user ID, a presigned URL for it. `members`: for every current member
+        who has a name or a photo, by user ID, their name (the first and
+        last name they set, as their member item holds it; null for none)
+        and the same URL (null for none). A member with neither isn't
+        listed, and someone removed from the team is gone from both. Never
+        an email or a role: owners get those from `listMembers`. Each URL
         is good for an hour (less if the server's own credentials expire
         sooner): cache them, and fetch this again before then or when an
         image fails to load. They're bearer links: don't log or share them.
-        S3 answers them with `Content-Type: image/jpeg`.
+        S3 answers them with `Content-Type: image/jpeg`. The person sets
+        their own name, so it's never a reason to trust anything.
       responses:
         "200":
-          description: The members' photos.
+          description: The members' names and photos.
           content:
             application/json:
               schema:
                 type: object
-                required: [photos]
+                required: [photos, members]
                 properties:
                   photos:
                     type: object
                     additionalProperties: { type: string, format: uri }
+                  members:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      required: [name, photoUrl]
+                      properties:
+                        name: { type: [string, "null"] }
+                        photoUrl: { type: [string, "null"], format: uri }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }

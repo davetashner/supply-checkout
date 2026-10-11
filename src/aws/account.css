@@ -22,7 +22,7 @@
 .teambar select{flex:0 1 260px}
 /* Who is signed in, and their role: the Account button. A long name or email ends in an ellipsis. */
 .teambar .whoami-chip{gap:6px;min-width:0;max-width:100%;color:var(--ink);font-weight:500;padding-block:3px}
-.teambar .who-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:24ch}
+.teambar .who-name{overflow:hidden;overflow:clip;text-overflow:ellipsis;white-space:nowrap;max-width:24ch}
 .teambar .who-role{flex:none;font-size:12px;font-weight:600;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px}
 @media (max-width:480px){.teambar .who-name{max-width:15ch}}
 .teambar .closed-note{flex-basis:100%;margin:0;color:var(--ink);background:var(--sunk);border-radius:10px;padding:8px 12px}
@@ -47,7 +47,7 @@
 .members{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .member{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:8px}
 .member:first-child{border-top:0;padding-top:0}
-.member-name{flex:1 1 180px;min-width:0;overflow-wrap:anywhere}
+.member-name{flex:1 1 180px;min-width:0;overflow-wrap:anywhere;overflow:hidden}
 .member-email{font-size:14px}
 .member select{flex:0 1 160px}
 #membersList{display:grid;gap:10px}

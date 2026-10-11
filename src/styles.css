@@ -126,7 +126,8 @@ select{background:var(--ground);border:1px solid var(--line);border-radius:9px;p
 .pill{display:inline-block;font-family:var(--display);font-weight:700;text-transform:uppercase;letter-spacing:.06em;font-size:12.5px;padding:2px 9px;border-radius:5px}
 .pill.open{background:var(--out-soft);color:var(--out)}
 .pill.closed{background:var(--accent-soft);color:var(--accent)}
-.who{display:inline-flex;align-items:center;gap:6px}
+/* Clipped: a name is the person's own text, and a long run of combining marks mustn't draw over the rows around it */
+.who{display:inline-flex;align-items:center;gap:6px;max-width:100%;overflow:hidden}
 /* A person's photo, or their initials (src/avatar.js): a circle of a fixed size, so nothing moves while a photo loads */
 .avatar{flex:none;display:inline-grid;place-items:center;border-radius:50%;object-fit:cover;background:var(--accent-soft);color:var(--accent);font-weight:700;line-height:1;overflow:hidden;user-select:none}
 .avatar-24{width:24px;height:24px;font-size:10px}

@@ -291,7 +291,7 @@ describe("PUT /me/photo", () => {
   it("isn't served without a photo store", async () => {
     handler = createAccountHandler({ ...deps, photos: undefined });
     expect((await upload(CREW)).status).toBe(500);
-    expect(await photos(OWNER)).toEqual({ status: 200, body: { photos: {} } });
+    expect(await photos(OWNER)).toEqual({ status: 200, body: { photos: {}, members: {} } });
     expect((await call("GET", "/me", CREW)).body.user.photoUrl).toBeNull();
   });
 });
@@ -307,7 +307,7 @@ describe("DELETE /me/photo", () => {
     expect(record(CREW)?.photoId).toBeUndefined();
     expect(memberPhoto("team-a", CREW)).toBeUndefined();
     expect(memberPhoto("team-b", CREW)).toBeUndefined();
-    expect((await photos(OWNER)).body).toEqual({ photos: {} });
+    expect((await photos(OWNER)).body).toEqual({ photos: {}, members: {} });
     expect(await call("DELETE", "/me/photo", CREW)).toEqual({ status: 204, body: undefined });
     // Someone who never had one
     expect(await call("DELETE", "/me/photo", VIEWER)).toEqual({ status: 204, body: undefined });
@@ -383,7 +383,11 @@ describe("GET /teams/{teamId}/photos", () => {
   it("gives any member the URLs of the team's members who have a photo, by user ID only", async () => {
     await upload(CREW);
     await upload(OWNER);
-    const expected = { photos: { [CREW]: urlFor(record(CREW)?.photoId), [OWNER]: urlFor(record(OWNER)?.photoId) } };
+    const expected = {
+      photos: { [CREW]: urlFor(record(CREW)?.photoId), [OWNER]: urlFor(record(OWNER)?.photoId) },
+      // No names here: nobody has one
+      members: { [CREW]: { name: null, photoUrl: urlFor(record(CREW)?.photoId) }, [OWNER]: { name: null, photoUrl: urlFor(record(OWNER)?.photoId) } },
+    };
     for (const user of [OWNER, CREW, VIEWER]) expect(await photos(user)).toEqual({ status: 200, body: expected });
     // Owners see them on the members list too
     const { body } = await call("GET", "/teams/team-a/members", OWNER);
@@ -426,12 +430,51 @@ describe("GET /teams/{teamId}/photos", () => {
   it("signs only well-formed photo IDs from the team's own member items", async () => {
     table.put({ ...(table.get("TEAM#team-a", `MEMBER#${CREW}`) as Record<string, unknown>), photoId: "../users/someone-else" });
     table.put({ ...(table.get("TEAM#team-a", `MEMBER#${VIEWER}`) as Record<string, unknown>), photoId: 12 });
-    expect(await photos(OWNER)).toEqual({ status: 200, body: { photos: {} } });
+    expect(await photos(OWNER)).toEqual({ status: 200, body: { photos: {}, members: {} } });
     // A user ID that is an object's own property name is just a key
     member("team-a", "__proto__", "viewer");
     table.put({ ...(table.get("TEAM#team-a", "MEMBER#__proto__") as Record<string, unknown>), photoId: "a".repeat(32) });
     const body = (await photos(OWNER)).body;
     expect(Object.keys(body.photos)).toEqual(["__proto__"]);
+  });
+
+  it("gives any member the names of the team's members who have one, with their photo, and never an email or a role", async () => {
+    const named = (teamId: string, user: string, displayName: unknown) => table.put({ ...(table.get(`TEAM#${teamId}`, `MEMBER#${user}`) as Record<string, unknown>), displayName });
+    named("team-a", OWNER, "Pat Lee");
+    named("team-a", CREW, "Sam Ortiz");
+    await upload(CREW);
+    const expected = { [OWNER]: { name: "Pat Lee", photoUrl: null }, [CREW]: { name: "Sam Ortiz", photoUrl: urlFor(record(CREW)?.photoId) } };
+    for (const user of [OWNER, CREW, VIEWER]) {
+      const { status, body } = await photos(user);
+      expect(status).toBe(200);
+      expect(body.members).toEqual(expected);
+      // Photos as before, for an app from before the names
+      expect(body.photos).toEqual({ [CREW]: urlFor(record(CREW)?.photoId) });
+      expect(JSON.stringify(body)).not.toMatch(/@|example\.com|"email"|"role"|"(owner|contributor|viewer)"/);
+    }
+    // A name that isn't a non-empty string is no name
+    named("team-a", OWNER, "");
+    named("team-a", VIEWER, 42);
+    expect((await photos(VIEWER)).body.members).toEqual({ [CREW]: expected[CREW] });
+    // Owners still see the email beside the name on the members list
+    const { body } = await call("GET", "/teams/team-a/members", OWNER);
+    expect(body.members.find((m: { userId: string }) => m.userId === CREW)).toMatchObject({ name: "Sam Ortiz", email: "crew@example.com" });
+    // Names are never logged
+    expect(JSON.stringify(logs)).not.toMatch(/Pat Lee|Sam Ortiz/);
+  });
+
+  it("never gives a member of one team another team's names, and drops a removed member's", async () => {
+    table.put({ ...(table.get("TEAM#team-b", `MEMBER#${OUTSIDER}`) as Record<string, unknown>), displayName: "Olive Out" });
+    table.put({ ...(table.get("TEAM#team-a", `MEMBER#${CREW}`) as Record<string, unknown>), displayName: "Sam Ortiz" });
+    table.put({ ...(table.get("TEAM#team-b", `MEMBER#${CREW}`) as Record<string, unknown>), displayName: "Sam Ortiz" });
+    // Team-a's members never see team-b's names; Crew, in both, sees each team's own
+    expect((await photos(OWNER)).body.members).toEqual({ [CREW]: { name: "Sam Ortiz", photoUrl: null } });
+    expect((await photos(CREW, "team-b")).body.members).toEqual({ [OUTSIDER]: { name: "Olive Out", photoUrl: null }, [CREW]: { name: "Sam Ortiz", photoUrl: null } });
+    expect(await photos(OWNER, "team-b")).toEqual(refusal(403, "permission_denied", "not_member"));
+    // Removed from team-a: their name goes with their item
+    expect((await call("DELETE", `/teams/team-a/members/${CREW}`, OWNER)).status).toBe(204);
+    expect((await photos(OWNER)).body.members).toEqual({});
+    expect((await photos(OUTSIDER, "team-b")).body.members[CREW]).toEqual({ name: "Sam Ortiz", photoUrl: null });
   });
 
   it("works on a closed team, and never names a photo there that was replaced or removed", async () => {

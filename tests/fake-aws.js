@@ -520,7 +520,13 @@ export class FakeBackend {
     const ids = [this.user.id, ...(this.members[team] || []).map((x) => x.userId)];
     // The last list, for tests
     this.photoList = Object.fromEntries(ids.filter((id) => this.photos.has(id)).map((id) => [id, this.photoLink(id)]));
-    return [200, { photos: clone(this.photoList) }];
+    // And each member's name, with that link (supply-checkout-w5x0): a member with neither isn't listed
+    const people = {};
+    for (const id of ids) {
+      const name = ((this.members[team] || []).find((x) => x.userId === id) || {}).name || null, photoUrl = this.photoList[id] || null;
+      if (name || photoUrl) people[id] = { name, photoUrl };
+    }
+    return [200, { photos: clone(this.photoList), members: people }];
   }
 
   // What support did to the team, as owners read it: a page of `limit`, and a cursor for the next

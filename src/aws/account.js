@@ -738,14 +738,14 @@ export async function start(config) {
         isOwner: async () => team.role === "owner",
         // Why it's read-only, when that's because the team is closed or read-only for billing; null: the role says why
         viewOnlyNotice: async () => { await closing; return viewOnly; },
-        // The signed-in user's own profile, and a photo for anyone else in the team who has one:
-        // the API doesn't share other members' names yet. The first draw waits a moment for the photos.
-        // A teammate whose photo's link is being asked for again is still there, with a blank
-        // circle meanwhile, so the photo can take its place.
+        // The signed-in user's own profile, and the name and photo of anyone else in the team
+        // who has either (supply-checkout-w5x0); "" for no name shows as "Someone". The first draw
+        // waits a moment for the list. A teammate whose photo's link is being asked for again is
+        // still there, with a blank circle meanwhile, so the photo can take its place.
         profiles: async (ids) => {
           if (photos) await photos.ready();
-          const known = (id) => id === me.user.id || (photos && photos.has(id));
-          return Object.fromEntries([].concat(ids).filter(known).map((id) => [id, id === me.user.id ? { ...profile, avatarUrl: photoOf(id) } : { id, name: "", avatarUrl: photoOf(id), isMe: false }]));
+          const known = (id) => id === me.user.id || (photos && (photos.has(id) || !!photos.name(id)));
+          return Object.fromEntries([].concat(ids).filter(known).map((id) => [id, id === me.user.id ? { ...profile, avatarUrl: photoOf(id) } : { id, name: photos.name(id), avatarUrl: photoOf(id), isMe: false }]));
         },
       },
       downloads: { save: download },

@@ -89,7 +89,10 @@
 //                                   app then refreshes its tokens, so the ID
 //                                   token carries the new name. Never logged.
 //   GET    /teams/{teamId}/photos   Any member: presigned URLs for the photos of
-//                                   the team's current members who have one.
+//                                   the team's current members who have one,
+//                                   and the names (displayName) of those who
+//                                   have one (supply-checkout-w5x0). Never an
+//                                   email: that stays owners-only (members).
 //   POST   /teams/{teamId}/feedback  Any member, a viewer too: sends a report
 //                                   from the Report an issue form
 //                                   (supply-checkout-bmsh.1). Stored in the
@@ -1442,20 +1445,29 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   }
 
   /**
-   * GET /teams/{teamId}/photos: any member of the team gets a presigned URL
-   * for each current member who has a photo, by user ID. Only IDs the team's
-   * own MEMBER items name are signed; no names or emails.
+   * GET /teams/{teamId}/photos: any member of the team gets, for each current
+   * member who has a photo or a name, by user ID, a presigned URL for the
+   * photo (`photos`, as before, and `members[id].photoUrl`) and their name
+   * (`members[id].name`, supply-checkout-w5x0), so teammates show by name,
+   * not "Someone". The team is the path's, after the membership check, and
+   * only what the team's own MEMBER items hold is returned: a removed
+   * member's item is gone, and so is their name and photo. Never an email or
+   * a role (the owners' members list has those), and nothing is logged.
    */
   async function listPhotos(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     const { teamId, ctx } = await teamContext(event, userId);
     const members = await listMembers(dbFor({ userId, teamId }), ctx);
     const photos: [string, string][] = [];
+    const people: [string, { name: string | null; photoUrl: string | null }][] = [];
     for (const member of members) {
       const url = await photoUrl(storedPhotoId(member.photoId));
       if (url) photos.push([member.userId, url]);
+      // Written only by memberName(), but only a non-empty string is ever a name here
+      const name = typeof member.displayName === "string" && member.displayName ? member.displayName : null;
+      if (url || name) people.push([member.userId, { name, photoUrl: url }]);
     }
     // fromEntries: a user ID can't reach an object's prototype
-    return json(200, { photos: Object.fromEntries(photos) });
+    return json(200, { photos: Object.fromEntries(photos), members: Object.fromEntries(people) });
   }
 
   /**
