@@ -143,6 +143,9 @@ export const REPORT_RECEIVED_THRESHOLD = 0;
  */
 export const SET_ASIDE_INCIDENT_AT = 5;
 
+/** Consecutive 5-minute periods of slow p95 latency before "API slow" alarms: more than 10 minutes. */
+export const API_SLOW_PERIODS = 3;
+
 const TEN_MINUTES = Duration.minutes(10);
 const FIFTEEN_MINUTES = Duration.minutes(15);
 /** Two of the hourly purge's runs, so every period holds at least one gauge reading. */
@@ -197,9 +200,10 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       title: "API slow",
       journeys: "Every journey",
       severity: "P2",
-      rule: "API Gateway Latency p95 above 2 seconds over 10 minutes.",
-      metric: apiGateway("Latency", apiId, region, "p95", TEN_MINUTES),
+      rule: "API Gateway Latency p95 above 2 seconds in each of 3 consecutive 5-minute periods: slow for more than 10 minutes, so a cold start or a brief spike on light traffic doesn't alarm.",
+      metric: apiGateway("Latency", apiId, region, "p95", FIVE_MINUTES),
       threshold: 2000,
+      periods: API_SLOW_PERIODS,
     },
     {
       id: "database-errors",

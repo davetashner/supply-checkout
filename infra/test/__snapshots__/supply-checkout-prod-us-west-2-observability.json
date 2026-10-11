@@ -570,10 +570,10 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 API slow (Every journey, us-west-2). API Gateway Latency p95 above 2 seconds over 10 minutes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 API slow (Every journey, us-west-2). API Gateway Latency p95 above 2 seconds in each of 3 consecutive 5-minute periods: slow for more than 10 minutes, so a cold start or a brief spike on light traffic doesn't alarm. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-api-slow",
         "ComparisonOperator": "GreaterThanThreshold",
-        "DatapointsToAlarm": 1,
+        "DatapointsToAlarm": 3,
         "Dimensions": [
           {
             "Name": "ApiId",
@@ -582,7 +582,7 @@
             }
           }
         ],
-        "EvaluationPeriods": 1,
+        "EvaluationPeriods": 3,
         "ExtendedStatistic": "p95",
         "MetricName": "Latency",
         "Namespace": "AWS/ApiGateway",
@@ -591,7 +591,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "Period": 600,
+        "Period": 300,
         "Tags": [
           {
             "Key": "app",
