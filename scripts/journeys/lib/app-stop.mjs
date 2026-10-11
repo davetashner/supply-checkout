@@ -44,7 +44,7 @@ export function trackRequests(context, apiOrigin) {
   if (known) return known;
   const origin = new URL(apiOrigin).origin;
   // cutOffAuth: an /auth/ request started while stopApp was taking the pages away
-  const tracker = { origin, inFlight: new Set(), abandoned: null, cutOffAuth: false };
+  const tracker = { origin, inFlight: new Set(), abandoned: null, cutOffAuth: false, reloading: null };
   const toApi = (req) => { try { return new URL(req.url()).origin === origin; } catch { return false; } };
   context.on("request", (req) => {
     if (!toApi(req)) return;
@@ -107,6 +107,20 @@ export async function stopApp(context, { apiOrigin, authWaitMs = AUTH_WAIT_MS, s
   if (cutOffAuth) throw new RefreshInFlight("as the app was stopped");
 }
 
+/**
+ * Runs `reload`, which makes the app load its page again (the team switch), and allows WebKit's
+ * cut-off report for the API requests in flight when it starts, and only until it returns. The
+ * app's lists (products, projects) are still on their way when a test switches team, and the
+ * reload cuts them off (journeys run 38107209551, J2 on iPhone). Narrower than stopApp's
+ * allowance: no /auth/ request (a cut-off refresh may spend the cookie, which a reload doesn't
+ * make safe to ignore), and none the old page starts after `reload` began.
+ */
+export async function allowReloadCutOff(context, { apiOrigin }, reload) {
+  const tracker = trackRequests(context, apiOrigin);
+  tracker.reloading = new Set([...tracker.inFlight].filter((req) => !isAuth(req)).map((req) => req.url()));
+  try { return await reload(); } finally { tracker.reloading = null; }
+}
+
 // WebKit's report of a fetch cut off by navigation: "<url> due to access control checks.", with
 // "Fetch API cannot load " before it in the console
 const CUT_OFF = /^(?:Fetch API cannot load )?(\S+) due to access control checks\.?$/;
@@ -116,8 +130,9 @@ const CUT_OFF = /^(?:Fetch API cannot load )?(\S+) due to access control checks\
  * off in this context right now. False at any other time, and for any other message or URL.
  */
 export function isAbandonedRequestError(context, message) {
-  const abandoned = trackers.get(context)?.abandoned;
-  if (!abandoned?.size) return false;
+  const tracker = trackers.get(context);
+  const abandoned = new Set([...(tracker?.abandoned ?? []), ...(tracker?.reloading ?? [])]);
+  if (!abandoned.size) return false;
   const reported = CUT_OFF.exec(String(message ?? ""))?.[1];
   if (!reported) return false;
   for (const href of abandoned) {

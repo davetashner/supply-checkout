@@ -10,7 +10,7 @@
 /* global document -- appReady's check runs in the page */
 import { readFile } from "node:fs/promises";
 import { runBarcode, runName } from "../../scripts/journeys/lib/addresses.mjs";
-import { isAbandonedRequestError } from "../../scripts/journeys/lib/app-stop.mjs";
+import { allowReloadCutOff, isAbandonedRequestError } from "../../scripts/journeys/lib/app-stop.mjs";
 import { PROD } from "../../scripts/journeys/lib/config.mjs";
 import { switchTeam, teamPicker } from "../ui/index.js";
 import { consoleFailure, expect, isDocumentNotFound, isExpectedConsoleError, isExpectedPageError, NOT_FOUND_WARNING } from "./fixtures.mjs";
@@ -53,9 +53,16 @@ export async function openTeam(page, teamId) {
   const picker = teamPicker(page);
   await expect(picker, "the long-lived accounts are in both journey teams").toBeVisible();
   if ((await picker.inputValue()) !== teamId) {
-    const loaded = page.waitForEvent("load");
-    await switchTeam(page, teamId);
-    await loaded;
+    // The switch loads the page again, which cuts off the lists still on their way; WebKit
+    // reports those as page errors (lib/app-stop.mjs allowReloadCutOff). The allowance stays open
+    // until the new page has drawn the team, so no report of the old page can come after it.
+    await allowReloadCutOff(page.context(), { apiOrigin: PROD.api }, async () => {
+      const loaded = page.waitForEvent("load");
+      await switchTeam(page, teamId);
+      await loaded;
+      await expect(teamPicker(page)).toHaveValue(teamId);
+      await appReady(page);
+    });
   }
   await expect(teamPicker(page)).toHaveValue(teamId);
   await appReady(page);
