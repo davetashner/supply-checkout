@@ -1,5 +1,5 @@
 // Your account, from the team bar's Account button or the screens before a team is open:
-// the profile photo (profile-photo.js), the password (changed in password.js), two-step sign-in (set up in mfa.js), the What's New
+// the name (name.js), the profile photo (profile-photo.js), the password (changed in password.js), two-step sign-in (set up in mfa.js), the What's New
 // banner on or off (whats-new.js), and deleting the account (DELETE /me in
 // docs/api/openapi.yaml). The user types DELETE to confirm, and
 // the button stays off until they have. The server refuses while they're the only owner of
@@ -10,6 +10,7 @@ import { esc } from "../format.js";
 import { openModal, closeModal } from "../dom.js";
 import { whatsNewSetting, wireWhatsNewSetting } from "./whats-new.js";
 import { photoSection, wirePhoto } from "./profile-photo.js";
+import { nameSection, wireName } from "./name.js";
 
 const WORD = "DELETE";
 
@@ -46,10 +47,11 @@ const passwordSection = (mfa) => `<h3>Password</h3>
 // (`moving`: it's on already, and they're moving to a new phone); `twoStep.changePassword()`
 // opens Change password. `whatsNew.prefs` is /me's user.preferences, and `whatsNew.off()`
 // hides the banner once it's turned off. `photo` is the user's own photo (profile-photo.js),
-// or null when the API has no photos.
-export function openDeleteAccount(api, email, onDeleted, twoStep, whatsNew, photo) {
+// or null when the API has no photos. `name` is the user's first and last name (name.js).
+export function openDeleteAccount(api, email, onDeleted, twoStep, whatsNew, photo, name) {
   openModal(`<h2>Your account</h2>
     <p>Signed in as <strong>${esc(email || "you")}</strong>.</p>
+    ${nameSection(name)}
     ${photo ? photoSection(photo) : ""}
     ${passwordSection(twoStep.mfa)}
     ${twoStepSection(twoStep.mfa)}
@@ -70,6 +72,7 @@ export function openDeleteAccount(api, email, onDeleted, twoStep, whatsNew, phot
     const change = m.querySelector("#passwordOpen");
     if (change) change.addEventListener("click", twoStep.changePassword);
     wireWhatsNewSetting(m, api, whatsNew.prefs, whatsNew.off);
+    wireName(m, api, name);
     if (photo) wirePhoto(m, api, photo);
     input.addEventListener("input", () => { button.disabled = !ready(); });
     m.querySelector("#deleteForm").addEventListener("submit", async (e) => {

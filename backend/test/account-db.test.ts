@@ -5,7 +5,7 @@
 import type { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import { describe, expect, it, vi } from "vitest";
 import { accountScopedDbs } from "../src/api/account-db.js";
-import { cognitoDeleteUser, cognitoEmailCodes, cognitoTotp, cognitoUserInfo } from "../src/api/cognito-user.js";
+import { cognitoDeleteUser, cognitoEmailCodes, cognitoSetName, cognitoTotp, cognitoUserInfo } from "../src/api/cognito-user.js";
 import { ApiError } from "../src/api/http.js";
 import { connection } from "../src/data/client.js";
 import { type Db, hashEmail, InvalidInputError } from "../src/data/index.js";
@@ -289,5 +289,58 @@ describe("cognitoTotp", () => {
     const unknown = refused("InternalErrorException", "secret stuff: t");
     await expect(unknown.signOutEverywhere("t")).rejects.toThrow("GlobalSignOut failed: 400 InternalErrorException");
     await expect(cognitoTotp(ISSUER, reply(500, {})).associate("t")).rejects.toThrow("AssociateSoftwareToken failed: 500 ");
+  });
+});
+
+describe("cognitoSetName", () => {
+  const ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
+  const ok = () => vi.fn(async () => new Response("{}", { status: 200 }));
+  const sent = (fetch: ReturnType<typeof ok>) =>
+    fetch.mock.calls.map((c) => {
+      const [url, init] = c as unknown as [string, RequestInit];
+      return { url, target: (init.headers as Record<string, string>)["x-amz-target"], body: JSON.parse(init.body as string) };
+    });
+
+  it("sets both names with the caller's own token, and only given_name and family_name", async () => {
+    const fetch = ok();
+    await cognitoSetName(ISSUER, fetch)("access-token", "Pat", "Lee");
+    expect(sent(fetch)).toEqual([
+      {
+        url: "https://cognito-idp.test-local-1.amazonaws.com/",
+        target: "AWSCognitoIdentityProviderService.UpdateUserAttributes",
+        body: { AccessToken: "access-token", UserAttributes: [{ Name: "given_name", Value: "Pat" }, { Name: "family_name", Value: "Lee" }] },
+      },
+    ]);
+  });
+
+  it("deletes an empty part rather than setting it, and makes no update when both are empty", async () => {
+    const one = ok();
+    await cognitoSetName(ISSUER, one)("t", "", "Lee");
+    expect(sent(one).map((c) => [c.target.split(".")[1], c.body])).toEqual([
+      ["UpdateUserAttributes", { AccessToken: "t", UserAttributes: [{ Name: "family_name", Value: "Lee" }] }],
+      ["DeleteUserAttributes", { AccessToken: "t", UserAttributeNames: ["given_name"] }],
+    ]);
+    const both = ok();
+    await cognitoSetName(ISSUER, both)("t", "", "");
+    expect(sent(both).map((c) => [c.target.split(".")[1], c.body])).toEqual([["DeleteUserAttributes", { AccessToken: "t", UserAttributeNames: ["given_name", "family_name"] }]]);
+  });
+
+  it("answers 401 to a revoked token, 429 to Cognito's limits, and fails on anything else without Cognito's message", async () => {
+    const reply = (status: number, body: unknown) => vi.fn(async () => new Response(JSON.stringify(body), { status }));
+    const set = (fetch: typeof globalThis.fetch) => cognitoSetName(ISSUER, fetch)("t", "Pat", "Lee");
+    await expect(set(reply(400, { __type: "NotAuthorizedException" }))).rejects.toMatchObject({ status: 401 });
+    await expect(set(reply(400, { __type: "UserNotFoundException" }))).rejects.toMatchObject({ status: 401 });
+    await expect(set(reply(400, { __type: "TooManyRequestsException" }))).rejects.toMatchObject({ status: 429 });
+    await expect(set(reply(400, { __type: "LimitExceededException" }))).rejects.toMatchObject({ status: 429 });
+    // Cognito refusing the value: a 400 with a reason, and never its message (which can echo the name)
+    const refused = await set(reply(400, { __type: "com.amazonaws#InvalidParameterException", message: "given_name Pat" })).catch((e: unknown) => e);
+    expect(refused).toMatchObject({ status: 400, reason: "name_refused" });
+    expect(String((refused as Error).message)).not.toMatch(/Pat/);
+    await expect(set(reply(400, { __type: "InternalErrorException", message: "given_name Pat" }))).rejects.toThrow(/^UpdateUserAttributes failed: 400 InternalErrorException$/);
+    await expect(cognitoSetName(ISSUER, vi.fn(async () => new Response("<html>", { status: 503 })))("t", "", "")).rejects.toThrow(/^DeleteUserAttributes failed: 503/);
+  });
+
+  it("only talks to a Cognito issuer", () => {
+    expect(() => cognitoSetName("https://evil.example.com/pool")).toThrow(/not a Cognito user pool issuer/);
   });
 });

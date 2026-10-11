@@ -1,6 +1,18 @@
 {
   "releases": [
     {
+      "version": "upcoming",
+      "notes": [
+        {
+          "title": "Your name on Account",
+          "text": "Add your first and last name on Account, or change them. Your name then shows in the bar under the header instead of your email.",
+          "prs": [
+            756
+          ]
+        }
+      ]
+    },
+    {
       "version": "1.14.0",
       "date": "2026-10-10",
       "notes": [],

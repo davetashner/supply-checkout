@@ -76,6 +76,18 @@
 //                                   ID; the one it replaces is deleted. See
 //                                   "Profile photos" below.
 //   DELETE /me/photo                Removes it (idempotent).
+//   PUT    /me/name                 The caller's own first and last name
+//                                   (supply-checkout-bt3g): checked like a
+//                                   member's name (one line, no control or
+//                                   invisible characters, at most
+//                                   MEMBER_NAME_MAX together), set in Cognito
+//                                   with the caller's own access token
+//                                   (cognito-user.ts: only given_name and
+//                                   family_name, and only theirs), then copied
+//                                   to their MEMBER item in each open team
+//                                   they're in. An empty part is cleared. The
+//                                   app then refreshes its tokens, so the ID
+//                                   token carries the new name. Never logged.
 //   GET    /teams/{teamId}/photos   Any member: presigned URLs for the photos of
 //                                   the team's current members who have one.
 //   POST   /teams/{teamId}/feedback  Any member, a viewer too: sends a report
@@ -204,6 +216,7 @@
 // names and tokens never go in a log line or a metric.
 
 import { randomBytes } from "node:crypto";
+import { hasHiddenCharacter } from "../text/hidden-characters.js";
 import type { APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import {
   acceptInvite,
@@ -246,6 +259,8 @@ import {
   recordTotpOn,
   recordPasswordReset,
   hasEnded,
+  MEMBER_NAME_MAX,
+  memberName,
   isTestAccount,
   billingAccess,
   deletionLastDay,
@@ -298,7 +313,7 @@ import { PhotoRejectedError, stripPhoto } from "../photos/jpeg.js";
 import type { PhotoStore } from "../photos/store.js";
 import { BusinessMetric, type BusinessMetricName, type Observability, testMark } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
-import type { CognitoUser, DeleteUser, EmailCodes, TotpSetup, UserInfo } from "./cognito-user.js";
+import type { CognitoUser, DeleteUser, EmailCodes, SetOwnName, TotpSetup, UserInfo } from "./cognito-user.js";
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
 import { accessToken, ApiError, errorResponse, header, json, jsonBody, noContent, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
@@ -314,6 +329,8 @@ export interface AccountHandlerDeps {
   readonly emailCodes: EmailCodes;
   /** Sets the caller's password and authenticator app up, and signs them out everywhere (cognito-user.ts). */
   readonly totp: TotpSetup;
+  /** Sets or clears the caller's own first and last name in Cognito (cognito-user.ts). The Lambda entry always sets it; absent, PUT /me/name fails. */
+  readonly setName?: SetOwnName;
   /** The user pool's issuer URL; tokens from anywhere else are refused. */
   readonly issuerUrl: string;
   readonly obs: Observability;
@@ -355,6 +372,21 @@ const MAX_PASSWORD = 256;
 const SIGN_OUT_ATTEMPTS = 3;
 /** The wait before each try after the first, times the tries so far. */
 const SIGN_OUT_BACKOFF_MS = 100;
+
+/** The largest PUT /me/name body: two names of MEMBER_NAME_MAX, and room for the JSON around them. */
+const NAME_BODY_BYTES = 4096;
+const nameInvalid = () => new ApiError(400, "bad_request", `Enter a first and last name of up to ${MEMBER_NAME_MAX} characters together, on one line`, "name_invalid");
+
+/**
+ * One part of a name for PUT /me/name: a string, trimmed, on one line with no
+ * control or invisible characters (src/text/hidden-characters.ts), checked
+ * after its length so the scan is bounded. "" clears it. Refused, not
+ * cleaned: what the person sees in Account is what's saved.
+ */
+function namePart(value: unknown): string {
+  if (typeof value !== "string" || value.length > MEMBER_NAME_MAX * 2 || hasHiddenCharacter(value)) throw nameInvalid();
+  return value.trim();
+}
 
 /** The largest PUT /me/photo body: a 64 KB photo in base64, and room for the JSON around it. */
 export const PHOTO_BODY_BYTES = 100_000;
@@ -621,7 +653,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   }
 
   /** keepMemberProfile in every team the caller is in (their own USER# rows), each on a session for that team after the membership check. */
-  async function keepMemberEmails(userId: string, email: string, name: string | undefined): Promise<void> {
+  async function keepMemberEmails(userId: string, email: string | undefined, name: string | undefined): Promise<void> {
     const rows = await listTeamsForUser(dbFor({ userId }), userId);
     await Promise.all(
       rows.slice(0, MAX_TEAMS_PER_USER).map(async (row) => {
@@ -1329,6 +1361,33 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     }
   }
 
+  /**
+   * PUT /me/name: the caller's own first and last name, both sent (an empty
+   * one is cleared). Checked first, so nothing reaches Cognito unless both
+   * parts are one line with no control or invisible characters and their
+   * name, as memberName() joins them, is at most MEMBER_NAME_MAX characters.
+   * Cognito is changed with the caller's own token, and only after GetUser
+   * shows it's the caller API Gateway verified. Then the name goes to their
+   * MEMBER item in each open team they're in (keepMemberProfile, best effort:
+   * the next /me catches up). The name is never logged.
+   */
+  async function setOwnName(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const body = jsonBody(event, ["givenName", "familyName"], NAME_BODY_BYTES);
+    const givenName = namePart(body.givenName);
+    const familyName = namePart(body.familyName);
+    const name = memberName(givenName, familyName);
+    if (`${givenName} ${familyName}`.trim().length > MEMBER_NAME_MAX) throw nameInvalid();
+    if (!deps.setName) throw new Error("No name setter");
+    const user = await cognitoUser(event, userId);
+    await deps.setName(accessToken(event), givenName, familyName);
+    try {
+      await keepMemberEmails(userId, verifiedEmail(user), name);
+    } catch (error) {
+      obs.logger.warn("Member names not updated", { code: (error as { name?: string } | null)?.name ?? "Unknown" });
+    }
+    return json(200, { name: name ?? null });
+  }
+
   /** PUT /me/photo (see "Profile photos" at the top). */
   async function setPhoto(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     let body: Record<string, unknown>;
@@ -1458,6 +1517,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     setPreferences: setPreferencesRoute,
     setPhoto,
     deletePhoto,
+    setName: setOwnName,
     listPhotos,
     sendFeedback: sendReport,
   };
