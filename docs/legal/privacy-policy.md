@@ -67,7 +67,7 @@ Barcodes are read on your device. Barcode photos are not sent to us.
 - **To meet legal obligations**: keep tax and accounting records, and respond to lawful requests.
 - **To improve the Service**: using combined, anonymous figures that can't identify you, your team or your clients.
 
-We send transactional email only. We don't send marketing email. [If marketing email is added: say so here, with an unsubscribe link in every message.]
+We send transactional email only. We don't send marketing email.
 
 ## 4. Receipt reading and AI
 
@@ -97,7 +97,7 @@ We may also share information:
 - **To protect people and the Service**, when we reasonably believe it's needed to prevent fraud, abuse or harm.
 - **In a business transfer**, such as a merger or sale of the business, under this policy's promises. We will tell owners before their data becomes subject to a different privacy policy.
 
-A current list of the service providers that handle customer data is at [SUBPROCESSOR LIST LINK].
+A current list of the service providers that handle customer data is at [supplycheckout.com/subprocessors](https://supplycheckout.com/subprocessors/).
 
 ## 6. Support access
 
@@ -124,7 +124,7 @@ A current list of the service providers that handle customer data is at [SUBPROC
 | Error and performance reports | 30 days |
 | Email delivery problems | If a message to an address bounces permanently or is marked as spam, we stop sending to that address until its owner asks us to start again. Details of an undeliverable message are kept for up to 7 days. |
 | Billing records at Stripe | When a team's data is deleted, we delete its Stripe customer. Stripe keeps payment and invoice records it must keep by law, under its own privacy policy. We keep our own tax and accounting records for 7 years. |
-| Support emails | [PERIOD] |
+| Support emails | Up to 2 years after the conversation ends, and longer only where billing or the law needs it |
 
 When you delete your account, what you added to a team (items, projects, receipts) stays with the team, because it belongs to the team. If you were the only member of a team, deleting your account closes that team, and it's deleted 30 days later. If you are the only owner of a team that has other members, make someone else an owner first.
 
@@ -137,7 +137,7 @@ We don't use advertising or tracking cookies, and we don't use third-party analy
 | Name | Set by | What for | How long |
 | --- | --- | --- | --- |
 | `__Secure-sc_refresh` | Our API (`api.supplycheckout.com`) | Keeps you signed in. It's only sent to our sign-in endpoints and can't be read by scripts. | 30 days, renewed as you use the app; removed when you sign out |
-| Sign-in session cookies | Amazon Cognito, on our sign-in page (`auth.supplycheckout.com`) | Remembers that you just signed in, so you aren't asked again straight away | [About an hour]; removed when you sign out |
+| Sign-in session cookies | Amazon Cognito, on our sign-in page (`auth.supplycheckout.com`) | Remembers that you just signed in, so you aren't asked again straight away | About an hour; removed when you sign out |
 
 **Storage in your browser** (these stay on your device and aren't sent to us)
 
@@ -198,7 +198,7 @@ The Service is for businesses, and users must be at least 18. It isn't directed 
 
 ## 12. Where data is stored
 
-We store and process data in the United States, in AWS's US East (N. Virginia) region. [When the second region launches: and US West (Oregon).] The Service isn't offered outside the United States.
+We store and process data in the United States, in AWS's US East (N. Virginia) region. The Service isn't offered outside the United States.
 
 ## 13. Changes to this policy
 
@@ -207,7 +207,6 @@ If we change this policy in a way that matters, we will email team owners and sh
 ## 14. Contact
 
 Main Street Logic, LLC
-[MAILING ADDRESS]
 Privacy questions and requests: hello@supplycheckout.com
 Support: support@supplycheckout.com
 

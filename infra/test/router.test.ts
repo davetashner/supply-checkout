@@ -129,6 +129,21 @@ describe("router (CloudFront Function)", () => {
       expectRedirect(await router({ app: "1.4.0" })(APEX, "/how-to/"), 302, `https://${APP}/`);
     });
 
+    it("serves the legal pages at /privacy/ and /subprocessors/, and nothing under or beside them", async () => {
+      expect((await withSite(APEX, "/privacy/")).uri).toBe("/releases/site-20261005-120000-abc1234/privacy/index.html");
+      expect((await withSite(APEX, "/subprocessors/")).uri).toBe("/releases/site-20261005-120000-abc1234/subprocessors/index.html");
+      for (const path of ["/privacy", "/subprocessors"]) {
+        const res = await withSite(APEX, path);
+        expectRedirect(res, 301, `${path}/`);
+        expect(res.headers?.["cache-control"]?.value).toBe("max-age=86400");
+      }
+      for (const uri of ["/privacy/index.html", "/privacy/x/", "/Privacy/", "/privacy//", "/terms/", "/subprocessors/a/"]) {
+        expectRedirect(await withSite(APEX, uri), 302, `https://${APP}/`);
+      }
+      expectRedirect(await withSite(WWW, "/privacy/"), 301, `https://${APEX}/`);
+      expectRedirect(await router({ app: "1.4.0" })(APEX, "/privacy/"), 302, `https://${APP}/`);
+    });
+
     it("leaves the app, the demo and www. as they were", async () => {
       expect((await withSite(APP, "/")).uri).toBe("/releases/1.4.0/index.html");
       expect((await withSite(APEX, "/demo/")).uri).toBe("/releases/demo-20260926-abc1234/index.html");
