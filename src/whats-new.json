@@ -5,7 +5,8 @@
       "notes": [],
       "skip": {
         "765": "Operator-facing: where each sign-up came from, for the owner's ads and outreach",
-        "772": "Marketing site and legal text on supplycheckout.com, not in the app"
+        "772": "Marketing site and legal text on supplycheckout.com, not in the app",
+        "775": "Terms of service and acceptable use pages on supplycheckout.com, not in the app"
       }
     },
     {

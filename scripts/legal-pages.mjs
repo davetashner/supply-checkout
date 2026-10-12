@@ -15,18 +15,24 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const PAGES = [
   { source: "docs/legal/privacy-policy.md", output: "site/privacy/index.html", description: "What Supply Checkout collects, why, who handles it, how long we keep it and your choices." },
+  { source: "docs/legal/terms-of-service.md", output: "site/terms/index.html", description: "The terms for using Supply Checkout: accounts, teams, plans and billing, your data, and what we each owe the other." },
+  { source: "docs/legal/acceptable-use.md", output: "site/acceptable-use/index.html", description: "What you may and may not do with Supply Checkout, and what we do if the rules are broken." },
   { source: "docs/legal/subprocessors.md", output: "site/subprocessors/index.html", description: "The companies that handle customer data for Supply Checkout, and what each one does." },
 ];
 
 const escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-/** Inline Markdown to HTML. Links to other files or headings in the repo become plain text: they aren't published. */
+// The documents that are published, by file name: a link to one goes to its page
+const PUBLISHED = Object.fromEntries(PAGES.map(({ source, output }) => [source.split("/").pop(), `/${output.replace(/^site\/|index\.html$/g, "")}`]));
+
+/** Inline Markdown to HTML. Links to the other published documents go to their pages (not to a heading in them: the page's ids differ); links to anything else in the repo become plain text. */
 export function inline(text) {
   const codes = [];
   let out = escapeHtml(text).replace(/`([^`]+)`/g, (_, c) => `@@${codes.push(`<code>${c}</code>`) - 1}@@`);
   out = out
     .replace(/\[([^\]]+)\]\((https:\/\/[^)\s]+)\)/g, '<a href="$2" rel="noopener">$1</a>')
-    .replace(/\[([^\]]+)\]\((?!https:\/\/)[^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\(([\w-]+\.md)(?:#[^)]*)?\)/g, (all, text, file) => (PUBLISHED[file] ? `<a href="${PUBLISHED[file]}">${text}</a>` : text))
+    .replace(/\[([^\]]+)\]\((?!https:\/\/|\/)[^)]*\)/g, "$1")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*\w])\*([^*]+)\*(?![*\w])/g, "$1<em>$2</em>");
   return out.replace(/@@(\d+)@@/g, (_, i) => codes[Number(i)]);
@@ -87,7 +93,7 @@ export function render(markdown) {
     }
   }
   // What the page would show: an unfilled placeholder or a note to the owner left in the text
-  const unfilled = html.join("\n").match(/\[(?:[A-Z][A-Z ]{3,}|If |When )[^\]\n]*\]/);
+  const unfilled = html.join("\n").match(/\[[^\]\n]+\]/);
   if (unfilled) throw new Error(`Fill in ${unfilled[0]} before publishing`);
   return { title, html: html.join("\n") };
 }
@@ -132,7 +138,7 @@ ${html}
 
 <footer>
   <p>Supply Checkout</p>
-  <p><a href="/privacy/">Privacy</a> · <a href="/subprocessors/">Subprocessors</a> · <a href="/how-to/">How-to</a> · <a href="/demo/">Demo</a> · <a href="https://app.supplycheckout.com/">Sign in</a></p>
+  <p><a href="/terms/">Terms</a> · <a href="/privacy/">Privacy</a> · <a href="/acceptable-use/">Acceptable use</a> · <a href="/subprocessors/">Subprocessors</a> · <a href="/how-to/">How-to</a> · <a href="/demo/">Demo</a> · <a href="https://app.supplycheckout.com/">Sign in</a></p>
 </footer>
 </body>
 </html>

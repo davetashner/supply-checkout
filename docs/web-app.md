@@ -15,8 +15,9 @@ The web app and the demo are static builds served by one CloudFront distribution
   | `<domain>/demo` | 301 to `/demo/` |
   | `<domain>/demo/…` | the `demo` channel, with `/demo` taken off the path |
   | `<domain>/how-to/` and `<domain>/how-to/<lesson>/` (a lesson's name is lowercase letters, digits and hyphens) | the `site` channel too: the how-to lessons. Like `/`, they 302 to the app while nothing is live on the site |
-  | `<domain>/how-to` | 301 to `/how-to/` |
-  | any other `<domain>` path (the site has only `/`, `/how-to/`, its lessons and its hashed `assets/`) | 302 to `https://app.<domain>/`, `no-store` |
+  | `<domain>/privacy/`, `/terms/`, `/acceptable-use/` and `/subprocessors/` | the `site` channel too: the legal pages, built from `docs/legal/` by `scripts/legal-pages.mjs` (it refuses a document with an unfilled `[placeholder]`; `npm run lint` fails if a committed page is stale) |
+  | `<domain>/how-to`, `/privacy`, `/terms`, `/acceptable-use` and `/subprocessors` | 301 to the same with a `/` |
+  | any other `<domain>` path (the site has only `/`, `/how-to/`, its lessons, the legal pages and its hashed `assets/`) | 302 to `https://app.<domain>/`, `no-store` |
   | `www.<domain>/demo…` | 301 to `https://<domain>/demo/` |
   | any other `www.<domain>` path | 301 to `https://<domain>/` |
 

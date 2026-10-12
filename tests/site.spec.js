@@ -137,18 +137,21 @@ test("at phone width nothing scrolls sideways, and the header and trial button f
   await expect(page.getByRole("link", { name: "Start your free trial" }).first()).toBeInViewport();
 });
 
-test("the page has no scripts but its own, and links to the privacy policy and subprocessors but not to terms until they exist", async ({ page }) => {
+test("the page has no scripts but its own, and links to the legal pages", async ({ page }) => {
   await open(page);
   expect(await page.locator("script").evaluateAll((s) => s.map((e) => e.getAttribute("src")))).toEqual([expect.stringMatching(/^\/assets\/index-[\w-]+\.js$/)]);
   expect(files.get("/site-release.json").body.toString()).toBe('{"site":true}\n');
-  await expect(page.getByRole("link", { name: /terms/i })).toHaveCount(0);
   await expect(page.locator("footer").getByRole("link", { name: "Privacy" })).toHaveAttribute("href", "/privacy/");
   await expect(page.locator("footer").getByRole("link", { name: "Subprocessors" })).toHaveAttribute("href", "/subprocessors/");
+  await expect(page.locator("footer").getByRole("link", { name: "Terms" })).toHaveAttribute("href", "/terms/");
+  await expect(page.locator("footer").getByRole("link", { name: "Acceptable use" })).toHaveAttribute("href", "/acceptable-use/");
 });
 
 for (const [path, heading, text] of [
   ["/privacy/", "Privacy Policy", "Main Street Logic, LLC"],
   ["/subprocessors/", "Subprocessors", "Amazon Web Services"],
+  ["/terms/", "Terms of Service", "Main Street Logic, LLC"],
+  ["/acceptable-use/", "Acceptable Use Policy", "Don't"],
 ]) {
   test(`${path} is the legal text under the site's policy: readable, accessible, and without the owner's notes`, async ({ page }) => {
     await open(page, { path });
