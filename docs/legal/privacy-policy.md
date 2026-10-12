@@ -177,11 +177,11 @@ The California Consumer Privacy Act (CCPA) gives California residents these righ
 
 In the last 12 months we have collected these categories of personal information, from the sources and for the purposes in sections 2 and 3, and disclosed them for business purposes to the service providers in section 5: identifiers (name, email address, IP address, account ID); customer records (billing contact details); commercial information (plan, subscription and invoices); internet activity (logs and error reports); and professional information (team membership and role). We collect account login credentials, which are sensitive personal information, only to sign you in.
 
-To use these rights, email [PRIVACY EMAIL] or use the in-app tools above. We'll confirm your request within 10 business days and answer within 45 days (we may extend that by another 45 days and will tell you if we do). We verify requests by checking that they come from the email address on the account, and may ask for more if we need it. An authorized agent may make a request for you with your signed permission, and we may ask you to confirm it directly. If your information is in a team's data, we may pass your request to that team, since we hold that data for them.
+To use these rights, email hello@supplycheckout.com or use the in-app tools above. We'll confirm your request within 10 business days and answer within 45 days (we may extend that by another 45 days and will tell you if we do). We verify requests by checking that they come from the email address on the account, and may ask for more if we need it. An authorized agent may make a request for you with your signed permission, and we may ask you to confirm it directly. If your information is in a team's data, we may pass your request to that team, since we hold that data for them.
 
 ### Other states
 
-Residents of other states with consumer privacy laws (for example Colorado, Connecticut, Virginia, Oregon and Texas) may have similar rights, including to appeal a decision we make about a request. Email [PRIVACY EMAIL] with "Appeal" in the subject line. [Confirm which state laws apply, given that the Service is business-to-business.]
+Residents of other states with consumer privacy laws (for example Colorado, Connecticut, Virginia, Oregon and Texas) may have similar rights, including to appeal a decision we make about a request. Email hello@supplycheckout.com with "Appeal" in the subject line. [Confirm which state laws apply, given that the Service is business-to-business.]
 
 ## 10. Security
 
@@ -194,7 +194,7 @@ No system is perfectly secure. If a breach affects your personal information, we
 
 ## 11. Children
 
-The Service is for businesses, and users must be at least 18. It isn't directed at children, and we don't knowingly collect personal information from anyone under 18. If you think a child has given us personal information, contact us at [PRIVACY EMAIL] and we will delete it.
+The Service is for businesses, and users must be at least 18. It isn't directed at children, and we don't knowingly collect personal information from anyone under 18. If you think a child has given us personal information, contact us at hello@supplycheckout.com and we will delete it.
 
 ## 12. Where data is stored
 
@@ -208,14 +208,14 @@ If we change this policy in a way that matters, we will email team owners and sh
 
 Main Street Logic, LLC
 [MAILING ADDRESS]
-Privacy questions and requests: [PRIVACY EMAIL]
+Privacy questions and requests: hello@supplycheckout.com
 Support: support@supplycheckout.com
 
 ---
 
 ## Open questions for the owner / lawyer
 
-1. **Legal entity and contacts.** Name, type and state (bead `supply-checkout-ar0`), mailing address, and whether privacy requests go to support@supplycheckout.com or a separate [PRIVACY EMAIL]. CCPA asks for at least two ways to submit requests (typically an email and a web form or toll-free number); an online-only business with a direct customer relationship may use an email address alone. Confirm.
+1. **Legal entity and contacts.** Name, type and state (bead `supply-checkout-ar0`), mailing address, and whether privacy requests go to support@supplycheckout.com or a separate hello@supplycheckout.com. CCPA asks for at least two ways to submit requests (typically an email and a web form or toll-free number); an online-only business with a direct customer relationship may use an email address alone. Confirm.
 2. **Does the CCPA apply to us at all?** It applies to for-profit businesses over $26.6M (inflation-adjusted) in revenue, or that buy, sell or share data of 100,000+ consumers, or that make half their revenue from selling or sharing. At launch we meet none of these. The draft includes the CCPA section anyway, as the bead asks, because it's easy to honor and customers expect it. Keep it, or say we honor the rights voluntarily? The same question for other states' laws, most of which exempt data about people acting in a business role.
 3. **Service provider role.** Should we sign a data processing addendum with customers so we are clearly their "service provider" for team data (bead `supply-checkout-q3g`, phase 2)? Until then, is section 1 enough?
 4. **What's built versus what this draft says.** Where the code and a bead or the Terms disagree, this draft follows the code, except where the Terms already promise something. Differences:
