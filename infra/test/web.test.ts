@@ -5,6 +5,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { domainOutputParameters, hostNames } from "../lib/domain.js";
+import { BILLING_RECORD_RETENTION_DAYS } from "../../backend/src/billing-records/names.js";
 import { DELETION_RECORD_RETENTION_DAYS } from "../../backend/src/deletions/names.js";
 import { photosBucketName, photosHost } from "../../backend/src/photos/names.js";
 import { webBucketName } from "../lib/stacks/data-stack.js";
@@ -85,6 +86,36 @@ describe("web bucket (data stack)", () => {
 
   it("publishes the bucket name", () => {
     build().data(EAST).hasResourceProperties("AWS::SSM::Parameter", { Name: "/supply-checkout/prod/data/web-bucket-name" });
+  });
+});
+
+describe("billing records bucket (data stack, supply-checkout-ijt7)", () => {
+  it("keeps each record 7 years under a compliance-mode lock, then expires it, and is retained", () => {
+    const { data } = build();
+    data(EAST).hasResource("AWS::S3::Bucket", {
+      DeletionPolicy: "Retain",
+      Properties: {
+        BucketName: { "Fn::Join": ["", [`supply-checkout-prod-billing-records-${EAST}-`, { Ref: "AWS::AccountId" }]] },
+        VersioningConfiguration: { Status: "Enabled" },
+        ObjectLockEnabled: true,
+        ObjectLockConfiguration: { ObjectLockEnabled: "Enabled", Rule: { DefaultRetention: { Mode: "COMPLIANCE", Days: BILLING_RECORD_RETENTION_DAYS } } },
+        LifecycleConfiguration: { Rules: [{ ExpirationInDays: BILLING_RECORD_RETENTION_DAYS + 1, NoncurrentVersionExpiration: { NoncurrentDays: 1 }, Status: "Enabled" }] },
+        BucketEncryption: { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } }] },
+        OwnershipControls: { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" }] },
+        PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true },
+        LoggingConfiguration: { LogFilePrefix: "s3/billing-records/", DestinationBucketName: Match.anyValue() },
+      },
+    });
+    // Never fewer than 7 calendar years (two leap days in any 7)
+    expect(BILLING_RECORD_RETENTION_DAYS).toBeGreaterThanOrEqual(7 * 365 + 2);
+    build().data(EAST).hasResourceProperties("AWS::SSM::Parameter", { Name: "/supply-checkout/prod/data/billing-records-bucket-name" });
+  });
+
+  it("refuses anything but TLS, and grants nobody anything in its bucket policy", () => {
+    const policies = Object.values(build().data(EAST).findResources("AWS::S3::BucketPolicy")).filter((p) => JSON.stringify(p.Properties.Bucket).includes("BillingRecordsBucket"));
+    expect(policies).toHaveLength(1);
+    const statements = policies[0]?.Properties.PolicyDocument.Statement as { Effect: string }[];
+    expect(statements.map((st) => st.Effect)).toEqual(["Deny"]);
   });
 });
 

@@ -8,6 +8,7 @@ import { FEEDBACK_ATTRIBUTES, FEEDBACK_PREFIX } from "../src/data/schema.js";
 import type { EmailCodes, TotpSetup } from "../src/api/cognito-user.js";
 import { EmailNotSentError, type Mailer, type MessageTags } from "../src/email/mailer.js";
 import type { EmailInput } from "../src/email/templates.js";
+import { type BillingRecord, type BillingRecordLog, validBillingRecord } from "../src/billing-records/records.js";
 import { type DeletionLog, type DeletionRecord, validRecord } from "../src/deletions/records.js";
 
 /** DynamoDB Local, e.g. http://localhost:8000. CI runs it as a service container. */
@@ -155,6 +156,23 @@ export function memoryDeletionLog() {
       if (state.fail) throw Object.assign(new Error("Access Denied"), { name: "AccessDenied" });
       // Checked and written once, as s3DeletionLog does
       if (!records.some((r) => r.kind === record.kind && r.id === record.id)) records.push(validRecord(record));
+    },
+  };
+  return { log, records, state };
+}
+
+/** A billing record log that keeps what it's given, or fails like S3 while `fail` is set. `events` hears each write. */
+export function memoryBillingRecordLog(events: string[] = []) {
+  const records: BillingRecord[] = [];
+  const state = { fail: false };
+  const log: BillingRecordLog = {
+    async record(record) {
+      if (state.fail) throw Object.assign(new Error("Access Denied"), { name: "AccessDenied" });
+      // Checked and written once, as s3BillingRecordLog does
+      if (!records.some((r) => r.teamId === record.teamId)) {
+        records.push(validBillingRecord(record));
+        events.push(`record ${record.stripeCustomerId}`);
+      }
     },
   };
   return { log, records, state };

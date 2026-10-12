@@ -5896,6 +5896,32 @@
                 ]
               },
               "Sid": "PutTeamDeletionRecords"
+            },
+            {
+              "Action": "s3:PutObject",
+              "Condition": {
+                "Null": {
+                  "s3:if-none-match": "false"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":s3:::supply-checkout-prod-billing-records-us-east-1-",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    "/teams/*"
+                  ]
+                ]
+              },
+              "Sid": "PutBillingRecords"
             }
           ],
           "Version": "2012-10-17"
@@ -5939,6 +5965,18 @@
               ]
             },
             "DELETIONS_REGION": "us-east-1",
+            "BILLING_RECORDS_BUCKET": {
+              "Fn::Join": [
+                "",
+                [
+                  "supply-checkout-prod-billing-records-us-east-1-",
+                  {
+                    "Ref": "AWS::AccountId"
+                  }
+                ]
+              ]
+            },
+            "BILLING_RECORDS_REGION": "us-east-1",
             "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
             "SUPPLY_CHECKOUT_ENV": "prod"
           }
