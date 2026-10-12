@@ -33,7 +33,7 @@ export function inline(text) {
 }
 
 // An id must begin with a letter, and "1. Who is responsible" begins with a digit
-const slug = (s) => ("s-" + s).toLowerCase().replace(/<[^>]*>/g, "").replace(/&[a-z]+;/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+const slug = (s) => ("s-" + s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
 /** The Markdown's body (below the title) as HTML, and the title. */
 export function render(markdown) {
