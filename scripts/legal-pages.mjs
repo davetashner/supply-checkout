@@ -79,7 +79,7 @@ export function render(markdown) {
       const rows = [];
       for (; i < body.length && body[i].startsWith("|"); i++) rows.push(body[i].replace(/^\||\|$/g, "").split("|").map((c) => c.trim()));
       const [head, , ...rest] = rows;
-      html.push(`<div class="table" tabindex="0" role="region" aria-label="Table ${++tables}: ${escapeHtml(head.join(", "))}"><table><thead><tr>${head.map((c) => `<th scope="col">${inline(c)}</th>`).join("")}</tr></thead><tbody>${rest.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+      html.push(`<section class="table" tabindex="0" aria-label="Table ${++tables}: ${escapeHtml(head.join(", "))}"><table><thead><tr>${head.map((c) => `<th scope="col">${inline(c)}</th>`).join("")}</tr></thead><tbody>${rest.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></section>`);
     } else {
       const text = [];
       for (; i < body.length && body[i].trim() && !startsBlock(body[i]); i++) text.push(body[i]);
