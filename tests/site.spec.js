@@ -137,12 +137,36 @@ test("at phone width nothing scrolls sideways, and the header and trial button f
   await expect(page.getByRole("link", { name: "Start your free trial" }).first()).toBeInViewport();
 });
 
-test("the page has no scripts but its own, and no links to terms or privacy until they exist", async ({ page }) => {
+test("the page has no scripts but its own, and links to the privacy policy and subprocessors but not to terms until they exist", async ({ page }) => {
   await open(page);
   expect(await page.locator("script").evaluateAll((s) => s.map((e) => e.getAttribute("src")))).toEqual([expect.stringMatching(/^\/assets\/index-[\w-]+\.js$/)]);
   expect(files.get("/site-release.json").body.toString()).toBe('{"site":true}\n');
-  await expect(page.getByRole("link", { name: /terms|privacy/i })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /terms/i })).toHaveCount(0);
+  await expect(page.locator("footer").getByRole("link", { name: "Privacy" })).toHaveAttribute("href", "/privacy/");
+  await expect(page.locator("footer").getByRole("link", { name: "Subprocessors" })).toHaveAttribute("href", "/subprocessors/");
 });
+
+for (const [path, heading, text] of [
+  ["/privacy/", "Privacy Policy", "Main Street Logic, LLC"],
+  ["/subprocessors/", "Subprocessors", "Amazon Web Services"],
+]) {
+  test(`${path} is the legal text under the site's policy: readable, accessible, and without the owner's notes`, async ({ page }) => {
+    await open(page, { path });
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(heading);
+    await expect(page.locator("main")).toContainText(text);
+    // The draft banner, the open questions and unfilled placeholders are for the owner
+    await expect(page.locator("main")).not.toContainText(/DRAFT|Open questions|\[[A-Z ]{4,}\]/);
+    await noViolations(page);
+    await page.setViewportSize({ width: 360, height: 740 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+  });
+
+  test(`${path} has no accessibility violations`, async ({ page }) => {
+    await open(page, { policy: false, path });
+    const results = await new AxeBuilder({ page }).analyze();
+    expect(results.violations.map((v) => `${v.id}: ${v.nodes.length}`)).toEqual([]);
+  });
+}
 
 test("a shared link previews with its own title, description and a 1200 x 630 image at a full URL", async ({ page }) => {
   await open(page);
