@@ -164,12 +164,11 @@ You will defend and indemnify us against third-party claims arising from your da
 - **Force majeure**: neither party is responsible for delays caused by events outside its reasonable control, such as outages at our cloud or payment providers, natural disasters or war.
 - **Severability**: if a court finds part of these terms unenforceable, the rest still applies.
 - **No waiver**: not enforcing a term right away doesn't mean we give up the right to enforce it later.
-- **Notices**: we send notices to the owner's email address. You send notices to support@supplycheckout.com or [MAILING ADDRESS].
+- **Notices**: we send notices to the owner's email address. You send notices to support@supplycheckout.com.
 
 ## 18. Contact
 
 [COMPANY LEGAL NAME]
-[MAILING ADDRESS]
 support@supplycheckout.com
 
 ---
@@ -178,7 +177,7 @@ support@supplycheckout.com
 
 *Decided by the owner on 2026-09-28: 2 (courts in the home state, no arbitration), 3 (US businesses only), 4 (yearly: 14-day refund; monthly: none), 10 (35 days: the MVP keeps backups in the prod account only, per ADR 0003) and 13 (US only). They're struck through below. The rest are still open.*
 
-1. **Legal entity.** Name, type (LLC or other) and state of formation. The entity isn't formed yet (bead `supply-checkout-ar0`).
+1. **Legal entity.** Main Street Logic, LLC, a Virginia limited liability company, formed 2026-10-07 (bead `supply-checkout-ar0`). Fill in the name above. Decided 2026-10-12: no mailing address for now, so notices go by email only; add one if marketing email starts or the lawyer asks.
 2. ~~**Governing law and venue.** Which state? Courts or binding arbitration? If arbitration, a class-action waiver and an opt-out window?~~
 3. ~~**B2B only, or consumers too?** State auto-renewal laws mainly protect consumers. This draft follows California's rules (clear disclosure, separate consent, confirmation email, online cancellation, annual and pre-renewal reminders, price-change notice) anyway. Confirm that is the right standard and check the latest California amendments and other states (for example New York, Colorado, Virginia). Confirm the status of the FTC's negative option ("click to cancel") rule.~~
 4. ~~**Refunds on yearly plans.** Is a 14-day full refund window right? Should monthly plans get any refund window?~~
