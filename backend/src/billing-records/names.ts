@@ -17,7 +17,7 @@ export function billingRecordsBucketName(envName: string, region: string, accoun
   return `supply-checkout-${envName}-billing-records-${region}-${account}`;
 }
 
-/** Where a team's record goes: `teams/<teamId>.json`. */
+/** Where a team's records go: `teams/<teamId>/<customerId>.json`. */
 export const BILLING_RECORD_PREFIX = "teams/";
 
 /** Environment variables the writer reads. */

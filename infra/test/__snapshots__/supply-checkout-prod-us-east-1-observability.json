@@ -5902,6 +5902,9 @@
               "Condition": {
                 "Null": {
                   "s3:if-none-match": "false"
+                },
+                "StringEquals": {
+                  "s3:if-none-match": "*"
                 }
               },
               "Effect": "Allow",

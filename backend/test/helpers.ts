@@ -169,7 +169,7 @@ export function memoryBillingRecordLog(events: string[] = []) {
     async record(record) {
       if (state.fail) throw Object.assign(new Error("Access Denied"), { name: "AccessDenied" });
       // Checked and written once, as s3BillingRecordLog does
-      if (!records.some((r) => r.teamId === record.teamId)) {
+      if (!records.some((r) => r.teamId === record.teamId && r.stripeCustomerId === record.stripeCustomerId)) {
         records.push(validBillingRecord(record));
         events.push(`record ${record.stripeCustomerId}`);
       }

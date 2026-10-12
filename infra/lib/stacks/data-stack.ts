@@ -278,7 +278,7 @@ export class DataStack extends SupplyCheckoutStack {
       });
     }
 
-    // Billing records (supply-checkout-ijt7): `teams/<teamId>.json`, a purged team's
+    // Billing records (supply-checkout-ijt7): `teams/<teamId>/<customerId>.json`, a purged team's
     // invoices (amounts, tax, dates and where the tax was due; no card data, name or
     // email), written by the team purge just before it deletes the team's Stripe
     // customer, and by nothing else (ops-checks.ts, billing-records.ts). The privacy

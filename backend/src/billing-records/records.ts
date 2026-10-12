@@ -10,7 +10,7 @@
 // data, no name, no email, no street address. Locked records can't be erased, which
 // the policy says: the law lets us keep tax records past an erasure request.
 //
-// Written once: a retry finds the record there (If-None-Match) and keeps the first.
+// Written once per team and customer: a retry finds the record there (If-None-Match) and keeps the first.
 // The caller (ops/team-purge-handler.ts) deletes the customer only after the record
 // is written, and leaves the deletion queued when it can't be.
 
@@ -81,10 +81,15 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
 
-/** The object key for a team's record: `teams/<teamId>.json`. */
-export function billingRecordKey(teamId: string): string {
+/**
+ * The object key for a team's record: `teams/<teamId>/<customerId>.json`. Per customer, not just per team: a
+ * team restored from a backup keeps its ID but may get another Stripe customer, and a record is written once,
+ * so the second customer's invoices need a key of their own.
+ */
+export function billingRecordKey(teamId: string, customerId: string): string {
   if (typeof teamId !== "string" || !ID.test(teamId)) throw new Error("Invalid team ID in a billing record");
-  return `${BILLING_RECORD_PREFIX}${teamId}.json`;
+  if (typeof customerId !== "string" || !CUSTOMER.test(customerId)) throw new Error("Invalid Stripe customer ID in a billing record");
+  return `${BILLING_RECORD_PREFIX}${teamId}/${customerId}.json`;
 }
 
 /** One Stripe invoice as a record: the fields above and nothing else of it. */
@@ -133,8 +138,7 @@ export async function exportInvoices(stripe: InvoiceLister, customerId: string):
 export function validBillingRecord(value: unknown): BillingRecord {
   const r = value as Partial<BillingRecord> | null;
   if (!r || typeof r !== "object") throw new Error("Not a billing record");
-  const key = billingRecordKey(r.teamId as string);
-  if (typeof r.stripeCustomerId !== "string" || !CUSTOMER.test(r.stripeCustomerId)) throw new Error(`Invalid stripeCustomerId in ${key}`);
+  const key = billingRecordKey(r.teamId as string, r.stripeCustomerId as string);
   if (typeof r.recordedAt !== "string" || !ISO.test(r.recordedAt)) throw new Error(`Invalid recordedAt in ${key}`);
   if (!Array.isArray(r.invoices) || r.invoices.length > MAX_INVOICES) throw new Error(`Invalid invoices in ${key}`);
   const invoices = r.invoices.map((i: InvoiceRecord) => {
@@ -143,7 +147,7 @@ export function validBillingRecord(value: unknown): BillingRecord {
     if (![i.created, i.periodStart, i.periodEnd, ...(i.paidAt === null ? [] : [i.paidAt])].every((t) => typeof t === "string" && ISO.test(t))) throw new Error(`Invalid invoice time in ${key}`);
     return { id: i.id, number: i.number, created: i.created, status: i.status, currency: i.currency, subtotal: i.subtotal, tax: i.tax, total: i.total, amountPaid: i.amountPaid, paidAt: i.paidAt, periodStart: i.periodStart, periodEnd: i.periodEnd, country: i.country, state: i.state };
   });
-  return { teamId: r.teamId as string, stripeCustomerId: r.stripeCustomerId, recordedAt: r.recordedAt, invoices };
+  return { teamId: r.teamId as string, stripeCustomerId: r.stripeCustomerId as string, recordedAt: r.recordedAt, invoices };
 }
 
 /** Writes billing records. */
@@ -158,7 +162,7 @@ export interface S3Like {
 
 const errorName = (error: unknown) => (error as { name?: string } | null)?.name;
 
-/** A BillingRecordLog writing to the bucket, once per team. */
+/** A BillingRecordLog writing to the bucket, once per team and customer. */
 export function s3BillingRecordLog(options: { readonly bucket: string; readonly s3: S3Like }): BillingRecordLog {
   return {
     async record(input) {
@@ -167,10 +171,10 @@ export function s3BillingRecordLog(options: { readonly bucket: string; readonly 
         await options.s3.send(
           new PutObjectCommand({
             Bucket: options.bucket,
-            Key: billingRecordKey(record.teamId),
+            Key: billingRecordKey(record.teamId, record.stripeCustomerId),
             Body: JSON.stringify(record),
             ContentType: "application/json",
-            // Written once: a retry keeps the first record
+            // Written once: a retry for the same customer keeps the first record
             IfNoneMatch: "*",
           }),
         );

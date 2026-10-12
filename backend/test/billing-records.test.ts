@@ -30,8 +30,11 @@ describe("names", () => {
   it("keeps records 7 years, never fewer than 7 calendar years", () => {
     expect(BILLING_RECORD_RETENTION_DAYS).toBeGreaterThanOrEqual(7 * 365 + 2);
     expect(billingRecordsBucketName("prod", REGION, "123456789012")).toBe(`supply-checkout-prod-billing-records-${REGION}-123456789012`);
-    expect(billingRecordKey("team-a")).toBe(`${BILLING_RECORD_PREFIX}team-a.json`);
-    for (const bad of ["", "team a", "../team", "team/a", "a".repeat(129)]) expect(() => billingRecordKey(bad)).toThrow("Invalid team ID");
+    expect(billingRecordKey("team-a", "cus_123")).toBe(`${BILLING_RECORD_PREFIX}team-a/cus_123.json`);
+    for (const bad of ["", "team a", "../team", "team/a", "a".repeat(129)]) expect(() => billingRecordKey(bad, "cus_123")).toThrow("Invalid team ID");
+    for (const bad of ["", "acct_1", "cus_1/../x", "cus_1 2"]) expect(() => billingRecordKey("team-a", bad)).toThrow("Invalid Stripe customer ID");
+    // A restored team with another customer gets its own key
+    expect(billingRecordKey("team-a", "cus_456")).not.toBe(billingRecordKey("team-a", "cus_123"));
   });
 });
 
@@ -102,7 +105,7 @@ describe("validBillingRecord", () => {
 
   it("refuses anything else", () => {
     const good = invoiceRecord(invoice(1));
-    for (const bad of [null, "x", 1, record({ teamId: "team a" }), record({ stripeCustomerId: "acct_1" }), record({ recordedAt: "soon" }), { ...record(), invoices: "none" }, record({ invoices: [{ ...good, id: "cus_1" }] }), record({ invoices: [{ ...good, total: 10.5 }] }), record({ invoices: [{ ...good, tax: Number.NaN }] }), record({ invoices: [{ ...good, created: "yesterday" }] }), record({ invoices: [{ ...good, paidAt: "soon" }] }), { ...record(), invoices: new Array(MAX_INVOICES + 1).fill(good) }]) {
+    for (const bad of [null, "x", 1, record({ teamId: "team a" }), record({ stripeCustomerId: "acct_1" }), record({ stripeCustomerId: "cus_1/x" }), record({ recordedAt: "soon" }), { ...record(), invoices: "none" }, record({ invoices: [{ ...good, id: "cus_1" }] }), record({ invoices: [{ ...good, total: 10.5 }] }), record({ invoices: [{ ...good, tax: Number.NaN }] }), record({ invoices: [{ ...good, created: "yesterday" }] }), record({ invoices: [{ ...good, paidAt: "soon" }] }), { ...record(), invoices: new Array(MAX_INVOICES + 1).fill(good) }]) {
       expect(() => validBillingRecord(bad)).toThrow();
     }
   });
@@ -121,7 +124,7 @@ describe("the S3 log", () => {
     sent.length = 0;
     await s3BillingRecordLog({ bucket: "b", s3: s3() }).record(record());
     expect(sent).toHaveLength(1);
-    expect(sent[0]?.input).toMatchObject({ Bucket: "b", Key: "teams/team-a.json", ContentType: "application/json", IfNoneMatch: "*" });
+    expect(sent[0]?.input).toMatchObject({ Bucket: "b", Key: "teams/team-a/cus_123.json", ContentType: "application/json", IfNoneMatch: "*" });
     expect(JSON.parse(String(sent[0]?.input.Body))).toEqual(record());
     // Already there: the first stays, and it isn't an error
     await expect(s3BillingRecordLog({ bucket: "b", s3: s3({ name: "PreconditionFailed" }) }).record(record())).resolves.toBeUndefined();

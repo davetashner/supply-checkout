@@ -10,7 +10,7 @@ import { BILLING_RECORD_PREFIX, BILLING_RECORDS_ENV, billingRecordsBucketName } 
 import type { DeploymentConfig } from "./config.js";
 
 /**
- * Lets `fn` write billing records: s3:PutObject under teams/ only. No reads, lists, deletes,
+ * Lets `fn` write billing records (`teams/<teamId>/<customerId>.json`): s3:PutObject under teams/ only. No reads, lists, deletes,
  * retention or legal-hold changes, so a stolen purge role can't read, shorten or remove a record
  * (and compliance mode stops everyone else), and only with If-None-Match, so no record can get a
  * newer version on top of it. The object key names a team ID, which only the function's own checks
@@ -23,8 +23,8 @@ export function grantPutBillingRecords(fn: LambdaFunction, config: Pick<Deployme
       sid: "PutBillingRecords",
       actions: ["s3:PutObject"],
       resources: [`arn:${Aws.PARTITION}:s3:::${bucket}/${BILLING_RECORD_PREFIX}*`],
-      // Only a conditional write (If-None-Match: *, as records.ts sends it)
-      conditions: { Null: { "s3:if-none-match": "false" } },
+      // Only a conditional write, and only If-None-Match: * (as records.ts sends it)
+      conditions: { Null: { "s3:if-none-match": "false" }, StringEquals: { "s3:if-none-match": "*" } },
     }),
   );
   Validations.of(fn.role as Role).acknowledge({
