@@ -8,9 +8,11 @@
 //   <domain>/how-to/          channel "site" too: the how-to lessons, and each lesson at
 //                             /how-to/<lesson>/ (lowercase letters, digits and hyphens)
 //   <domain>/how-to           301 to /how-to/
+//   <domain>/privacy/ and /subprocessors/   channel "site" too: the legal pages (docs/legal/)
+//   <domain>/privacy and /subprocessors     301 to the same with a "/"
 //   <domain>/demo             301 to /demo/
 //   <domain>/demo/...         channel "demo", with /demo stripped: the demo
-//   <domain>/anything else    302 to https://app.<domain>/ (the site has only /, /how-to/ and /assets/)
+//   <domain>/anything else    302 to https://app.<domain>/ (the site has only /, /how-to/, the legal pages and /assets/)
 //   www.<domain>/demo...      301 to https://<domain>/demo/
 //   www.<domain>/anything     301 to https://<domain>/
 //
@@ -80,7 +82,8 @@ const isDemo = (uri) => uri === "/demo" || uri.startsWith("/demo/");
 // The home page's paths: the page, the how-to lessons, and their hashed files, which the build
 // puts in assets/. A lesson is one folder deep, so nothing else under /how-to/ reaches the bucket
 const HOW_TO = /^\/how-to\/([a-z0-9-]+\/)?$/;
-const isSite = (uri) => uri === "/" || uri.startsWith("/assets/") || HOW_TO.test(uri);
+const LEGAL = /^\/(privacy|subprocessors)\/$/;
+const isSite = (uri) => uri === "/" || uri.startsWith("/assets/") || HOW_TO.test(uri) || LEGAL.test(uri);
 
 async function serve(request, channel, uri) {
   // A missing key or a store error means nothing can be served
@@ -115,7 +118,7 @@ async function handler(event) {
   if (host === WWW) return moved(isDemo(uri) ? "https://" + APEX + "/demo/" : "https://" + APEX + "/");
   if (uri === "/demo") return moved("/demo/");
   if (uri.startsWith("/demo/")) return serve(request, "demo", uri.slice("/demo".length));
-  if (uri === "/how-to") return moved("/how-to/");
+  if (uri === "/how-to" || uri === "/privacy" || uri === "/subprocessors") return moved(uri + "/");
   if (isSite(uri)) return site(request, uri);
   return found("https://" + APP + "/");
 }

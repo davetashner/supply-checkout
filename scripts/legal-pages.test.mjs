@@ -19,7 +19,7 @@ test("a document becomes headings, paragraphs, lists, tables and notes, and stop
   assert.equal(title, "Title");
   assert.match(html, /<aside class="note"><p><strong>Pilot terms\.<\/strong> Applies\.<\/p><\/aside>/);
   assert.doesNotMatch(html, /DRAFT|Placeholders|secret|Open questions/);
-  assert.match(html, /<h2 id="one">One<\/h2>\n<p>Some text continues\.<\/p>/);
+  assert.match(html, /<h2 id="s-one">One<\/h2>\n<p>Some text continues\.<\/p>/);
   assert.match(html, /<li>b more<\/li>/);
   assert.match(html, /<th scope="col">A<\/th>.*<td>2<\/td>/);
   assert.match(html, /<hr>/);

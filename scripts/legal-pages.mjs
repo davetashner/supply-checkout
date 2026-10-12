@@ -23,16 +23,17 @@ const escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace
 /** Inline Markdown to HTML. Links to other files or headings in the repo become plain text: they aren't published. */
 export function inline(text) {
   const codes = [];
-  let out = escapeHtml(text).replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(`<code>${c}</code>`) - 1}\u0000`);
+  let out = escapeHtml(text).replace(/`([^`]+)`/g, (_, c) => `@@${codes.push(`<code>${c}</code>`) - 1}@@`);
   out = out
     .replace(/\[([^\]]+)\]\((https:\/\/[^)\s]+)\)/g, '<a href="$2" rel="noopener">$1</a>')
     .replace(/\[([^\]]+)\]\((?!https:\/\/)[^)]*\)/g, "$1")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*\w])\*([^*]+)\*(?![*\w])/g, "$1<em>$2</em>");
-  return out.replace(/\u0000(\d+)\u0000/g, (_, i) => codes[Number(i)]);
+  return out.replace(/@@(\d+)@@/g, (_, i) => codes[Number(i)]);
 }
 
-const slug = (s) => s.toLowerCase().replace(/<[^>]*>/g, "").replace(/&[a-z]+;/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+// An id must begin with a letter, and "1. Who is responsible" begins with a digit
+const slug = (s) => ("s-" + s).toLowerCase().replace(/<[^>]*>/g, "").replace(/&[a-z]+;/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
 /** The Markdown's body (below the title) as HTML, and the title. */
 export function render(markdown) {
@@ -90,7 +91,7 @@ export function render(markdown) {
   return { title, html: html.join("\n") };
 }
 
-const NAV = (current) => `<nav aria-label="Main">
+const NAV = () => `<nav aria-label="Main">
     <a href="/how-to/">How-to</a>
     <a href="/demo/">Demo</a>
     <a href="https://app.supplycheckout.com/">Sign in</a>

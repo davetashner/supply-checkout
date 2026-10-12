@@ -25,7 +25,7 @@ async function open(page, { policy = true, path = "/" } = {}) {
   await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, (r) => r.abort());
   await page.route(`${ORIGIN}/**`, (route) => {
     const { pathname } = new URL(route.request().url());
-    const file = files.get(pathname);
+    const file = files.get(pathname.endsWith("/") && pathname !== "/" ? `${pathname}index.html` : pathname);
     const headers = { ...(policy ? { "content-security-policy": CSP } : {}), "cache-control": "no-store" };
     if (!file) return route.fulfill({ status: 404, headers });
     const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? "");
