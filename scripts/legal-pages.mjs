@@ -44,6 +44,7 @@ export function render(markdown) {
   const body = lines.slice(lines.findIndex((l) => l.startsWith("# ")) + 1, end === -1 ? undefined : end);
   const html = [];
   const used = new Set();
+  let tables = 0;
   let i = 0;
   const startsBlock = (l) => /^(#{2,3} |> |- |\| |---$)/.test(l);
   while (i < body.length) {
@@ -78,7 +79,7 @@ export function render(markdown) {
       const rows = [];
       for (; i < body.length && body[i].startsWith("|"); i++) rows.push(body[i].replace(/^\||\|$/g, "").split("|").map((c) => c.trim()));
       const [head, , ...rest] = rows;
-      html.push(`<div class="table"><table><thead><tr>${head.map((c) => `<th scope="col">${inline(c)}</th>`).join("")}</tr></thead><tbody>${rest.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+      html.push(`<div class="table" tabindex="0" role="region" aria-label="Table ${++tables}: ${escapeHtml(head.join(", "))}"><table><thead><tr>${head.map((c) => `<th scope="col">${inline(c)}</th>`).join("")}</tr></thead><tbody>${rest.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
     } else {
       const text = [];
       for (; i < body.length && body[i].trim() && !startsBlock(body[i]); i++) text.push(body[i]);

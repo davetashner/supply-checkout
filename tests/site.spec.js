@@ -164,7 +164,7 @@ for (const [path, heading, text] of [
   test(`${path} has no accessibility violations`, async ({ page }) => {
     await open(page, { policy: false, path });
     const results = await new AxeBuilder({ page }).analyze();
-    expect(results.violations.map((v) => `${v.id}: ${v.nodes.length}`)).toEqual([]);
+    expect(results.violations.map((v) => `${v.id}: ${v.nodes.length} ${v.nodes.map((n) => n.target).join(" ")}`)).toEqual([]);
   });
 }
 
