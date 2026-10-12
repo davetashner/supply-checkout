@@ -5,10 +5,10 @@
 >
 > **Pilot terms.** During the supervised pilot, this draft applies as one of the pilot terms, as the [Pilot Agreement](pilot-agreement.md) (section 1) describes: in full, with "we" meaning whoever the Pilot Agreement names, and the support mailbox as every contact. Where they disagree, the Pilot Agreement wins. A lawyer reviews this draft before public launch.
 
-- Last updated: [DATE]
-- Effective: [DATE]
+- Last updated: October 11, 2026
+- Effective: October 11, 2026
 
-This policy explains what **[COMPANY LEGAL NAME]**, a [STATE] [ENTITY TYPE] ("we", "us"), collects when you use Supply Checkout, why, who else handles it, how long we keep it, and the choices you have. It covers the website at [DOMAIN], the web app, the iOS and Android apps, and related services (together, "the Service"). It is part of our [Terms of Service](terms-of-service.md).
+This policy explains what **Main Street Logic, LLC**, a Virginia limited liability company ("we", "us"), collects when you use Supply Checkout, why, who else handles it, how long we keep it, and the choices you have. It covers the website at supplycheckout.com, the web app, the iOS and Android apps, and related services (together, "the Service"). It is part of our [Terms of Service](terms-of-service.md).
 
 The Service is for businesses in the United States. We store and process data in the United States.
 
@@ -123,7 +123,7 @@ A current list of the service providers that handle customer data is at [SUBPROC
 | Security records of our cloud account | 400 days |
 | Error and performance reports | 30 days |
 | Email delivery problems | If a message to an address bounces permanently or is marked as spam, we stop sending to that address until its owner asks us to start again. Details of an undeliverable message are kept for up to 7 days. |
-| Billing records at Stripe | When a team's data is deleted, we delete its Stripe customer. Stripe keeps payment and invoice records it must keep by law, under its own privacy policy. [We keep our own tax and accounting records for [7] years.] |
+| Billing records at Stripe | When a team's data is deleted, we delete its Stripe customer. Stripe keeps payment and invoice records it must keep by law, under its own privacy policy. We keep our own tax and accounting records for 7 years. |
 | Support emails | [PERIOD] |
 
 When you delete your account, what you added to a team (items, projects, receipts) stays with the team, because it belongs to the team. If you were the only member of a team, deleting your account closes that team, and it's deleted 30 days later. If you are the only owner of a team that has other members, make someone else an owner first.
@@ -136,8 +136,8 @@ We don't use advertising or tracking cookies, and we don't use third-party analy
 
 | Name | Set by | What for | How long |
 | --- | --- | --- | --- |
-| `__Secure-sc_refresh` | Our API (`api.[DOMAIN]`) | Keeps you signed in. It's only sent to our sign-in endpoints and can't be read by scripts. | 30 days, renewed as you use the app; removed when you sign out |
-| Sign-in session cookies | Amazon Cognito, on our sign-in page (`auth.[DOMAIN]`) | Remembers that you just signed in, so you aren't asked again straight away | [About an hour]; removed when you sign out |
+| `__Secure-sc_refresh` | Our API (`api.supplycheckout.com`) | Keeps you signed in. It's only sent to our sign-in endpoints and can't be read by scripts. | 30 days, renewed as you use the app; removed when you sign out |
+| Sign-in session cookies | Amazon Cognito, on our sign-in page (`auth.supplycheckout.com`) | Remembers that you just signed in, so you aren't asked again straight away | [About an hour]; removed when you sign out |
 
 **Storage in your browser** (these stay on your device and aren't sent to us)
 
@@ -177,11 +177,11 @@ The California Consumer Privacy Act (CCPA) gives California residents these righ
 
 In the last 12 months we have collected these categories of personal information, from the sources and for the purposes in sections 2 and 3, and disclosed them for business purposes to the service providers in section 5: identifiers (name, email address, IP address, account ID); customer records (billing contact details); commercial information (plan, subscription and invoices); internet activity (logs and error reports); and professional information (team membership and role). We collect account login credentials, which are sensitive personal information, only to sign you in.
 
-To use these rights, email [PRIVACY EMAIL] or use the in-app tools above. We'll confirm your request within 10 business days and answer within 45 days (we may extend that by another 45 days and will tell you if we do). We verify requests by checking that they come from the email address on the account, and may ask for more if we need it. An authorized agent may make a request for you with your signed permission, and we may ask you to confirm it directly. If your information is in a team's data, we may pass your request to that team, since we hold that data for them.
+To use these rights, email hello@supplycheckout.com or use the in-app tools above. We'll confirm your request within 10 business days and answer within 45 days (we may extend that by another 45 days and will tell you if we do). We verify requests by checking that they come from the email address on the account, and may ask for more if we need it. An authorized agent may make a request for you with your signed permission, and we may ask you to confirm it directly. If your information is in a team's data, we may pass your request to that team, since we hold that data for them.
 
 ### Other states
 
-Residents of other states with consumer privacy laws (for example Colorado, Connecticut, Virginia, Oregon and Texas) may have similar rights, including to appeal a decision we make about a request. Email [PRIVACY EMAIL] with "Appeal" in the subject line. [Confirm which state laws apply, given that the Service is business-to-business.]
+Residents of other states with consumer privacy laws (for example Colorado, Connecticut, Virginia, Oregon and Texas) may have similar rights, including to appeal a decision we make about a request. Email hello@supplycheckout.com with "Appeal" in the subject line. [Confirm which state laws apply, given that the Service is business-to-business.]
 
 ## 10. Security
 
@@ -194,7 +194,7 @@ No system is perfectly secure. If a breach affects your personal information, we
 
 ## 11. Children
 
-The Service is for businesses, and users must be at least 18. It isn't directed at children, and we don't knowingly collect personal information from anyone under 18. If you think a child has given us personal information, contact us at [PRIVACY EMAIL] and we will delete it.
+The Service is for businesses, and users must be at least 18. It isn't directed at children, and we don't knowingly collect personal information from anyone under 18. If you think a child has given us personal information, contact us at hello@supplycheckout.com and we will delete it.
 
 ## 12. Where data is stored
 
@@ -206,16 +206,16 @@ If we change this policy in a way that matters, we will email team owners and sh
 
 ## 14. Contact
 
-[COMPANY LEGAL NAME]
+Main Street Logic, LLC
 [MAILING ADDRESS]
-Privacy questions and requests: [PRIVACY EMAIL]
+Privacy questions and requests: hello@supplycheckout.com
 Support: support@supplycheckout.com
 
 ---
 
 ## Open questions for the owner / lawyer
 
-1. **Legal entity and contacts.** Name, type and state (bead `supply-checkout-ar0`), mailing address, and whether privacy requests go to support@supplycheckout.com or a separate [PRIVACY EMAIL]. CCPA asks for at least two ways to submit requests (typically an email and a web form or toll-free number); an online-only business with a direct customer relationship may use an email address alone. Confirm.
+1. **Legal entity and contacts.** Name, type and state (bead `supply-checkout-ar0`), mailing address, and whether privacy requests go to support@supplycheckout.com or a separate hello@supplycheckout.com. CCPA asks for at least two ways to submit requests (typically an email and a web form or toll-free number); an online-only business with a direct customer relationship may use an email address alone. Confirm.
 2. **Does the CCPA apply to us at all?** It applies to for-profit businesses over $26.6M (inflation-adjusted) in revenue, or that buy, sell or share data of 100,000+ consumers, or that make half their revenue from selling or sharing. At launch we meet none of these. The draft includes the CCPA section anyway, as the bead asks, because it's easy to honor and customers expect it. Keep it, or say we honor the rights voluntarily? The same question for other states' laws, most of which exempt data about people acting in a business role.
 3. **Service provider role.** Should we sign a data processing addendum with customers so we are clearly their "service provider" for team data (bead `supply-checkout-q3g`, phase 2)? Until then, is section 1 enough?
 4. **What's built versus what this draft says.** Where the code and a bead or the Terms disagree, this draft follows the code, except where the Terms already promise something. Differences:
@@ -226,9 +226,9 @@ Support: support@supplycheckout.com
    - **Team activity history** (audit events) is kept 1 year (`AUDIT_RETENTION_DAYS`). A deleted user's ID stays in their former teams' history until it expires. It's a random ID nothing links to a person after deletion.
 5. **Backups: 35 days.** Matches `LOCAL_RETENTION` and PITR in `infra/lib/backup.ts` and ADR 0003 as accepted (prod account only, no backup account, deployed with `-c backupCopy=false`). If the separate backup account is ever set up, its copies keep 90 days (`COPY_RETENTION`) and this policy and the Terms must change first. AWS removes an expired recovery point shortly after it expires, not to the minute: should the wording allow a few days' margin?
 6. **Log retention.** Lambda logs, API access logs (IP address, user agent, account ID) and CloudFront access logs are kept 1 year (`LOG_RETENTION` in `infra/lib/observability/defaults.ts`, the logs bucket's lifecycle in `infra/lib/stacks/data-stack.ts`). That's a placeholder until the information security policy (bead `supply-checkout-4p1`) sets it. CloudTrail keeps 400 days (`TRAIL_LOG_RETENTION_DAYS`). Is a year of IP addresses more than we need? 90 days would be easier to defend.
-7. **Stripe and our own financial records.** How long do we keep invoices and tax records ourselves (the draft says [7] years in brackets)? Stripe keeps its own under its policy. Should the draft name Stripe Tax if we turn it on?
+7. **Stripe and our own financial records.** Decided 2026-10-11: we keep our own tax and accounting records for 7 years. Nothing enforces that yet: invoices live in Stripe, and deleting a team deletes its Stripe customer. Enforcement is bead `supply-checkout-ijt7`. Should the draft name Stripe Tax if we turn it on?
 8. **Google Fonts.** The app loads its fonts from Google, which sends Google each visitor's IP address. Self-hosting the fonts would remove Google from section 5 (see follow-up below). Keep it or self-host before launch?
-9. **Cognito's sign-in cookies.** Amazon Cognito's Managed Login sets its own session cookies on `auth.[DOMAIN]`; the draft says "about an hour" (Cognito's documented session length). Confirm the names and lifetime on the deployed sign-in page before publishing.
+9. **Cognito's sign-in cookies.** Amazon Cognito's Managed Login sets its own session cookies on `auth.supplycheckout.com`; the draft says "about an hour" (Cognito's documented session length). Confirm the names and lifetime on the deployed sign-in page before publishing.
 10. **CloudWatch RUM metadata.** The draft says RUM may derive a coarse location from IP addresses and records browser, OS and device type. Check the deployed app monitor's events and adjust.
 11. **Product analytics.** Bead `supply-checkout-khc` plans "privacy-friendly" analytics. When it's built, update sections 2, 5 and 8, and decide whether it needs a consent choice.
 12. **Marketing email.** None today. If the landing page collects addresses or we send newsletters, add an opt-in and unsubscribe.
