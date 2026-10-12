@@ -547,7 +547,8 @@ describe("content security policy", () => {
     expect(directives["style-src"]).toEqual(["'self'"]);
     for (const s of scripts) expect(directives["script-src"]).toContain(s);
     for (const s of styles) expect(directives["style-src"]).toContain(s);
-    expect(html).not.toMatch(/fonts\.(googleapis|gstatic)\.com/);
+    expect(html).not.toContain("fonts.googleapis.com");
+    expect(html).not.toContain("fonts.gstatic.com");
     expect(directives["font-src"]).toEqual(["'self'"]);
   });
 

@@ -142,7 +142,8 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
   for (const [provider, name, article] of [["Google", "Google", "a"], ["SignInWithApple", "Apple", "an"]]) {
     test(`${article} ${name} sign-in just linked to an existing account signs in again with ${name}, once`, { tag: ["@J0.2"] }, async ({ page }) => {
       const backend = new FakeBackend({ signedIn: false });
-      await openAws(page, backend, { path: linkedError(provider), storage: { session: { "supplyCheckout.signIn": JSON.stringify({ verifier: "v".repeat(43), state: "st1" }), "supplyCheckout.invite": JSON.stringify({ id: "i1", token: "tok" }) } } });
+      // The page starts the retried sign-in as it loads, and the self-hosted fonts keep it loading meanwhile
+      await openAws(page, backend, { path: linkedError(provider), waitUntil: "domcontentloaded", storage: { session: { "supplyCheckout.signIn": JSON.stringify({ verifier: "v".repeat(43), state: "st1" }), "supplyCheckout.invite": JSON.stringify({ id: "i1", token: "tok" }) } } });
       await expect.poll(() => backend.authRequests.length).toBe(1);
       const url = new URL(backend.authRequests[0]);
       const saved = JSON.parse(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.signIn")));
