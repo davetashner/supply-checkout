@@ -14,7 +14,6 @@ These are the companies that handle customer data for Supply Checkout, what each
 | **Amazon Bedrock** (part of AWS) | Reading receipt photos | The receipt photo, your team's inventory names and prices, and our instructions, for each scan. Photos are not stored. | United States |
 | **Amazon Simple Email Service** (part of AWS) | Sending sign-in codes, invitations and notices | The recipient's email address and the message | United States |
 | **Stripe** | Payments, subscriptions, invoices and the billing portal | The team name, the billing contact details owners enter, the plan and seat count, and payment details, which go straight to Stripe | United States |
-| **Google Fonts** | Loading the app's typefaces | Your browser asks Google's servers for the font files, which sends Google your IP address and browser details | Google's font servers |
 | **Our email provider** | Receiving and answering mail sent to our support and privacy addresses | The messages you send us and our replies | United States |
 
 ## Only if you choose them

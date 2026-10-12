@@ -542,13 +542,13 @@ describe("content security policy", () => {
     // No third-party scripts: ZXing is bundled
     expect(scripts).toEqual([]);
     expect(directives["script-src"]).toEqual(["'self'"]);
-    expect(styles).toContain("https://fonts.googleapis.com");
+    // No third-party styles or fonts: they're self-hosted
+    expect(styles).toEqual([]);
+    expect(directives["style-src"]).toEqual(["'self'"]);
     for (const s of scripts) expect(directives["script-src"]).toContain(s);
     for (const s of styles) expect(directives["style-src"]).toContain(s);
-    // Preconnects are to the font hosts
-    const preconnects = [...html.matchAll(/<link[^>]*rel="preconnect"[^>]*href="(https:[^"]+)"/g)].map((m) => origin(m[1] as string));
-    expect(preconnects).toContain("https://fonts.gstatic.com");
-    expect(directives["font-src"]).toContain("https://fonts.gstatic.com");
+    expect(html).not.toMatch(/fonts\.(googleapis|gstatic)\.com/);
+    expect(directives["font-src"]).toEqual(["'self'"]);
   });
 
   it("allows no inline or eval'd script and no framing", () => {

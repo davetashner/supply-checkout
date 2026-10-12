@@ -318,7 +318,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://supply-checkout-prod-photos-us-east-1-",
+                    "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https://supply-checkout-prod-photos-us-east-1-",
                     {
                       "Ref": "AWS::AccountId"
                     },
