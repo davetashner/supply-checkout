@@ -137,7 +137,9 @@ We don't use advertising or tracking cookies, and we don't use third-party analy
 | Name | Set by | What for | How long |
 | --- | --- | --- | --- |
 | `__Secure-sc_refresh` | Our API (`api.supplycheckout.com`) | Keeps you signed in. It's only sent to our sign-in endpoints and can't be read by scripts. | 30 days, renewed as you use the app; removed when you sign out |
-| Sign-in session cookies | Amazon Cognito, on our sign-in page (`auth.supplycheckout.com`) | Remembers that you just signed in, so you aren't asked again straight away | About an hour; removed when you sign out |
+| `cognito` | Amazon Cognito, on our sign-in page (`auth.supplycheckout.com`) | Remembers that you just signed in, so you aren't asked again straight away | About an hour; removed when you sign out |
+| `csrf-state`, `csrf-state-legacy` | Amazon Cognito, on our sign-in page | Protects the sign-in form against forged requests | A few minutes |
+| `XSRF-TOKEN`, `page-data`, `lang` | Amazon Cognito, on our sign-in page | Protect the sign-in form against forged requests, carry the page's settings, and remember the page language | Until you close your browser |
 
 **Storage in your browser** (these stay on your device and aren't sent to us)
 
@@ -227,7 +229,7 @@ Support: support@supplycheckout.com
 6. **Log retention.** Lambda logs, API access logs (IP address, user agent, account ID) and CloudFront access logs are kept 1 year (`LOG_RETENTION` in `infra/lib/observability/defaults.ts`, the logs bucket's lifecycle in `infra/lib/stacks/data-stack.ts`). That's a placeholder until the information security policy (bead `supply-checkout-4p1`) sets it. CloudTrail keeps 400 days (`TRAIL_LOG_RETENTION_DAYS`). Is a year of IP addresses more than we need? 90 days would be easier to defend.
 7. **Stripe and our own financial records.** Decided 2026-10-11: we keep our own tax and accounting records for 7 years. Nothing enforces that yet: invoices live in Stripe, and deleting a team deletes its Stripe customer. Enforcement is bead `supply-checkout-ijt7`. Should the draft name Stripe Tax if we turn it on?
 8. ~~**Google Fonts.**~~ Decided 2026-10-12: self-host before launch (`supply-checkout-zcid`). Until then the policy and the subprocessor list name Google Fonts. The app loads its fonts from Google, which sends Google each visitor's IP address. Self-hosting the fonts would remove Google from section 5 (see follow-up below). Keep it or self-host before launch?
-9. **Cognito's sign-in cookies.** Amazon Cognito's Managed Login sets its own session cookies on `auth.supplycheckout.com`; the draft says "about an hour" (Cognito's documented session length). Confirm the names and lifetime on the deployed sign-in page before publishing.
+9. ~~**Cognito's sign-in cookies.**~~ Checked 2026-10-12 on the deployed sign-in page: the names and lifetimes are in section 8. Original question: Amazon Cognito's Managed Login sets its own session cookies on `auth.supplycheckout.com`; the draft says "about an hour" (Cognito's documented session length). Confirm the names and lifetime on the deployed sign-in page before publishing.
 10. **CloudWatch RUM metadata.** The draft says RUM may derive a coarse location from IP addresses and records browser, OS and device type. Check the deployed app monitor's events and adjust.
 11. **Product analytics.** Bead `supply-checkout-khc` plans "privacy-friendly" analytics. When it's built, update sections 2, 5 and 8, and decide whether it needs a consent choice.
 12. **Marketing email.** None today. If the landing page collects addresses or we send newsletters, add an opt-in and unsubscribe.
