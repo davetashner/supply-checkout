@@ -7,6 +7,7 @@ test("inline Markdown: bold, italic, code and https links; local links lose thei
   assert.equal(inline("**a** and *b* and `c<d>`"), "<strong>a</strong> and <em>b</em> and <code>c&lt;d&gt;</code>");
   assert.equal(inline("[Stripe](https://stripe.com/privacy)"), '<a href="https://stripe.com/privacy" rel="noopener">Stripe</a>');
   assert.equal(inline("[Pilot](pilot-agreement.md) and [Q](#open-questions)"), "Pilot and Q");
+  assert.equal(inline("[Terms](terms-of-service.md) and [AUP](acceptable-use.md#x)"), '<a href="/terms/">Terms</a> and <a href="/acceptable-use/">AUP</a>');
   assert.equal(inline("1 < 2 & \"x\""), "1 &lt; 2 &amp; &quot;x&quot;");
 });
 
@@ -26,6 +27,7 @@ test("a document becomes headings, paragraphs, lists, tables and notes, and stop
   assert.throws(() => render("no title"), /title/);
   assert.throws(() => render("# T\n\nemail [PRIVACY EMAIL]"), /Fill in \[PRIVACY EMAIL\]/);
   assert.throws(() => render("# T\n\nx [If marketing email is added: say so]"), /Fill in/);
+  assert.throws(() => render("# T\n\nx [Confirm which state laws apply.]"), /Fill in/);
 });
 
 test("the committed pages match their Markdown", () => {

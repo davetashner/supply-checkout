@@ -5,9 +5,9 @@
 >
 > **Pilot terms.** During the supervised pilot, this draft applies in full as one of the pilot terms ([Pilot Agreement](pilot-agreement.md), section 1). Where they disagree, the Pilot Agreement wins. A lawyer reviews this draft before public launch.
 
-- Last updated: [DATE]
+- Last updated: October 12, 2026
 
-This policy is part of the [Terms of Service](terms-of-service.md) between you and [COMPANY LEGAL NAME]. It applies to everyone who uses Supply Checkout, including every member of your team. Owners are responsible for their members following it.
+This policy is part of the [Terms of Service](terms-of-service.md) between you and Main Street Logic, LLC. It applies to everyone who uses Supply Checkout, including every member of your team. Owners are responsible for their members following it.
 
 ## Use the Service for its purpose
 
@@ -37,7 +37,7 @@ Supply Checkout is for tracking supplies, inventory and receipts for your busine
 ## Reporting problems
 
 - Abuse or misuse: support@supplycheckout.com.
-- Security issues: [SECURITY CONTACT]. Please give us reasonable time to fix a problem before disclosing it. We won't take legal action against good-faith research that follows this policy and avoids harm to customers' data.
+- Security issues: hello@supplycheckout.com. Please give us reasonable time to fix a problem before disclosing it. We won't take legal action against good-faith research that follows this policy and avoids harm to customers' data.
 
 ## Changes
 

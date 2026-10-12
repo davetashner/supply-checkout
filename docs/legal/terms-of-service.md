@@ -5,10 +5,10 @@
 >
 > **Pilot terms.** During the supervised pilot, this draft applies as one of the pilot terms, as the [Pilot Agreement](pilot-agreement.md) (section 1) describes: except sections 4 to 7 (trial, subscriptions, cancelling, refunds), 10 (service levels), 13, 14 and 16 (disclaimers, liability, governing law), which the Pilot Agreement replaces. Where they disagree, the Pilot Agreement wins. A lawyer reviews this draft before public launch.
 
-- Last updated: [DATE]
-- Effective: [DATE]
+- Last updated: October 12, 2026
+- Effective: October 12, 2026
 
-These terms are an agreement between you and **[COMPANY LEGAL NAME]**, a [STATE] [ENTITY TYPE] ("we", "us"). They cover the Supply Checkout website at [DOMAIN], the web app, the iOS and Android apps, and related services (together, "the Service").
+These terms are an agreement between you and **Main Street Logic, LLC**, a Virginia limited liability company ("we", "us"). They cover the Supply Checkout website at supplycheckout.com, the web app, the iOS and Android apps, and related services (together, "the Service").
 
 "You" means the business or organization that creates a team, and the person who accepts these terms on its behalf. If you accept for a business, you confirm you have authority to bind it.
 
@@ -55,10 +55,10 @@ You must actively agree to the automatic renewal terms, separately from agreeing
 
 ### 5.2 Prices and seats
 
-- Current plans and prices are on our pricing page at [DOMAIN]/pricing. [Plan details to be added once subscription tiers are decided.]
+- Current plans and prices are on our website at supplycheckout.com. Starter is $9 a month and includes 3 seats, then $3 a month for each extra seat.
 - Prices are in US dollars and do not include sales tax, VAT or similar taxes. We add tax where the law requires it and show it before you pay.
-- Seats are the number of members on your team. When an owner adds a member, the seat count goes up and we charge the difference for the rest of the billing period (proration). When a member is removed, the lower seat count applies from the next billing period, or as a credit, as shown in the app. [Confirm proration behavior with the Stripe setup.]
-- Viewer seats: [PLACEHOLDER: free or paid, per the subscription tiers decision].
+- Seats are the number of members on your team. When an owner adds a member, the seat count goes up and we charge the difference for the rest of the billing period (proration). When a member is removed, the lower seat count applies from the next billing period, or as a credit, as shown in the app.
+- Viewer seats are free. Only owners and contributors count as seats.
 
 ### 5.3 Billing
 
@@ -117,7 +117,7 @@ If a payment fails, we email the owner and show a banner in the app. The team ke
 
 - At launch we provide the Service on a **best-effort** basis. We run it on Amazon Web Services, monitor it, and aim to fix problems quickly, but we don't promise a specific uptime percentage and don't give service credits.
 - We may pause the Service for maintenance. We try to do this outside US business hours and to give notice for planned work.
-- Support is by email at support@supplycheckout.com. We aim to reply within [2] business days.
+- Support is by email at support@supplycheckout.com. We aim to reply within 2 business days.
 - We may change features. If we remove a major feature you pay for, we will tell you at least 30 days before. You can cancel and get a refund of any unused prepaid period.
 
 ## 11. Acceptable use
@@ -152,9 +152,9 @@ You will defend and indemnify us against third-party claims arising from your da
 
 ## 16. Governing law and disputes
 
-- These terms are governed by the laws of the State of **[STATE]**, and US federal law, without regard to conflict-of-law rules.
+- These terms are governed by the laws of the State of **Virginia**, and US federal law, without regard to conflict-of-law rules.
 - Before filing a claim, each party agrees to try to resolve the dispute informally for 30 days, starting when one party emails the other a description of it.
-- If the dispute isn't resolved, it goes to the state or federal courts in [COUNTY], [STATE], and both parties agree to those courts' jurisdiction. Neither party has to arbitrate.
+- If the dispute isn't resolved, it goes to the state or federal courts in Virginia, and both parties agree to those courts' jurisdiction. Neither party has to arbitrate.
 - Nothing here stops either party from bringing a claim in small claims court.
 
 ## 17. General
@@ -168,7 +168,7 @@ You will defend and indemnify us against third-party claims arising from your da
 
 ## 18. Contact
 
-[COMPANY LEGAL NAME]
+Main Street Logic, LLC
 support@supplycheckout.com
 
 ---

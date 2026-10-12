@@ -181,7 +181,7 @@ To use these rights, email hello@supplycheckout.com or use the in-app tools abov
 
 ### Other states
 
-Residents of other states with consumer privacy laws (for example Colorado, Connecticut, Virginia, Oregon and Texas) may have similar rights, including to appeal a decision we make about a request. Email hello@supplycheckout.com with "Appeal" in the subject line. [Confirm which state laws apply, given that the Service is business-to-business.]
+Residents of other states with consumer privacy laws (for example Colorado, Connecticut, Virginia, Oregon and Texas) may have similar rights, including to appeal a decision we make about a request. Email hello@supplycheckout.com with "Appeal" in the subject line.
 
 ## 10. Security
 
