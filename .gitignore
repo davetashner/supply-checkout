@@ -29,3 +29,6 @@ codex-recommendations.md
 
 # Claude Code settings for this clone only (project settings are .claude/settings.json)
 .claude/settings.local.json
+
+# Local hero image drafts
+docs/images/
