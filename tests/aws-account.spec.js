@@ -71,6 +71,14 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
     await openAws(page, backend);
     await expect(account(page).getByRole("heading", { name: "Sign in" })).toBeVisible();
     await expect(account(page)).toContainText("Sign in to see your team's projects and inventory.");
+    // Signing in is agreeing to the terms and acceptable use policy; the privacy policy says what's collected
+    const notice = account(page).locator("#legalNotice");
+    for (const [name, path] of [["Terms of Service", "terms"], ["Acceptable Use Policy", "acceptable-use"], ["Privacy Policy", "privacy"]]) {
+      const link = notice.getByRole("link", { name });
+      await expect(link).toHaveAttribute("href", `https://${new URL(page.url()).hostname.replace(/^app\./, "")}/${path}/`);
+      await expect(link).toHaveAttribute("target", "_blank");
+      await expect(link).toHaveAttribute("rel", "noopener");
+    }
     await expect(alert(page)).toBeHidden();
     await expect(page.locator("#main")).toBeHidden();
     await expectAccessible(page);

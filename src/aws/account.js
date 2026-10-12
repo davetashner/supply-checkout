@@ -33,6 +33,7 @@ import { openInvoices } from "./invoices.js";
 import { showWhatsNew } from "./whats-new.js";
 import { openReport } from "./report.js";
 import { helpLink, wireHelp } from "./help.js";
+import { legalNotice } from "./legal.js";
 import { createPhotos } from "./photos.js";
 import { avatarHTML } from "../avatar.js";
 import { PARAMS as CAMPAIGN_PARAMS, STORAGE_KEY as CAMPAIGN_KEY, loadCampaign, readCampaign, saveCampaign } from "../campaign.js";
@@ -191,7 +192,8 @@ export async function start(config) {
       <p>${invited ? "Sign in with the email address your invite was sent to, and then you can join the team." : "Sign in to see your team's projects and inventory."}</p>
       ${errorText(session.notice)}
       <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn">Sign in</a></div>
-      <p><button type="button" class="btn ghost" id="forgotPassword">Forgot your password?</button></p>`, (el) => {
+      <p><button type="button" class="btn ghost" id="forgotPassword">Forgot your password?</button></p>
+      ${legalNotice()}`, (el) => {
       // Our own reset (reset-password.js), which helps when the address has no account
       el.querySelector("#forgotPassword").addEventListener("click", () => {
         session.notice = "";
