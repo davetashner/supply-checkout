@@ -93,7 +93,7 @@ We don't sell your personal information, and we don't share it for cross-context
 We may also share information:
 
 - **With your team.** Members of your team can see the team's data and the other members' names, email addresses and roles, depending on their role.
-- **When the law requires it**, for example a valid subpoena or court order. Where the law allows, we tell the team's owners first.
+- **When the law requires it**, for example a valid subpoena or court order. We may tell the team's owners about the request, unless the law or a court order forbids it.
 - **To protect people and the Service**, when we reasonably believe it's needed to prevent fraud, abuse or harm.
 - **In a business transfer**, such as a merger or sale of the business, under this policy's promises. We will tell owners before their data becomes subject to a different privacy policy.
 
@@ -194,7 +194,7 @@ No system is perfectly secure. If a breach affects your personal information, we
 
 ## 11. Children
 
-The Service is for businesses, and users must be at least 18. It isn't directed at children, and we don't knowingly collect personal information from anyone under 18. If you think a child has given us personal information, contact us at hello@supplycheckout.com and we will delete it.
+The Service is for businesses, and users must be at least 18. It isn't directed at children, and we don't knowingly collect personal information from anyone under 13. If you think a child has given us personal information, contact us at hello@supplycheckout.com and we will delete it.
 
 ## 12. Where data is stored
 
@@ -226,14 +226,14 @@ Support: support@supplycheckout.com
 5. **Backups: 35 days.** Matches `LOCAL_RETENTION` and PITR in `infra/lib/backup.ts` and ADR 0003 as accepted (prod account only, no backup account, deployed with `-c backupCopy=false`). If the separate backup account is ever set up, its copies keep 90 days (`COPY_RETENTION`) and this policy and the Terms must change first. AWS removes an expired recovery point shortly after it expires, not to the minute: should the wording allow a few days' margin?
 6. **Log retention.** Lambda logs, API access logs (IP address, user agent, account ID) and CloudFront access logs are kept 1 year (`LOG_RETENTION` in `infra/lib/observability/defaults.ts`, the logs bucket's lifecycle in `infra/lib/stacks/data-stack.ts`). That's a placeholder until the information security policy (bead `supply-checkout-4p1`) sets it. CloudTrail keeps 400 days (`TRAIL_LOG_RETENTION_DAYS`). Is a year of IP addresses more than we need? 90 days would be easier to defend.
 7. **Stripe and our own financial records.** Decided 2026-10-11: we keep our own tax and accounting records for 7 years. Nothing enforces that yet: invoices live in Stripe, and deleting a team deletes its Stripe customer. Enforcement is bead `supply-checkout-ijt7`. Should the draft name Stripe Tax if we turn it on?
-8. **Google Fonts.** The app loads its fonts from Google, which sends Google each visitor's IP address. Self-hosting the fonts would remove Google from section 5 (see follow-up below). Keep it or self-host before launch?
+8. ~~**Google Fonts.**~~ Decided 2026-10-12: self-host before launch (`supply-checkout-zcid`). Until then the policy and the subprocessor list name Google Fonts. The app loads its fonts from Google, which sends Google each visitor's IP address. Self-hosting the fonts would remove Google from section 5 (see follow-up below). Keep it or self-host before launch?
 9. **Cognito's sign-in cookies.** Amazon Cognito's Managed Login sets its own session cookies on `auth.supplycheckout.com`; the draft says "about an hour" (Cognito's documented session length). Confirm the names and lifetime on the deployed sign-in page before publishing.
 10. **CloudWatch RUM metadata.** The draft says RUM may derive a coarse location from IP addresses and records browser, OS and device type. Check the deployed app monitor's events and adjust.
 11. **Product analytics.** Bead `supply-checkout-khc` plans "privacy-friendly" analytics. When it's built, update sections 2, 5 and 8, and decide whether it needs a consent choice.
 12. **Marketing email.** None today. If the landing page collects addresses or we send newsletters, add an opt-in and unsubscribe.
 13. **Mobile apps.** The iOS and Android apps (phase 2) need App Store privacy labels and Google Play data safety answers that match this policy. Check what the apps store on the device (the same keys as the web app, or more) and whether they use any SDK that collects data.
-14. **The claude.ai artifact.** The current version of Supply Checkout runs as a claude.ai artifact, where Anthropic hosts the data under its own terms. This policy covers only the AWS service. Do existing artifact users need a notice when they move?
-15. **Children.** The Terms require users to be 18, so the draft says we don't knowingly collect data from anyone under 18 (stricter than COPPA's 13). Confirm.
-16. **Law enforcement requests.** The draft promises to tell owners first where the law allows. Confirm we want to commit to that.
+14. ~~**The claude.ai artifact.**~~ Decided 2026-10-12: no notice. The policy applies from sign-up on the new service. The current version of Supply Checkout runs as a claude.ai artifact, where Anthropic hosts the data under its own terms. This policy covers only the AWS service. Do existing artifact users need a notice when they move?
+15. ~~**Children.**~~ Decided 2026-10-12: the Terms stay at 18, and the policy says we don't knowingly collect data from anyone under 13 (COPPA's line).
+16. ~~**Law enforcement requests.**~~ Decided 2026-10-12: no promise. The policy says we may tell owners, unless the law or a court order forbids it.
 17. **Correcting name and email.** There's no change-of-email flow in the app yet, so the draft says to contact us. Update when there is one.
 18. **Campaign tags (bead `supply-checkout-kajm`).** Section 2 and section 8 describe first-party campaign tags kept on the account and the team, with no third-party pixels. Confirm the wording on "up to 7 days", that they are deleted with the account's own record and the team, and whether the Terms or an ad platform's own policy need a line about the tags. If a referral code is added (bead `supply-checkout-6os6`) it is stored the same way: update sections 2 and 8.
