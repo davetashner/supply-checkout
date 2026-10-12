@@ -115,9 +115,6 @@ export function page({ title, html }, { description }) {
 <meta name="description" content="${escapeHtml(description)}">
 <meta name="theme-color" content="#EDF1EE">
 <link rel="icon" href="../icon.svg" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Public+Sans:wght@400;600;700&display=swap">
 <link rel="stylesheet" href="../site.css">
 <link rel="stylesheet" href="../legal.css">
 </head>

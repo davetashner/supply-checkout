@@ -214,9 +214,9 @@ test.describe("campaign tags", () => {
     expect(Object.keys(JSON.parse(kept.session)).sort()).toEqual(["at", "tags"]);
     expect(kept.local).toBeNull();
     expect(kept.cookie).toBe("");
-    // Nothing was sent anywhere because of them: only this origin and the fonts
+    // Nothing was sent anywhere because of them: only this origin (the fonts are its own)
     expect(requests.filter((u) => /utm_|cpc|cleaning/i.test(u))).toEqual([`${ORIGIN}/?utm_source=Google&utm_medium=CPC&utm_campaign=cleaning-local&utm_term=ignored`]);
-    const allowed = [ORIGIN, "https://fonts.googleapis.com", "https://fonts.gstatic.com"];
+    const allowed = [ORIGIN];
     expect(requests.filter((u) => !u.startsWith("data:") && !allowed.includes(new URL(u).origin))).toEqual([]);
     await noViolations(page);
   });

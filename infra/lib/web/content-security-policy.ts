@@ -4,10 +4,9 @@
 // fails on any violation.
 //
 // What the app loads today (src/index.html):
-// - Google Fonts: the stylesheet from fonts.googleapis.com, the font files from
-//   fonts.gstatic.com.
 // - Its own hashed scripts (including ZXing, bundled from npm and loaded when a
-//   photo needs it), stylesheet and favicons (src/icons/). No third-party scripts.
+//   photo needs it), stylesheet, fonts (self-hosted, src/fonts/) and favicons (src/icons/). No third-party
+//   scripts, styles or fonts.
 // - Inline style="" attributes in markup that src/main.js renders with
 //   innerHTML, hence style-src-attr 'unsafe-inline'. <style> elements and
 //   inline scripts stay blocked.
@@ -43,9 +42,9 @@ export function cspDirectives(hosts: CspHosts): Record<string, string[]> {
   return {
     "default-src": ["'self'"],
     "script-src": ["'self'"],
-    "style-src": ["'self'", "https://fonts.googleapis.com"],
+    "style-src": ["'self'"],
     "style-src-attr": ["'unsafe-inline'"],
-    "font-src": ["'self'", "https://fonts.gstatic.com"],
+    "font-src": ["'self'"],
     "img-src": ["'self'", "data:", "blob:", `https://${hosts.photos}`],
     "connect-src": [
       "'self'",

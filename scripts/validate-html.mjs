@@ -7,7 +7,7 @@ const validator = new HtmlValidate({
   rules: {
     // The barcode mark in the header uses inline widths.
     "no-inline-style": "off",
-    // Google Fonts CSS is generated per browser, so it can't carry an integrity hash.
+    // Every stylesheet and script is the page's own, so none carries an integrity hash.
     "require-sri": "off",
   },
 });

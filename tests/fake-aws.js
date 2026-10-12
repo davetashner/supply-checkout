@@ -1012,8 +1012,9 @@ export const trackAnswers = (page) => page.addInitScript(() => {
 export const unanswered = (page) => page.evaluate(() => window.__apiPending);
 
 // Loads the web build with the fake backend. storage: { local: {...}, session: {...} },
-// set before the app starts.
-export async function openAws(page, backend, { path = "/", ws = {}, storage } = {}) {
+// set before the app starts. waitUntil is for a page that sends the browser away while it
+// loads (to the sign-in page), where the load event may never come.
+export async function openAws(page, backend, { path = "/", ws = {}, storage, waitUntil = "load" } = {}) {
   await page.route(ABORTED, (r) => r.abort());
   await page.route(AUTH + "/**", (r) => { backend.authRequests.push(r.request().url()); return r.fulfill({ status: 204 }); });
   await page.route(ORIGIN + "/**", (r) => backend.route(r));
@@ -1027,7 +1028,7 @@ export async function openAws(page, backend, { path = "/", ws = {}, storage } = 
       for (const [k, v] of Object.entries(s.session || {})) sessionStorage.setItem(k, v);
     }, storage);
   }
-  await page.goto(ORIGIN + path);
+  await page.goto(ORIGIN + path, { waitUntil });
 }
 
 // Waits until the app has loaded the team's data
