@@ -195,10 +195,9 @@ export const LESSONS = {
       // 3. The review, with the client for this trip
       async (page) => {
         await expect(page.locator(".rline")).toHaveCount(3);
-        await page.getByRole("combobox", { name: "Project for client 1" }).selectOption({ label: "Add to Acme Offices (Oct 11, 2026)" }).catch(async () => {
-          const label = await page.getByRole("combobox", { name: "Project for client 1" }).locator("option", { hasText: "Acme Offices" }).textContent();
-          await page.getByRole("combobox", { name: "Project for client 1" }).selectOption({ label });
-        });
+        // The option's label carries the project's start date, which moves with the day the test runs
+        const label = await page.getByRole("combobox", { name: "Project for client 1" }).locator("option", { hasText: "Acme Offices" }).textContent();
+        await page.getByRole("combobox", { name: "Project for client 1" }).selectOption({ label });
         await scrollToTop(page.getByText("Clients on this trip", { exact: false }).first());
       },
       // 4. The first line: the suggested match and the price
