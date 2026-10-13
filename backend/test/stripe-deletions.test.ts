@@ -13,7 +13,7 @@ import { CLOSED_TEAM_RETENTION_DAYS, closeTeam, createTeam, isTeamPurgedOrPurgin
 import { STRIPE_DELETIONS_PARTITION } from "../src/data/schema.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
-import { endpoint, memoryDeletionLog, newUser, REGION, useTable } from "./helpers.js";
+import { endpoint, memoryBillingRecordLog, memoryDeletionLog, newUser, REGION, useTable } from "./helpers.js";
 
 const DAY = 86400_000;
 
@@ -72,6 +72,7 @@ describe.skipIf(!endpoint)("queued Stripe customer deletions (DynamoDB Local)", 
     const customers = new Set([customerId]);
     const stripe = { down: true, attempts: 0 };
     const client = {
+      invoices: { async list() { return { data: [], has_more: false }; } },
       customers: {
         async del(id: string) {
           stripe.attempts++;
@@ -90,7 +91,8 @@ describe.skipIf(!endpoint)("queued Stripe customer deletions (DynamoDB Local)", 
       flush: () => {},
     };
     const deletions = memoryDeletionLog();
-    const purge = (at: number) => createTeamPurgeHandler({ db: table.db, obs, deletions: deletions.log, stripe: async () => client, now: () => at })();
+    const billingRecords = memoryBillingRecordLog();
+    const purge = (at: number) => createTeamPurgeHandler({ db: table.db, obs, deletions: deletions.log, billingRecords: billingRecords.log, stripe: async () => client, now: () => at })();
 
     const due = closedAt.getTime() + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000;
     // Still there: a queue entry naming it would be refused

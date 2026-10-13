@@ -24,7 +24,9 @@
 // customer can still be found once the table's link to it is gone; a team
 // whose record can't be written isn't deleted this run.
 //
-// Then, for a team with a Stripe customer, it deletes the customer in Stripe
+// Then, for a team with a Stripe customer, it first writes the customer's invoices to the
+// billing records bucket, locked for 7 years (billing-records/records.ts, supply-checkout-ijt7),
+// and only then deletes the customer in Stripe
 // (billing/closing.ts, deleteStripeCustomer): its name, email, address and
 // cards, and any subscription still on it. The team's data is deleted on
 // schedule even when Stripe can't do that (supply-checkout-8jc.42, the
@@ -147,6 +149,7 @@ import {
   type SetAsideReason,
   type StripeDeletion,
 } from "../data/index.js";
+import { type BillingRecordLog, keepBillingRecord } from "../billing-records/records.js";
 import type { DeletionLog } from "../deletions/records.js";
 import { BusinessMetric, type Observability, testMark } from "../observability/index.js";
 import {
@@ -172,6 +175,8 @@ export interface TeamPurgeDeps {
   readonly obs: Observability;
   /** Where each team's deletion record goes, before anything of it is deleted (deletions/records.ts). */
   readonly deletions: DeletionLog;
+  /** Where a team's invoices are kept for 7 years, written before its Stripe customer is deleted (billing-records/records.ts). */
+  readonly billingRecords: BillingRecordLog;
   /** The Stripe client, read from Secrets Manager the first time a team needs it. */
   readonly stripe: () => Promise<PurgeStripe>;
   readonly now?: () => number;
@@ -379,16 +384,31 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
   }
 
   /**
-   * Deletes a purged team's Stripe customer, before any of its items go. When Stripe can't
+   * Writes a purged team's invoices to the billing records bucket, locked for 7 years, before
+   * its Stripe customer is deleted (supply-checkout-ijt7). Throws when Stripe can't list them
+   * or S3 can't take the record, so the caller leaves the customer, and its invoices, where they are.
+   */
+  async function keepRecord(teamId: string, customerId: string): Promise<void> {
+    const result = await keepBillingRecord({ stripe: await deps.stripe(), log: deps.billingRecords, now: () => new Date(now()) }, teamId, customerId);
+    // Nothing to keep for a customer Stripe doesn't have: it was deleted before, or a key or mode mismatch (the delete step flags that)
+    if (result === "no_customer") obs.logger.warn("Billing record not kept: Stripe has no such customer", { teamId, customerId });
+    else obs.logger.info("Billing record kept", { teamId, customerId });
+  }
+
+  /**
+   * Deletes a purged team's Stripe customer, before any of its items go, and only after its
+   * invoices are kept (keepRecord). When Stripe can't
    * (down, a timeout, a rate limit, a key that can't be read, any error), or this run has
-   * stopped asking it, queues the deletion for later runs instead (supply-checkout-8jc.42):
-   * the team's data still goes on schedule. Only a queue entry that can't be written stops
+   * stopped asking it, or the billing record can't be written, queues the deletion for later
+   * runs instead (supply-checkout-8jc.42): the team's data still goes on schedule, and the
+   * customer is never deleted without its record. Only a queue entry that can't be written stops
    * the team, which then fails and is tried again next run, nothing of it deleted.
    */
   async function deleteCustomer(run: RunState, teamId: string, customerId: string, at: Date, mark: { readonly test?: true }): Promise<void> {
     let failure: unknown;
     if (run.stripeFailures < STRIPE_FAILURES_BEFORE_QUEUEING) {
       try {
+        await keepRecord(teamId, customerId);
         const result = await deleteStripeCustomer(await deps.stripe(), customerId);
         run.stripeFailures = 0;
         customerDeleted(teamId, customerId, result, "purge", mark);
@@ -456,6 +476,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
       }
       let result: "deleted" | "already_deleted";
       try {
+        await keepRecord(teamId, customerId);
         result = await deleteStripeCustomer(await deps.stripe(), customerId);
         run.stripeFailures = 0;
       } catch (error) {

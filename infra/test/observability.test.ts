@@ -1246,6 +1246,7 @@ describe("scheduled checks", () => {
       ["kms:Decrypt", "kms:DescribeKey"],
       "secretsmanager:GetSecretValue",
       "s3:PutObject",
+      "s3:PutObject",
     ]);
     // The Stripe secret key of this environment's mode, and no other secret
     expect(found.find((s) => s.Sid === "ReadStripeSecretKey")).toEqual({
@@ -1255,17 +1256,27 @@ describe("scheduled checks", () => {
       Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:secretsmanager:${EAST}:`, { Ref: "AWS::AccountId" }, ":secret:supply-checkout/prod/stripe/test-secret-key-??????"]] },
     });
     // Team deletion records only: no reads, deletes or retention changes, and not users/
-    expect(found.at(-1)).toEqual({
+    expect(found.at(-2)).toEqual({
       Sid: "PutTeamDeletionRecords",
       Effect: "Allow",
       Action: "s3:PutObject",
       Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }, "/teams/*"]] },
       Condition: { Null: { "s3:if-none-match": "false" } },
     });
+    // Billing records (supply-checkout-ijt7) the same way: PutObject under teams/ of their own bucket, conditional, nothing else
+    expect(found.at(-1)).toEqual({
+      Sid: "PutBillingRecords",
+      Effect: "Allow",
+      Action: "s3:PutObject",
+      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-billing-records-${EAST}-`, { Ref: "AWS::AccountId" }, "/teams/*"]] },
+      Condition: { Null: { "s3:if-none-match": "false" }, StringEquals: { "s3:if-none-match": "*" } },
+    });
     const [fn] = functions(observability()).filter((f) => f.FunctionName === "supply-checkout-prod-team-purge");
     expect((fn.Environment as { Variables: Record<string, unknown> }).Variables).toMatchObject({
       DELETIONS_BUCKET: { "Fn::Join": ["", [`supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] },
       DELETIONS_REGION: EAST,
+      BILLING_RECORDS_BUCKET: { "Fn::Join": ["", [`supply-checkout-prod-billing-records-${EAST}-`, { Ref: "AWS::AccountId" }]] },
+      BILLING_RECORDS_REGION: EAST,
       STRIPE_SECRET_ID: "supply-checkout/prod/stripe/test-secret-key",
       STRIPE_MODE: "test",
     });

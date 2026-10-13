@@ -13,6 +13,7 @@ import { BlockPublicAccess, Bucket, BucketEncryption, type CfnBucket, ObjectLock
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { GSI1, GSI1PK, GSI1SK, GSI2, GSI2PK, GSI2SK, GSI3, GSI3PK, GSI3SK, OPS_INDEX_ATTRIBUTES, PK, SK, TTL_ATTRIBUTE, tableName } from "../../../backend/src/data/schema.js";
+import { BILLING_RECORD_RETENTION_DAYS, billingRecordsBucketName } from "../../../backend/src/billing-records/names.js";
 import { DELETION_RECORD_RETENTION_DAYS, deletionsBucketName } from "../../../backend/src/deletions/names.js";
 import { PHOTO_PREFIX, PHOTOS_METRICS_ID, photosBucketName } from "../../../backend/src/photos/names.js";
 import { backupCopyFromContext, backupParameters } from "../backup.js";
@@ -76,6 +77,8 @@ export class DataStack extends SupplyCheckoutStack {
   readonly logsBucket?: Bucket;
   /** Deletion records (backend/src/deletions). Primary region only. */
   readonly deletionsBucket?: Bucket;
+  /** The team purge's billing records, kept 7 years under Object Lock (supply-checkout-ijt7). */
+  readonly billingRecordsBucket?: Bucket;
   /** Replicates the deletion records to the backup account. Primary region only, and not with `-c backupCopy=false`. */
   readonly deletionsReplicationRole?: Role;
   /** Profile photos (backend/src/photos). Primary region only. */
@@ -274,6 +277,31 @@ export class DataStack extends SupplyCheckoutStack {
         organizationId: ssm(params.organizationId),
       });
     }
+
+    // Billing records (supply-checkout-ijt7): `teams/<teamId>/<customerId>.json`, a purged team's
+    // invoices (amounts, tax, dates and where the tax was due; no card data, name or
+    // email), written by the team purge just before it deletes the team's Stripe
+    // customer, and by nothing else (ops-checks.ts, billing-records.ts). The privacy
+    // policy promises we keep our tax and accounting records 7 years. Compliance
+    // mode: nobody, the root user included, can delete a record or shorten its
+    // retention, which is also why it can't be erased on request (the policy says so).
+    // Once the lock lapses, the lifecycle rule expires the record and its version.
+    const billingRetention = Duration.days(BILLING_RECORD_RETENTION_DAYS);
+    this.billingRecordsBucket = new Bucket(this, "BillingRecordsBucket", {
+      bucketName: billingRecordsBucketName(config.envName, region, Aws.ACCOUNT_ID),
+      encryption: BucketEncryption.S3_MANAGED,
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      objectOwnership: ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      enforceSSL: true,
+      versioned: true,
+      objectLockEnabled: true,
+      objectLockDefaultRetention: ObjectLockRetention.compliance(billingRetention),
+      lifecycleRules: [{ expiration: billingRetention.plus(Duration.days(1)), noncurrentVersionExpiration: Duration.days(1) }],
+      serverAccessLogsBucket: this.logsBucket,
+      serverAccessLogsPrefix: "s3/billing-records/",
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    publish("BillingRecordsBucketParam", "billing-records-bucket-name", this.billingRecordsBucket.bucketName, "Billing records bucket (primary region)");
 
     // Profile photos (supply-checkout-6uw.30): one object per photo,
     // `photos/<photoId>.jpg`, the ID random. Only the account function's role

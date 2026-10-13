@@ -5,6 +5,7 @@
 import { STRIPE_ENV } from "../billing/names.js";
 import { cachedStripe, createStripe, secretsManagerReader, stripeModeFrom } from "../billing/stripe.js";
 import { createDb } from "../data/index.js";
+import { billingRecordLogFromEnv } from "../billing-records/records.js";
 import { deletionLogFromEnv } from "../deletions/records.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { OPS_ENV } from "./names.js";
@@ -19,4 +20,4 @@ function required(name: string): string {
 const obs = createObservability({ service: "ops" });
 const db = createDb({ tableName: process.env[OPS_ENV.tableName] });
 const stripe = cachedStripe({ secretId: required(STRIPE_ENV.secretId), mode: stripeModeFrom(process.env[STRIPE_ENV.mode]), read: secretsManagerReader(process.env.AWS_REGION), create: createStripe });
-export const handler = withObservability(obs, createTeamPurgeHandler({ db, obs, deletions: deletionLogFromEnv(), stripe }));
+export const handler = withObservability(obs, createTeamPurgeHandler({ db, obs, deletions: deletionLogFromEnv(), billingRecords: billingRecordLogFromEnv(), stripe }));

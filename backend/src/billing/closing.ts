@@ -78,6 +78,7 @@
 // Only IDs, statuses and actions are logged, never the key or a Stripe message.
 
 import { createHash } from "node:crypto";
+import type { InvoiceLister } from "../billing-records/records.js";
 import { hasEnded } from "../data/index.js";
 import type { SubscriptionLike } from "./worker.js";
 
@@ -97,8 +98,8 @@ export interface ClosingStripe {
   };
 }
 
-/** What the purge also needs: deleting a purged team's customer. */
-export interface PurgeStripe extends ClosingStripe {
+/** What the purge also needs: deleting a purged team's customer, and listing its invoices first (billing-records/records.ts). */
+export interface PurgeStripe extends ClosingStripe, InvoiceLister {
   readonly customers: { del(id: string): PromiseLike<unknown> };
 }
 

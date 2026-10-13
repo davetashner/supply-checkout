@@ -44,6 +44,7 @@ import {
   SEAT_RECONCILE_SILENT_ALARM_DAYS,
 } from "../../../backend/src/ops/names.js";
 import { type DeploymentConfig, stripeSecretArn } from "../config.js";
+import { grantPutBillingRecords } from "../billing-records.js";
 import { grantPutDeletionRecords } from "../deletions.js";
 import { grantSendEmail } from "../email.js";
 import { bundling } from "../stacks/api-stack.js";
@@ -350,6 +351,8 @@ export class OpsChecks extends Construct {
     );
     // The checks run in the primary region only, so this stack's region is the bucket's
     grantPutDeletionRecords(this.teamPurge, { envName: props.envName, primaryRegion: Stack.of(this).region }, "team");
+    // ...and the purged team's invoices, kept for 7 years before its Stripe customer is deleted (supply-checkout-ijt7)
+    grantPutBillingRecords(this.teamPurge, { envName: props.envName, primaryRegion: Stack.of(this).region });
     Validations.of(this.teamPurge.role as Role).acknowledge({
       id: "AwsSolutions-IAM5[Resource::*]",
       reason: "The purge deletes whichever closed teams are due, named only by the table's own closed-teams index: the TEAM#, USER# and STRIPE# partition wildcards are in dynamodb:LeadingKeys, with dynamodb:Attributes limiting it to keys and closure fields",
