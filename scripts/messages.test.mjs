@@ -14,7 +14,7 @@ test("every English catalog file's keys start with its name, and no key repeats"
     const area = file.replace(/\.js$/, "");
     const { default: entries } = await import(new URL(file, dir));
     for (const [key, entry] of Object.entries(entries)) {
-      assert.match(key, new RegExp(`^${area}\\.[A-Za-z0-9.]+$`), `${file}: "${key}" must start with "${area}."`);
+      assert.match(key, new RegExp(`^${area}\\.[A-Za-z0-9._]+$`), `${file}: "${key}" must start with "${area}."`);
       assert.ok(!seen.has(key), `"${key}" is in ${seen.get(key)} and ${file}`);
       seen.set(key, file);
       const forms = typeof entry === "string" ? [entry] : Object.entries(entry).map(([form, text]) => (assert.ok(["zero", "one", "two", "few", "many", "other"].includes(form), `${key}: "${form}" isn't a plural form`), text));
