@@ -1,0 +1,32 @@
+// Setting the signed-in user's password (src/aws/password.js)
+export default {
+  "password.rules": "At least 12 characters, with upper and lower case letters, a number and a symbol.",
+  "password.invalid": "Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol, that you haven't used before.",
+  "password.wrongRequired": "That current password isn't right.",
+  "password.wrong": "That current password isn't right. If you've only signed in with an email code or a passkey, leave it empty.",
+  "password.federated": "You sign in with Google or Apple, so there's no Supply Checkout password to change.",
+  "password.tooMany": "Too many tries for now. Wait a few minutes, then try again.",
+
+  "password.currentLabel": "Current password",
+  "password.currentHintRequired": "The password you sign in with now.",
+  "password.currentHint": "Leave it empty if you've only signed in with an email code or a passkey.",
+  "password.forgotSummary": "Forgot your current password?",
+  "password.forgotBody": "Sign out, then on the sign-in page choose to reset your password: we'll email you a code to set a new one. Sign in with it, and you're done.",
+  "password.newLabel": "New password",
+  "password.confirmLabel": "Confirm new password",
+  "password.enterCurrent": "Enter your current password.",
+  "password.choose": "Choose a password.",
+  "password.mismatch": "The new passwords don't match. Type the new one again.",
+
+  "password.title": "Change password",
+  "password.introRequired": "Change the password you sign in with.",
+  "password.intro": "Change the password you sign in with, or set one if you've only signed in with an email code or a passkey.",
+  "password.signOutAll": "Sign out everywhere",
+  "password.signOutHint": "Signs you out of the app on your devices, this one too, so anyone who knew the old password has to sign in again. You'll sign in again here with the new one. A browser that signed in within the last hour may still get back in without a password until that hour is up.",
+  "password.cancel": "Cancel",
+  "password.save": "Change password",
+  "password.notSignedOut": "Your password is changed, but you weren't signed out everywhere yet. Try again, or close this to stay signed in.",
+  "password.close": "Close",
+  "password.failed": "Couldn't change the password. Check your connection and try again.",
+  "password.changed": "Your password is changed.",
+};

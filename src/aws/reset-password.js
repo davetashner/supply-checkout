@@ -12,7 +12,7 @@
 import { esc } from "../format.js";
 import { msg } from "../i18n.js";
 import { json, request } from "./http.js";
-import { MANAGER_RULES, passwordFailure, RULES } from "./password.js";
+import { MANAGER_RULES, passwordFailure, rules } from "./password.js";
 
 const CODE = /^\d{6}$/;
 const ADDRESS = /^[^\s@]+@[^\s@]+$/;
@@ -74,7 +74,7 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
         <input type="text" class="vh" name="username" autocomplete="username" value="${esc(email)}" readonly tabindex="-1" aria-hidden="true">
         <div class="field"><label for="resetCode">${msg("resetPassword.codeLabel")}</label><input type="text" id="resetCode" name="code" class="reset-code" inputmode="numeric" autocomplete="one-time-code" required data-autofocus></div>
         <div class="field"><label for="newPassword">${msg("resetPassword.newPasswordLabel")}</label><input type="password" id="newPassword" name="new-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}" aria-describedby="newHint" required>
-        <p class="hint" id="newHint">${RULES}</p></div>
+        <p class="hint" id="newHint">${rules()}</p></div>
         <div class="field"><label for="confirmPassword">${msg("resetPassword.confirmLabel")}</label><input type="password" id="confirmPassword" name="confirm-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}" required></div>
         <p class="hint" role="status" id="resetStatus"></p>
         <p class="error" role="alert" id="accountError" hidden></p>

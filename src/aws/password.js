@@ -13,39 +13,40 @@
 // in its place before the change is sent. Someone who doesn't know their current password is
 // told how to reset it ("Forgot your current password?").
 import { esc } from "../format.js";
+import { msg } from "../i18n.js";
 import { openModal, closeModal, toast } from "../dom.js";
 
 // The user pool's password policy (infra), as people read it and as password managers do
-export const RULES = "At least 12 characters, with upper and lower case letters, a number and a symbol.";
+export const rules = () => msg("password.rules");
 export const MANAGER_RULES = "minlength: 12; required: lower; required: upper; required: digit; required: special;";
 
 // What went wrong setting the password, in words, or null for anything else. `required`: the
 // user has a password for sure (two-step sign-in is on), so leaving it empty isn't an option.
 export const passwordFailure = (e, required = false) =>
   // password_invalid is also a password used before (Cognito's password history)
-  e.reason === "password_invalid" ? "Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol, that you haven't used before."
-    : e.reason === "password_mismatch" ? (required ? "That current password isn't right." : "That current password isn't right. If you've only signed in with an email code or a passkey, leave it empty.")
-    : e.reason === "federated_sign_in" ? "You sign in with Google or Apple, so there's no Supply Checkout password to change."
-    : e.code === "quota_exceeded" ? "Too many tries for now. Wait a few minutes, then try again."
+  e.reason === "password_invalid" ? msg("password.invalid")
+    : e.reason === "password_mismatch" ? msg(required ? "password.wrongRequired" : "password.wrong")
+    : e.reason === "federated_sign_in" ? msg("password.federated")
+    : e.code === "quota_exceeded" ? msg("password.tooMany")
     : null;
 
 // The fields, current password first. `required`: as for passwordFailure.
 export const passwordFields = (email, required = false) => `
   <input type="text" class="vh" name="username" autocomplete="username" value="${esc(email)}" readonly tabindex="-1" aria-hidden="true">
-  <div class="field"><label for="currentPassword">Current password</label><input type="password" id="currentPassword" name="current-password" autocomplete="current-password"${required ? " required" : ""} aria-describedby="currentHint" data-autofocus>
-  <p class="hint" id="currentHint">${required ? "The password you sign in with now." : "Leave it empty if you've only signed in with an email code or a passkey."}</p></div>
-  <details class="password-forgot"><summary>Forgot your current password?</summary>
-  <p>Sign out, then on the sign-in page choose to reset your password: we'll email you a code to set a new one. Sign in with it, and you're done.</p></details>
-  <div class="field"><label for="newPassword">New password</label><input type="password" id="newPassword" name="new-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}" aria-describedby="newHint">
-  <p class="hint" id="newHint">${RULES}</p></div>
-  <div class="field"><label for="confirmPassword">Confirm new password</label><input type="password" id="confirmPassword" name="confirm-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}"></div>`;
+  <div class="field"><label for="currentPassword">${msg("password.currentLabel")}</label><input type="password" id="currentPassword" name="current-password" autocomplete="current-password"${required ? " required" : ""} aria-describedby="currentHint" data-autofocus>
+  <p class="hint" id="currentHint">${msg(required ? "password.currentHintRequired" : "password.currentHint")}</p></div>
+  <details class="password-forgot"><summary>${msg("password.forgotSummary")}</summary>
+  <p>${msg("password.forgotBody")}</p></details>
+  <div class="field"><label for="newPassword">${msg("password.newLabel")}</label><input type="password" id="newPassword" name="new-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}" aria-describedby="newHint">
+  <p class="hint" id="newHint">${rules()}</p></div>
+  <div class="field"><label for="confirmPassword">${msg("password.confirmLabel")}</label><input type="password" id="confirmPassword" name="confirm-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}"></div>`;
 
 // The request's body from the fields in `m`, or null after saying (with `say`) what's missing
 export function readPassword(m, say) {
   const current = m.querySelector("#currentPassword"), next = m.querySelector("#newPassword"), again = m.querySelector("#confirmPassword");
-  const problem = current.required && !current.value ? [current, "Enter your current password."]
-    : !next.value ? [next, "Choose a password."]
-    : next.value !== again.value ? [again, "The new passwords don't match. Type the new one again."]
+  const problem = current.required && !current.value ? [current, msg("password.enterCurrent")]
+    : !next.value ? [next, msg("password.choose")]
+    : next.value !== again.value ? [again, msg("password.mismatch")]
     : null;
   if (problem) { say(problem[1]); problem[0].focus(); return null; }
   return current.value ? { password: next.value, currentPassword: current.value } : { password: next.value };
@@ -63,16 +64,16 @@ export function clearPassword(m) {
 // hint doesn't promise every session ends. A sign-out refused because the session has ended
 // already (signed out elsewhere meanwhile) counts as done.
 export function openChangePassword(session, email, onSignedOut, { required }) {
-  openModal(`<h2>Change password</h2>
+  openModal(`<h2>${msg("password.title")}</h2>
     <div class="two-step" id="passwordBox">
       <form id="passwordForm" class="two-step-form" method="post" novalidate>
-        <p class="hint">${required ? "Change the password you sign in with." : "Change the password you sign in with, or set one if you've only signed in with an email code or a passkey."}</p>
+        <p class="hint">${msg(required ? "password.introRequired" : "password.intro")}</p>
         ${passwordFields(email, required)}
-        <label class="check"><input type="checkbox" id="signOutAll" checked aria-describedby="signOutHint"> Sign out everywhere</label>
-        <p class="hint" id="signOutHint">Signs you out of the app on your devices, this one too, so anyone who knew the old password has to sign in again. You'll sign in again here with the new one. A browser that signed in within the last hour may still get back in without a password until that hour is up.</p>
+        <label class="check"><input type="checkbox" id="signOutAll" checked aria-describedby="signOutHint"> ${msg("password.signOutAll")}</label>
+        <p class="hint" id="signOutHint">${msg("password.signOutHint")}</p>
       </form>
       <p class="error" role="alert" id="passwordFail" hidden></p>
-      <div class="modal-actions"><button type="button" class="btn" id="passwordCancel">Cancel</button><button type="submit" form="passwordForm" class="btn primary" id="passwordSave">Change password</button></div>
+      <div class="modal-actions"><button type="button" class="btn" id="passwordCancel">${msg("password.cancel")}</button><button type="submit" form="passwordForm" class="btn primary" id="passwordSave">${msg("password.save")}</button></div>
     </div>`, (m) => {
     const $ = (s) => m.querySelector(s);
     const box = $("#passwordBox"), fail = $("#passwordFail"), save = $("#passwordSave");
@@ -95,7 +96,7 @@ export function openChangePassword(session, email, onSignedOut, { required }) {
         busy(false);
         if (err.code === "unauthenticated") { closeModal(); onSignedOut(); return; }
         if (!changed) changedOnly();
-        say("Your password is changed, but you weren't signed out everywhere yet. Try again, or close this to stay signed in.");
+        say(msg("password.notSignedOut"));
         return;
       }
       // Every session has ended, this one too: the only way on is to sign in again
@@ -110,8 +111,8 @@ export function openChangePassword(session, email, onSignedOut, { required }) {
       $("#passwordForm").hidden = true;
       save.removeAttribute("form");
       save.type = "button";
-      save.textContent = "Sign out everywhere";
-      $("#passwordCancel").textContent = "Close";
+      save.textContent = msg("password.signOutAll");
+      $("#passwordCancel").textContent = msg("password.close");
       save.addEventListener("click", signOutEverywhere);
       save.focus();
     }
@@ -126,13 +127,13 @@ export function openChangePassword(session, email, onSignedOut, { required }) {
         await session.api("POST", "/me/password", body);
       } catch (err) {
         busy(false);
-        say(passwordFailure(err, required) || "Couldn't change the password. Check your connection and try again.");
+        say(passwordFailure(err, required) || msg("password.failed"));
         return;
       }
       busy(false);
       if ($("#signOutAll").checked) { await signOutEverywhere(); return; }
       closeModal();
-      toast("Your password is changed.", 5000);
+      toast(msg("password.changed"), 5000);
     });
   });
 }
