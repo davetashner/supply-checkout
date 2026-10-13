@@ -473,28 +473,28 @@ const finish = id => write(() => db.doc("projects/" + id).update({ status: "clos
 function finishModal(s, out) {
   const acts = out.map(() => ({ back: {}, lost: {} }));
   openModal(`
-    <h2>Before you finish</h2>
-    <p class="hint" style="margin-top:-6px">Some company equipment is still out. For each piece, say how many are back and how many were lost or broken; the rest stay out, still at the job, and the project stays open.</p>
+    <h2>${msg("finish.title")}</h2>
+    <p class="hint" style="margin-top:-6px">${msg("finish.intro")}</p>
     <form id="f" style="display:grid;gap:14px">
       ${out.map((l, i) => { const still = equipmentCounts(l).still; return `
-      <fieldset class="field finish" data-i="${i}"><legend>${esc(l.name || "Unnamed item")} · ${still} still out</legend>
+      <fieldset class="field finish" data-i="${i}"><legend>${msg("finish.legend", { name: esc(l.name || msg("inventory.unnamed")), still })}</legend>
         <div class="row2">
-          <div class="field"><label for="fBack${i}">It's back</label>${stepperHTML(`fBack${i}`, 0, still)}</div>
-          <div class="field"><label for="fLost${i}">Lost or broken</label>${stepperHTML(`fLost${i}`, 0, still)}</div>
+          <div class="field"><label for="fBack${i}">${msg("finish.back")}</label>${stepperHTML(`fBack${i}`, 0, still)}</div>
+          <div class="field"><label for="fLost${i}">${msg("finish.lost")}</label>${stepperHTML(`fLost${i}`, 0, still)}</div>
         </div>
-        <p class="hint" data-left aria-live="polite">Still at the job: ${still}</p>
-        ${isAdhoc(s) ? "" : `<div class="field" data-charge hidden><label for="fCharge${i}">Charge the client for what was lost or broken ($, optional)</label>
-          <input type="number" id="fCharge${i}" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money placeholder="Leave blank to not charge">
-          <p class="hint">${hasCost(l) ? `Worth ${money(l.cost)} each.` : "Its value isn't known."} The amount is for all of them, not each.</p></div>`}
+        <p class="hint" data-left aria-live="polite">${msg("finish.stillAtJob", { count: still })}</p>
+        ${isAdhoc(s) ? "" : `<div class="field" data-charge hidden><label for="fCharge${i}">${msg("finish.charge")}</label>
+          <input type="number" id="fCharge${i}" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money placeholder="${msg("finish.chargePlaceholder")}">
+          <p class="hint">${hasCost(l) ? msg("finish.worth", { value: money(l.cost) }) : msg("finish.valueUnknown")} ${msg("finish.amountNote")}</p></div>`}
       </fieldset>`; }).join("")}
-      <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
+      <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("finish.cancel")}</button><button type="submit" class="btn primary">${msg("finish.save")}</button></div>
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const counts = out.map((l, i) => {
       const box = m.querySelector(`[data-i="${i}"]`), still = equipmentCounts(l).still;
       const paint = () => {
         const back = int(box.querySelector(`#fBack${i}`).value), lost = int(box.querySelector(`#fLost${i}`).value);
-        setText(box.querySelector("[data-left]"), back + lost > still ? `That's more than the ${still} still out.` : `Still at the job: ${still - back - lost}`);
+        setText(box.querySelector("[data-left]"), back + lost > still ? msg("finish.moreThanOut", { still }) : msg("finish.stillAtJob", { count: still - back - lost }));
         // The General Use project has no client to charge
         const field = box.querySelector("[data-charge]");
         if (field) field.hidden = !lost;
@@ -510,14 +510,14 @@ function finishModal(s, out) {
         return { l, back: counts[i].back(), lost: counts[i].lost(), still: counts[i].still, charge: raw === "" ? undefined : Math.max(0, round2(raw)), act: acts[i] };
       });
       const over = plans.find(p => p.back + p.lost > p.still);
-      if (over) { toast(`That's more ${over.l.name || "of that item"} than are still out.`); return; }
+      if (over) { toast(msg("finish.moreItem", { name: over.l.name || msg("finish.ofThatItem") })); return; }
       const left = plans.reduce((a, p) => a + p.still - p.back - p.lost, 0);
       saving(form, async () => {
         for (const p of plans) {
           if (p.back && !(await write(() => recordReturn(db, p.act.back, s.id, p.l.key, p.back), undefined, s.id))) return false;
           if (p.lost && !(await write(() => markLost(db, p.act.lost, s.id, p.l.key, p.lost, p.charge), undefined, s.id))) return false;
         }
-        if (left) { closeModal(); toast(`Saved. ${left} still at the job, so the project stays open.`); return true; }
+        if (left) { closeModal(); toast(msg("finish.savedLeft", { count: left })); return true; }
         return closing(finish(s.id));
       });
     });
@@ -538,11 +538,11 @@ const projectAction = {
   reopen: () => {
     // A team has one open General Use project at a time (the web build's server refuses another too)
     if (isAdhoc(currentProject()) && openAdhoc()) { toast(msg("app.adhocOpen")); return; }
-    once("reopen", () => write(() => db.doc("projects/" + ui.projectId).update({ status: "open" }), "Project reopened", ui.projectId));
+    once("reopen", () => write(() => db.doc("projects/" + ui.projectId).update({ status: "open" }), msg("project.reopened"), ui.projectId));
   },
-  delProject: b => arm(b, "Tap again to delete", () => once("delProject", async () => {
+  delProject: b => arm(b, msg("project.tapToDelete"), () => once("delProject", async () => {
     const id = ui.projectId;
-    if (await write(() => db.doc("projects/" + id).delete(), "Project deleted", id)) ui.projectId = null;
+    if (await write(() => db.doc("projects/" + id).delete(), msg("project.deleted"), id)) ui.projectId = null;
   })),
 };
 ["#projectHead", "#projectBody"].forEach(sel => {
@@ -562,64 +562,64 @@ $("#projectBody").addEventListener("keydown", e => {
 // Inventory: every item, or supplies or company equipment only (ADR 0017). With Equipment
 // picked, In lists what's in storage, and Out each open project with equipment still out on it:
 // how many, the project, who took it last and when (from the line, so it needs only the projects).
-const KINDS = [["all", "All"], ["supply", "Supplies"], ["equipment", "Equipment"]];
+const KINDS = [["all", "inventory.kindAll"], ["supply", "inventory.kindSupplies"], ["equipment", "inventory.kindEquipment"]];
 const chip = (attr, value, label, on) => `<button type="button" class="chip" data-${attr}="${value}" aria-pressed="${on}">${label}</button>`;
 function drawPrices() {
   const all = Object.entries(products).map(([key, p]) => ({ key, ...p })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   // Running low (supply-checkout-005.8): offered once any item has a reorder level, or while it's showing
   const levels = ui.kind === "low" || all.some(p => reorderLevel(p) !== null);
-  const kinds = `<div class="chips" role="group" aria-label="Show">${KINDS.map(([k, label]) => chip("kind", k, label, ui.kind === k)).join("")}${levels ? chip("kind", "low", lowLabel(all), ui.kind === "low") : ""}</div>`;
+  const kinds = `<div class="chips" role="group" aria-label="${msg("inventory.showLabel")}">${KINDS.map(([k, label]) => chip("kind", k, msg(label), ui.kind === k)).join("")}${levels ? chip("kind", "low", lowLabel(all), ui.kind === "low") : ""}</div>`;
   if (ui.kind === "low") { drawLow(all, kinds); return; }
   const list = ui.kind === "all" ? all : all.filter(p => isEquipment(p) === (ui.kind === "equipment"));
   const out = ui.kind === "equipment" && ui.equip === "out";
-  const where = ui.kind === "equipment" ? `<div class="chips" role="group" aria-label="Equipment">${chip("equip", "in", "In storage", !out)}${chip("equip", "out", "Out on jobs", out)}</div>` : "";
+  const where = ui.kind === "equipment" ? `<div class="chips" role="group" aria-label="${msg("inventory.equipmentLabel")}">${chip("equip", "in", msg("inventory.inStorage"), !out)}${chip("equip", "out", msg("inventory.outOnJobs"), out)}</div>` : "";
   const n = list.length;
   morph($("#main"), `
     <div class="bar">
-      <p class="muted" style="margin:0">${n} item${n===1?"":"s"}. Storage counts go down when items are checked out and up when they're returned or bought for general inventory.</p>
-      ${canWrite ? `<button type="button" class="btn primary" id="addProduct">+ Add item</button>` : ""}
+      <p class="muted" style="margin:0">${msg("inventory.intro", { count: n })}</p>
+      ${canWrite ? `<button type="button" class="btn primary" id="addProduct">${msg("inventory.addItem")}</button>` : ""}
     </div>
     <div class="bar">${kinds}${where}</div>
     ${out ? equipmentOutHTML() : list.length ? `<div class="table-wrap"><table class="prices">
-      <thead><tr><th>Item</th><th>In storage</th><th>Price each</th><th>${ui.kind === "equipment" ? "Value each" : "Cost each"}</th><th>Value</th></tr></thead>
-      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}${lowBadge(p)}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span>${isEquipment(p) ? `<span class="kind">Company equipment</span>` : ""}</td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td>${isEquipment(p) ? `<td class="muted">Not charged</td>` : `<td>${money(p.price)}</td>`}<td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
-      <tfoot><tr><td>Total in storage</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td></td><td>${money(list.reduce((a, p) => a + storageCents(p), 0) / 100)}</td></tr></tfoot>
-    </table></div>` : `<div class="empty">${!connected ? "Loading…" : !all.length ? "No items yet. Add one, or scan a barcode on a project." : ui.kind === "equipment" ? "No company equipment yet. Edit an item and choose Company equipment." : "No supplies yet."}</div>`}`);
+      <thead><tr><th>${msg("inventory.colItem")}</th><th>${msg("inventory.colInStorage")}</th><th>${msg("inventory.colPriceEach")}</th><th>${msg(ui.kind === "equipment" ? "inventory.colValueEach" : "inventory.colCostEach")}</th><th>${msg("inventory.colValue")}</th></tr></thead>
+      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || msg("inventory.unnamed"))}${lowBadge(p)}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span>${isEquipment(p) ? `<span class="kind">${msg("inventory.companyEquipment")}</span>` : ""}</td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td>${isEquipment(p) ? `<td class="muted">${msg("inventory.notCharged")}</td>` : `<td>${money(p.price)}</td>`}<td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>${msg("inventory.totalInStorage")}</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td></td><td>${money(list.reduce((a, p) => a + storageCents(p), 0) / 100)}</td></tr></tfoot>
+    </table></div>` : `<div class="empty">${!connected ? msg("inventory.loading") : !all.length ? msg("inventory.none") : ui.kind === "equipment" ? msg("inventory.noEquipment") : msg("inventory.noSupplies")}</div>`}`);
 }
 // Low stock (supply-checkout-005.8, src/reorder.js). The count is what still needs someone to
 // look at it: low, and not acknowledged.
 const lowList = () => lowItems(Object.entries(products).map(([key, p]) => ({ key, ...p })));
 const lowCount = list => list.filter(needsReorder).length;
-const lowLabel = list => { const n = lowCount(list); return n ? `Running low (${n})` : "Running low"; };
-const lowBadge = p => isOnOrder(p) ? `<span class="low-badge acked">On order</span>` : !isLow(p) ? "" : isAcked(p) ? `<span class="low-badge acked">Low, acknowledged</span>` : `<span class="low-badge">Low</span>`;
+const lowLabel = list => { const n = lowCount(list); return n ? msg("inventory.runningLowCount", { count: n }) : msg("inventory.runningLow"); };
+const lowBadge = p => isOnOrder(p) ? `<span class="low-badge acked">${msg("inventory.badgeOnOrder")}</span>` : !isLow(p) ? "" : isAcked(p) ? `<span class="low-badge acked">${msg("inventory.badgeAcked")}</span>` : `<span class="low-badge">${msg("inventory.badgeLow")}</span>`;
 // The Inventory tab says how many need looking at, from anywhere in the app
 function paintLowCount() {
   const n = lowCount(Object.values(products)), tab = $("#tab-prices");
-  setHTML(tab, n ? `Inventory<span class="tab-count" aria-hidden="true">${n}</span>` : "Inventory");
-  if (n) setAttr(tab, "aria-label", `Inventory, ${n} running low`); else tab.removeAttribute("aria-label");
+  setHTML(tab, n ? `${msg("inventory.tab")}<span class="tab-count" aria-hidden="true">${n}</span>` : msg("inventory.tab"));
+  if (n) setAttr(tab, "aria-label", msg("inventory.tabLow", { count: n })); else tab.removeAttribute("aria-label");
 }
 // Inventory, Running low: the reorder list, to copy or download, and to acknowledge from
 function drawLow(all, kinds) {
   const list = lowItems(all), n = list.length;
   morph($("#main"), `
     <div class="bar">
-      <p class="muted" style="margin:0">${n ? `${n} item${n === 1 ? " is" : "s are"} low or on order. Mark an item ordered and it isn't flagged again until it's restocked above the reorder level and runs low again, or you cancel the order. Acknowledge one to quiet it until stock falls further.` : "Nothing is running low. Set a reorder level on an item, and it shows here when storage is down to it."}</p>
-      ${n ? `<span class="row-actions"><button type="button" class="btn" id="copyReorder">Copy list</button><button type="button" class="btn" id="downloadReorder">Download CSV</button></span>` : ""}
+      <p class="muted" style="margin:0">${n ? msg("inventory.lowIntro", { count: n }) : msg("inventory.lowNone")}</p>
+      ${n ? `<span class="row-actions"><button type="button" class="btn" id="copyReorder">${msg("inventory.copyList")}</button><button type="button" class="btn" id="downloadReorder">${msg("inventory.downloadCsv")}</button></span>` : ""}
     </div>
     <div class="bar">${kinds}</div>
     ${n ? `<div class="table-wrap"><table class="reorder">
-      <thead><tr><th>Item</th><th>In storage</th><th>Reorder at</th><th>Usual order</th><th>Status</th></tr></thead>
-      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span></td><td>${hasStock(p) ? p.stock : "—"}</td><td>${reorderLevel(p) ?? "—"}</td><td class="${Number.isInteger(p.reorderQty) ? "" : "muted"}">${Number.isInteger(p.reorderQty) ? p.reorderQty : "—"}</td><td>${lowStatus(p)}</td></tr>`).join("")}</tbody>
+      <thead><tr><th>${msg("inventory.colItem")}</th><th>${msg("inventory.colInStorage")}</th><th>${msg("inventory.colReorderAt")}</th><th>${msg("inventory.colUsualOrder")}</th><th>${msg("inventory.colStatus")}</th></tr></thead>
+      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || msg("inventory.unnamed"))}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span></td><td>${hasStock(p) ? p.stock : "—"}</td><td>${reorderLevel(p) ?? "—"}</td><td class="${Number.isInteger(p.reorderQty) ? "" : "muted"}">${Number.isInteger(p.reorderQty) ? p.reorderQty : "—"}</td><td>${lowStatus(p)}</td></tr>`).join("")}</tbody>
     </table></div>` : ""}`);
 }
 // Running low's Status cell: on order (and Cancel order), acknowledged, or low (with Acknowledge
 // and Mark ordered for those who can write)
 function lowStatus(p) {
-  const name = esc(p.name || "Unnamed item"), key = esc(p.key);
-  const button = (attr, label, aria) => `<button type="button" class="btn small" data-${attr}="${key}" aria-label="${aria} ${name}">${label}</button>`;
-  if (isOnOrder(p)) return `<span class="status">${esc(onOrderText(p))}</span>${canWrite ? button("cancel-order", "Cancel order", "Cancel the order of") : ""}`;
-  const state = isAcked(p) ? `<span class="status">Acknowledged</span>` : canWrite ? button("ack", "Acknowledge", "Acknowledge") : `<span class="low-badge">Low</span>`;
-  return canWrite ? `${state}${button("order", "Mark ordered", "Mark ordered:")}` : state;
+  const name = esc(p.name || msg("inventory.unnamed")), key = esc(p.key);
+  const button = (attr, label, aria) => `<button type="button" class="btn small" data-${attr}="${key}" aria-label="${msg(aria, { name })}">${msg(label)}</button>`;
+  if (isOnOrder(p)) return `<span class="status">${esc(onOrderText(p))}</span>${canWrite ? button("cancel-order", "inventory.cancelOrder", "inventory.cancelOrderLabel") : ""}`;
+  const state = isAcked(p) ? `<span class="status">${msg("inventory.acknowledged")}</span>` : canWrite ? button("ack", "inventory.acknowledge", "inventory.acknowledgeLabel") : `<span class="low-badge">${msg("inventory.badgeLow")}</span>`;
+  return canWrite ? `${state}${button("order", "inventory.markOrdered", "inventory.markOrderedLabel")}` : state;
 }
 // Marked ordered (supply-checkout-005.14): how many and when, shared by the team on the item. It
 // isn't flagged while it's on order, until a restock above the level (the server ends the order
@@ -633,19 +633,19 @@ function orderModal(key) {
   const p = own(products, key);
   if (!p) return;
   openModal(`
-    <h2>Mark ordered</h2>
-    <p class="muted" style="margin-top:-6px">${esc(p.name || "Unnamed item")}</p>
+    <h2>${msg("inventory.orderTitle")}</h2>
+    <p class="muted" style="margin-top:-6px">${esc(p.name || msg("inventory.unnamed"))}</p>
     <form id="f" style="display:grid;gap:14px">
-      <div class="field"><label for="fOrderQty">How many ordered</label><input type="number" id="fOrderQty" required min="1" max="${MAX_COUNT}" step="1" inputmode="numeric" data-autofocus value="${Number.isInteger(p.reorderQty) ? p.reorderQty : ""}"></div>
-      <div class="field"><label for="fOrderOn">Ordered on</label><input type="date" id="fOrderOn" required min="2000-01-01" value="${todayISO()}"></div>
-      <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Mark ordered</button></div>
+      <div class="field"><label for="fOrderQty">${msg("inventory.orderQty")}</label><input type="number" id="fOrderQty" required min="1" max="${MAX_COUNT}" step="1" inputmode="numeric" data-autofocus value="${Number.isInteger(p.reorderQty) ? p.reorderQty : ""}"></div>
+      <div class="field"><label for="fOrderOn">${msg("inventory.orderedOn")}</label><input type="date" id="fOrderOn" required min="2000-01-01" value="${todayISO()}"></div>
+      <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("inventory.cancel")}</button><button type="submit" class="btn primary">${msg("inventory.markOrdered")}</button></div>
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const form = m.querySelector("#f");
     onSubmit(form, () => {
       const qty = int(m.querySelector("#fOrderQty").value), on = m.querySelector("#fOrderOn").value;
       const body = { ...withoutMarks(p), orderedQty: qty, orderedOn: on };
-      saving(form, () => closing(write(() => db.doc("products/" + key).set(body), `Marked ${qty} ordered`)));
+      saving(form, () => closing(write(() => db.doc("products/" + key).set(body), msg("inventory.marked", { qty }))));
     });
   });
 }
@@ -655,7 +655,7 @@ function cancelOrder(key) {
   if (!p) return;
   const body = { ...p };
   delete body.orderedQty; delete body.orderedOn;
-  write(() => db.doc("products/" + key).set(body), "Order cancelled. It's flagged again while it's low.");
+  write(() => db.doc("products/" + key).set(body), msg("inventory.orderCancelled"));
 }
 // Shared by the team, on the item: quiet until stock falls below what it is now, or until it's
 // restocked above the level and runs low again (src/reorder.js). Made against the item as this
@@ -664,11 +664,11 @@ function acknowledge(key) {
   const p = own(products, key);
   // Deleted (or no longer low) since the list was drawn: the redraw that follows says so
   if (!p || !isLow(p)) return;
-  write(() => db.doc("products/" + key).update({ ackedAtStock: p.stock }), "Acknowledged. It's flagged again if stock falls below " + p.stock + ".");
+  write(() => db.doc("products/" + key).update({ ackedAtStock: p.stock }), msg("inventory.acked", { stock: p.stock }));
 }
 async function copyReorder() {
-  try { await navigator.clipboard.writeText(reorderText(lowList())); toast("Reorder list copied"); }
-  catch { toast("Couldn't copy here. Download the CSV instead."); }
+  try { await navigator.clipboard.writeText(reorderText(lowList())); toast(msg("inventory.copied")); }
+  catch { toast(msg("inventory.copyFailed")); }
 }
 
 // Inventory, Equipment, Out: one row per open project and piece of equipment still out on it
@@ -677,10 +677,10 @@ function equipmentOutHTML() {
     .flatMap(s => lines(s).filter(isEquipmentLine).map(l => ({ s, l, still: equipmentCounts(l).still })))
     .filter(r => r.still > 0)
     .sort((a, b) => String(a.l.name).localeCompare(String(b.l.name)) || String(a.s.date).localeCompare(String(b.s.date)));
-  if (!rows.length) return `<div class="empty">No company equipment is out on a job right now.</div>`;
+  if (!rows.length) return `<div class="empty">${msg("inventory.noneOut")}</div>`;
   return `<div class="table-wrap"><table class="equipment out">
-      <thead><tr><th>Item</th><th>Out</th><th>Project</th><th>Taken by</th><th>When</th></tr></thead>
-      <tbody>${rows.map(({ s, l, still }) => `<tr class="click" data-project="${esc(s.id)}" tabindex="0"><td>${esc(l.name || "Unnamed item")}<span class="code">${esc(codeText(l.code))}</span></td><td>${still}</td><td>${esc(projectTitle(s))}<span class="code">${esc(fmtDate(s.date))}</span></td><td>${esc(takerText(l.takenBy))}</td><td>${esc(whenText(l.takenAt))}</td></tr>`).join("")}</tbody>
+      <thead><tr><th>${msg("inventory.colItem")}</th><th>${msg("inventory.colOut")}</th><th>${msg("inventory.colProject")}</th><th>${msg("inventory.colTakenBy")}</th><th>${msg("inventory.colWhen")}</th></tr></thead>
+      <tbody>${rows.map(({ s, l, still }) => `<tr class="click" data-project="${esc(s.id)}" tabindex="0"><td>${esc(l.name || msg("inventory.unnamed"))}<span class="code">${esc(codeText(l.code))}</span></td><td>${still}</td><td>${esc(projectTitle(s))}<span class="code">${esc(fmtDate(s.date))}</span></td><td>${esc(takerText(l.takenBy))}</td><td>${esc(whenText(l.takenAt))}</td></tr>`).join("")}</tbody>
     </table></div>`;
 }
 
@@ -688,12 +688,12 @@ function newProjectModal(existing) {
   const editing = existing && existing.id;
   const needName = !editing && !myId;
   openModal(`
-    <h2>${editing ? "Edit project" : "New project"}</h2>
+    <h2>${msg(editing ? "project.editTitle" : "project.newTitle")}</h2>
     <form id="f" style="display:grid;gap:14px">
-      <div class="field"><label for="fClient">Client</label><input type="text" id="fClient" required data-autofocus value="${esc(editing ? existing.client : "")}" placeholder="Client or job name"></div>
-      <div class="field"><label for="fDate">Date</label><input type="date" id="fDate" required value="${esc(editing ? existing.date : todayISO())}"></div>
-      ${needName ? `<div class="field"><label for="fBy">Prepared by</label><input type="text" id="fBy" required placeholder="Your name"></div>` : ""}
-      <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">${editing ? "Save" : "Create project"}</button></div>
+      <div class="field"><label for="fClient">${msg("project.client")}</label><input type="text" id="fClient" required data-autofocus value="${esc(editing ? existing.client : "")}" placeholder="${msg("project.clientPlaceholder")}"></div>
+      <div class="field"><label for="fDate">${msg("project.date")}</label><input type="date" id="fDate" required value="${esc(editing ? existing.date : todayISO())}"></div>
+      ${needName ? `<div class="field"><label for="fBy">${msg("project.preparedByLabel")}</label><input type="text" id="fBy" required placeholder="${msg("project.yourName")}"></div>` : ""}
+      <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("project.cancel")}</button><button type="submit" class="btn primary">${msg(editing ? "project.save" : "project.create")}</button></div>
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     // One new project per form: trying again saves the same project, so a save whose answer was
