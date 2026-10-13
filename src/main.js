@@ -1,4 +1,5 @@
 import "./theme.js";
+import { msg } from "./i18n.js";
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, markLost, saveItem, addLines, quickTake, moveLine } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY, MAX_BRAND, brandOf, nameWithBrand, brandHTML, visibleText } from "./format.js";
@@ -260,7 +261,7 @@ function cardHTML(s) {
         <button type="button" class="project-card adhoc" data-open="${esc(s.id)}">
           <h3>${esc(projectTitle(s))}</h3>
           <div class="right"><span class="pill open">Taken for no job</span></div>
-          <div class="meta"><span>Since ${esc(fmtDate(s.date))}</span><span>${n} item${n === 1 ? "" : "s"} out</span></div>
+          <div class="meta"><span>Since ${esc(fmtDate(s.date))}</span><span>${msg("project.itemsOut", { count: n })}</span></div>
         </button>`;
   }
   return `
@@ -290,7 +291,7 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 // A group's count, and for owners its total charge (the General Use project is never charged)
 function groupMeta(list) {
   const cents = list.filter(s => !isAdhoc(s)).reduce((a, s) => a + Math.round(totals(s).charge * 100), 0);
-  return `${plural(list.length, "project")}${isOwner ? ` · ${money(cents / 100)}` : ""}`;
+  return `${msg("project.count", { count: list.length })}${isOwner ? ` · ${money(cents / 100)}` : ""}`;
 }
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 function groupedHTML(closed) {
