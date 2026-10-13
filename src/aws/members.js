@@ -23,46 +23,48 @@
 import { esc } from "../format.js";
 import { armButton, openModal, closeModal, toast } from "../dom.js";
 import { avatarHTML } from "../avatar.js";
+import { msg } from "../i18n.js";
 
+// id, label key, description key
 const ROLES = [
-  ["owner", "Owner", "Everything, including members and billing"],
-  ["contributor", "Contributor", "Scans, and edits projects and inventory"],
-  ["viewer", "Viewer", "Sees everything, changes nothing"],
+  ["owner", "members.roleOwner", "members.roleOwnerDesc"],
+  ["contributor", "members.roleContributor", "members.roleContributorDesc"],
+  ["viewer", "members.roleViewer", "members.roleViewerDesc"],
 ];
-const AS = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
+const AS = { owner: "members.asOwner", contributor: "members.asContributor", viewer: "members.asViewer" };
+const INVITE_AS = { owner: "members.inviteAsOwner", contributor: "members.inviteAsContributor", viewer: "members.inviteAsViewer" };
 // Why an invite's email didn't arrive, and what the owner can do about it
 const WHY = {
-  bounced: "The address doesn't take mail. Check it, then revoke this invite and invite the right address.",
-  complained: "They marked the invite as spam, so we won't email them again.",
-  not_sent: "The email couldn't be sent. Try Resend.",
+  bounced: "members.whyBounced",
+  complained: "members.whyComplained",
+  not_sent: "members.whyNotSent",
 };
 const day = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 const when = (iso) => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 // What support did, in words (the actions in listSupportActions, backend/src/data/audit.ts)
 const SUPPORT = {
-  "ops.team.read": () => "Looked at the team's account",
-  "ops.comp.set": (a) => "Gave the team a free plan" + (a.after && a.after.until ? ` until ${day(a.after.until)}` : ""),
-  "ops.comp.end": () => "Ended the team's free plan",
+  "ops.team.read": () => msg("members.supportRead"),
+  "ops.comp.set": (a) => a.after && a.after.until ? msg("members.supportCompSetUntil", { date: day(a.after.until) }) : msg("members.supportCompSet"),
+  "ops.comp.end": () => msg("members.supportCompEnd"),
   // What billing did about a free plan's months on the team's Stripe bills (supply-checkout-6e4b)
   "ops.comp.discount": (a) => {
     const outcome = a.after && a.after.outcome;
-    return outcome === "applied" ? "Made the team's bills free for its free plan's months"
-      : outcome === "removed" ? "Took the free plan's discount off the team's bills"
-      : "Checked the team's bills for its free plan";
+    return msg(outcome === "applied" ? "members.supportDiscountApplied" : outcome === "removed" ? "members.supportDiscountRemoved" : "members.supportDiscountChecked");
   },
-  "ops.import.clear": () => "Cleared an import that didn't finish",
+  "ops.import.clear": () => msg("members.supportImportClear"),
 };
 const SUPPORT_PAGE = 20;
 
 // What went wrong, in words: the server's own for the last owner, and for a team that became
 // read-only for billing meanwhile (its trial or subscription ended, or a payment is overdue),
 // which say what to do
-const failure = (e, what) =>
+// `fallback`: the catalog key for any other error
+const failure = (e, fallback) =>
   e.reason === "last_owner" || e.reason === "subscription_ended" ? e.message
-    : e.code === "not_found" ? "That person isn't in the team any more."
-    : e.code === "aborted" ? "Someone else changed the team's members just now. Try again."
-    : e.code === "permission_denied" ? "Only the team's owners can manage members."
-    : `Couldn't ${what}. Check your connection and try again.`;
+    : msg(e.code === "not_found" ? "members.failNotFound"
+    : e.code === "aborted" ? "members.failAborted"
+    : e.code === "permission_denied" ? "members.failDenied"
+    : fallback);
 
 // Who a member is, in a sentence: their name (from their account, supply-checkout-lx7), else
 // their email. A member chooses their own name, so the row also shows the email under it.
@@ -73,39 +75,39 @@ const who = (m) => m.name || m.email;
 function rowHTML(m, me, owners, closed, fixed, photo) {
   const you = m.userId === me;
   const name = (m.name
-    ? `${esc(m.name)}${you ? ` <span class="muted">(you)</span>` : ""}<br><span class="muted member-email">${esc(m.email || "No email address")}</span>`
-    : esc(m.email || "A member without an email address") + (you ? ` <span class="muted">(you)</span>` : ""));
+    ? `${esc(m.name)}${you ? ` <span class="muted">${msg("members.you")}</span>` : ""}<br><span class="muted member-email">${esc(m.email || msg("members.noEmail"))}</span>`
+    : esc(m.email || msg("members.noEmailMember")) + (you ? ` <span class="muted">${msg("members.you")}</span>` : ""));
   // The only owner can't step down or leave: a team always keeps an owner, until it's closed
   const last = m.role === "owner" && owners === 1 && !closed;
-  const options = ROLES.map(([id, label]) => `<option value="${id}"${id === m.role ? " selected" : ""}>${label}</option>`).join("");
+  const options = ROLES.map(([id, label]) => `<option value="${id}"${id === m.role ? " selected" : ""}>${msg(label)}</option>`).join("");
   return `<li class="member" data-user="${esc(m.userId)}">
     ${avatarHTML(photo, who(m), 32, m.userId)}
     <span class="member-name">${name}</span>
-    <select aria-label="Role for ${esc(who(m) || "this member")}"${last || fixed ? " disabled" : ""}>${options}</select>
-    <button type="button" class="btn danger" data-remove${last ? " disabled" : ""}>${you ? "Leave" : "Remove"}</button>
+    <select aria-label="${msg("members.roleFor", { name: esc(who(m) || msg("members.thisMember")) })}"${last || fixed ? " disabled" : ""}>${options}</select>
+    <button type="button" class="btn danger" data-remove${last ? " disabled" : ""}>${msg(you ? "members.leave" : "members.remove")}</button>
   </li>`;
 }
 
 // What went wrong with an invite, in words: the server's own where it says what to do (a full
 // team says how many; one read-only for billing says who can make changes again)
-const inviteFailure = (e, what) =>
+const inviteFailure = (e, fallback) =>
   e.reason === "team_full" || e.reason === "subscription_ended" ? e.message
-    : e.code === "quota_exceeded" ? "You've sent as many invites as you can for now. Try again tomorrow."
     : e.code === "aborted" ? e.message
-    : e.code === "bad_request" ? "Enter an email address, like name@example.com."
-    : e.code === "not_found" ? "That invite was accepted or revoked just now."
-    : e.code === "permission_denied" ? "Only the team's owners can manage invites."
-    : `Couldn't ${what}. Check your connection and try again.`;
+    : msg(e.code === "quota_exceeded" ? "members.inviteQuota"
+    : e.code === "bad_request" ? "members.inviteBadEmail"
+    : e.code === "not_found" ? "members.inviteGone"
+    : e.code === "permission_denied" ? "members.inviteDenied"
+    : fallback);
 
 // `ended`: the team is read-only for billing, so an invite can be revoked but not re-sent
 function inviteHTML(i, ended) {
-  const status = i.inviteStatus === "failed" ? `<span class="invite-failed">Couldn't deliver. ${WHY[i.failureReason] || "Try Resend, or revoke it."}</span>`
-    : i.inviteStatus === "expired" ? `Expired ${day(i.expiresAt)}. Resend it for a new link.`
-    : `Pending, expires ${day(i.expiresAt)}`;
+  const status = i.inviteStatus === "failed" ? `<span class="invite-failed">${msg("members.inviteFailed", { why: msg(WHY[i.failureReason] || "members.whyOther") })}</span>`
+    : i.inviteStatus === "expired" ? msg("members.inviteExpired", { date: day(i.expiresAt) })
+    : msg("members.invitePending", { date: day(i.expiresAt) });
   return `<li class="member invite-row" data-invite="${esc(i.id)}">
-    <span class="member-name">${esc(i.email)} <span class="muted">as ${AS[i.role]}</span><br><span class="invite-status">${status}</span></span>
-    ${ended ? "" : `<button type="button" class="btn" data-resend>Resend</button>`}
-    <button type="button" class="btn danger" data-revoke>Revoke</button>
+    <span class="member-name">${esc(i.email)} <span class="muted">${msg(INVITE_AS[i.role])}</span><br><span class="invite-status">${status}</span></span>
+    ${ended ? "" : `<button type="button" class="btn" data-resend>${msg("members.resend")}</button>`}
+    <button type="button" class="btn danger" data-revoke>${msg("members.revoke")}</button>
   </li>`;
 }
 
@@ -114,31 +116,31 @@ const typed = (value) => value.normalize("NFKC").trim().toLowerCase();
 
 // What went wrong closing the team, in words
 const closeFailure = (e) =>
-  e.code === "bad_request" ? "Type the team's name as it's shown."
-    : e.code === "aborted" ? "Someone else changed the team just now. Try again."
-    : e.code === "permission_denied" ? "Only the team's owners can close it."
-    : "Couldn't close the team. Check your connection and try again.";
+  msg(e.code === "bad_request" ? "members.closeBadName"
+    : e.code === "aborted" ? "members.closeAborted"
+    : e.code === "permission_denied" ? "members.closeDenied"
+    : "members.closeFailed");
 
 // The team's invites and closing it, while it's open. A team that's read-only for billing
 // (`ended`) can't invite anyone: the form is hidden, and the screen says why.
 function openParts(team, ended) {
-  return `<h3>${ended ? "Invites" : "Invite someone"}</h3>
-    ${ended ? `<p class="hint" id="endedMembers">This team is read-only until an owner subscribes or pays: you can remove people, leave, revoke invites or close the team, but not invite anyone or change roles.</p>` : ""}
+  return `<h3>${msg(ended ? "members.invitesHeading" : "members.inviteHeading")}</h3>
+    ${ended ? `<p class="hint" id="endedMembers">${msg("members.endedHint")}</p>` : ""}
     <form id="inviteForm" class="invite-form" novalidate${ended ? " hidden" : ""}>
-      <div class="field"><label for="inviteEmail">Email</label><input type="email" id="inviteEmail" required maxlength="254" autocomplete="off" spellcheck="false"></div>
-      <div class="field"><label for="inviteRole">Role</label><select id="inviteRole">${ROLES.map(([id, label]) => `<option value="${id}"${id === "contributor" ? " selected" : ""}>${label}</option>`).join("")}</select></div>
-      <button type="submit" class="btn primary" id="inviteSend">Send invite</button>
+      <div class="field"><label for="inviteEmail">${msg("members.emailLabel")}</label><input type="email" id="inviteEmail" required maxlength="254" autocomplete="off" spellcheck="false"></div>
+      <div class="field"><label for="inviteRole">${msg("members.roleLabel")}</label><select id="inviteRole">${ROLES.map(([id, label]) => `<option value="${id}"${id === "contributor" ? " selected" : ""}>${msg(label)}</option>`).join("")}</select></div>
+      <button type="submit" class="btn primary" id="inviteSend">${msg("members.sendInvite")}</button>
     </form>
-    <p class="hint"${ended ? " hidden" : ""}>They get an email with a link that works once and expires in 7 days. They sign in or sign up with that address to join.</p>
-    <p class="hint" id="teamFull" hidden>The team is full, counting invites waiting. Remove someone or revoke an invite to invite someone else.</p>
+    <p class="hint"${ended ? " hidden" : ""}>${msg("members.inviteHint")}</p>
+    <p class="hint" id="teamFull" hidden>${msg("members.teamFull")}</p>
     <p class="error" role="alert" id="invitesFail" hidden></p>
-    <div id="invitesList" aria-live="polite"><p class="muted" role="status">Loading invites…</p></div>
-    <h3>Close the team</h3>
-    <p class="hint">Closing makes the team read-only for everyone, straight away, and nobody can join. Owners can still export its data for 30 days; then everything in it is deleted. It can't be undone. If the team pays yearly, closing it doesn't refund the unused months, except within 14 days of a yearly charge (see the Terms).</p>
+    <div id="invitesList" aria-live="polite"><p class="muted" role="status">${msg("members.loadingInvites")}</p></div>
+    <h3>${msg("members.closeHeading")}</h3>
+    <p class="hint">${msg("members.closeHint")}</p>
     <form id="closeForm" class="close-form" novalidate>
-      <div class="field"><label for="closeName">Type the team's name, <strong>${esc(team.name)}</strong>, to close it</label><input type="text" id="closeName" autocomplete="off" spellcheck="false"></div>
+      <div class="field"><label for="closeName">${msg("members.closeLabel", { name: esc(team.name) })}</label><input type="text" id="closeName" autocomplete="off" spellcheck="false"></div>
       <p class="error" role="alert" id="closeFail" hidden></p>
-      <div class="modal-actions"><button type="submit" class="btn danger" id="closeTeam" disabled>Close team</button></div>
+      <div class="modal-actions"><button type="submit" class="btn danger" id="closeTeam" disabled>${msg("members.closeTeam")}</button></div>
     </form>`;
 }
 
@@ -156,12 +158,12 @@ function wireInvites(api, team, m, invited, changed) {
 
   function drawInvites() {
     changed(invites);
-    inviteList.innerHTML = invites.length ? `<ul class="members invites">${invites.map((i) => inviteHTML(i, team.subscriptionEnded)).join("")}</ul>` : `<p class="muted">No invites waiting.</p>`;
+    inviteList.innerHTML = invites.length ? `<ul class="members invites">${invites.map((i) => inviteHTML(i, team.subscriptionEnded)).join("")}</ul>` : `<p class="muted">${msg("members.noInvites")}</p>`;
     inviteList.querySelectorAll(".invite-row").forEach((row) => {
       const invite = invites.find((x) => x.id === row.dataset.invite);
       const resend = row.querySelector("[data-resend]"), revoke = row.querySelector("[data-revoke]");
       if (resend) resend.addEventListener("click", () => resendInvite(invite, resend));
-      armButton(revoke, "Tap again to revoke", () => revokeInvite(invite, revoke));
+      armButton(revoke, msg("members.tapToRevoke"), () => revokeInvite(invite, revoke));
     });
   }
 
@@ -170,14 +172,14 @@ function wireInvites(api, team, m, invited, changed) {
     invites = [invite, ...invites.filter((x) => x.id !== replacing && x.id !== invite.id)];
     drawInvites();
     invited();
-    toast(invite.inviteStatus === "failed" ? `Couldn't send the invite to ${invite.email}` : `Invite sent to ${invite.email}`);
+    toast(invite.inviteStatus === "failed" ? msg("members.inviteToastFailed", { email: invite.email }) : msg("members.inviteToast", { email: invite.email }));
   }
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const address = email.value.trim();
     sayInvite("");
-    if (!/^[^\s@]+@[^\s@]+$/.test(address)) { sayInvite("Enter an email address, like name@example.com."); email.focus(); return; }
+    if (!/^[^\s@]+@[^\s@]+$/.test(address)) { sayInvite(msg("members.inviteBadEmail")); email.focus(); return; }
     busy = true;
     gate();
     try {
@@ -185,7 +187,7 @@ function wireInvites(api, team, m, invited, changed) {
       email.value = "";
       sent(res.invite);
     } catch (err) {
-      sayInvite(inviteFailure(err, "send the invite"));
+      sayInvite(inviteFailure(err, "members.inviteFailSend"));
     }
     busy = false;
     gate();
@@ -199,7 +201,7 @@ function wireInvites(api, team, m, invited, changed) {
     } catch (err) {
       // Accepted or revoked meanwhile: it's gone
       if (err.code === "not_found") { invites = invites.filter((x) => x.id !== invite.id); drawInvites(); } else button.disabled = false;
-      sayInvite(inviteFailure(err, "resend the invite"));
+      sayInvite(inviteFailure(err, "members.inviteFailResend"));
     }
   }
 
@@ -210,10 +212,10 @@ function wireInvites(api, team, m, invited, changed) {
       await api("DELETE", `${invitesPath}/${encodeURIComponent(invite.id)}`);
       invites = invites.filter((x) => x.id !== invite.id);
       drawInvites();
-      toast(`Revoked the invite to ${invite.email}`);
+      toast(msg("members.revokedToast", { email: invite.email }));
     } catch (err) {
       button.disabled = false;
-      sayInvite(inviteFailure(err, "revoke the invite"));
+      sayInvite(inviteFailure(err, "members.inviteFailRevoke"));
     }
   }
 
@@ -223,7 +225,7 @@ function wireInvites(api, team, m, invited, changed) {
       drawInvites();
     } catch (e) {
       inviteList.innerHTML = "";
-      sayInvite(inviteFailure(e, "load the invites"));
+      sayInvite(inviteFailure(e, "members.inviteFailLoad"));
     }
   })();
   return {
@@ -243,7 +245,7 @@ function wireClose(api, team, m, leave) {
     try {
       const res = await api("POST", `/teams/${encodeURIComponent(team.id)}/close`, { name: name.value });
       closeModal();
-      leave(`You closed ${team.name}. It's read-only now, and everything in it will be deleted on ${day(res.team.deletesAt)}.`);
+      leave(msg("members.closed", { team: team.name, date: day(res.team.deletesAt) }));
     } catch (err) {
       fail.textContent = closeFailure(err);
       fail.hidden = false;
@@ -254,24 +256,24 @@ function wireClose(api, team, m, leave) {
 
 // What went wrong reopening the team, in words
 const reopenFailure = (e) =>
-  e.reason === "team_deleting" ? "This team is about to be deleted, so it can't be reopened any more."
-    : e.code === "bad_request" ? "Type the team's name as it's shown."
-    : e.code === "quota_exceeded" ? "This team has been reopened as many times as it can be today. Try again tomorrow."
-    : e.code === "aborted" ? "Someone else changed the team just now. Try again."
-    : e.code === "permission_denied" ? "Only the team's owners can reopen it."
-    : "Couldn't reopen the team. Check your connection and try again.";
+  msg(e.reason === "team_deleting" ? "members.reopenDeleting"
+    : e.code === "bad_request" ? "members.reopenBadName"
+    : e.code === "quota_exceeded" ? "members.reopenQuota"
+    : e.code === "aborted" ? "members.reopenAborted"
+    : e.code === "permission_denied" ? "members.reopenDenied"
+    : "members.reopenFailed");
 
 // Reopening a closed team, for its owners: the button stays off until the typed name matches.
 // `done` runs once it's open again: the team's access changed, so the page starts again.
 export function openReopen(api, team, done) {
-  openModal(`<h2>Reopen ${esc(team.name)}</h2>
-    <p class="hint">Reopening makes the team writable again for its members, straight away, and it won't be deleted. Every owner gets an email about it.</p>
-    <p class="hint">Invites that were cancelled when it closed stay cancelled, and anyone who left or was removed while it was closed isn't back: invite them again from Members.</p>
-    <p class="hint">If closing the team set its subscription to end, reopening keeps it going. A subscription that has already ended doesn't come back: the team stays read-only until you subscribe again.</p>
+  openModal(`<h2>${msg("members.reopenTitle", { team: esc(team.name) })}</h2>
+    <p class="hint">${msg("members.reopenIntro")}</p>
+    <p class="hint">${msg("members.reopenInvites")}</p>
+    <p class="hint">${msg("members.reopenSubscription")}</p>
     <form id="reopenForm" class="close-form" novalidate>
-      <div class="field"><label for="reopenName">Type the team's name, <strong>${esc(team.name)}</strong>, to reopen it</label><input type="text" id="reopenName" autocomplete="off" spellcheck="false" data-autofocus></div>
+      <div class="field"><label for="reopenName">${msg("members.reopenLabel", { name: esc(team.name) })}</label><input type="text" id="reopenName" autocomplete="off" spellcheck="false" data-autofocus></div>
       <p class="error" role="alert" id="reopenFail" hidden></p>
-      <div class="modal-actions"><button type="button" class="btn" id="reopenCancel">Cancel</button><button type="submit" class="btn primary" id="reopenTeamGo" disabled>Reopen team</button></div>
+      <div class="modal-actions"><button type="button" class="btn" id="reopenCancel">${msg("members.reopenCancel")}</button><button type="submit" class="btn primary" id="reopenTeamGo" disabled>${msg("members.reopenTeam")}</button></div>
     </form>`, (m) => {
     const name = m.querySelector("#reopenName"), button = m.querySelector("#reopenTeamGo"), fail = m.querySelector("#reopenFail");
     m.querySelector("#reopenCancel").addEventListener("click", closeModal);
@@ -289,14 +291,14 @@ export function openReopen(api, team, done) {
         return;
       }
       closeModal();
-      done(`You reopened ${team.name}. Its members can change it again, and it won't be deleted.`);
+      done(msg("members.reopened", { team: team.name }));
     });
   });
 }
 
 function supportHTML(a) {
-  const what = (SUPPORT[a.action] || (() => "Changed the team's account"))(a);
-  return `<li class="support-action"><span class="muted">${esc(when(a.ts))}</span> ${esc(what)}${a.reason ? `<br><span class="muted">Reason: ${esc(a.reason)}</span>` : ""}</li>`;
+  const what = (SUPPORT[a.action] || (() => msg("members.supportOther")))(a);
+  return `<li class="support-action"><span class="muted">${esc(when(a.ts))}</span> ${esc(what)}${a.reason ? `<br><span class="muted">${msg("members.supportReason", { reason: esc(a.reason) })}</span>` : ""}</li>`;
 }
 
 // What Supply Checkout support did to the team, newest first, a page at a time. If the first
@@ -310,19 +312,19 @@ function wireSupport(api, team, m) {
     fail.hidden = true;
     try {
       const page = await api("GET", cursor ? `${path}&cursor=${encodeURIComponent(cursor)}` : path);
-      if (!shown) list.innerHTML = page.actions.length ? `<ul class="support-actions"></ul>` : `<p class="muted">Supply Checkout support hasn't done anything to this team.</p>`;
+      if (!shown) list.innerHTML = page.actions.length ? `<ul class="support-actions"></ul>` : `<p class="muted">${msg("members.supportNone")}</p>`;
       shown += page.actions.length;
       if (shown) list.querySelector("ul").insertAdjacentHTML("beforeend", page.actions.map(supportHTML).join(""));
       cursor = page.cursor || null;
     } catch {
       if (!shown) {
-        list.innerHTML = `<button type="button" class="btn" id="supportRetry">Try again</button>`;
+        list.innerHTML = `<button type="button" class="btn" id="supportRetry">${msg("members.supportRetry")}</button>`;
         list.querySelector("#supportRetry").addEventListener("click", () => {
-          list.innerHTML = `<p class="muted" role="status">Loading…</p>`;
+          list.innerHTML = `<p class="muted" role="status">${msg("members.loading")}</p>`;
           load();
         });
       }
-      fail.textContent = "Couldn't load what support did. Check your connection and try again.";
+      fail.textContent = msg("members.supportFailed");
       fail.hidden = false;
     }
     more.hidden = !cursor;
@@ -345,18 +347,18 @@ export function openMembers(api, team, me, leave, invited, photoOf) {
   // API from before it has none, and the screen then shows no count.
   let cap = team.memberCap;
   let members = [], waiting = 0, loaded = false;
-  openModal(`<h2>Members</h2>
-    <p class="hint">${ROLES.map(([, name, what]) => `<strong>${name}</strong>: ${what}.`).join(" ")}</p>
+  openModal(`<h2>${msg("members.title")}</h2>
+    <p class="hint">${ROLES.map(([, name, what]) => msg("members.roleLine", { name: msg(name), description: msg(what) })).join(" ")}</p>
     <p class="seats" id="seats" hidden></p>
     <p class="error" role="alert" id="membersFail" hidden></p>
-    <div id="membersList" aria-live="polite"><p class="muted" role="status">Loading members…</p></div>
-    ${closed ? `<p class="hint">This team is closed: you can remove people or leave it, but not invite anyone or change roles.</p>` : openParts(team, ended)}
-    <h3>Support activity</h3>
-    <p class="hint">What Supply Checkout support did to this team, newest first.</p>
+    <div id="membersList" aria-live="polite"><p class="muted" role="status">${msg("members.loadingMembers")}</p></div>
+    ${closed ? `<p class="hint">${msg("members.closedHint")}</p>` : openParts(team, ended)}
+    <h3>${msg("members.supportHeading")}</h3>
+    <p class="hint">${msg("members.supportIntro")}</p>
     <p class="error" role="alert" id="supportFail" hidden></p>
-    <div id="supportList" aria-live="polite"><p class="muted" role="status">Loading…</p></div>
-    <button type="button" class="btn" id="supportMore" hidden>Show more</button>
-    <div class="modal-actions"><button type="button" class="btn" id="membersClose">Close</button></div>`, (m) => {
+    <div id="supportList" aria-live="polite"><p class="muted" role="status">${msg("members.loading")}</p></div>
+    <button type="button" class="btn" id="supportMore" hidden>${msg("members.showMore")}</button>
+    <div class="modal-actions"><button type="button" class="btn" id="membersClose">${msg("members.close")}</button></div>`, (m) => {
     const list = m.querySelector("#membersList"), fail = m.querySelector("#membersFail");
     const say = (text) => { fail.textContent = text; fail.hidden = !text; };
     m.querySelector("#membersClose").addEventListener("click", closeModal);
@@ -377,7 +379,7 @@ export function openMembers(api, team, me, leave, invited, photoOf) {
       if (!list.isConnected) return;
       const el = m.querySelector("#seats");
       el.hidden = !(cap && loaded);
-      if (!el.hidden) el.textContent = `${members.length} of ${cap} members`;
+      if (!el.hidden) el.textContent = msg("members.seats", { count: members.length, cap });
       gate();
     }
 
@@ -394,12 +396,12 @@ export function openMembers(api, team, me, leave, invited, photoOf) {
       seats();
       const owners = members.filter((x) => x.role === "owner").length;
       list.innerHTML = `<ul class="members">${members.map((x) => rowHTML(x, me, owners, closed, closed || ended, photoOf(x.userId))).join("")}</ul>`
-        + (owners === 1 && !closed ? `<p class="hint">A team needs at least one owner. To step down, make someone else an owner first.</p>` : "");
+        + (owners === 1 && !closed ? `<p class="hint">${msg("members.needOwner")}</p>` : "");
       list.querySelectorAll(".member").forEach((row) => {
         const member = members.find((x) => x.userId === row.dataset.user);
         const select = row.querySelector("select"), remove = row.querySelector("[data-remove]");
         select.addEventListener("change", () => changeRole(member, select));
-        armButton(remove, member.userId === me ? "Tap again to leave" : "Tap again to remove", () => removeMember(member, remove));
+        armButton(remove, msg(member.userId === me ? "members.tapToLeave" : "members.tapToRemove"), () => removeMember(member, remove));
       });
     }
 
@@ -409,14 +411,14 @@ export function openMembers(api, team, me, leave, invited, photoOf) {
       say("");
       try {
         const res = await api("PATCH", `${path}/${encodeURIComponent(member.userId)}`, { role });
-        if (member.userId === me) { closeModal(); leave(`You're now ${AS[role]} in ${team.name}.`); return; }
+        if (member.userId === me) { closeModal(); leave(msg("members.nowRoleYou", { role: msg(AS[role]), team: team.name })); return; }
         members = members.map((x) => (x.userId === member.userId ? res.member : x));
         draw();
-        toast(`${who(member) || "The member"} is now ${AS[role]}`);
+        toast(msg("members.nowRole", { name: who(member) || msg("members.theMember"), role: msg(AS[role]) }));
       } catch (e) {
         select.value = member.role;
         select.disabled = false;
-        say(failure(e, "change the role"));
+        say(failure(e, "members.failChangeRole"));
       }
     }
 
@@ -425,15 +427,15 @@ export function openMembers(api, team, me, leave, invited, photoOf) {
       say("");
       try {
         await api("DELETE", `${path}/${encodeURIComponent(member.userId)}`);
-        if (member.userId === me) { closeModal(); leave(`You left ${team.name}.`, true); return; }
+        if (member.userId === me) { closeModal(); leave(msg("members.left", { team: team.name }), true); return; }
         members = members.filter((x) => x.userId !== member.userId);
         draw();
         // The server revoked their other invites to the team too (a closed team has none)
         if (member.email && invites) invites.dropFor(member.email);
-        toast(`Removed ${who(member) || "the member"} from the team`);
+        toast(msg("members.removed", { name: who(member) || msg("members.theMemberLower") }));
       } catch (e) {
         button.disabled = false;
-        say(failure(e, "remove them"));
+        say(failure(e, "members.failRemove"));
       }
     }
 
@@ -444,7 +446,7 @@ export function openMembers(api, team, me, leave, invited, photoOf) {
         draw();
       } catch (e) {
         list.innerHTML = "";
-        say(failure(e, "load the members"));
+        say(failure(e, "members.failLoad"));
       }
     })();
   });
