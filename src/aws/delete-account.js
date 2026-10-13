@@ -7,7 +7,7 @@
 // otherwise removes them from every team, closes any team they're alone in, and deletes
 // their sign-in. Web build only, like the rest of src/aws/.
 import { esc } from "../format.js";
-import { msg } from "../i18n.js";
+import { chooseDeviceLanguage, currentLanguage, languageChoices, msg } from "../i18n.js";
 import { openModal, closeModal } from "../dom.js";
 import { whatsNewSetting, wireWhatsNewSetting } from "./whats-new.js";
 import { photoSection, wirePhoto } from "./profile-photo.js";
@@ -20,6 +20,16 @@ const failure = (e) =>
   e.reason === "last_owner" ? e.message
     : e.code === "bad_request" ? msg("deleteAccount.typeWord", { word: WORD })
     : msg("deleteAccount.failed");
+
+// The language, saved on this device: shown only when there's more than one to choose from (i18n.js)
+function languageSection() {
+  const choices = languageChoices();
+  if (!choices.length) return "";
+  return `<h3>${msg("deleteAccount.languageHeading")}</h3>
+    <div class="field"><label for="languageSelect">${msg("deleteAccount.languageLabel")}</label>
+    <select id="languageSelect">${choices.map(([code, name]) => `<option value="${code}"${code === currentLanguage() ? " selected" : ""}>${name}</option>`).join("")}</select>
+    <p class="hint">${msg("deleteAccount.languageHint")}</p></div>`;
+}
 
 // Two-step sign-in as /me says it (`mfa`), with a button to set it up: owners need it for
 // billing. Nothing from an API that doesn't say.
@@ -54,6 +64,7 @@ export function openDeleteAccount(api, email, onDeleted, twoStep, whatsNew, phot
   openModal(`<h2>${msg("deleteAccount.title")}</h2>
     <p>${msg("deleteAccount.signedInAs", { email: esc(email || msg("deleteAccount.you")) })}</p>
     ${nameSection(name)}
+    ${languageSection()}
     ${photo ? photoSection(photo) : ""}
     ${passwordSection(twoStep.mfa)}
     ${twoStepSection(twoStep.mfa)}
@@ -75,6 +86,9 @@ export function openDeleteAccount(api, email, onDeleted, twoStep, whatsNew, phot
     if (change) change.addEventListener("click", twoStep.changePassword);
     wireWhatsNewSetting(m, api, whatsNew.prefs, whatsNew.off);
     wireName(m, api, name);
+    // Every screen is made again in the new language, so the page loads again
+    const language = m.querySelector("#languageSelect");
+    if (language) language.addEventListener("change", async () => { await chooseDeviceLanguage(language.value); location.reload(); });
     if (photo) wirePhoto(m, api, photo);
     input.addEventListener("input", () => { button.disabled = !ready(); });
     m.querySelector("#deleteForm").addEventListener("submit", async (e) => {

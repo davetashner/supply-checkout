@@ -99,7 +99,8 @@ export async function openApp(page, opts = {}) {
   const { persona } = journeyVideo;
   if (persona) opts = { userName: persona.user, avatarUrl: persona.avatarUrl, ...opts, names: { Sam: persona.crew, [persona.crew]: persona.crew, ...opts.names } };
   await page.addInitScript(installMockClaude, opts);
-  await page.goto(ORIGIN);
+  // search: a query string for the address, such as ?lang=es
+  await page.goto(ORIGIN + (opts.search || ""));
 }
 
 /**

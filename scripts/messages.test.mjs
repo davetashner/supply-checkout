@@ -54,3 +54,14 @@ test("every Spanish catalog entry matches its English one: same key, placeholder
     }
   }
 });
+
+test("the Spanish catalog has every English entry (an entry it lacks would show in English)", async () => {
+  const esDir = new URL("../src/messages/es/", import.meta.url);
+  const missing = [];
+  for (const file of files) {
+    const { default: en } = await import(new URL(file, dir));
+    const es = await import(new URL(file, esDir)).then((m) => m.default, () => ({}));
+    for (const key of Object.keys(en)) if (!(key in es)) missing.push(`${file}: ${key}`);
+  }
+  assert.deepEqual(missing, []);
+});

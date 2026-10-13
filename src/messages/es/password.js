@@ -1,0 +1,32 @@
+// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+export default {
+  "password.rules": "Al menos 12 caracteres, con mayúsculas, minúsculas, un número y un símbolo.",
+  "password.invalid": "Elija una contraseña de al menos 12 caracteres, con mayúsculas, minúsculas, un número y un símbolo, que no haya usado antes.",
+  "password.wrongRequired": "Esa contraseña actual no es correcta.",
+  "password.wrong": "Esa contraseña actual no es correcta. Si solo ha iniciado sesión con un código por correo o una llave de acceso, déjela vacía.",
+  "password.federated": "Usted inicia sesión con Google o Apple, así que no hay una contraseña de Supply Checkout que cambiar.",
+  "password.tooMany": "Demasiados intentos por ahora. Espere unos minutos e intente de nuevo.",
+
+  "password.currentLabel": "Contraseña actual",
+  "password.currentHintRequired": "La contraseña con la que inicia sesión ahora.",
+  "password.currentHint": "Déjela vacía si solo ha iniciado sesión con un código por correo o una llave de acceso.",
+  "password.forgotSummary": "¿Olvidó su contraseña actual?",
+  "password.forgotBody": "Cierre sesión y, en la página de inicio de sesión, elija restablecer su contraseña: le enviaremos un código por correo para crear una nueva. Inicie sesión con ella y listo.",
+  "password.newLabel": "Contraseña nueva",
+  "password.confirmLabel": "Confirmar contraseña nueva",
+  "password.enterCurrent": "Escriba su contraseña actual.",
+  "password.choose": "Elija una contraseña.",
+  "password.mismatch": "Las contraseñas nuevas no coinciden. Escriba de nuevo la nueva.",
+
+  "password.title": "Cambiar contraseña",
+  "password.introRequired": "Cambie la contraseña con la que inicia sesión.",
+  "password.intro": "Cambie la contraseña con la que inicia sesión, o cree una si solo ha iniciado sesión con un código por correo o una llave de acceso.",
+  "password.signOutAll": "Cerrar sesión en todas partes",
+  "password.signOutHint": "Cierra su sesión en la aplicación en sus dispositivos, también en este, para que quien conociera la contraseña anterior tenga que iniciar sesión de nuevo. Aquí iniciará sesión de nuevo con la nueva. Un navegador que inició sesión en la última hora puede seguir entrando sin contraseña hasta que pase esa hora.",
+  "password.cancel": "Cancelar",
+  "password.save": "Cambiar contraseña",
+  "password.notSignedOut": "Su contraseña cambió, pero aún no se cerró su sesión en todas partes. Intente de nuevo, o cierre esto para seguir con la sesión iniciada.",
+  "password.close": "Cerrar",
+  "password.failed": "No se pudo cambiar la contraseña. Revise su conexión e intente de nuevo.",
+  "password.changed": "Su contraseña cambió.",
+};

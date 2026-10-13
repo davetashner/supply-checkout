@@ -49,7 +49,6 @@ export default {
   "project.colStillOut": "Still out",
   "project.total": "Total",
 
-  "project.since2": "Since ",
   "project.startedBy": "Started by {who}",
   "project.preparedBy": "Prepared by {who}",
   "project.adhocHint": "Taken for no job. Nothing here is charged; move a line to a client's project to bill it.",

@@ -1,0 +1,22 @@
+// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+export default {
+  "shell.home": "Inicio de Supply Checkout",
+  "shell.sections": "Secciones",
+  "shell.projects": "Proyectos",
+  "shell.theme": "Tema",
+  "shell.themeSystem": "Tema del sistema",
+  "shell.themeLight": "Tema claro",
+  "shell.themeDark": "Tema oscuro",
+  "shell.allProjects": "← Todos los proyectos",
+  "shell.whatDoing": "¿Qué está haciendo?",
+  "shell.checkOut": "Retirar",
+  "shell.return": "Devolver",
+  "shell.scanBarcode": "Escanear código de barras",
+  "shell.barcodePhoto": "Foto del código de barras",
+  "shell.barcodeNumber": "Número del código de barras",
+  "shell.orType": "O escriba el código de barras",
+  "shell.enter": "Aceptar",
+  "shell.receiptPhoto": "Foto del recibo",
+  "shell.fewer": "Menos",
+  "shell.more": "Más",
+};

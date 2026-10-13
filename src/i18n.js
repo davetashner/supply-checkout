@@ -18,7 +18,7 @@
 import en from "./messages/en.js";
 
 /** Every language with a catalog, and the locale its dates, numbers and money use. */
-const LOCALES = { en: "en-US", es: "es-US" };
+const LOCALES = { en: "en-US", es: "es-US", qps: "en-US" };
 /** The languages the browser's own language may pick. */
 const OFFERED = ["en"];
 export const STORAGE_KEY = "supplyCheckout.language";
@@ -27,17 +27,32 @@ let language = "en";
 let catalog = en;
 let plurals = new Intl.PluralRules(LOCALES.en);
 
+// The pseudo-language (?lang=qps, for the tests and for anyone checking a screen): English with every catalog
+// string marked ⟦ ⟧ and a third longer, so a string still in a template shows unmarked, and one too long for
+// its place overflows. {values} and HTML tags are kept as they are.
+const pseudo = (text) => {
+  const letters = text.replace(/\{\w+\}|<[^>]*>/g, "").length;
+  return `⟦${text}${"·".repeat(Math.ceil(letters / 3))}⟧`;
+};
+const pseudoCatalog = () => Object.fromEntries(Object.entries(en).map(([key, entry]) => [key, typeof entry === "string" ? pseudo(entry) : Object.fromEntries(Object.entries(entry).map(([form, text]) => [form, pseudo(text)]))]));
+
 /** The language the app speaks now. */
 export const currentLanguage = () => language;
 /** The locale for dates, numbers and money. */
 export const locale = () => LOCALES[language];
 
-/** Every language there is a catalog for. */
-export const languages = () => Object.keys(LOCALES);
+const AUTONYMS = { en: "English", es: "Español", qps: "Pseudo (qps)" };
+
+/**
+ * The languages Account's switch lists, as [code, name] pairs: those offered to everyone and the one in use now
+ * (a reviewer on ?lang=es sees Español and can go back), or none while English is all there is.
+ */
+export const languageChoices = () =>
+  OFFERED.length > 1 || language !== "en" ? [...new Set([...OFFERED, language])].map((code) => [code, AUTONYMS[code]]) : [];
 
 /** Speaks `lang` from now on. Spanish's catalog is loaded when it's wanted, not with the app. */
 export async function setLanguage(lang) {
-  catalog = lang === "es" ? (await import("./messages/es.js")).default : en;
+  catalog = lang === "es" ? (await import("./messages/es.js")).default : lang === "qps" ? pseudoCatalog() : en;
   language = lang;
   plurals = new Intl.PluralRules(locale());
   document.documentElement.lang = lang;
@@ -58,6 +73,9 @@ export function chooseLanguage(search = location.search, saved = read(), browser
 /** Saves the device's language (Account's switch) and speaks it. */
 export async function chooseDeviceLanguage(lang) {
   write(lang);
+  // A ?lang= in the address would choose its own language again when the page loads
+  const url = new URL(location.href);
+  if (url.searchParams.has("lang")) { url.searchParams.delete("lang"); history.replaceState(null, "", url); }
   await setLanguage(lang);
 }
 

@@ -1,0 +1,28 @@
+// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+export default {
+  "twoStep.codeMismatch": "Ese código no es correcto. Revise la aplicación e intente con el código más reciente.",
+  "twoStep.codeExpired": "Esta configuración venció. Cierre esto y empiece de nuevo.",
+  "twoStep.failedStart": "No se pudo iniciar la configuración. Revise su conexión e intente de nuevo.",
+  "twoStep.failedPassword": "No se pudo establecer la contraseña. Revise su conexión e intente de nuevo.",
+  "twoStep.failedSignOut": "No se pudo cerrar su sesión en todas partes. Revise su conexión e intente de nuevo.",
+  "twoStep.failedCode": "No se pudo comprobar el código. Revise su conexión e intente de nuevo.",
+
+  "twoStep.title": "Inicio de sesión en dos pasos",
+  "twoStep.introMoving": "Configure la aplicación de autenticación en su teléfono nuevo. Los códigos de su teléfono anterior siguen funcionando hasta que termine.",
+  "twoStep.intro": "Iniciará sesión con su correo, una contraseña y un código de 6 dígitos de una aplicación de autenticación en su teléfono, como Google Authenticator, Microsoft Authenticator o 1Password. Los códigos por correo y las llaves de acceso dejan de servir para iniciar sesión.",
+  "twoStep.passwordHeading": "1. Su contraseña",
+  "twoStep.continue": "Continuar",
+  "twoStep.keepPassword": "Conservar mi contraseña actual",
+  "twoStep.appHeadingMoving": "Su aplicación de autenticación",
+  "twoStep.appHeading": "2. Su aplicación de autenticación",
+  "twoStep.scan": "Escanee esto con la aplicación, o escriba la clave a mano.",
+  "twoStep.key": "Clave: {key}",
+  "twoStep.openApp": "Abrir en una aplicación de autenticación en este dispositivo",
+  "twoStep.codeLabel": "Código de la aplicación",
+  "twoStep.turnOn": "Activar",
+  "twoStep.cancel": "Cancelar",
+  "twoStep.qrLabel": "Código QR para su aplicación de autenticación",
+  "twoStep.signOutEverywhere": "Cerrar sesión en todas partes",
+  "twoStep.notSignedOut": "El inicio de sesión en dos pasos está activado, pero aún no se cerraron sus otras sesiones. Cierre sesión en todas partes para terminar.",
+  "twoStep.badCode": "Escriba el código de 6 dígitos de la aplicación.",
+};

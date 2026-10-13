@@ -16,6 +16,9 @@ export default {
   "deleteAccount.passwordMayBeNone": "Change the password you sign in with, or set one if you've only signed in with an email code or a passkey.",
   "deleteAccount.changePassword": "Change password",
 
+  "deleteAccount.languageHeading": "Language",
+  "deleteAccount.languageLabel": "Language",
+  "deleteAccount.languageHint": "Saved on this device.",
   "deleteAccount.title": "Your account",
   "deleteAccount.signedInAs": "Signed in as <strong>{email}</strong>.",
   "deleteAccount.you": "you",
