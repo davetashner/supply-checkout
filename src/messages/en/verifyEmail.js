@@ -1,0 +1,25 @@
+// Verifying the signed-in user's email address (src/aws/verify-email.js)
+export default {
+  "verifyEmail.emailChanged": "Your email address changed; send a new code.",
+  "verifyEmail.codeMismatch": "That code isn't right. Check the email and try again.",
+  "verifyEmail.codeExpired": "That code has expired. Send a new one.",
+  "verifyEmail.emailInUse": "Another account already uses this email address, so it can't be verified here.",
+  "verifyEmail.tooMany": "Too many tries for now. Wait a few minutes, then try again.",
+  "verifyEmail.sendFailed": "Couldn't send the code. Check your connection and try again.",
+  "verifyEmail.checkFailed": "Couldn't check the code. Check your connection and try again.",
+
+  "verifyEmail.title": "Verify your email address",
+  "verifyEmail.codeLabel": "Code from the email",
+  "verifyEmail.verify": "Verify",
+  "verifyEmail.sendCode": "Send code",
+  "verifyEmail.tryAgain": "Try again",
+  "verifyEmail.cancel": "Cancel",
+  "verifyEmail.about": "We'll email a 6-digit code to <strong>{email}</strong>. Once it's verified, you can see and join teams that invite this address.",
+  "verifyEmail.sent": "We sent a code to <strong>{email}</strong>. Enter it below. It may take a minute to arrive; check your spam folder too.",
+  "verifyEmail.resendIn": "Resend code in {seconds}s",
+  "verifyEmail.resend": "Resend code",
+  "verifyEmail.notCaughtUp": "Your code was accepted, but your account hasn't caught up yet. Try again in a moment, or sign out and sign in again.",
+  "verifyEmail.verified": "{email} is verified.",
+  "verifyEmail.done": "Done",
+  "verifyEmail.badCode": "Enter the 6-digit code from the email.",
+};
