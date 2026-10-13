@@ -1,11 +1,12 @@
 import { int } from "./format.js";
+import { msg } from "./i18n.js";
 
 export const $ = s => document.querySelector(s);
 
 /* ---------- toast & modal ---------- */
 let toastTimer;
-export function toast(msg, ms = 3200) {
-  const t = $("#toast"); t.textContent = msg; t.hidden = false;
+export function toast(text, ms = 3200) {
+  const t = $("#toast"); t.textContent = text; t.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, ms);
 }
 export function openModal(html, mount) {
@@ -40,7 +41,7 @@ export const armButton = (btn, label, action) => btn.addEventListener("click", (
 
 /* ---------- modals ---------- */
 export function stepperHTML(id, val, max) {
-  return `<div class="stepper"><button type="button" data-step="-1" aria-label="Fewer">−</button><input type="number" id="${id}" min="0" ${max != null ? `max="${max}"` : ""} value="${val}" inputmode="numeric"><button type="button" data-step="1" aria-label="More">+</button></div>`;
+  return `<div class="stepper"><button type="button" data-step="-1" aria-label="${msg("shell.fewer")}">−</button><input type="number" id="${id}" min="0" ${max != null ? `max="${max}"` : ""} value="${val}" inputmode="numeric"><button type="button" data-step="1" aria-label="${msg("shell.more")}">+</button></div>`;
 }
 export const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
 export const setHTML = (el, h) => { if (el.innerHTML !== h) el.innerHTML = h; };

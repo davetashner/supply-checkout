@@ -1,0 +1,20 @@
+// Finishing a project with company equipment still out (src/main.js finishModal)
+export default {
+  "finish.title": "Before you finish",
+  "finish.intro": "Some company equipment is still out. For each piece, say how many are back and how many were lost or broken; the rest stay out, still at the job, and the project stays open.",
+  "finish.legend": "{name} · {still} still out",
+  "finish.back": "It's back",
+  "finish.lost": "Lost or broken",
+  "finish.stillAtJob": "Still at the job: {count}",
+  "finish.charge": "Charge the client for what was lost or broken ($, optional)",
+  "finish.chargePlaceholder": "Leave blank to not charge",
+  "finish.worth": "Worth {value} each.",
+  "finish.valueUnknown": "Its value isn't known.",
+  "finish.amountNote": "The amount is for all of them, not each.",
+  "finish.cancel": "Cancel",
+  "finish.save": "Save",
+  "finish.moreThanOut": "That's more than the {still} still out.",
+  "finish.moreItem": "That's more {name} than are still out.",
+  "finish.ofThatItem": "of that item",
+  "finish.savedLeft": "Saved. {count} still at the job, so the project stays open.",
+};
