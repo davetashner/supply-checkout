@@ -13,12 +13,13 @@
 // a new key, so the edit isn't swallowed as a repeat. Every failure keeps what was typed.
 // Web build only, like the rest of src/aws/.
 import { openModal, closeModal } from "../dom.js";
+import { msg } from "../i18n.js";
 import { version } from "../../package.json";
 
 const KINDS = [
-  ["bug", "Something is broken"],
-  ["idea", "I have an idea"],
-  ["question", "I have a question"],
+  ["bug", "report.kindBug"],
+  ["idea", "report.kindIdea"],
+  ["question", "report.kindQuestion"],
 ];
 export const MESSAGE_MAX = 2000, EXPECTED_MAX = 1000;
 
@@ -48,15 +49,14 @@ export function currentScreen(doc = document) {
 
 // What went wrong, in words. Null: the answer never came, so the button offers Try again.
 function failure(e) {
-  if (e.reason === "feedback_limit") return "You've sent today's limit of 5 reports. Try again tomorrow: the day changes at midnight UTC. Your text is still here.";
-  if (e.status === 429) return "Lots of reports are coming in right now. Wait a minute, then send it again.";
-  if (e.status === 413) return "That report is too long to send. Shorten it a little, then send it again.";
-  if (e.code === "bad_request") return "We couldn't use that report. Check that you wrote what happened, then send it again.";
-  if (e.code === "permission_denied") return "You aren't in this team any more, so a report can't be sent from here. Reload the page, then try again.";
-  if (e.code === "aborted") return "This team, or your account, is being deleted, so we can't take a report from here.";
+  if (e.reason === "feedback_limit") return msg("report.limit");
+  if (e.status === 429) return msg("report.busy");
+  if (e.status === 413) return msg("report.tooLong");
+  if (e.code === "bad_request") return msg("report.badRequest");
+  if (e.code === "permission_denied") return msg("report.notInTeam");
+  if (e.code === "aborted") return msg("report.deleting");
   return null;
 }
-const OFFLINE = "Couldn't send your report. Check your connection, then try again. Your text is still here.";
 
 /**
  * Opens the form. `api` is the session's api(); `teamId` is the team the report is sent
@@ -67,29 +67,29 @@ const OFFLINE = "Couldn't send your report. Check your connection, then try agai
  */
 export function openReport(api, { teamId, role = null, screen = currentScreen(), opener }) {
   const context = { build: version, screen, browser: browserFamily(navigator.userAgent) };
-  const sends = [`the app version (${version})`, "the screen you're on", "your browser"].concat(role ? [`your role (${role})`] : []);
-  const list = `${sends.slice(0, -1).join(", ")} and ${sends.at(-1)}`;
-  openModal(`<h2 id="reportTitle">Report an issue</h2>
+  const sends = [msg("report.sendsVersion", { version }), msg("report.sendsScreen"), msg("report.sendsBrowser")].concat(role ? [msg("report.sendsRole", { role })] : []);
+  const list = msg("report.and", { head: sends.slice(0, -1).join(", "), last: sends.at(-1) });
+  openModal(`<h2 id="reportTitle">${msg("report.title")}</h2>
     <form id="reportForm" class="report-form" novalidate>
       <p class="error" role="alert" id="reportError" hidden></p>
-      <fieldset class="kinds"><legend>What kind of report is this?</legend>
-        ${KINDS.map(([id, label], i) => `<label class="check report-kind"><input type="radio" name="reportKind" value="${id}"${i === 0 ? " checked" : ""}> ${label}</label>`).join("")}
+      <fieldset class="kinds"><legend>${msg("report.kinds")}</legend>
+        ${KINDS.map(([id, key], i) => `<label class="check report-kind"><input type="radio" name="reportKind" value="${id}"${i === 0 ? " checked" : ""}> ${msg(key)}</label>`).join("")}
       </fieldset>
-      <div class="field"><label for="reportMessage">What happened</label>
+      <div class="field"><label for="reportMessage">${msg("report.what")}</label>
         <textarea id="reportMessage" rows="5" maxlength="${MESSAGE_MAX}" required aria-describedby="reportMessageCount" data-autofocus></textarea>
-        <p class="hint" id="reportMessageCount">0 of ${MESSAGE_MAX.toLocaleString("en-US")} characters</p></div>
-      <div class="field"><label for="reportExpected">What did you expect? (optional)</label>
+        <p class="hint" id="reportMessageCount">${msg("report.count", { count: 0, max: MESSAGE_MAX.toLocaleString("en-US") })}</p></div>
+      <div class="field"><label for="reportExpected">${msg("report.expected")}</label>
         <textarea id="reportExpected" rows="3" maxlength="${EXPECTED_MAX}" aria-describedby="reportExpectedCount"></textarea>
-        <p class="hint" id="reportExpectedCount">0 of ${EXPECTED_MAX.toLocaleString("en-US")} characters</p></div>
-      <label class="check report-kind"><input type="checkbox" id="reportContact"> You can email me about this</label>
-      <p class="hint" id="reportSends">Sent with your report: ${list}. Please don't include passwords or card numbers.</p>
+        <p class="hint" id="reportExpectedCount">${msg("report.count", { count: 0, max: EXPECTED_MAX.toLocaleString("en-US") })}</p></div>
+      <label class="check report-kind"><input type="checkbox" id="reportContact"> ${msg("report.contact")}</label>
+      <p class="hint" id="reportSends">${msg("report.sends", { list })}</p>
       <div class="modal-actions" id="reportActions">
-        <button type="button" class="btn" id="reportCancel">Cancel</button>
-        <button type="submit" class="btn primary" id="reportSend">Send report</button>
+        <button type="button" class="btn" id="reportCancel">${msg("report.cancel")}</button>
+        <button type="submit" class="btn primary" id="reportSend">${msg("report.send")}</button>
       </div>
       <div id="reportDiscard" hidden>
-        <p role="alert">Discard what you wrote?</p>
-        <div class="modal-actions"><button type="button" class="btn" id="reportKeep">Keep writing</button><button type="button" class="btn danger" id="reportDiscardNow">Discard</button></div>
+        <p role="alert">${msg("report.discardAsk")}</p>
+        <div class="modal-actions"><button type="button" class="btn" id="reportKeep">${msg("report.keep")}</button><button type="button" class="btn danger" id="reportDiscardNow">${msg("report.discard")}</button></div>
       </div>
     </form>`, (m) => {
     m.setAttribute("aria-labelledby", "reportTitle");
@@ -104,7 +104,7 @@ export function openReport(api, { teamId, role = null, screen = currentScreen(),
 
     const say = (text) => { error.textContent = text; error.hidden = false; };
     const count = (field, max, id) => {
-      m.querySelector(id).textContent = `${field.value.length.toLocaleString("en-US")} of ${max.toLocaleString("en-US")} characters`;
+      m.querySelector(id).textContent = msg("report.count", { count: field.value.length.toLocaleString("en-US"), max: max.toLocaleString("en-US") });
     };
     message.addEventListener("input", () => count(message, MESSAGE_MAX, "#reportMessageCount"));
     expected.addEventListener("input", () => count(expected, EXPECTED_MAX, "#reportExpectedCount"));
@@ -162,9 +162,9 @@ export function openReport(api, { teamId, role = null, screen = currentScreen(),
 
     function thanks(report) {
       done = true;
-      form.innerHTML = `<h2 id="reportThanks" tabindex="-1">Thanks, we read every report</h2>
-        <p>Your reference is <strong id="reportRef">${report.shortId}</strong>. Keep it if you write to us about this report.</p>
-        <div class="modal-actions"><button type="button" class="btn primary" id="reportDone">Done</button></div>`;
+      form.innerHTML = `<h2 id="reportThanks" tabindex="-1">${msg("report.thanks")}</h2>
+        <p>${msg("report.reference", { id: report.shortId })}</p>
+        <div class="modal-actions"><button type="button" class="btn primary" id="reportDone">${msg("report.done")}</button></div>`;
       title.hidden = true;
       m.setAttribute("aria-labelledby", "reportThanks");
       const doneButton = form.querySelector("#reportDone");
@@ -178,7 +178,7 @@ export function openReport(api, { teamId, role = null, screen = currentScreen(),
       if (sending) return;
       const what = message.value.trim();
       if (!what) {
-        say("Tell us what happened, so we know what to look at.");
+        say(msg("report.needText"));
         message.setAttribute("aria-invalid", "true");
         message.focus();
         return;
@@ -198,7 +198,7 @@ export function openReport(api, { teamId, role = null, screen = currentScreen(),
       sentAs = signature;
       sending = true;
       send.disabled = true;
-      send.textContent = "Sending…";
+      send.textContent = msg("report.sending");
       error.hidden = true;
       let report;
       try {
@@ -207,8 +207,8 @@ export function openReport(api, { teamId, role = null, screen = currentScreen(),
         sending = false;
         send.disabled = false;
         const text = failure(err);
-        send.textContent = text ? "Send report" : "Try again";
-        say(text || OFFLINE);
+        send.textContent = msg(text ? "report.send" : "report.tryAgain");
+        say(text || msg("report.offline"));
         // The summary is announced (role=alert); the focus goes to the button that retries
         send.focus();
         return;
