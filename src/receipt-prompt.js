@@ -1,3 +1,4 @@
+import { msg } from "./i18n.js";
 
 export const RECEIPT_PROMPT = `The image is a photo of a store receipt for supplies. Extract the purchased line items.
 Reply with only JSON in this shape:
@@ -14,15 +15,5 @@ Rules:
 
 // `message`: the server's own words, used for `receipt_rate` (the web build's per-user rate
 // limit, src/aws/receipts.js), which says how long to wait
-export const sampleErr = (code, message) => code === "receipt_rate" ? message : ({
-  not_granted: "Receipt reading needs permission to use Claude. Reload the page and allow it to try again.",
-  sampling_disabled: "Receipt reading isn't available for this account.",
-  rate_limited: "Too many requests right now. Wait a minute and try again.",
-  image_rejected: "That image couldn't be used. Try a JPEG or PNG photo.",
-  images_unavailable: "Receipt reading isn't available in this view.",
-  invalid_json: "The receipt couldn't be read cleanly. Try again, or take a sharper photo.",
-  session_expired: "Your sign-in expired. Reload the page and sign in again.",
-  receipt_limit: "Your team has read all the receipts included this month. Enter the items by hand, or ask an owner about your plan.",
-  trial_receipt_limit: "Your team has used all the receipt scans included in its free trial. Enter the items by hand, or ask an owner to subscribe to keep scanning receipts.",
-  timeout: "Reading the receipt took too long. Try again, or take a sharper photo.",
-}[code] || "Reading the receipt failed. Check your connection and try again.");
+const SAMPLE_ERRORS = ["not_granted", "sampling_disabled", "rate_limited", "image_rejected", "images_unavailable", "invalid_json", "session_expired", "receipt_limit", "trial_receipt_limit", "timeout"];
+export const sampleErr = (code, message) => code === "receipt_rate" ? message : msg(SAMPLE_ERRORS.includes(code) ? `receiptPrompt.${code}` : "receiptPrompt.failed");

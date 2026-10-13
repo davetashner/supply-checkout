@@ -11,55 +11,54 @@
 // answers `team_deleting`.
 import { esc } from "../format.js";
 import { openModal, closeModal } from "../dom.js";
+import { msg } from "../i18n.js";
 
 const day = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 const amount = (cents, currency) => new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() }).format(cents / 100);
 // Stripe's statuses, in words; an open invoice says what's still due
 const STATUS = {
-  paid: () => "Paid",
-  open: (i) => `Due: ${amount(i.amountDue, i.currency)}`,
-  void: () => "Void",
-  uncollectible: () => "Not paid",
+  paid: () => msg("invoices.paid"),
+  open: (i) => msg("invoices.due", { amount: amount(i.amountDue, i.currency) }),
+  void: () => msg("invoices.void"),
+  uncollectible: () => msg("invoices.notPaid"),
 };
 
 // Refusals that trying again won't change
 const FINAL = new Map([
-  ["no_billing_account", "This team has no billing account yet, so it has no invoices."],
-  ["team_deleting", "This team is being deleted, and its invoices with it."],
+  ["no_billing_account", "invoices.noAccount"],
+  ["team_deleting", "invoices.deleting"],
 ]);
 
 // A link to Stripe, opened in a new tab so the app stays where it was
 const link = (url, text, label) => url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" aria-label="${esc(label)}">${text}</a>` : "";
 
 function invoiceHTML(i) {
-  const name = i.number ? `Invoice ${i.number}` : "Invoice";
+  const name = i.number ? msg("invoices.invoiceNumber", { number: i.number }) : msg("invoices.invoice");
   const status = (STATUS[i.status] || (() => i.status))(i);
   return `<li class="invoice" data-invoice="${esc(i.id)}">
     <span class="invoice-what">${esc(day(i.createdAt))} <span class="muted">${esc(name)}</span></span>
     <span class="invoice-amount">${esc(amount(i.total, i.currency))} <span class="muted">${esc(status)}</span></span>
-    <span class="invoice-links">${link(i.hostedUrl, "View", `View ${name}`)} ${link(i.pdfUrl, "PDF", `${name} as a PDF`)}</span>
+    <span class="invoice-links">${link(i.hostedUrl, msg("invoices.view"), msg("invoices.viewLabel", { name }))} ${link(i.pdfUrl, msg("invoices.pdf"), msg("invoices.pdfLabel", { name }))}</span>
   </li>`;
 }
 
 export function openInvoices(api, team, needsTwoStep) {
-  const hint = team.closedAt
-    ? `Stripe emailed each invoice and receipt to your billing email. This team was closed: save any invoices you need before it's deleted on ${esc(day(team.deletesAt))}, when they're deleted with it.`
-    : "Stripe emails each invoice and receipt to your billing email. To change the name, address or tax ID on them, or to see older invoices, use Billing.";
-  const older = team.closedAt ? "Older invoices are in the emails from Stripe." : "Older invoices are in Billing.";
-  openModal(`<h2>Invoices</h2>
+  const hint = team.closedAt ? msg("invoices.hintClosed", { date: esc(day(team.deletesAt)) }) : msg("invoices.hint");
+  const older = msg(team.closedAt ? "invoices.olderClosed" : "invoices.older");
+  openModal(`<h2>${msg("invoices.title")}</h2>
     <p class="hint">${hint}</p>
     <p class="error" role="alert" id="invoicesFail" hidden></p>
-    <div id="invoiceList" aria-live="polite"><p class="muted" role="status">Loading invoices…</p></div>
-    <div class="modal-actions"><button type="button" class="btn" id="invoicesClose">Close</button></div>`, (m) => {
+    <div id="invoiceList" aria-live="polite"><p class="muted" role="status">${msg("invoices.loading")}</p></div>
+    <div class="modal-actions"><button type="button" class="btn" id="invoicesClose">${msg("invoices.close")}</button></div>`, (m) => {
     const list = m.querySelector("#invoiceList"), fail = m.querySelector("#invoicesFail");
     m.querySelector("#invoicesClose").addEventListener("click", closeModal);
 
     async function load() {
       fail.hidden = true;
-      list.innerHTML = `<p class="muted" role="status">Loading invoices…</p>`;
+      list.innerHTML = `<p class="muted" role="status">${msg("invoices.loading")}</p>`;
       try {
         const page = await api("GET", `/teams/${encodeURIComponent(team.id)}/billing/invoices`);
-        list.innerHTML = (page.invoices.length ? `<ul class="invoices">${page.invoices.map(invoiceHTML).join("")}</ul>` : `<p class="muted">No invoices yet.</p>`)
+        list.innerHTML = (page.invoices.length ? `<ul class="invoices">${page.invoices.map(invoiceHTML).join("")}</ul>` : `<p class="muted">${msg("invoices.none")}</p>`)
           + (page.hasMore ? `<p class="hint" id="olderInvoices">${older}</p>` : "");
       } catch (e) {
         if (e.reason === "mfa_required" || e.reason === "mfa_sign_in_again") {
@@ -68,9 +67,9 @@ export function openInvoices(api, team, needsTwoStep) {
           return;
         }
         const final = FINAL.get(e.reason);
-        fail.textContent = final || "Couldn't load invoices. Check your connection and try again.";
+        fail.textContent = final ? msg(final) : msg("invoices.failed");
         fail.hidden = false;
-        list.innerHTML = final ? "" : `<button type="button" class="btn" id="invoicesRetry">Try again</button>`;
+        list.innerHTML = final ? "" : `<button type="button" class="btn" id="invoicesRetry">${msg("invoices.retry")}</button>`;
         const retry = list.querySelector("#invoicesRetry");
         if (retry) retry.addEventListener("click", load);
       }

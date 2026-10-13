@@ -5,6 +5,8 @@
 // lines come back with `match` as the team's product keys, which `byKey` tells the app. The claude.ai artifact keeps
 // claude.ai's sample.
 
+import { msg } from "../i18n.js";
+
 // The server gives the model 25 seconds; this leaves room for the upload on a slow phone
 // connection and the rest of the request.
 export const RECEIPT_TIMEOUT = 40_000;
@@ -45,8 +47,8 @@ async function base64(blob) {
 /** The line src/main.js shows under Scan receipt, and Team settings shows owners: the scans left. */
 export function usageLabel(usage) {
   const { period, limit, remaining } = usage;
-  if (period === "trial") return remaining > 0 ? `${remaining} of ${limit} free trial receipt scans left` : "No free trial receipt scans left. An owner can subscribe to scan more.";
-  return remaining > 0 ? `${remaining} of ${limit} receipt scans left this month` : "No receipt scans left this month";
+  if (period === "trial") return remaining > 0 ? msg("receipts.trialLeft", { remaining, limit }) : msg("receipts.trialNone");
+  return remaining > 0 ? msg("receipts.monthLeft", { remaining, limit }) : msg("receipts.monthNone");
 }
 
 // The server's usage, with its label; null for anything that isn't one

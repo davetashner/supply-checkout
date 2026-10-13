@@ -1,0 +1,23 @@
+// The Profile photo section of Account (src/aws/profile-photo.js)
+export default {
+  "profilePhoto.pick": "Choose a JPEG, PNG or WebP photo.",
+  "profilePhoto.invalid": "That photo couldn't be used. Try another JPEG, PNG or WebP photo.",
+  "profilePhoto.tooLarge": "That photo is too large to save. Zoom in a little, or try another photo.",
+  "profilePhoto.limit": "You've changed your photo as many times as you can today. Try again tomorrow.",
+  "profilePhoto.saveFailed": "Couldn't save your photo. Check your connection and try again.",
+  "profilePhoto.removeFailed": "Couldn't remove your photo. Check your connection and try again.",
+  "profilePhoto.yourPhoto": "Your profile photo",
+  "profilePhoto.heading": "Profile photo",
+  "profilePhoto.change": "Change photo",
+  "profilePhoto.upload": "Upload photo",
+  "profilePhoto.remove": "Remove",
+  "profilePhoto.hint": "Your teammates see it next to your name. A JPEG, PNG or WebP photo.",
+  "profilePhoto.position": "Photo position",
+  "profilePhoto.cropHelp": "Drag the photo, or use the arrow keys, to choose what's in the circle. Zoom with the slider, or + and -.",
+  "profilePhoto.zoom": "Zoom",
+  "profilePhoto.cancel": "Cancel",
+  "profilePhoto.save": "Save photo",
+  "profilePhoto.tooLargeToOpen": "That photo is too large to open. Choose one under 20 MB.",
+  "profilePhoto.cantOpen": "That photo couldn't be opened. Try another JPEG, PNG or WebP photo.",
+  "profilePhoto.tapAgain": "Tap again to remove",
+};

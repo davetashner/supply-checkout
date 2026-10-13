@@ -5,26 +5,24 @@
 // line with no control or invisible characters, at most NAME_MAX characters together.
 import { esc, visibleText } from "../format.js";
 import { toast } from "../dom.js";
+import { msg } from "../i18n.js";
 
 export const NAME_MAX = 100;
 
-const TOO_LONG = `Enter a first and last name of up to ${NAME_MAX} characters together.`;
-const FAILED = "Couldn't save your name. Check your connection and try again.";
-// Cognito refused the value (a name Google or Apple provides, for some accounts)
-const REFUSED = "That name couldn't be saved. If you sign in with Google or Apple, change your name there.";
+const tooLong = () => msg("name.tooLong", { max: NAME_MAX });
 
 // `name.given` and `name.family` are the ID token's; `name.provider`: a Google or Apple user,
 // whose provider may set the name back when they next sign in with it
 export function nameSection(name) {
-  return `<h3>Name</h3>
+  return `<h3>${msg("name.heading")}</h3>
     <form id="nameForm" class="name-form" novalidate>
       <div class="name-fields">
-        <div class="field"><label for="givenName">First name</label><input type="text" id="givenName" maxlength="${NAME_MAX}" autocomplete="given-name" value="${esc(name.given)}"></div>
-        <div class="field"><label for="familyName">Last name</label><input type="text" id="familyName" maxlength="${NAME_MAX}" autocomplete="family-name" value="${esc(name.family)}"></div>
+        <div class="field"><label for="givenName">${msg("name.first")}</label><input type="text" id="givenName" maxlength="${NAME_MAX}" autocomplete="given-name" value="${esc(name.given)}"></div>
+        <div class="field"><label for="familyName">${msg("name.last")}</label><input type="text" id="familyName" maxlength="${NAME_MAX}" autocomplete="family-name" value="${esc(name.family)}"></div>
       </div>
-      <p class="hint" id="nameHint">Your teammates see it next to your photo, on projects you prepared and in Members.${name.provider ? " Signing in with Google or Apple may set it back to your name there." : ""}</p>
+      <p class="hint" id="nameHint">${msg("name.hint")}${name.provider ? msg("name.hintProvider") : ""}</p>
       <p class="error" role="alert" id="nameFail" hidden></p>
-      <div class="actions"><button type="submit" class="btn" id="nameSave">Save name</button></div>
+      <div class="actions"><button type="submit" class="btn" id="nameSave">${msg("name.save")}</button></div>
     </form>`;
 }
 
@@ -38,18 +36,19 @@ export function wireName(m, api, name) {
     const first = visibleText(given.value).trim(), last = visibleText(family.value).trim();
     given.value = first;
     family.value = last;
-    if (`${first} ${last}`.trim().length > NAME_MAX) return say(TOO_LONG);
+    if (`${first} ${last}`.trim().length > NAME_MAX) return say(tooLong());
     say("");
     save.disabled = true;
-    save.textContent = "Saving…";
+    save.textContent = msg("name.saving");
     try {
       await api("PUT", "/me/name", { givenName: first, familyName: last });
       await name.saved();
-      toast(first || last ? "Your name is saved" : "Your name is cleared");
+      toast(msg(first || last ? "name.saved" : "name.cleared"));
     } catch (err) {
-      say(err.reason === "name_invalid" ? TOO_LONG : err.reason === "name_refused" ? REFUSED : FAILED);
+      // Cognito refused the value (a name Google or Apple provides, for some accounts): name_refused
+      say(err.reason === "name_invalid" ? tooLong() : msg(err.reason === "name_refused" ? "name.refused" : "name.failed"));
     }
     save.disabled = false;
-    save.textContent = "Save name";
+    save.textContent = msg("name.save");
   });
 }

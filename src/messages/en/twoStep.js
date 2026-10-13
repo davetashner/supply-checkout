@@ -1,0 +1,28 @@
+// Two-step sign-in with an authenticator app (src/aws/mfa.js)
+export default {
+  "twoStep.codeMismatch": "That code isn't right. Check the app and try the newest code.",
+  "twoStep.codeExpired": "This setup expired. Close this and start again.",
+  "twoStep.failedStart": "Couldn't start the setup. Check your connection and try again.",
+  "twoStep.failedPassword": "Couldn't set the password. Check your connection and try again.",
+  "twoStep.failedSignOut": "Couldn't sign you out everywhere. Check your connection and try again.",
+  "twoStep.failedCode": "Couldn't check the code. Check your connection and try again.",
+
+  "twoStep.title": "Two-step sign-in",
+  "twoStep.introMoving": "Set up the authenticator app on your new phone. Your old phone's codes keep working until this is done.",
+  "twoStep.intro": "You'll sign in with your email, a password and a 6-digit code from an authenticator app on your phone, such as Google Authenticator, Microsoft Authenticator or 1Password. Email codes and passkeys stop working for signing in.",
+  "twoStep.passwordHeading": "1. Your password",
+  "twoStep.continue": "Continue",
+  "twoStep.keepPassword": "Keep my current password",
+  "twoStep.appHeadingMoving": "Your authenticator app",
+  "twoStep.appHeading": "2. Your authenticator app",
+  "twoStep.scan": "Scan this with the app, or enter the key by hand.",
+  "twoStep.key": "Key: {key}",
+  "twoStep.openApp": "Open in an authenticator app on this device",
+  "twoStep.codeLabel": "Code from the app",
+  "twoStep.turnOn": "Turn on",
+  "twoStep.cancel": "Cancel",
+  "twoStep.qrLabel": "QR code for your authenticator app",
+  "twoStep.signOutEverywhere": "Sign out everywhere",
+  "twoStep.notSignedOut": "Two-step sign-in is on, but your other sessions weren't signed out yet. Sign out everywhere to finish.",
+  "twoStep.badCode": "Enter the 6-digit code from the app.",
+};

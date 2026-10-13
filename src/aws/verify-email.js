@@ -9,6 +9,7 @@
 // counts only for the address it was sent to: when the address changed (409 email_changed,
 // from either route), the dialog loads /me again and starts over at sending a code.
 import { esc } from "../format.js";
+import { msg } from "../i18n.js";
 import { openModal, closeModal } from "../dom.js";
 
 // Seconds before another code can be asked for
@@ -16,29 +17,29 @@ export const RESEND_AFTER = 60;
 
 // What went wrong, in words
 const failure = (e, sending) =>
-  e.reason === "email_changed" ? "Your email address changed; send a new code."
-    : e.reason === "code_mismatch" ? "That code isn't right. Check the email and try again."
-    : e.reason === "code_expired" ? "That code has expired. Send a new one."
-    : e.reason === "email_in_use" ? "Another account already uses this email address, so it can't be verified here."
-    : e.code === "quota_exceeded" ? "Too many tries for now. Wait a few minutes, then try again."
-    : `Couldn't ${sending ? "send the code" : "check the code"}. Check your connection and try again.`;
+  msg(e.reason === "email_changed" ? "verifyEmail.emailChanged"
+    : e.reason === "code_mismatch" ? "verifyEmail.codeMismatch"
+    : e.reason === "code_expired" ? "verifyEmail.codeExpired"
+    : e.reason === "email_in_use" ? "verifyEmail.emailInUse"
+    : e.code === "quota_exceeded" ? "verifyEmail.tooMany"
+    : sending ? "verifyEmail.sendFailed" : "verifyEmail.checkFailed");
 
 // `onVerified(me)` runs with the new /me once it says the address is verified
 export function openVerifyEmail(session, email, onVerified) {
-  openModal(`<h2>Verify your email address</h2>
+  openModal(`<h2>${msg("verifyEmail.title")}</h2>
     <div class="verify" id="verify">
       <p id="verifyAbout"></p>
       <form id="verifyForm" class="verify-form" novalidate hidden>
-        <div class="field"><label for="verifyCode">Code from the email</label>
+        <div class="field"><label for="verifyCode">${msg("verifyEmail.codeLabel")}</label>
         <input type="text" id="verifyCode" inputmode="numeric" autocomplete="one-time-code" maxlength="12" spellcheck="false"></div>
-        <div class="actions"><button type="submit" class="btn primary" id="verifySubmit">Verify</button></div>
+        <div class="actions"><button type="submit" class="btn primary" id="verifySubmit">${msg("verifyEmail.verify")}</button></div>
       </form>
       <p class="error" role="alert" id="verifyFail" hidden></p>
       <p class="verify-done" role="status" id="verifyDone" hidden></p>
       <div class="actions">
-        <button type="button" class="btn primary" id="sendCode" data-autofocus>Send code</button>
-        <button type="button" class="btn" id="verifyAgain" hidden>Try again</button>
-        <button type="button" class="btn ghost" id="verifyClose">Cancel</button>
+        <button type="button" class="btn primary" id="sendCode" data-autofocus>${msg("verifyEmail.sendCode")}</button>
+        <button type="button" class="btn" id="verifyAgain" hidden>${msg("verifyEmail.tryAgain")}</button>
+        <button type="button" class="btn ghost" id="verifyClose">${msg("verifyEmail.cancel")}</button>
       </div>
     </div>`, (m) => {
     const $ = (s) => m.querySelector(s);
@@ -53,7 +54,7 @@ export function openVerifyEmail(session, email, onVerified) {
       send.disabled = on || left > 0;
     };
     const stop = () => clearInterval(timer);
-    const about = () => { $("#verifyAbout").innerHTML = `We'll email a 6-digit code to <strong>${esc(email)}</strong>. Once it's verified, you can see and join teams that invite this address.`; };
+    const about = () => { $("#verifyAbout").innerHTML = msg("verifyEmail.about", { email: esc(email) }); };
     about();
     close.addEventListener("click", () => { stop(); closeModal(); });
 
@@ -64,7 +65,7 @@ export function openVerifyEmail(session, email, onVerified) {
       const tick = () => {
         if (!send.isConnected) return stop();
         send.disabled = left > 0;
-        send.textContent = left > 0 ? `Resend code in ${left}s` : "Resend code";
+        send.textContent = left > 0 ? msg("verifyEmail.resendIn", { seconds: left }) : msg("verifyEmail.resend");
         if (left > 0) left--;
         else stop();
       };
@@ -85,16 +86,16 @@ export function openVerifyEmail(session, email, onVerified) {
       busy(false);
       if (!me || !me.user.emailVerified) {
         again.hidden = false;
-        say("Your code was accepted, but your account hasn't caught up yet. Try again in a moment, or sign out and sign in again.");
+        say(msg("verifyEmail.notCaughtUp"));
         return;
       }
       stop();
       form.hidden = true;
       send.hidden = again.hidden = true;
       $("#verifyAbout").hidden = true;
-      done.textContent = `${email} is verified.`;
+      done.textContent = msg("verifyEmail.verified", { email });
       done.hidden = false;
-      close.textContent = "Done";
+      close.textContent = msg("verifyEmail.done");
       close.className = "btn primary";
       onVerified(me);
       close.focus();
@@ -113,7 +114,7 @@ export function openVerifyEmail(session, email, onVerified) {
       form.hidden = again.hidden = true;
       input.value = "";
       about();
-      send.textContent = "Send code";
+      send.textContent = msg("verifyEmail.sendCode");
       send.className = "btn primary";
       busy(false);
       say(failure(e));
@@ -132,7 +133,7 @@ export function openVerifyEmail(session, email, onVerified) {
         return say(failure(e, true));
       }
       busy(false);
-      $("#verifyAbout").innerHTML = `We sent a code to <strong>${esc(email)}</strong>. Enter it below. It may take a minute to arrive; check your spam folder too.`;
+      $("#verifyAbout").innerHTML = msg("verifyEmail.sent", { email: esc(email) });
       form.hidden = false;
       send.className = "btn";
       cooldown();
@@ -142,7 +143,7 @@ export function openVerifyEmail(session, email, onVerified) {
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const code = input.value.replace(/\D/g, "");
-      if (code.length !== 6) { say("Enter the 6-digit code from the email."); input.focus(); return; }
+      if (code.length !== 6) { say(msg("verifyEmail.badCode")); input.focus(); return; }
       busy(true);
       say("");
       try {

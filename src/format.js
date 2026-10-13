@@ -1,4 +1,5 @@
 // Formatting and small value helpers with no app state.
+import { msg } from "./i18n.js";
 export const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const usd = new Intl.NumberFormat("en-US", {style:"currency", currency:"USD"});
 export const money = n => usd.format(Number(n) || 0);
@@ -13,7 +14,7 @@ export const keyOf = code => { let k = String(code).trim().replace(/[^A-Za-z0-9_
 // obj[k] when it's obj's own property, not something inherited like Object.prototype.constructor
 export const own = (obj, k) => Object.hasOwn(obj, k) ? obj[k] : undefined;
 export const int = v => Math.max(0, Math.floor(Number(v) || 0));
-export const codeText = c => c ? "Barcode " + c : "No barcode";
+export const codeText = c => c ? msg("format.barcode", { code: c }) : msg("format.noBarcode");
 export const hasStock = p => p && typeof p.stock === "number";
 // Company equipment (ADR 0017): reused, not charged, no client price; its value is its cost.
 // Any other item (no kind, or "supply") is a supply, used up and charged at its price.

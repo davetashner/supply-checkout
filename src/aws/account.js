@@ -17,6 +17,7 @@
 // (password.js). Help (help.js), the how-to lesson for the screen, and Report an issue (report.js) sit
 // beside Sign out; Report an issue is on the "Couldn't connect" screen too.
 import { esc, visibleText } from "../format.js";
+import { msg } from "../i18n.js";
 import { armButton, closeModal, openModal, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
 import { createDb } from "./db.js";
@@ -38,7 +39,7 @@ import { createPhotos } from "./photos.js";
 import { avatarHTML } from "../avatar.js";
 import { PARAMS as CAMPAIGN_PARAMS, STORAGE_KEY as CAMPAIGN_KEY, loadCampaign, readCampaign, saveCampaign } from "../campaign.js";
 
-const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
+const ROLE = { owner: "account.asOwner", contributor: "account.asContributor", viewer: "account.asViewer" };
 // A screen's promise resolves with this key after the user verifies their email: start the
 // screens again with the new /me it holds (its invites, and whether they're verified)
 const AGAIN = Symbol("again");
@@ -49,28 +50,28 @@ const moment = (iso) => new Date(iso).toLocaleString("en-US", { month: "long", d
 // heaviest route, so the polling fallback's re-lists (every 15 seconds) ask far less often
 const ME_EVERY = 60e3, ME_EVERY_POLLING = 600e3;
 // Why the app is read-only when the team is closed (src/main.js asks, user.viewOnlyNotice)
-const CLOSED_NOTICE = "This team is closed, so nothing in it can be changed.";
+const closedNotice = () => msg("account.closedNotice");
 // When /me can't say when it will be deleted (it didn't load, or doesn't list it closed yet)
-const CLOSED_MEANWHILE = "An owner closed this team, so nothing in it can be changed now. Reload the page to see when it will be deleted.";
+const closedMeanwhile = () => msg("account.closedMeanwhile");
 // Why it's read-only for billing (/me's subscriptionEnded), by readOnlyReason, as the team
 // opened or once /me says so after a refused write
 const ENDED_NOTICES = {
-  subscription_ended: "This team's subscription ended, so nothing in it can be changed until an owner subscribes.",
-  trial_ended: "This team's free trial ended, so nothing in it can be changed until an owner subscribes.",
-  payment_overdue: "This team's payment is overdue, so nothing in it can be changed until an owner pays it in Billing.",
+  subscription_ended: "account.endedSubscription",
+  trial_ended: "account.endedTrial",
+  payment_overdue: "account.endedPayment",
 };
 // Why a team is read-only for billing: an API from before readOnlyReason, or a reason this
 // page doesn't know, reads as an ended subscription (an owner subscribes)
 const endedReason = (team) => (Object.hasOwn(ENDED_NOTICES, team.readOnlyReason ?? "") ? team.readOnlyReason : "subscription_ended");
 // What the app says is read-only and why: a closed team, one read-only for billing, or null (the role says)
-const viewOnlyFor = (team) => (team.closedAt ? CLOSED_NOTICE : team.subscriptionEnded ? ENDED_NOTICES[endedReason(team)] : null);
+const viewOnlyFor = (team) => (team.closedAt ? closedNotice() : team.subscriptionEnded ? msg(ENDED_NOTICES[endedReason(team)]) : null);
 // readOnlyLastDay, a calendar date (YYYY-MM-DD) the emails state too: shown as that date wherever the reader is
 const lastDay = (ymd) => new Date(`${ymd}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 // How long a Customer Portal link is offered before the button makes a new one: Stripe's
 // sessions are short-lived
 const PORTAL_LINK_MS = 4 * 60e3;
 // A write refused for billing while the page was open, when /me can't say why
-const ENDED_MEANWHILE = "This team is read-only now, so nothing in it can be changed. Reload the page to see why.";
+const endedMeanwhile = () => msg("account.endedMeanwhile");
 
 let box;
 
@@ -119,7 +120,7 @@ function takeCampaign() {
 // (1 to 128 letters, digits, - or _); tokens are base64url.
 const INVITE_ID = /^[A-Za-z0-9_-]{1,128}$/, INVITE_TOKEN = /^[A-Za-z0-9_-]{1,256}$/;
 const wellFormed = (invite) => typeof invite.id === "string" && INVITE_ID.test(invite.id) && typeof invite.token === "string" && INVITE_TOKEN.test(invite.token);
-const INCOMPLETE = "This invite link is incomplete. Open it again from the email, or ask for a new invite.";
+const incomplete = () => msg("account.incomplete");
 
 // The saved invite, if it's for this user. It's marked with the first user it's offered to,
 // so after that user's session ends without Sign out, the next person to sign in in this tab
@@ -178,9 +179,9 @@ export async function start(config) {
     if (session.relink) {
       const provider = session.relink, url = await session.signInUrl(provider);
       session.relink = "";
-      show(`<h2>Signing in</h2>
-        <p>Your ${provider === "Google" ? "Google" : "Apple"} sign-in is now linked to your Supply Checkout account. Finishing sign-in…</p>
-        <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn">Continue</a></div>`);
+      show(`<h2>${msg("account.relinkTitle")}</h2>
+        <p>${msg("account.relinkBody", { provider: provider === "Google" ? "Google" : "Apple" })}</p>
+        <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn">${msg("account.continue")}</a></div>`);
       location.assign(url);
       return until(() => {});
     }
@@ -188,11 +189,11 @@ export async function start(config) {
     const url = await session.signInUrl();
     if (mine !== turn) return until(() => {});
     const invited = !!takeInvite();
-    show(`<h2>Sign in</h2>
-      <p>${invited ? "Sign in with the email address your invite was sent to, and then you can join the team." : "Sign in to see your team's projects and inventory."}</p>
+    show(`<h2>${msg("account.signInTitle")}</h2>
+      <p>${msg(invited ? "account.signInInvited" : "account.signInPlain")}</p>
       ${errorText(session.notice)}
-      <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn">Sign in</a></div>
-      <p><button type="button" class="btn ghost" id="forgotPassword">Forgot your password?</button></p>
+      <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn">${msg("account.signIn")}</a></div>
+      <p><button type="button" class="btn ghost" id="forgotPassword">${msg("account.forgot")}</button></p>
       ${legalNotice()}`, (el) => {
       // Our own reset (reset-password.js), which helps when the address has no account
       el.querySelector("#forgotPassword").addEventListener("click", () => {
@@ -212,7 +213,7 @@ export async function start(config) {
     button.disabled = true;
     owner = null;
     if (await session.signOut(keep)) { if (db) db.stop(); }
-    else { owner = was; button.disabled = false; toast("Couldn't sign out. Try again.", 5000); }
+    else { owner = was; button.disabled = false; toast(msg("account.signOutFailed"), 5000); }
   }
 
   // The account is gone: forget everything here, stop live updates, and say so. Done signs
@@ -223,22 +224,23 @@ export async function start(config) {
     owner = null;
     if (db) db.stop();
     const out = await session.forgetDeleted();
-    show(`<h2>Your account is deleted</h2>
-      <p>You've been removed from your teams and can't sign in with this account any more. Thanks for using Supply Checkout.</p>
-      <div class="actions"><a class="btn primary" href="${esc(out)}" id="deletedDone" autofocus>Done</a></div>`);
+    show(`<h2>${msg("account.deletedTitle")}</h2>
+      <p>${msg("account.deletedBody")}</p>
+      <div class="actions"><a class="btn primary" href="${esc(out)}" id="deletedDone" autofocus>${msg("account.done")}</a></div>`);
   }
   // Two-step sign-in is on, and the API signed the user out everywhere: this tab's session is
   // over, so stop, and offer to sign in again (with the password and the app's code). The
   // owner mark stays, so the same person keeps their team and drafts.
   // The same after a password change that signed out everywhere (password.js).
+  // `title` and `text` are catalog keys
   async function signedOutEverywhere(title, text) {
     turn++;
     owner = null;
     if (db) db.stop();
     const out = await session.endEverywhere();
-    show(`<h2>${title}</h2>
-      <p>${text}</p>
-      <div class="actions"><a class="btn primary big" href="${esc(out)}" id="signInAgain" data-autofocus>Sign in again</a></div>`);
+    show(`<h2>${msg(title)}</h2>
+      <p>${msg(text)}</p>
+      <div class="actions"><a class="btn primary big" href="${esc(out)}" id="signInAgain" data-autofocus>${msg("account.signInAgain")}</a></div>`);
   }
   // This session began before the account was last signed out everywhere (supply-checkout-6uw.33):
   // after a password reset, or a password change or turning two-step sign-in on in another session,
@@ -250,14 +252,14 @@ export async function start(config) {
     owner = null;
     if (db) db.stop();
     closeModal();
-    show(`<h2>Signed out everywhere</h2>
-      <p>This account was signed out everywhere after this session began, so it's been signed out here too. That happens when the password is reset or changed, or two-step sign-in is turned on. Sign in again.</p>
-      <div class="actions"><button type="button" class="btn primary big" id="resetSignInAgain" data-autofocus>Sign in again</button></div>`, (el) => {
+    show(`<h2>${msg("account.resetTitle")}</h2>
+      <p>${msg("account.resetBody")}</p>
+      <div class="actions"><button type="button" class="btn primary big" id="resetSignInAgain" data-autofocus>${msg("account.signInAgain")}</button></div>`, (el) => {
       el.querySelector("#resetSignInAgain").addEventListener("click", (e) => signOut(e, true));
     });
   }
-  const twoStepOn = () => signedOutEverywhere("Two-step sign-in is on", "You've been signed out everywhere, here too. Sign in again with your email, your password and a code from your authenticator app.");
-  const passwordChanged = () => signedOutEverywhere("Your password is changed", "You've been signed out everywhere, here too. Sign in again with your new password.");
+  const twoStepOn = () => signedOutEverywhere("account.twoStepOnTitle", "account.twoStepOnBody");
+  const passwordChanged = () => signedOutEverywhere("account.passwordChangedTitle", "account.passwordChangedBody");
   const twoStep = (me, options) => openTwoStep(session, me.user.email, twoStepOn, options);
   // Takes the What's New banner away once Account turns it off; nothing until it's shown
   let hideWhatsNew = () => {};
@@ -289,7 +291,7 @@ export async function start(config) {
   }, { prefs: me.user.preferences, off: () => hideWhatsNew() }, ownPhoto(me, name), ownName(me));
 
   // Who's signed in, with a way out, on the screens before a team is open
-  const whoami = (me) => `<p class="whoami">Signed in as ${esc(me.user.email || "you")}. <button type="button" class="btn ghost" id="accountSignOut">Sign out</button> <button type="button" class="btn ghost" id="accountDelete">Delete account</button></p>`;
+  const whoami = (me) => `<p class="whoami">${msg("account.whoami", { email: esc(me.user.email || msg("account.you")) })} <button type="button" class="btn ghost" id="accountSignOut">${msg("account.signOut")}</button> <button type="button" class="btn ghost" id="accountDelete">${msg("account.deleteAccount")}</button></p>`;
   const wireWhoami = (el, me) => {
     el.querySelector("#accountSignOut").addEventListener("click", signOut);
     el.querySelector("#accountDelete").addEventListener("click", () => account(me, me.user.email));
@@ -300,8 +302,8 @@ export async function start(config) {
   // when there's no address. Verifying starts the screens again with the new /me.
   const unverified = (me) => !!me.user.email && !me.user.emailVerified;
   const verifyPrompt = (me) => me.user.email ? `<div class="verify-prompt" id="verifyPrompt"${unverified(me) ? "" : " hidden"}>
-      <p>Your email address, <strong>${esc(me.user.email)}</strong>, isn't verified yet. Verify it to see and join teams that invite it.</p>
-      <div class="actions"><button type="button" class="btn" id="verifyEmail">Verify email</button></div>
+      <p>${msg("account.verifyPrompt", { email: esc(me.user.email) })}</p>
+      <div class="actions"><button type="button" class="btn" id="verifyEmail">${msg("account.verifyEmail")}</button></div>
     </div>` : "";
   const wireVerify = (el, me, resolve) => {
     const button = el.querySelector("#verifyEmail");
@@ -312,9 +314,9 @@ export async function start(config) {
   // With a way to report it when the last team is known: a report is sent under a team
   const failed = () => until((resolve) => {
     const teamId = local.get(TEAM_KEY);
-    show(`<h2>Couldn't connect</h2>
-    <p>Supply Checkout didn't answer. Check your connection and try again.</p>
-    <div class="actions"><button type="button" class="btn primary" id="retry" data-autofocus>Try again</button>${teamId ? `<button type="button" class="btn" id="reportIssue">Report an issue</button>` : ""}</div>`,
+    show(`<h2>${msg("account.failedTitle")}</h2>
+    <p>${msg("account.failedBody")}</p>
+    <div class="actions"><button type="button" class="btn primary" id="retry" data-autofocus>${msg("account.tryAgain")}</button>${teamId ? `<button type="button" class="btn" id="reportIssue">${msg("account.reportIssue")}</button>` : ""}</div>`,
     (el) => {
       el.querySelector("#retry").addEventListener("click", resolve);
       if (teamId) el.querySelector("#reportIssue").addEventListener("click", (e) => openReport(session.api, { teamId, screen: "sign-in", opener: e.currentTarget }));
@@ -323,16 +325,16 @@ export async function start(config) {
 
   // A new team, with an Idempotency-Key per name, so a retry or double tap makes one team
   const newTeam = (me) => until((resolve) => {
-    const seen = me.invites.map((i) => `<p class="invite"><strong>${esc(i.teamName)}</strong> invited you as ${ROLE[i.role]}. Open the link in your invite email to join.</p>`).join("");
+    const seen = me.invites.map((i) => `<p class="invite">${msg("account.invitedAs", { team: esc(i.teamName), role: msg(ROLE[i.role]) })}</p>`).join("");
     let key = crypto.randomUUID(), keyName = null;
-    show(`<h2>Name your team</h2>
-      <p>Your team shares one inventory and one set of projects.</p>
+    show(`<h2>${msg("account.nameTeamTitle")}</h2>
+      <p>${msg("account.nameTeamBody")}</p>
       ${seen}
       ${verifyPrompt(me)}
       <form id="teamForm">
-        <div class="field"><label for="teamName">Team name</label><input type="text" id="teamName" required maxlength="200" autocomplete="organization" data-autofocus></div>
+        <div class="field"><label for="teamName">${msg("account.teamName")}</label><input type="text" id="teamName" required maxlength="200" autocomplete="organization" data-autofocus></div>
         ${errorText("")}
-        <div class="actions"><button type="submit" class="btn primary" id="createTeam">Create team</button></div>
+        <div class="actions"><button type="submit" class="btn primary" id="createTeam">${msg("account.createTeam")}</button></div>
       </form>
       ${whoami(me)}`, (el) => { wireWhoami(el, me); wireVerify(el, me, resolve); el.querySelector("#teamForm").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -352,9 +354,7 @@ export async function start(config) {
       }
       catch (err) {
         btn.disabled = false;
-        setError(err.code === "quota_exceeded" ? "You've made as many teams as you can for now. Try again tomorrow, or join a team you've been invited to."
-          : err.code === "bad_request" ? "Enter a team name of up to 200 characters."
-          : "Couldn't create the team. Check your connection and try again.");
+        setError(msg(err.code === "quota_exceeded" ? "account.teamQuota" : err.code === "bad_request" ? "account.teamBadName" : "account.teamFailed"));
       }
     }); });
   });
@@ -366,12 +366,12 @@ export async function start(config) {
     // A broken link can't be joined: say so at once, with no Join, and forget it
     const broken = !wellFormed(invite);
     if (broken) dropInvite();
-    show(`<h2>${known ? "Join " + esc(known.teamName) : "Join a team"}</h2>
-      <p>${known ? `${esc(known.teamName)} invited you as ${ROLE[known.role]}.` : "You've been invited to join a team."}</p>
+    show(`<h2>${known ? msg("account.joinTeamTitle", { team: esc(known.teamName) }) : msg("account.joinTitle")}</h2>
+      <p>${known ? msg("account.joinKnown", { team: esc(known.teamName), role: msg(ROLE[known.role]) }) : msg("account.joinUnknown")}</p>
       ${verifyPrompt(me)}
-      ${errorText(broken ? INCOMPLETE : "")}
-      <div class="actions"><button type="button" class="btn primary" id="join"${broken ? " hidden" : " data-autofocus"}>Join</button>
-      <button type="button" class="btn" id="skip">${hasTeams ? "Not now" : "Create my own team instead"}</button></div>
+      ${errorText(broken ? incomplete() : "")}
+      <div class="actions"><button type="button" class="btn primary" id="join"${broken ? " hidden" : " data-autofocus"}>${msg("account.join")}</button>
+      <button type="button" class="btn" id="skip">${msg(hasTeams ? "account.notNow" : "account.createInstead")}</button></div>
       ${whoami(me)}`, (el) => {
       wireWhoami(el, me);
       wireVerify(el, me, resolve);
@@ -391,12 +391,12 @@ export async function start(config) {
           if (err.code === "not_found" || err.code === "bad_request") { dropInvite(); join.hidden = true; }
           const prompt = el.querySelector("#verifyPrompt");
           if (err.code === "permission_denied" && prompt) prompt.hidden = false;
-          setError(err.code === "bad_request" ? INCOMPLETE
-            : err.code === "not_found" ? "This invite has expired, was already used, or was sent to a different email address. Ask the person who invited you for a new one."
-            : err.code === "permission_denied" ? "Your email address isn't verified yet. Verify it, then join."
-            : err.reason === "team_full" ? "This team is full. Ask the person who invited you to make room, then try again."
-            : err.code === "quota_exceeded" ? "You're already in as many teams as you can be. Leave one to join this one."
-            : "Couldn't join the team. Check your connection and try again.");
+          setError(err.code === "bad_request" ? incomplete()
+            : msg(err.code === "not_found" ? "account.joinExpired"
+            : err.code === "permission_denied" ? "account.joinUnverified"
+            : err.reason === "team_full" ? "account.joinFull"
+            : err.code === "quota_exceeded" ? "account.joinQuota"
+            : "account.joinFailed"));
         }
       });
     });
@@ -413,8 +413,8 @@ export async function start(config) {
     session.end();
     if (db) db.stop();
     closeModal();
-    show(`<h2>Your account changed</h2>
-      <p>Someone signed in or out in another tab. Loading Supply Checkout again…</p>`);
+    show(`<h2>${msg("account.changedTitle")}</h2>
+      <p>${msg("account.changedBody")}</p>`);
     location.reload();
   }
   // The owner mark (OWNER_KEY in session.js) changed from this user's: when another tab writes
@@ -441,18 +441,18 @@ export async function start(config) {
   }
 
   // Removed from the team while using it: start again with the teams they're still in
-  const removed = (team) => show(`<h2>You're no longer in ${esc(team.name)}</h2>
-    <p>You've been removed from this team, or it was closed. Ask one of its owners if that's a mistake.</p>
-    <div class="actions"><button type="button" class="btn primary" id="continue" data-autofocus>Continue</button></div>`,
+  const removed = (team) => show(`<h2>${msg("account.removedTitle", { team: esc(team.name) })}</h2>
+    <p>${msg("account.removedBody")}</p>
+    <div class="actions"><button type="button" class="btn primary" id="continue" data-autofocus>${msg("account.continue")}</button></div>`,
   (el) => el.querySelector("#continue").addEventListener("click", () => { local.remove(TEAM_KEY); location.reload(); }));
 
   // The owner changed their own role or left the team (the members screen): their access
   // changed, so start again from /me. Leaving forgets the team, so another one opens.
   const changed = (text, left) => {
     if (left) local.remove(TEAM_KEY);
-    show(`<h2>Your access changed</h2>
+    show(`<h2>${msg("account.accessChangedTitle")}</h2>
     <p>${esc(text)}</p>
-    <div class="actions"><button type="button" class="btn primary" id="continue" data-autofocus>Continue</button></div>`,
+    <div class="actions"><button type="button" class="btn primary" id="continue" data-autofocus>${msg("account.continue")}</button></div>`,
     (el) => el.querySelector("#continue").addEventListener("click", () => location.reload()));
   };
 
@@ -464,19 +464,19 @@ export async function start(config) {
       await session.api("DELETE", `/teams/${encodeURIComponent(team.id)}/members/${encodeURIComponent(me.user.id)}`);
     } catch {
       button.disabled = false;
-      toast("Couldn't leave the team. Check your connection and try again.", 5000);
+      toast(msg("account.leaveFailed"), 5000);
       return;
     }
     db.stop();
-    changed(`You left ${team.name}.`, true);
+    changed(msg("account.left", { team: team.name }), true);
   }
 
   // Which team: a switcher when there are several. Switching loads the page again for the
   // other team: new data, role and live updates.
   function drawSwitcher(el, teams, team) {
     el.innerHTML = teams.length > 1
-      ? `<label for="teamSwitch">Team</label><select id="teamSwitch">${teams.map((t) => `<option value="${esc(t.id)}"${t.id === team.id ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select>`
-      : `<span>Team: <strong>${esc(team.name)}</strong></span>`;
+      ? `<label for="teamSwitch">${msg("account.team")}</label><select id="teamSwitch">${teams.map((t) => `<option value="${esc(t.id)}"${t.id === team.id ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select>`
+      : `<span>${msg("account.teamLine", { team: esc(team.name) })}</span>`;
     const pick = el.querySelector("#teamSwitch");
     if (pick) pick.addEventListener("change", () => { local.set(TEAM_KEY, pick.value); location.reload(); });
   }
@@ -503,17 +503,17 @@ export async function start(config) {
     const left = Date.parse(team.reopenBy) - Date.now();
     if (left > 0) { setTimeout(() => reopenWindow(bar, team), Math.min(left, 864e5)); return; }
     bar.querySelector("#reopenTeam").remove();
-    bar.querySelector("#reopenBy").textContent = " It's too close to being deleted to reopen now.";
+    bar.querySelector("#reopenBy").textContent = msg("account.tooCloseToReopen");
   }
 
   // Who is signed in, and their role in this team, on the team bar's Account button: their
   // name from the token, else their email, cut short with an ellipsis on a narrow screen. A
   // screen reader reads it all, as "Signed in as …".
-  const ROLE_NAME = { owner: "Owner", contributor: "Contributor", viewer: "Viewer" };
+  const ROLE_NAME = { owner: "account.roleOwner", contributor: "account.roleContributor", viewer: "account.roleViewer" };
   // With their photo, or their initials.
   const identity = (name, team, userId) => {
-    const who = esc(visibleText(name)), role = ROLE_NAME[team.role];
-    return `<button type="button" class="btn ghost whoami-chip" id="accountOpen" title="${who}" aria-label="Signed in as ${who}, ${role}. Account">${avatarHTML(photoOf(userId), visibleText(name), 32, userId)}<span class="who-name">${who}</span><span class="who-role">${role}</span></button>`;
+    const who = esc(visibleText(name)), role = msg(ROLE_NAME[team.role]);
+    return `<button type="button" class="btn ghost whoami-chip" id="accountOpen" title="${who}" aria-label="${msg("account.chipLabel", { who, role })}">${avatarHTML(photoOf(userId), visibleText(name), 32, userId)}<span class="who-name">${who}</span><span class="who-role">${role}</span></button>`;
   };
   // A member's photo link, or null: none, or no photos (no team open, or an API without them)
   const photoOf = (userId) => (photos ? photos.url(userId) : null);
@@ -525,17 +525,17 @@ export async function start(config) {
     const bar = document.createElement("div");
     bar.className = "teambar";
     const owner = team.role === "owner";
-    const reopenBy = owner && team.reopenBy ? `<span id="reopenBy"> Reopen by ${esc(moment(team.reopenBy))} to keep it.</span>` : "";
+    const reopenBy = owner && team.reopenBy ? `<span id="reopenBy">${msg("account.reopenBy", { date: esc(moment(team.reopenBy)) })}</span>` : "";
     const ended = !team.closedAt && team.subscriptionEnded;
     // The Customer Portal: owners of an open team that has a Stripe customer
     const billing = owner && !team.closedAt && team.billingAccount;
     // Invoices: owners of a team with a Stripe customer, closed or not, so a closed team's owners can save them
     // before it's deleted (the server refuses once the deletion is due)
     const invoices = owner && team.billingAccount;
-    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button>` : ""}${invoices ? `<button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}${identity(who, team, me.user.id)}${helpLink()}<button type="button" class="btn ghost" id="reportIssue">Report an issue</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
-      + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "")
-      + (!team.closedAt && !ended && team.cancelsAt ? `<p class="closed-note" role="status" id="cancelNote">This team's subscription was canceled. Everything works until ${esc(day(team.cancelsAt))}; then the team becomes read-only.${billing ? " To keep it, renew it from Billing." : " Ask an owner to renew it to keep it."}</p>` : "")
-      + (!team.closedAt && !ended && team.paymentGraceEndsAt ? `<p class="closed-note" role="status" id="graceNote">A payment for this team didn't go through. Everything works until ${esc(moment(team.paymentGraceEndsAt))}; then the team becomes read-only until it's paid.${owner ? " Update the payment method in Billing to keep it working." : " Ask an owner to update the payment method."}</p>` : "")
+    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">${msg("account.verifyEmail")}</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">${msg("account.members")}</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">${msg("account.billing")}</button>` : ""}${invoices ? `<button type="button" class="btn ghost" id="invoices">${msg("account.invoices")}</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">${msg("account.importCsv")}</button><button type="button" class="btn ghost" id="teamSettings">${msg("account.teamSettings")}</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">${msg("account.leaveTeam")}</button>`}${identity(who, team, me.user.id)}${helpLink()}<button type="button" class="btn ghost" id="reportIssue">${msg("account.reportIssue")}</button><button type="button" class="btn ghost" id="signOut">${msg("account.signOut")}</button>`
+      + (team.closedAt ? `<p class="closed-note" role="status">${msg("account.closedNote", { closed: esc(day(team.closedAt)), deletes: esc(day(team.deletesAt)) })}${owner ? msg("account.closedExport") : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">${msg("account.reopenTeam")}</button>` : ""}` : "")
+      + (!team.closedAt && !ended && team.cancelsAt ? `<p class="closed-note" role="status" id="cancelNote">${msg("account.cancelNote", { date: esc(day(team.cancelsAt)) })}${msg(billing ? "account.cancelRenewOwner" : "account.cancelRenew")}</p>` : "")
+      + (!team.closedAt && !ended && team.paymentGraceEndsAt ? `<p class="closed-note" role="status" id="graceNote">${msg("account.graceNote", { date: esc(moment(team.paymentGraceEndsAt)) })}${msg(owner ? "account.graceOwner" : "account.grace")}</p>` : "")
       + (ended ? endedNote(team, owner, billing) : "");
     box.after(bar);
     drawSwitcher(bar.querySelector(".team-pick"), me.teams, team);
@@ -566,7 +566,7 @@ export async function start(config) {
       }
     } else {
       const leave = bar.querySelector("#leaveTeam");
-      armButton(leave, "Tap again to leave", () => leaveTeam(me, team, leave));
+      armButton(leave, msg("account.tapToLeave"), () => leaveTeam(me, team, leave));
     }
     return bar;
   }
@@ -578,13 +578,13 @@ export async function start(config) {
   function endedNote(team, owner, billing) {
     const reason = endedReason(team);
     const overdue = reason === "payment_overdue";
-    const why = { subscription_ended: "This team's subscription has ended, so it's read-only.", trial_ended: "This team's free trial has ended, so it's read-only.", payment_overdue: "This team's payment is overdue, so it's read-only until it's paid." }[reason];
-    const deletes = !overdue && team.readOnlyLastDay ? ` Unless it's subscribed, everything in it will be deleted after ${esc(lastDay(team.readOnlyLastDay))}.` : "";
-    const todo = overdue
-      ? (owner ? " Update the payment method in Billing to make changes again." : " Ask an owner to update the payment method to make changes again.")
-      : (owner ? " Subscribe to make changes again." : " Ask an owner to subscribe to make changes again.");
-    const action = !owner ? "" : overdue ? (billing ? `<button type="button" class="btn" id="payBilling">Update payment</button>` : "") : `<button type="button" class="btn" id="subscribe">Subscribe</button>`;
-    return `<p class="closed-note" role="status" id="endedNote">${why} Nothing has been deleted: everyone can still see it${owner ? ", and you can export it." : "."}${deletes}${todo}</p>${action}`;
+    const why = msg({ subscription_ended: "account.whySubscriptionEnded", trial_ended: "account.whyTrialEnded", payment_overdue: "account.whyPaymentOverdue" }[reason]);
+    const deletes = !overdue && team.readOnlyLastDay ? msg("account.willBeDeleted", { date: esc(lastDay(team.readOnlyLastDay)) }) : "";
+    const todo = msg(overdue
+      ? (owner ? "account.todoOverdueOwner" : "account.todoOverdue")
+      : (owner ? "account.todoSubscribeOwner" : "account.todoSubscribe"));
+    const action = !owner ? "" : overdue ? (billing ? `<button type="button" class="btn" id="payBilling">${msg("account.updatePayment")}</button>` : "") : `<button type="button" class="btn" id="subscribe">${msg("account.subscribe")}</button>`;
+    return `<p class="closed-note" role="status" id="endedNote">${why} ${msg(owner ? "account.nothingDeletedOwner" : "account.nothingDeleted")}${deletes}${todo}</p>${action}`;
   }
 
   // An owner subscribes a team whose subscription ended: Stripe Checkout for the Starter plan,
@@ -597,9 +597,9 @@ export async function start(config) {
   // otherwise sign straight back in without the code, and sign in again. The team, drafts and
   // owner mark are kept for the same person.
   function signInAgain() {
-    openModal(`<h2>Sign in again</h2>
-      <p>To manage billing, sign in again with your email, your password and a code from your authenticator app. This session began before two-step sign-in was turned on.</p>
-      <div class="modal-actions"><button type="button" class="btn" id="signInAgainCancel">Cancel</button> <button type="button" class="btn primary" id="signInAgainGo" data-autofocus>Sign in again</button></div>`, (m) => {
+    openModal(`<h2>${msg("account.signInAgainTitle")}</h2>
+      <p>${msg("account.signInAgainBody")}</p>
+      <div class="modal-actions"><button type="button" class="btn" id="signInAgainCancel">${msg("account.cancel")}</button> <button type="button" class="btn primary" id="signInAgainGo" data-autofocus>${msg("account.signInAgain")}</button></div>`, (m) => {
       m.querySelector("#signInAgainCancel").addEventListener("click", closeModal);
       m.querySelector("#signInAgainGo").addEventListener("click", (e) => signOut(e, true));
     });
@@ -608,7 +608,7 @@ export async function start(config) {
   const needsTwoStep = (me, e) => {
     if (e.reason === "mfa_sign_in_again") { signInAgain(); return true; }
     if (e.reason !== "mfa_required") return false;
-    twoStep(me, { why: "To manage billing, turn on two-step sign-in first. It keeps someone who gets hold of your email from changing how your team pays." });
+    twoStep(me, { why: msg("account.needsTwoStep") });
     return true;
   };
   async function subscribe(me, team, button) {
@@ -620,13 +620,13 @@ export async function start(config) {
       link.className = "btn primary";
       link.id = "checkoutLink";
       link.href = checkout.url;
-      link.textContent = "Continue to checkout";
+      link.textContent = msg("account.checkout");
       button.replaceWith(link);
       link.focus();
     } catch (e) {
       button.disabled = false;
       if (needsTwoStep(me, e)) return;
-      toast(e.reason === "already_subscribed" ? "This team already has a subscription. Reload the page to see it." : "Couldn't start checkout. Check your connection and try again.", 5000);
+      toast(msg(e.reason === "already_subscribed" ? "account.alreadySubscribed" : "account.checkoutFailed"), 5000);
     }
   }
 
@@ -641,7 +641,7 @@ export async function start(config) {
       link.className = "btn primary";
       link.id = "billingLink";
       link.href = portal.url;
-      link.textContent = "Continue to billing";
+      link.textContent = msg("account.portal");
       button.disabled = false;
       button.replaceWith(link);
       link.focus();
@@ -649,7 +649,7 @@ export async function start(config) {
     } catch (e) {
       button.disabled = false;
       if (needsTwoStep(me, e)) return;
-      toast(e.reason === "no_billing_account" ? "This team has no billing account yet. Reload the page, then subscribe." : "Couldn't open billing. Check your connection and try again.", 5000);
+      toast(msg(e.reason === "no_billing_account" ? "account.noBillingAccount" : "account.portalFailed"), 5000);
     }
   }
 
@@ -717,7 +717,7 @@ export async function start(config) {
     // it, and says to reload if /me couldn't say.
     let closing = null;
     const changedMeanwhile = (closed) => { closing = (async () => {
-      viewOnly = closed ? CLOSED_MEANWHILE : ENDED_MEANWHILE;
+      viewOnly = closed ? closedMeanwhile() : endedMeanwhile();
       let teams;
       try { teams = (await session.api("GET", "/me")).teams; } catch { return; }
       const now = teams.find((t) => t.id === team.id);
@@ -789,7 +789,7 @@ export async function start(config) {
   // Signs in if needed, loads /me and picks a team. Anything that fails shows a screen
   // whose button runs it again; signing in leaves the page.
   for (;;) {
-    show(`<p class="muted" role="status">Loading…</p>`);
+    show(`<p class="muted" role="status">${msg("account.loading")}</p>`);
     try {
       if (!await session.start()) return signIn();
       let me = await session.api("GET", "/me");

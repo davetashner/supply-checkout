@@ -2,6 +2,7 @@
 // docs/infrastructure.md): Managed Login with the authorization code flow and PKCE. The
 // API redeems the code at /auth/session and keeps the refresh token in an HttpOnly cookie;
 // the access and ID tokens live only in this module's memory, never in storage.
+import { msg } from "../i18n.js";
 import { request, json } from "./http.js";
 
 const PKCE_KEY = "supplyCheckout.signIn";
@@ -178,7 +179,7 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged,
           try { begin(await post("/auth/session", { code, codeVerifier: saved.verifier, redirectUri })); return true; }
           catch (e) { if (e.code !== "unauthenticated") throw e; }
         }
-        this.notice = "Sign-in didn't finish. Please try again.";
+        this.notice = msg("session.didntFinish");
         return false;
       }
       try { begin(await post("/auth/refresh")); return true; }

@@ -11,6 +11,7 @@ import { start } from "./account.js";
 // The release version RUM tags every event with (release-please sets it); only this field
 // of package.json is bundled
 import { version } from "../../package.json";
+import { msg } from "../i18n.js";
 
 // Receipt reading (use("sample")): the receipt endpoint, POST /teams/{teamId}/receipts/read
 // (src/aws/receipts.js, supply-checkout-kx8). Switched off, sample is null and the app hides
@@ -52,6 +53,6 @@ if (!window.claude) {
       return (caps && caps[name]) || null;
     },
     // What the app's notice suggests when storage doesn't connect
-    help: { connecting: "reload the page", missing: "Reload the page, or try again in a few minutes." },
+    help: { get connecting() { return msg("runtime.connecting"); }, get missing() { return msg("runtime.missingAws"); } },
   };
 }

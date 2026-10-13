@@ -13,6 +13,7 @@
 // preferences shows nothing. Web build only, like the rest of src/aws/.
 import notes from "../whats-new.json";
 import { esc } from "../format.js";
+import { msg } from "../i18n.js";
 
 export const WINDOW_DAYS = 14;
 // How many notes the banner lists before "Show all"
@@ -53,12 +54,12 @@ export function showWhatsNew(api, prefs, after) {
   banner.className = "whats-new";
   banner.id = "whatsNew";
   banner.setAttribute("aria-labelledby", "whatsNewTitle");
-  banner.innerHTML = `<div class="whats-new-head"><h2 id="whatsNewTitle">What's new</h2>
-      <button type="button" class="btn ghost" id="whatsNewDismiss" aria-label="Dismiss What's new">Dismiss</button></div>
-    <p class="sr-only" role="status">What's new in Supply Checkout from the last two weeks, below the team bar.</p>
+  banner.innerHTML = `<div class="whats-new-head"><h2 id="whatsNewTitle">${msg("whatsNew.title")}</h2>
+      <button type="button" class="btn ghost" id="whatsNewDismiss" aria-label="${msg("whatsNew.dismissLabel")}">${msg("whatsNew.dismiss")}</button></div>
+    <p class="sr-only" role="status">${msg("whatsNew.about")}</p>
     <ul class="whats-new-list">${recent.slice(0, FIRST).map(item).join("")}</ul>
-    <details class="whats-new-more"><summary>Show all ${recent.length}</summary><ul class="whats-new-list">${recent.slice(FIRST).map(item).join("")}</ul></details>
-    <p class="hint">Turn these off in Account.</p>`;
+    <details class="whats-new-more"><summary>${msg("whatsNew.showAll", { count: recent.length })}</summary><ul class="whats-new-list">${recent.slice(FIRST).map(item).join("")}</ul></details>
+    <p class="hint">${msg("whatsNew.turnOff")}</p>`;
   // Nothing more to show: no "Show all"
   banner.querySelector(".whats-new-more").hidden = recent.length <= FIRST;
   after.after(banner);
@@ -79,8 +80,8 @@ export function showWhatsNew(api, prefs, after) {
 // /me's user.preferences; nothing from an API without them.
 export function whatsNewSetting(prefs) {
   if (!prefs) return "";
-  return `<h3>What's new</h3>
-    <label class="check"><input type="checkbox" id="whatsNewOn"${prefs.whatsNew ? " checked" : ""}> Show what's new after an update, at most once a day</label>
+  return `<h3>${msg("whatsNew.title")}</h3>
+    <label class="check"><input type="checkbox" id="whatsNewOn"${prefs.whatsNew ? " checked" : ""}> ${msg("whatsNew.setting")}</label>
     <p class="error" role="alert" id="whatsNewFail" hidden></p>`;
 }
 
@@ -99,7 +100,7 @@ export function wireWhatsNewSetting(m, api, prefs, onOff) {
       if (!on) onOff();
     } catch {
       box.checked = !on;
-      fail.textContent = "Couldn't save that. Check your connection and try again.";
+      fail.textContent = msg("whatsNew.saveFailed");
       fail.hidden = false;
     }
     box.disabled = false;

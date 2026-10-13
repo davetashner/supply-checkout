@@ -45,37 +45,34 @@ let firstRun = null;
 let retryable = false;
 async function write(fn, okMsg, projectId) {
   retryable = false;
-  if (!db) { toast("Not connected to shared storage."); return false; }
-  if (!navigator.onLine) { retryable = true; toast(OFFLINE); return false; }
+  if (!db) { toast(msg("app.notConnected")); return false; }
+  if (!navigator.onLine) { retryable = true; toast(msg("app.offline")); return false; }
   try { await fn(); if (okMsg) toast(okMsg); return true; }
   catch (e) {
     if (projectId && e && (e.code === "not_found" || (e.code === "invalid_argument" && await projectGone(projectId)))) {
-      closeModal(); toast("Someone else deleted this project, so your change wasn't saved.");
+      closeModal(); toast(msg("app.projectDeleted"));
     }
-    else if (e && e.code === "invalid_argument") { canWrite = false; await readViewOnly(); render(); toast(viewOnly || "You have view-only access. Ask the owner for Contributor access to make changes."); }
-    else if (e && e.code === "quota_exceeded") toast("Storage is full. Delete old projects or items to make room.");
+    else if (e && e.code === "invalid_argument") { canWrite = false; await readViewOnly(); render(); toast(viewOnly || msg("app.viewOnly")); }
+    else if (e && e.code === "quota_exceeded") toast(msg("app.storageFull"));
     // Someone else saved this first (the web build's versioned writes, ADR 0006). Close the
     // editor so the latest values show, rather than an edit made on the old ones.
     // Finished Return on a project with equipment out that this page didn't know about (someone
     // took more meanwhile): the server refuses to close it (ADR 0017, docs/api/commands.md)
     // Reopening a General Use project while another is open, which this page didn't know about
-    else if (e && e.reason === "adhoc_open") { toast(ADHOC_OPEN); }
-    else if (e && e.reason === "equipment_out") { closeModal(); toast("Equipment is still out on this project, so it wasn't finished. Tap Finished Return again to say where each piece is."); }
-    else if (e && e.code === "aborted") { closeModal(); toast("Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed."); }
+    else if (e && e.reason === "adhoc_open") { toast(msg("app.adhocOpen")); }
+    else if (e && e.reason === "equipment_out") { closeModal(); toast(msg("app.equipmentOut")); }
+    else if (e && e.code === "aborted") { closeModal(); toast(msg("app.changedJustNow")); }
     // Refused for what's saved now, such as returning more than are left (the web build's
     // checkout and return commands, src/aws/db.js): the message says why. The latest is showing.
     // `refused` is that adapter's own code, so no other write shows a raw message.
     else if (e && e.code === "refused") { closeModal(); toast(e.message); }
     // The web build's session ended (signed out, here or in another tab, or it expired): the
     // connection isn't the problem, and trying again won't help until they sign in
-    else if (e && e.code === "unauthenticated") toast("You're signed out, so that wasn't saved. Sign in, then make your change again.");
-    else { retryable = true; toast("That didn't save. Check your connection and try again."); }
+    else if (e && e.code === "unauthenticated") toast(msg("app.signedOut"));
+    else { retryable = true; toast(msg("app.notSaved")); }
     return false;
   }
 }
-const STILL_OUT = "Return it or mark it lost before removing it.";
-const ADHOC_OPEN = "Another General Use project is open. Finish it before reopening this one.";
-const OFFLINE = "You're offline, so that wasn't saved. Try again when you're back online.";
 // Why the page is read-only, when the runtime says (the web build: an owner closed the team);
 // otherwise it's the viewer's role. Asked again when a write is refused, since the reason can
 // change while the page is open. A runtime without it (claude.ai) throws, and the role it is.
@@ -88,13 +85,12 @@ async function readViewOnly() { try { viewOnly = (await userNs.viewOnlyNotice())
 // was entered stays, the form says it isn't saved, and the button says Try again: the same
 // action again, with the same operation ID (src/aws/db.js), so a save whose answer was lost
 // counts once. fn resolves to whether it saved.
-const TRY = "Try again";
 // Wires a modal form's submit. Not while it's saving: the button is disabled then, so only a
 // submit that gets through anyway (a browser letting a very quick second tap through) is ignored.
 // A price or cost field (data-money) over the API's limit says so, and its form won't submit
 // until it's fixed: never a silent cap, and never a save the API refuses
-const MONEY_LIMIT = `Prices and costs go up to ${money(MAX_MONEY)}.`;
-const checkMoney = e => { if (e.target.matches("[data-money]")) e.target.setCustomValidity(Number(e.target.value) > MAX_MONEY ? MONEY_LIMIT : ""); };
+const moneyLimit = () => msg("app.moneyLimit", { max: money(MAX_MONEY) });
+const checkMoney = e => { if (e.target.matches("[data-money]")) e.target.setCustomValidity(Number(e.target.value) > MAX_MONEY ? moneyLimit() : ""); };
 $("#modal").addEventListener("input", checkMoney);
 $("#rBody").addEventListener("input", checkMoney);
 const onSubmit = (form, fn) => form.addEventListener("submit", e => { e.preventDefault(); if (!form.hasAttribute("aria-busy")) fn(); });
@@ -111,15 +107,15 @@ async function busy(form, fn) {
 }
 async function saving(form, fn) {
   const go = form.querySelector("[type=submit]"), failed = form.querySelector(".save-failed");
-  if (go.textContent !== TRY) form.dataset.label = go.textContent;
+  if (go.textContent !== msg("app.tryAgain")) form.dataset.label = go.textContent;
   if (failed) { failed.remove(); go.removeAttribute("aria-describedby"); }
-  go.textContent = "Saving…";
+  go.textContent = msg("app.saving");
   const ok = await busy(form, fn);
   go.textContent = form.dataset.label;
   // Gone if it saved, or if the save closed it (someone else deleted or changed this)
   if (ok || !form.isConnected || !retryable) return;
-  go.textContent = TRY;
-  form.querySelector(".modal-actions").insertAdjacentHTML("beforebegin", `<p class="save-failed" id="saveFailed">${navigator.onLine ? "Not saved. Check your connection, then tap Try again." : "Not saved: you're offline. Tap Try again when you're back online."}</p>`);
+  go.textContent = msg("app.tryAgain");
+  form.querySelector(".modal-actions").insertAdjacentHTML("beforebegin", `<p class="save-failed" id="saveFailed">${msg(navigator.onLine ? "app.saveFailedOnline" : "app.saveFailedOffline")}</p>`);
   go.setAttribute("aria-describedby", "saveFailed");
   go.focus();
 }
@@ -145,17 +141,17 @@ function personHTML(s) {
   if (s.createdBy) {
     const p = own(people, s.createdBy);
     // Their photo, or their initials; nothing for someone the runtime knows nothing about
-    return `<span class="who">${p ? avatarHTML(p.avatarUrl, p.name, 24, s.createdBy) : ""}${esc((p && p.name) || "Someone")}</span>`;
+    return `<span class="who">${p ? avatarHTML(p.avatarUrl, p.name, 24, s.createdBy) : ""}${esc((p && p.name) || msg("app.someone"))}</span>`;
   }
-  return `<span class="who">${esc(s.createdByName || "Unknown")}</span>`;
+  return `<span class="who">${esc(s.createdByName || msg("app.unknown"))}</span>`;
 }
-function personText(s) { return s.createdBy ? ((own(people, s.createdBy) || {}).name || "Someone") : (s.createdByName || "Unknown"); }
+function personText(s) { return s.createdBy ? ((own(people, s.createdBy) || {}).name || msg("app.someone")) : (s.createdByName || msg("app.unknown")); }
 // Who last took a piece of equipment (ADR 0017): a user ID (the web build, or claude.ai with a
 // signed-in user), or the name typed on the project when there's none. Missing on older lines.
 function takerText(id) {
   if (!id) return "—";
   const p = own(people, id);
-  return p && p.name ? p.name : "Someone";
+  return p && p.name ? p.name : msg("app.someone");
 }
 const whenText = iso => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—"; };
 
@@ -176,9 +172,9 @@ async function render() {
 
 function paintNotice() {
   const notice = $("#notice");
-  if (!navigator.onLine) { notice.hidden = false; notice.textContent = "You're offline. Nothing can be saved until the connection is back."; }
-  else if (!connected) { notice.hidden = false; notice.textContent = `Connecting to shared storage… If this doesn't clear, ${help().connecting}.`; }
-  else if (!canWrite) { notice.hidden = false; notice.textContent = viewOnly || "You have view-only access. Ask the owner to give you Contributor access to scan and edit."; }
+  if (!navigator.onLine) { notice.hidden = false; notice.textContent = msg("app.offlineNotice"); }
+  else if (!connected) { notice.hidden = false; notice.textContent = msg("app.connecting", { help: help().connecting }); }
+  else if (!canWrite) { notice.hidden = false; notice.textContent = viewOnly || msg("app.viewOnlyNotice"); }
   else notice.hidden = true;
 }
 // Going offline and back: the notice says so, and a form that didn't save says it can be
@@ -186,7 +182,7 @@ function paintNotice() {
 window.addEventListener("offline", paintNotice);
 window.addEventListener("online", () => {
   paintNotice();
-  const f = $("#saveFailed"); if (f) f.textContent = "Not saved yet. You're back online: tap Try again.";
+  const f = $("#saveFailed"); if (f) f.textContent = msg("app.backOnline");
 });
 
 // The view, then the first-run checklist above the project list or inventory (web build). Only
@@ -543,7 +539,7 @@ const projectAction = {
   },
   reopen: () => {
     // A team has one open General Use project at a time (the web build's server refuses another too)
-    if (isAdhoc(currentProject()) && openAdhoc()) { toast(ADHOC_OPEN); return; }
+    if (isAdhoc(currentProject()) && openAdhoc()) { toast(msg("app.adhocOpen")); return; }
     once("reopen", () => write(() => db.doc("projects/" + ui.projectId).update({ status: "open" }), "Project reopened", ui.projectId));
   },
   delProject: b => arm(b, "Tap again to delete", () => once("delProject", async () => {
@@ -979,7 +975,7 @@ function lineModal(s, key) {
     ${eq ? `<form id="f" style="display:grid;gap:14px">
       <p class="hint" style="margin:0">Company equipment: not charged. Its counts change when it's checked out, returned, or marked lost at Finished Return.</p>
       <div class="summary"><span>Taken <b>${eq.o}</b></span><span>Returned <b>${eq.r}</b></span>${eq.lost ? `<span>Lost or broken <b>${eq.lost}</b></span>` : ""}<span>Still out <b>${eq.still}</b></span></div>
-      ${eq.still ? `<p class="hint" style="margin:0">${STILL_OUT}</p>` : ""}
+      ${eq.still ? `<p class="hint" style="margin:0">${msg("app.stillOut")}</p>` : ""}
       <div class="modal-actions">${eq.still ? "" : `<button type="button" class="btn danger" id="remove">Remove</button>`}<span class="spacer"></span><button type="button" class="btn primary" id="cancel">Close</button></div>
     </form>` : `<form id="f" style="display:grid;gap:14px">
       ${adhoc ? `<p class="hint" style="margin:0">Taken for no job: not charged.</p>` : `<div class="field"><label for="fPrice">Price each on this project ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>`}
@@ -1007,7 +1003,7 @@ function lineModal(s, key) {
     // that this page didn't know about (someone took more meanwhile): the latest is showing.
     const remove = m.querySelector("#remove");
     if (remove) armButton(remove, "Tap to remove", () => busy(form, () => closing(write(() => removeLine(s.id, key).catch(e => {
-      throw e && e.reason === "equipment_out" ? { code: "refused", message: `Some of this is still out, so it wasn't removed. ${STILL_OUT}` } : e;
+      throw e && e.reason === "equipment_out" ? { code: "refused", message: `Some of this is still out, so it wasn't removed. ${msg("app.stillOut")}` } : e;
     }), "Removed", s.id))));
     if (!eq) onSubmit(form, () => {
       // Returned never above what's taken
@@ -1366,7 +1362,7 @@ function renderReceipt() {
     <label class="check"><input type="checkbox" id="rSavePrices" ${d.savePrices ? "checked" : ""}> Also add client items to inventory with their prices</label>
     </fieldset>
     ${d.locked && !rSaving ? `<p class="hint warn" id="rLocked">Not saved yet: the answer didn't come back, so part of this receipt may have saved. Tap Try again to finish. It can't be changed until it's saved, so nothing is added twice.</p>` : ""}
-    <div class="modal-actions"><button type="button" class="btn danger" id="rDiscard" ${rSaving ? "disabled" : ""}>Discard</button><span class="spacer"></span><button type="button" class="btn primary big" id="rSave" ${rSaving ? "disabled" : ""} ${d.locked && !rSaving ? `aria-describedby="rLocked"` : ""}>${rSaving ? "Saving…" : d.locked ? TRY : "Save"}</button></div>`;
+    <div class="modal-actions"><button type="button" class="btn danger" id="rDiscard" ${rSaving ? "disabled" : ""}>Discard</button><span class="spacer"></span><button type="button" class="btn primary big" id="rSave" ${rSaving ? "disabled" : ""} ${d.locked && !rSaving ? `aria-describedby="rLocked"` : ""}>${rSaving ? msg("app.saving") : d.locked ? msg("app.tryAgain") : "Save"}</button></div>`;
   armButton($("#rDiscard"), "Tap again to discard", () => { draft = null; saveDraft(); ui.receipt = false; draw(); toast("Receipt discarded"); });
   paintSum();
 }
@@ -1526,7 +1522,7 @@ async function saveReceipt() {
   if (!lines.length) { toast("Add at least one item with a name and a quantity."); return; }
   // A price over the API's limit, read from the photo or typed, is fixed before anything is saved
   const over = lines.find(l => Number(l.price) > MAX_MONEY);
-  if (over) { toast(MONEY_LIMIT); const f = $("#p-" + over.id); f.setCustomValidity(MONEY_LIMIT); f.focus(); return; }
+  if (over) { toast(moneyLimit()); const f = $("#p-" + over.id); f.setCustomValidity(moneyLimit()); f.focus(); return; }
   const usedDests = d.dests.filter(x => lines.some(l => l.dest === x.id));
   const unnamed = usedDests.find(x => !x.projectId && !x.client.trim());
   if (unnamed) { toast("Enter a client name for each new project."); const f = $("#dname-" + unnamed.id); f && f.focus(); return; }

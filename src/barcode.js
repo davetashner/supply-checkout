@@ -1,4 +1,5 @@
 import { $, toast } from "./dom.js";
+import { msg } from "./i18n.js";
 
 /* ---------- barcode reading ---------- */
 async function loadBitmap(file) {
@@ -240,10 +241,10 @@ export async function scanFromInput(input) {
   if (live) { taken.delete(input); return live; }
   const file = input.files && input.files[0]; input.value = "";
   if (!file) return null;
-  toast("Reading barcode…", 8000);
+  toast(msg("barcode.reading"), 8000);
   let code = null;
   try { code = await decodeImage(file); } catch {}
-  if (!code) { toast("No barcode found. Fill the frame with the barcode, keep it flat and well lit, or type the number.", 5000); return null; }
+  if (!code) { toast(msg("barcode.none"), 5000); return null; }
   $("#toast").hidden = true;
   return code.trim();
 }
