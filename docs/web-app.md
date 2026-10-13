@@ -76,6 +76,10 @@ The web stack deploys the data stack too, so keep `-c backupCopy=false` until [s
 
 Then check https://securityheaders.com/?q=supplycheckout.com/demo/ (it should grade A; `'unsafe-inline'` for style attributes stops it at A rather than A+) and that `https://www.supplycheckout.com/` redirects to the apex and `/demo` to `/demo/`. `https://app.supplycheckout.com/` answers 503 until the real app is published to the `app` channel.
 
+## The app's text and languages
+
+The app's text is moving into message catalogs (`supply-checkout-3ilj`, step 1 of the Spanish version; `supply-checkout-oopu` and `supply-checkout-rg4c` follow). `src/i18n.js` has `msg(key, vars)`; the English text is `src/messages/en.js`, one entry per string, keyed `area.what`. `{name}` in an entry is replaced from `vars`, and a plural entry is `{ one, other }`, picked by `vars.count` with `Intl.PluralRules`. `msg()` gives text, not safe HTML: a value a person typed goes in through `esc()` first, as before. A key the catalog lacks comes back as the key, so a missing string shows as itself. Strings move over file by file with no change to what the app says (the tests still read English), and the files not yet moved still have their text in place. The language setting, the Spanish catalog and the pseudo-locale check come after the last file moves.
+
 ## The operator page
 
 The operator page (`ops/`, `npm run build:ops`, [ADR 0015](adr/0015-platform-operator-role.md) §9, `supply-checkout-gxlt`) is a separate small site at `ops.<env domain>`, with none of the customer app's code. What it does, and setting it up, are in [Operators](infrastructure.md#the-operator-page).
