@@ -24,3 +24,33 @@ test("every English catalog file's keys start with its name, and no key repeats"
   }
   assert.ok(seen.size > 0);
 });
+
+// The Spanish catalog (src/messages/es/*.js, supply-checkout-oopu): each file is named for an English one, holds
+// only keys that English has, and keeps every {name} and every HTML tag of the English text, so a translation
+// can't drop a value or break the markup around it. A plural has the forms Spanish needs: one and other.
+const placeholders = (text) => [...text.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
+const tags = (text) => [...text.matchAll(/<\/?([a-z0-9]+)[^>]*>/gi)].map((m) => m[0].replace(/\s+/g, " ")).sort().join("|");
+
+test("every Spanish catalog entry matches its English one: same key, placeholders and markup, and the plural forms", async () => {
+  const esDir = new URL("../src/messages/es/", import.meta.url);
+  for (const file of readdirSync(esDir).filter((f) => f.endsWith(".js")).sort()) {
+    assert.ok(files.includes(file), `${file} has no English file`);
+    const { default: en } = await import(new URL(file, dir));
+    const { default: es } = await import(new URL(file, esDir));
+    for (const [key, entry] of Object.entries(es)) {
+      assert.ok(key in en, `${file}: "${key}" isn't in English`);
+      const from = en[key];
+      assert.equal(typeof entry, typeof from, `${file}: "${key}" must be ${typeof from === "string" ? "a string" : "a plural"} like English`);
+      const pairs = typeof entry === "string" ? [[entry, from]] : Object.entries(entry).map(([form, text]) => [text, from[form] ?? from.other]);
+      if (typeof entry !== "string") {
+        assert.ok("other" in entry, `${file}: "${key}" needs "other"`);
+        for (const form of Object.keys(entry)) assert.ok(["one", "many", "other"].includes(form), `${file}: "${key}" has a form Spanish doesn't use: ${form}`);
+      }
+      for (const [text, source] of pairs) {
+        assert.equal(typeof text, "string", `${file}: "${key}" must be text`);
+        assert.equal(placeholders(text), placeholders(source), `${file}: "${key}" must keep the English placeholders`);
+        assert.equal(tags(text), tags(source), `${file}: "${key}" must keep the English markup`);
+      }
+    }
+  }
+});

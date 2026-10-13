@@ -13,7 +13,7 @@
 // a new key, so the edit isn't swallowed as a repeat. Every failure keeps what was typed.
 // Web build only, like the rest of src/aws/.
 import { openModal, closeModal } from "../dom.js";
-import { msg } from "../i18n.js";
+import { msg, numberText } from "../i18n.js";
 import { version } from "../../package.json";
 
 const KINDS = [
@@ -77,10 +77,10 @@ export function openReport(api, { teamId, role = null, screen = currentScreen(),
       </fieldset>
       <div class="field"><label for="reportMessage">${msg("report.what")}</label>
         <textarea id="reportMessage" rows="5" maxlength="${MESSAGE_MAX}" required aria-describedby="reportMessageCount" data-autofocus></textarea>
-        <p class="hint" id="reportMessageCount">${msg("report.count", { count: 0, max: MESSAGE_MAX.toLocaleString("en-US") })}</p></div>
+        <p class="hint" id="reportMessageCount">${msg("report.count", { count: 0, max: numberText(MESSAGE_MAX) })}</p></div>
       <div class="field"><label for="reportExpected">${msg("report.expected")}</label>
         <textarea id="reportExpected" rows="3" maxlength="${EXPECTED_MAX}" aria-describedby="reportExpectedCount"></textarea>
-        <p class="hint" id="reportExpectedCount">${msg("report.count", { count: 0, max: EXPECTED_MAX.toLocaleString("en-US") })}</p></div>
+        <p class="hint" id="reportExpectedCount">${msg("report.count", { count: 0, max: numberText(EXPECTED_MAX) })}</p></div>
       <label class="check report-kind"><input type="checkbox" id="reportContact"> ${msg("report.contact")}</label>
       <p class="hint" id="reportSends">${msg("report.sends", { list })}</p>
       <div class="modal-actions" id="reportActions">
@@ -104,7 +104,7 @@ export function openReport(api, { teamId, role = null, screen = currentScreen(),
 
     const say = (text) => { error.textContent = text; error.hidden = false; };
     const count = (field, max, id) => {
-      m.querySelector(id).textContent = msg("report.count", { count: field.value.length.toLocaleString("en-US"), max: max.toLocaleString("en-US") });
+      m.querySelector(id).textContent = msg("report.count", { count: numberText(field.value.length), max: numberText(max) });
     };
     message.addEventListener("input", () => count(message, MESSAGE_MAX, "#reportMessageCount"));
     expected.addEventListener("input", () => count(expected, EXPECTED_MAX, "#reportExpectedCount"));

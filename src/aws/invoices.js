@@ -11,10 +11,10 @@
 // answers `team_deleting`.
 import { esc } from "../format.js";
 import { openModal, closeModal } from "../dom.js";
-import { msg } from "../i18n.js";
+import { msg, dateText, locale } from "../i18n.js";
 
-const day = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-const amount = (cents, currency) => new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() }).format(cents / 100);
+const day = (iso) => dateText(iso);
+const amount = (cents, currency) => new Intl.NumberFormat(locale(), { style: "currency", currency: currency.toUpperCase() }).format(cents / 100);
 // Stripe's statuses, in words; an open invoice says what's still due
 const STATUS = {
   paid: () => msg("invoices.paid"),

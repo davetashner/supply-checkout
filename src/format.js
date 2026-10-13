@@ -1,10 +1,11 @@
 // Formatting and small value helpers with no app state.
-import { msg } from "./i18n.js";
+import { msg, locale } from "./i18n.js";
 export const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const usd = new Intl.NumberFormat("en-US", {style:"currency", currency:"USD"});
-export const money = n => usd.format(Number(n) || 0);
+// One formatter per locale, made when first needed (the language is chosen before anything runs, and can change)
+const usd = {};
+export const money = n => (usd[locale()] ||= new Intl.NumberFormat(locale(), {style:"currency", currency:"USD"})).format(Number(n) || 0);
 export const todayISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0,10); };
-export const fmtDate = iso => { if (!iso) return ""; const [y,m,d] = iso.split("-").map(Number); return new Date(y, m-1, d).toLocaleDateString("en-US", {month:"short", day:"numeric", year:"numeric"}); };
+export const fmtDate = iso => { if (!iso) return ""; const [y,m,d] = iso.split("-").map(Number); return new Date(y, m-1, d).toLocaleDateString(locale(), {month:"short", day:"numeric", year:"numeric"}); };
 // A barcode's product key: also its line's key in a project's items. "__proto__" gets an "x"
 // like a dots-only key, because as a field name it would be the items map's prototype
 // (the API refuses it). Other built-in names, like "constructor", are ordinary keys, so

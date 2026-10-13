@@ -23,7 +23,7 @@
 import { esc } from "../format.js";
 import { armButton, openModal, closeModal, toast } from "../dom.js";
 import { avatarHTML } from "../avatar.js";
-import { msg } from "../i18n.js";
+import { msg, dateText, dateTimeText } from "../i18n.js";
 
 // id, label key, description key
 const ROLES = [
@@ -39,8 +39,8 @@ const WHY = {
   complained: "members.whyComplained",
   not_sent: "members.whyNotSent",
 };
-const day = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-const when = (iso) => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+const day = (iso) => dateText(iso);
+const when = (iso) => dateTimeText(iso);
 // What support did, in words (the actions in listSupportActions, backend/src/data/audit.ts)
 const SUPPORT = {
   "ops.team.read": () => msg("members.supportRead"),
