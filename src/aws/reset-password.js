@@ -10,6 +10,7 @@
 // other address gets nothing (the owner's decision, 2026-10-08). Web build only, like the rest
 // of src/aws/.
 import { esc } from "../format.js";
+import { msg } from "../i18n.js";
 import { json, request } from "./http.js";
 import { MANAGER_RULES, passwordFailure, RULES } from "./password.js";
 
@@ -32,8 +33,7 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
     catch (e) {
       // API Gateway's own throttle answers a bare 429 ({"message":"Too Many Requests"}), which reads as internal
       const limited = e.code === "quota_exceeded" || e.status === 429;
-      setError(limited ? "Too many reset requests for now. Try again in an hour, or reset your password on the sign-in page."
-        : e.code === "bad_request" ? "Enter your email address, like name@example.com." : "Couldn't send that. Check your connection and try again.");
+      setError(msg(limited ? "resetPassword.tooMany" : e.code === "bad_request" ? "resetPassword.badEmail" : "resetPassword.sendFailed"));
       el.querySelector("#resetFallback").hidden = !limited;
       return false;
     }
@@ -43,23 +43,23 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
   // only the newest link made has): /signup and /forgotPassword take /oauth2/authorize's parameters
   const managed = (url, page) => url.replace("/oauth2/authorize?", `/${page}?`);
   // Shown past the limits: Managed Login's own reset
-  const fallback = (url) => `<p class="hint" id="resetFallback" hidden><a href="${esc(managed(url, "forgotPassword"))}" id="resetElsewhere">Reset it on the sign-in page instead</a>.</p>`;
+  const fallback = (url) => `<p class="hint" id="resetFallback" hidden>${msg("resetPassword.elsewhere", { href: esc(managed(url, "forgotPassword")) })}</p>`;
 
   async function askForAddress() {
     const url = await signInUrl();
-    show(`<h2>Reset your password</h2>
-      <p>Enter the email address you sign in with. If there's an account for it, we'll email you a code to set a new password.</p>
+    show(`<h2>${msg("resetPassword.askTitle")}</h2>
+      <p>${msg("resetPassword.askIntro")}</p>
       <form id="resetForm" method="post" novalidate>
-        <div class="field"><label for="resetEmail">Email address</label><input type="email" id="resetEmail" name="email" autocomplete="username" required data-autofocus></div>
+        <div class="field"><label for="resetEmail">${msg("resetPassword.emailLabel")}</label><input type="email" id="resetEmail" name="email" autocomplete="username" required data-autofocus></div>
         <p class="error" role="alert" id="accountError" hidden></p>
         ${fallback(url)}
-        <div class="actions"><button type="submit" class="btn primary" id="resetSend">Send code</button> <button type="button" class="btn ghost" id="resetBack">Back to sign in</button></div>
+        <div class="actions"><button type="submit" class="btn primary" id="resetSend">${msg("resetPassword.sendCode")}</button> <button type="button" class="btn ghost" id="resetBack">${msg("resetPassword.backToSignIn")}</button></div>
       </form>`, (el) => {
       wireBack(el);
       el.querySelector("#resetForm").addEventListener("submit", async (e) => {
         e.preventDefault();
         const address = el.querySelector("#resetEmail").value.trim();
-        if (!ADDRESS.test(address)) { setError("Enter your email address, like name@example.com."); el.querySelector("#resetEmail").focus(); return; }
+        if (!ADDRESS.test(address)) { setError(msg("resetPassword.badEmail")); el.querySelector("#resetEmail").focus(); return; }
         if (await ask(el, address)) await enterCode(address);
       });
     });
@@ -67,19 +67,19 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
 
   async function enterCode(email) {
     const url = await signInUrl();
-    show(`<h2>Check your email</h2>
-      <p>If there's an account for this address (<strong>${esc(email)}</strong>), we've sent a code. It works for an hour.</p>
-      <p class="hint" id="resetNothing">Nothing in a few minutes? You may have signed up with a different email or with Google, or you may not have an account yet. <a href="${esc(managed(url, "signup"))}" id="resetSignUp">Create an account</a></p>
+    show(`<h2>${msg("resetPassword.checkTitle")}</h2>
+      <p>${msg("resetPassword.checkIntro", { email: esc(email) })}</p>
+      <p class="hint" id="resetNothing">${msg("resetPassword.nothing", { href: esc(managed(url, "signup")) })}</p>
       <form id="resetConfirm" method="post" novalidate>
         <input type="text" class="vh" name="username" autocomplete="username" value="${esc(email)}" readonly tabindex="-1" aria-hidden="true">
-        <div class="field"><label for="resetCode">Code from the email</label><input type="text" id="resetCode" name="code" class="reset-code" inputmode="numeric" autocomplete="one-time-code" required data-autofocus></div>
-        <div class="field"><label for="newPassword">New password</label><input type="password" id="newPassword" name="new-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}" aria-describedby="newHint" required>
+        <div class="field"><label for="resetCode">${msg("resetPassword.codeLabel")}</label><input type="text" id="resetCode" name="code" class="reset-code" inputmode="numeric" autocomplete="one-time-code" required data-autofocus></div>
+        <div class="field"><label for="newPassword">${msg("resetPassword.newPasswordLabel")}</label><input type="password" id="newPassword" name="new-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}" aria-describedby="newHint" required>
         <p class="hint" id="newHint">${RULES}</p></div>
-        <div class="field"><label for="confirmPassword">Confirm new password</label><input type="password" id="confirmPassword" name="confirm-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}" required></div>
+        <div class="field"><label for="confirmPassword">${msg("resetPassword.confirmLabel")}</label><input type="password" id="confirmPassword" name="confirm-password" autocomplete="new-password" passwordrules="${MANAGER_RULES}" required></div>
         <p class="hint" role="status" id="resetStatus"></p>
         <p class="error" role="alert" id="accountError" hidden></p>
         ${fallback(url)}
-        <div class="actions"><button type="submit" class="btn primary" id="resetSave">Set password</button> <button type="button" class="btn" id="resetAgain">Send a new code</button> <button type="button" class="btn ghost" id="resetBack">Back to sign in</button></div>
+        <div class="actions"><button type="submit" class="btn primary" id="resetSave">${msg("resetPassword.setPassword")}</button> <button type="button" class="btn" id="resetAgain">${msg("resetPassword.sendAgain")}</button> <button type="button" class="btn ghost" id="resetBack">${msg("resetPassword.backToSignIn")}</button></div>
       </form>`, (el) => {
       const $ = (s) => el.querySelector(s);
       const status = (text) => { $("#resetStatus").textContent = text; };
@@ -87,23 +87,22 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
       $("#resetAgain").addEventListener("click", async () => {
         status("");
         $("#accountError").hidden = true;
-        if (await ask(el, email)) status("If there's an account for this address, we've emailed it a new code. Use the newest one.");
+        if (await ask(el, email)) status(msg("resetPassword.newCodeSent"));
       });
       $("#resetConfirm").addEventListener("submit", async (e) => {
         e.preventDefault();
         status("");
         const code = $("#resetCode").value.replace(/\s/g, ""), password = $("#newPassword").value, again = $("#confirmPassword").value;
-        const problem = !CODE.test(code) ? ["#resetCode", "Enter the 6-digit code from the email."]
-          : !password ? ["#newPassword", "Choose a password."]
-          : password !== again ? ["#confirmPassword", "The new passwords don't match. Type the new one again."]
+        const problem = !CODE.test(code) ? ["#resetCode", msg("resetPassword.badCode")]
+          : !password ? ["#newPassword", msg("resetPassword.noPassword")]
+          : password !== again ? ["#confirmPassword", msg("resetPassword.mismatch")]
           : null;
         if (problem) { setError(problem[1]); $(problem[0]).focus(); return; }
         busy(el, true);
         try { await post("/auth/password-reset/confirm", { email, code, password }); }
         catch (err) {
           busy(el, false);
-          setError(err.reason === "code_mismatch" ? "That code isn't right, or it has expired. Check the email, or send a new code."
-            : passwordFailure(err) || "Couldn't set the password. Check your connection and try again.");
+          setError(err.reason === "code_mismatch" ? msg("resetPassword.codeWrong") : passwordFailure(err) || msg("resetPassword.setFailed"));
           return;
         }
         // Nothing keeps the password in the page
@@ -115,9 +114,9 @@ export function openReset({ show, setError, apiUrl, signInUrl, back }) {
 
   async function done() {
     const url = await signInUrl();
-    show(`<h2>Your password is reset</h2>
-      <p>Sign in with your email address and your new password.</p>
-      <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn" data-autofocus>Sign in</a></div>`);
+    show(`<h2>${msg("resetPassword.doneTitle")}</h2>
+      <p>${msg("resetPassword.doneIntro")}</p>
+      <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn" data-autofocus>${msg("resetPassword.signIn")}</a></div>`);
   }
 
   return askForAddress();
