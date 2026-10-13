@@ -256,18 +256,18 @@ function cardHTML(s) {
     return `
         <button type="button" class="project-card adhoc" data-open="${esc(s.id)}">
           <h3>${esc(projectTitle(s))}</h3>
-          <div class="right"><span class="pill open">Taken for no job</span></div>
-          <div class="meta"><span>Since ${esc(fmtDate(s.date))}</span><span>${msg("project.itemsOut", { count: n })}</span></div>
+          <div class="right"><span class="pill open">${msg("project.takenForNoJob")}</span></div>
+          <div class="meta"><span>${msg("project.since", { date: esc(fmtDate(s.date)) })}</span><span>${msg("project.itemsOut", { count: n })}</span></div>
         </button>`;
   }
   return `
         <button type="button" class="project-card" data-open="${esc(s.id)}">
           <h3>${esc(projectTitle(s))}</h3>
           <div class="right">
-            <span class="pill ${closed ? "closed" : "open"}">${closed ? "Returned" : "Checked out"}</span>
+            <span class="pill ${closed ? "closed" : "open"}">${msg(closed ? "project.returned" : "project.checkedOut")}</span>
             ${adhoc ? "" : `<span class="num">${money(closed ? t.charge : t.value)}</span>`}
           </div>
-          <div class="meta"><span>${esc(fmtDate(s.date))}</span>${personHTML(s)}<span>${t.count} item${t.count===1?"":"s"} · ${t.out} taken${t.ret ? ` · ${t.ret} back` : ""}${t.equipmentOut ? ` · ${t.equipmentOut} equipment out` : ""}</span></div>
+          <div class="meta"><span>${esc(fmtDate(s.date))}</span>${personHTML(s)}<span>${msg("project.items", { count: t.count })} · ${msg("project.taken", { count: t.out })}${t.ret ? ` · ${msg("project.back", { count: t.ret })}` : ""}${t.equipmentOut ? ` · ${msg("project.equipmentOut", { count: t.equipmentOut })}` : ""}</span></div>
         </button>`;
 }
 
@@ -294,14 +294,14 @@ function groupedHTML(closed) {
   const years = new Map();
   const day = s => String(s.date || "");
   [...closed].sort((a, b) => day(b).localeCompare(day(a))).forEach(s => {
-    const y = yearOf(s) || "No date";
+    const y = yearOf(s) || msg("project.noDate");
     years.set(y, [...(years.get(y) || []), s]);
   });
   const thisYear = todayISO().slice(0, 4);
   return [...years].map(([y, list], i) => {
     const open = ui.years[y] ?? (i === 0 || y === thisYear || y === ui.year || !!ui.q), id = `yr-${y.replace(/\W/g, "")}`;
     const months = new Map();
-    list.forEach(s => { const m = yearOf(s) ? MONTHS[Number(s.date.slice(5, 7)) - 1] : "No date"; months.set(m, [...(months.get(m) || []), s]); });
+    list.forEach(s => { const m = yearOf(s) ? MONTHS[Number(s.date.slice(5, 7)) - 1] : msg("project.noDate"); months.set(m, [...(months.get(m) || []), s]); });
     return `
       <section class="year-group" aria-labelledby="${id}-h">
         <h2 class="year-head" id="${id}-h"><button type="button" class="year-toggle" data-year="${esc(y)}" aria-expanded="${open}" aria-controls="${id}"><span>${esc(y)}</span><span class="group-meta">${groupMeta(list)}</span></button></h2>
@@ -325,29 +325,29 @@ function drawList() {
   morph($("#main"), `
     <div class="bar">
       <div class="chips">
-        <div class="chips" role="group" aria-label="Filter projects">
-          <button type="button" class="chip" data-filter="open" aria-pressed="${ui.filter==="open"}">Out now (${openCount})</button>
-          <button type="button" class="chip" data-filter="closed" aria-pressed="${ui.filter==="closed"}">Returned</button>
-          <button type="button" class="chip" data-filter="all" aria-pressed="${ui.filter==="all"}">All</button>
+        <div class="chips" role="group" aria-label="${msg("project.filterLabel")}">
+          <button type="button" class="chip" data-filter="open" aria-pressed="${ui.filter==="open"}">${msg("project.outNow", { count: openCount })}</button>
+          <button type="button" class="chip" data-filter="closed" aria-pressed="${ui.filter==="closed"}">${msg("project.returned")}</button>
+          <button type="button" class="chip" data-filter="all" aria-pressed="${ui.filter==="all"}">${msg("project.all")}</button>
         </div>
-        ${years.length || olderSince ? `<select id="yearFilter" class="year-filter" aria-label="Year"><option value="">All years</option>${years.map(y => `<option value="${y}"${y === year ? " selected" : ""}>${y}</option>`).join("")}${olderSince ? `<option value="older">Before ${olderSince.slice(0, 4)}</option>` : ""}</select>` : ""}
+        ${years.length || olderSince ? `<select id="yearFilter" class="year-filter" aria-label="${msg("project.yearLabel")}"><option value="">${msg("project.allYears")}</option>${years.map(y => `<option value="${y}"${y === year ? " selected" : ""}>${y}</option>`).join("")}${olderSince ? `<option value="older">${msg("project.before", { year: olderSince.slice(0, 4) })}</option>` : ""}</select>` : ""}
       </div>
       <div class="chips">
-        ${canWrite && receiptOK ? `<label class="btn" for="receiptFile">Scan receipt</label>` : ""}
-        ${dl && isOwner && connected ? `<button type="button" class="btn" id="exportAll">${year ? `Export ${year}` : "Export data"}</button>` : ""}
-        ${canWrite ? `<button type="button" class="btn" id="returnAny">Return</button><button type="button" class="btn" id="quickTake">Quick take</button><button type="button" class="btn primary" id="newProject">+ New project</button>` : ""}
+        ${canWrite && receiptOK ? `<label class="btn" for="receiptFile">${msg("project.scanReceipt")}</label>` : ""}
+        ${dl && isOwner && connected ? `<button type="button" class="btn" id="exportAll">${year ? msg("project.exportYear", { year }) : msg("project.exportData")}</button>` : ""}
+        ${canWrite ? `<button type="button" class="btn" id="returnAny">${msg("project.return")}</button><button type="button" class="btn" id="quickTake">${msg("project.quickTake")}</button><button type="button" class="btn primary" id="newProject">${msg("project.newProject")}</button>` : ""}
       </div>
     </div>
     ${canWrite && receiptOK && receiptUsage ? `<p class="muted receipts-left" id="receiptsLeft">${esc(receiptUsage.label)}</p>` : ""}
-    <div class="search-row"><input type="search" id="projectSearch" aria-label="Search projects" placeholder="Search by client, who prepared it, or item" autocomplete="off"></div>
-    ${draft && canWrite ? `<div class="notice resume"><span>You have a receipt that hasn't been saved yet.</span><button type="button" class="btn" id="resume">Continue review</button></div>` : ""}
+    <div class="search-row"><input type="search" id="projectSearch" aria-label="${msg("project.searchLabel")}" placeholder="${msg("project.searchPlaceholder")}" autocomplete="off"></div>
+    ${draft && canWrite ? `<div class="notice resume"><span>${msg("project.unsavedReceipt")}</span><button type="button" class="btn" id="resume">${msg("project.continueReview")}</button></div>` : ""}
     <div class="list">
       ${adhoc ? cardHTML(adhoc) : ""}
       ${flat.map(cardHTML).join("")}
-      ${shown.length || adhoc ? "" : `<div class="empty">${!connected ? "Loading projects…" : q ? `No projects match “${esc(ui.q.trim())}”.` : ui.filter === "open" ? "Nothing is checked out right now." : "No projects here yet."}</div>`}
+      ${shown.length || adhoc ? "" : `<div class="empty">${!connected ? msg("project.loading") : q ? msg("project.noMatch", { query: esc(ui.q.trim()) }) : ui.filter === "open" ? msg("project.nothingOut") : msg("project.none")}</div>`}
     </div>
     ${groupedHTML(grouped)}
-    ${olderSince && ui.filter !== "open" ? `<div class="older-row"><span class="muted">${olderLoad ? "Loading older projects…" : `Projects returned before ${olderSince.slice(0, 4)} aren't shown yet.`}</span>${olderLoad ? "" : `<button type="button" class="btn" id="loadOlder">Show older projects</button>`}</div>` : ""}`);
+    ${olderSince && ui.filter !== "open" ? `<div class="older-row"><span class="muted">${olderLoad ? msg("project.olderLoading") : msg("project.olderHidden", { year: olderSince.slice(0, 4) })}</span>${olderLoad ? "" : `<button type="button" class="btn" id="loadOlder">${msg("project.showOlder")}</button>`}</div>` : ""}`);
   // Not in the HTML, so a redraw while someone types leaves the field (and its caret) alone;
   // set here when the list is drawn afresh (back from the Inventory)
   const box = $("#projectSearch");
@@ -369,7 +369,7 @@ function loadOlder() {
   if (!olderSince) return Promise.resolve();
   if (!olderLoad) {
     olderLoad = db.loadOlder()
-      .catch(() => toast("Couldn't load older projects. Check the connection and try again."))
+      .catch(() => toast(msg("project.olderFailed")))
       .then(() => { olderLoad = null; draw(); });
     draw();
   }
@@ -379,7 +379,7 @@ function loadOlder() {
 // A line's row: tapping it opens the line editor (lineModal)
 const rowAttrs = l => `class="${canWrite ? "click" : ""}" data-line="${esc(l.key)}" ${canWrite ? 'tabindex="0"' : ""}`;
 // A typed price on a line bought for the client says who typed it and when (priceSetBy, priceSetAt)
-const typedNote = l => l.priceSet === "manual" && l.priceSetBy ? `<span class="code">Price typed by ${esc(takerText(l.priceSetBy))}, ${esc(whenText(l.priceSetAt))}</span>` : "";
+const typedNote = l => l.priceSet === "manual" && l.priceSetBy ? `<span class="code">${msg("project.priceTyped", { name: esc(takerText(l.priceSetBy)), when: esc(whenText(l.priceSetAt)) })}</span>` : "";
 const itemCell = l => `<td>${esc(lineLabel(l))}<span class="code">${esc(codeText(l.code))}</span>${typedNote(l)}</td>`;
 // Company equipment on the project (ADR 0017): its own section below the supplies, with no price
 // or charge, since taking it to a job isn't charged. Lost or broken shows once there is any.
@@ -387,9 +387,9 @@ function equipmentHTML(eq) {
   if (!eq.length) return "";
   const counts = eq.map(l => ({ l, ...equipmentCounts(l) })), anyLost = counts.some(c => c.lost);
   return `
-    <h3 class="section-head" id="equipHead">Equipment (not charged)</h3>
+    <h3 class="section-head" id="equipHead">${msg("project.equipmentHeading")}</h3>
     <div class="table-wrap"><table class="equipment" aria-labelledby="equipHead">
-      <thead><tr><th>Item</th><th>Taken</th><th>Returned</th>${anyLost ? "<th>Lost or broken</th>" : ""}<th>Still out</th></tr></thead>
+      <thead><tr><th>${msg("project.colItem")}</th><th>${msg("project.colTaken")}</th><th>${msg("project.colReturned")}</th>${anyLost ? `<th>${msg("project.colLost")}</th>` : ""}<th>${msg("project.colStillOut")}</th></tr></thead>
       <tbody>${counts.map(({ l, o, r, lost, still }) => `
         <tr ${rowAttrs(l)}>${itemCell(l)}<td>${o}</td><td>${r}</td>${anyLost ? `<td>${lost}</td>` : ""}<td>${still}</td></tr>`).join("")}</tbody>
     </table></div>`;
@@ -403,34 +403,32 @@ function drawProject(s) {
   morph($("#projectHead"), `
     <div class="project-head">
       <h2>${esc(projectTitle(s))}</h2>
-      <div class="meta"><span>${adhoc ? "Since " : ""}${esc(fmtDate(s.date))}</span><span>${adhoc ? "Started" : "Prepared"} by ${personHTML(s)}</span><span class="pill ${closed ? "closed" : "open"}">${closed ? "Returned" : "Checked out"}</span></div>
-      ${adhoc ? `<p class="hint">Taken for no job. Nothing here is charged; move a line to a client's project to bill it.</p>` : ""}
+      <div class="meta"><span>${adhoc ? msg("project.since", { date: esc(fmtDate(s.date)) }) : esc(fmtDate(s.date))}</span><span>${msg(adhoc ? "project.startedBy" : "project.preparedBy", { who: personHTML(s) })}</span><span class="pill ${closed ? "closed" : "open"}">${msg(closed ? "project.returned" : "project.checkedOut")}</span></div>
+      ${adhoc ? `<p class="hint">${msg("project.adhocHint")}</p>` : ""}
       <div class="project-actions">
-        ${dl && !adhoc ? `<button type="button" class="btn" id="exportCsv">Download CSV</button>` : ""}
-        ${canWrite && !adhoc ? `<button type="button" class="btn" id="editProject">Edit details</button>` : ""}
-        ${canWrite ? (closed ? actionButton("reopen", "btn", "Reopen") : actionButton("closeProject", "btn", "Finished Return")) : ""}
+        ${dl && !adhoc ? `<button type="button" class="btn" id="exportCsv">${msg("project.downloadCsv")}</button>` : ""}
+        ${canWrite && !adhoc ? `<button type="button" class="btn" id="editProject">${msg("project.editDetails")}</button>` : ""}
+        ${canWrite ? (closed ? actionButton("reopen", "btn", msg("project.reopen")) : actionButton("closeProject", "btn", msg("project.finishedReturn"))) : ""}
       </div>
     </div>`);
   // Each only changes the DOM when its value changes (toggleAttribute too)
   $("#scanbar").toggleAttribute("hidden", closed || !canWrite);
   $(".mode").toggleAttribute("hidden", adhoc);
   document.querySelectorAll(".mode button").forEach(b => setAttr(b, "aria-pressed", b.dataset.mode === mode));
-  setText($("#scanLabel"), mode === "out" ? "Scan to check out" : "Scan to return");
-  setText($("#noCodeBtn"), mode === "out" ? "Add item without a barcode" : "Return item without a barcode");
-  setText($("#modeHint"), mode === "out"
-    ? "Take a photo of the barcode, then choose how many you're taking."
-    : "Scan an item you're bringing back and enter how many are unused. Whatever isn't returned counts as used. Tap Finished Return when everything is back.");
+  setText($("#scanLabel"), msg(mode === "out" ? "project.scanOut" : "project.scanReturn"));
+  setText($("#noCodeBtn"), msg(mode === "out" ? "project.noCodeOut" : "project.noCodeReturn"));
+  setText($("#modeHint"), msg(mode === "out" ? "project.hintOut" : "project.hintReturn"));
 
   morph($("#projectBody"), `
     <div class="totals">
-      <div><div class="k">Taken</div><div class="v">${t.out}</div></div>
-      <div><div class="k">Returned</div><div class="v">${t.ret}</div></div>
-      <div><div class="k">Used</div><div class="v">${t.used}</div></div>
-      ${adhoc ? "" : `<div><div class="k">Charge</div><div class="v charge">${money(t.charge)}</div></div>`}
+      <div><div class="k">${msg("project.colTaken")}</div><div class="v">${t.out}</div></div>
+      <div><div class="k">${msg("project.colReturned")}</div><div class="v">${t.ret}</div></div>
+      <div><div class="k">${msg("project.colUsed")}</div><div class="v">${t.used}</div></div>
+      ${adhoc ? "" : `<div><div class="k">${msg("project.colCharge")}</div><div class="v charge">${money(t.charge)}</div></div>`}
     </div>
     ${adhoc && ls.length ? adhocTableHTML(ls, t) : ls.length || lost.length ? `
     <div class="table-wrap"><table>
-      <thead><tr><th>Item</th><th>Price</th><th>Taken</th><th>Returned</th><th>Used</th><th>Charge</th></tr></thead>
+      <thead><tr><th>${msg("project.colItem")}</th><th>${msg("project.colPrice")}</th><th>${msg("project.colTaken")}</th><th>${msg("project.colReturned")}</th><th>${msg("project.colUsed")}</th><th>${msg("project.colCharge")}</th></tr></thead>
       <tbody>${ls.map(l => { const o = int(l.out), r = Math.min(int(l.returned), o), u = o - r; return `
         <tr ${rowAttrs(l)}>
           ${itemCell(l)}
@@ -438,25 +436,25 @@ function drawProject(s) {
           <td>${u}</td><td class="charge">${money(lineCharge(l))}</td>
         </tr>`; }).join("")}${lost.map(r => `
         <tr ${rowAttrs(r)}>${itemCell(r)}<td></td><td></td><td></td><td>${r.used}</td><td class="charge">${money(r.charge)}</td></tr>`).join("")}</tbody>
-      <tfoot><tr><td>Total</td><td></td><td>${t.out}</td><td>${t.ret}</td><td>${t.used}</td><td>${money(t.charge)}</td></tr></tfoot>
-    </table></div>` : eq.length ? "" : `<div class="empty">${adhoc ? "Nothing on General Use yet. Take items with Quick take on the project list." : "No supplies on this project yet. Scan a barcode to check one out."}</div>`}
+      <tfoot><tr><td>${msg("project.total")}</td><td></td><td>${t.out}</td><td>${t.ret}</td><td>${t.used}</td><td>${money(t.charge)}</td></tr></tfoot>
+    </table></div>` : eq.length ? "" : `<div class="empty">${msg(adhoc ? "project.emptyAdhoc" : "project.empty")}</div>`}
     ${equipmentHTML(eq)}
-    ${canWrite ? `<div class="project-actions" style="margin-top:18px">${actionButton("delProject", "btn danger", "Delete project")}</div>` : ""}`);
+    ${canWrite ? `<div class="project-actions" style="margin-top:18px">${actionButton("delProject", "btn danger", msg("project.delete"))}</div>` : ""}`);
 }
 
 // The General Use project's supplies: taken, returned and used, and no money (ADR 0017, section 4)
 const adhocTableHTML = (ls, t) => `
     <div class="table-wrap"><table>
-      <thead><tr><th>Item</th><th>Taken</th><th>Returned</th><th>Used</th></tr></thead>
+      <thead><tr><th>${msg("project.colItem")}</th><th>${msg("project.colTaken")}</th><th>${msg("project.colReturned")}</th><th>${msg("project.colUsed")}</th></tr></thead>
       <tbody>${ls.map(l => { const o = int(l.out), r = Math.min(int(l.returned), o); return `
         <tr ${rowAttrs(l)}>${itemCell(l)}<td>${o}</td><td>${r}</td><td>${o - r}</td></tr>`; }).join("")}</tbody>
-      <tfoot><tr><td>Total</td><td>${t.out}</td><td>${t.ret}</td><td>${t.used}</td></tr></tfoot>
+      <tfoot><tr><td>${msg("project.total")}</td><td>${t.out}</td><td>${t.ret}</td><td>${t.used}</td></tr></tfoot>
     </table></div>`;
 
 // Finishing, reopening or deleting the project, while its write is on its way: that button says
 // Saving… and every one of them is disabled, redraws included, so a second tap sends nothing
 let pending = null;
-const actionButton = (id, cls, label) => `<button type="button" class="${cls}" id="${id}"${pending ? ` disabled${pending === id ? ' aria-busy="true"' : ""}` : ""}>${pending === id ? "Saving…" : label}</button>`;
+const actionButton = (id, cls, label) => `<button type="button" class="${cls}" id="${id}"${pending ? ` disabled${pending === id ? ' aria-busy="true"' : ""}` : ""}>${pending === id ? msg("app.saving") : label}</button>`;
 async function once(id, fn) {
   if (pending) return;
   pending = id; draw();
@@ -465,7 +463,7 @@ async function once(id, fn) {
 }
 
 // closedAt here is only for the moment before the server answers: the server stamps its own time (supply-checkout-1dg.16)
-const finish = id => write(() => db.doc("projects/" + id).update({ status: "closed", closedAt: new Date().toISOString() }), "Return finished", id);
+const finish = id => write(() => db.doc("projects/" + id).update({ status: "closed", closedAt: new Date().toISOString() }), msg("project.returnFinished"), id);
 
 // Before you finish: for each piece of equipment still out, how many are back, how many were
 // lost or broken (with what to charge the client for them, if anything), and the rest are still
