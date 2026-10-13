@@ -283,7 +283,6 @@ const projectYears = () => [...new Set(projects.map(yearOf).filter(Boolean))].so
 // The year picked in the year filter, while a project has it
 const pickedYear = () => projectYears().includes(ui.year) ? ui.year : "";
 const matches = (s, q) => [projectTitle(s), personText(s), ...lines(s).map(lineLabel)].join("\n").toLowerCase().includes(q);
-const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 // A group's count, and for owners its total charge (the General Use project is never charged)
 function groupMeta(list) {
   const cents = list.filter(s => !isAdhoc(s)).reduce((a, s) => a + Math.round(totals(s).charge * 100), 0);
@@ -1130,7 +1129,7 @@ function productModal(key) {
       // `counted`: the form showed a count when it opened, so a blank one means stop counting.
       const change = m.querySelector("#fStock").value.trim() === (hasStock(p) ? String(p.stock) : "") ? { reason: "count", keep: true }
         : { reason: "count", count: body.stock, counted: !!hasStock(p), expected: hasStock(p) ? p.stock : null };
-      saving(form, () => closing(write(() => saveItem(db, action, docKey, body, change), "Saved")));
+      saving(form, () => closing(write(() => saveItem(db, action, docKey, body, change), msg("checkout.saved"))));
     });
   });
 }
@@ -1150,7 +1149,7 @@ function handleCode(code) {
 /* ---------- export ---------- */
 async function save(filename, data) {
   try { await dl.save({ filename, data }); return true; }
-  catch (e) { if (e && e.code !== "declined") toast("Couldn't prepare the download here."); return false; }
+  catch (e) { if (e && e.code !== "declined") toast(msg("exports.cantPrepare")); return false; }
 }
 function exportCsv(s) {
   return save(`${[(s.client || "project").replace(/[\\/:*?"<>|]/g, ""), s.date].filter(Boolean).join(" ").trim()}.csv`, projectCsv(s, personText(s)));
@@ -1169,14 +1168,14 @@ function exportAllModal() {
   const year = pickedYear(), inYear = year ? projects.filter(s => yearOf(s) === year) : projects;
   const n = projects.length, k = Object.keys(products).length;
   openModal(`
-    <h2>Export all data</h2>
-    <p class="hint" style="margin-top:-6px">${n} project${n === 1 ? "" : "s"} and ${k} inventory item${k === 1 ? "" : "s"}, as the app shows them. CSV files open in a spreadsheet; the JSON file has everything, for a backup or another tool.</p>
+    <h2>${msg("exports.title")}</h2>
+    <p class="hint" style="margin-top:-6px">${msg("exports.intro", { projects: msg("project.count", { count: n }), items: msg("exports.items", { count: k }) })}</p>
     <div style="display:grid;gap:10px">
-      <button type="button" class="btn" data-export="projects">${year ? `Projects from ${year} (CSV, ${plural(inYear.length, "project")})` : "Projects (CSV)"}</button>
-      <button type="button" class="btn" data-export="inventory">Inventory (CSV)</button>
-      <button type="button" class="btn" data-export="json">Everything (JSON)</button>
+      <button type="button" class="btn" data-export="projects">${year ? msg("exports.projectsYear", { year, projects: msg("project.count", { count: inYear.length }) }) : msg("exports.projects")}</button>
+      <button type="button" class="btn" data-export="inventory">${msg("exports.inventory")}</button>
+      <button type="button" class="btn" data-export="json">${msg("exports.everything")}</button>
     </div>
-    <div class="modal-actions"><button type="button" class="btn" id="cancel">Close</button></div>`, m => {
+    <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("exports.close")}</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const day = todayISO();
     const files = {
@@ -1239,9 +1238,9 @@ function receiptPrompt() {
   return { prompt: RECEIPT_PROMPT + "\n\nCurrent inventory (id | name | brand | price):\n" + (list || "(empty)"), ids };
 }
 
-function receiptError(msg) {
-  $("#rBody").innerHTML = `<div class="reading"><h2>Couldn't read that receipt</h2><p>${esc(msg)}</p>
-    <div class="project-actions"><label class="btn primary" for="receiptFile">Try another photo</label><button type="button" class="btn" id="rManual">Enter items by hand</button></div></div>`;
+function receiptError(text) {
+  $("#rBody").innerHTML = `<div class="reading"><h2>${msg("receipt.cantRead")}</h2><p>${esc(text)}</p>
+    <div class="project-actions"><label class="btn primary" for="receiptFile">${msg("receipt.tryAnother")}</label><button type="button" class="btn" id="rManual">${msg("receipt.byHand")}</button></div></div>`;
   $("#rManual").addEventListener("click", () => { draft = newDraft({ items: [{ name: "", qty: 1, price: 0 }] }); saveDraft(); renderReceipt(); });
 }
 
@@ -1267,15 +1266,15 @@ const typedPrice = l => l.typed === undefined || l.typed === "" ? undefined : Ma
 const boughtPrice = l => typedPrice(l) ?? (markup !== null ? round2(unitCost(l) * (1 + markup / 100)) : unitCost(l));
 function chargedText(l) {
   const typed = typedPrice(l);
-  if (typed !== undefined) return `Charged: ${money(typed)} each, the price you typed`;
-  return markup !== null ? `Charged: ${money(boughtPrice(l))} each (receipt price + ${markup}% markup)` : "Charged: receipt price + team markup";
+  if (typed !== undefined) return msg("receipt.chargedTyped", { price: money(typed) });
+  return markup !== null ? msg("receipt.chargedMarkup", { price: money(boughtPrice(l)), markup }) : msg("receipt.chargedTeamMarkup");
 }
 // The server adds a markup this page doesn't know (web build, not an owner), so the total is short of the charge
 const preMarkup = l => markup === null && isBought(l) && typedPrice(l) === undefined;
-const totalText = l => money(charge(l)) + (preMarkup(l) ? " (before markup)" : "");
+const totalText = l => money(charge(l)) + (preMarkup(l) ? msg("receipt.beforeMarkup") : "");
 const effPrice = l => { const p = lineProd(l); return isBought(l) ? boughtPrice(l) : p && priceChoice(l) === "inv" ? round2(p.price) : unitCost(l); };
 const charge = l => round2(eaches(l) * effPrice(l));
-const lineNote = l => packOf(l) > 1 ? `${eaches(l)} each, cost ${money(unitCost(l))} each` : "";
+const lineNote = l => packOf(l) > 1 ? msg("receipt.lineNote", { eaches: eaches(l), cost: money(unitCost(l)) }) : "";
 let rScanLine = null;
 
 function newDraft(res) {
@@ -1293,7 +1292,7 @@ function newDraft(res) {
 async function startReceipt(file) {
   ui.receipt = true; draw(); window.scrollTo(0, 0);
   const ctl = new AbortController();
-  $("#rBody").innerHTML = `<div class="reading"><h2>Reading receipt…</h2><p class="muted">This usually takes 15 to 60 seconds. You'll be able to check everything before it's saved.</p><button type="button" class="btn" id="rStop">Stop</button></div>`;
+  $("#rBody").innerHTML = `<div class="reading"><h2>${msg("receipt.reading")}</h2><p class="muted">${msg("receipt.readingHint")}</p><button type="button" class="btn" id="rStop">${msg("receipt.stop")}</button></div>`;
   $("#rStop").addEventListener("click", () => ctl.abort());
   try {
     const { prompt, ids } = receiptPrompt();
@@ -1304,7 +1303,7 @@ async function startReceipt(file) {
     const items = res && Array.isArray(res.items) ? res.items.filter(i => i && i.name).map(i => ({ ...i, match: matchOf(i.match) })) : [];
     // The AWS runtime's answer has the team's scans left, this one counted
     if (res.usage) { receiptUsage = res.usage; }
-    if (!items.length) { receiptError("No line items were found in that photo. Lay the receipt flat, fill the frame, and make sure the text is in focus."); return; }
+    if (!items.length) { receiptError(msg("receipt.noLines")); return; }
     draft = newDraft({ ...res, items }); saveDraft();
     await refreshMarkup(); renderReceipt();
   } catch (e) {
@@ -1316,12 +1315,12 @@ async function startReceipt(file) {
 }
 
 function destLabel(x, i) {
-  if (x.projectId) { const s = projects.find(s => s.id === x.projectId); return s ? `${s.client} (existing project)` : "Missing project"; }
-  return x.client.trim() || `Client ${i + 1}`;
+  if (x.projectId) { const s = projects.find(s => s.id === x.projectId); return s ? msg("receipt.existingProject", { client: s.client }) : msg("receipt.missingProject"); }
+  return x.client.trim() || msg("receipt.clientN", { n: i + 1 });
 }
 function destOptions(sel) {
   return draft.dests.map((x, i) => `<option value="${x.id}" ${sel === x.id ? "selected" : ""}>${esc(destLabel(x, i))}</option>`).join("")
-    + `<option value="stock" ${sel === "stock" ? "selected" : ""}>General inventory (storage)</option>`;
+    + `<option value="stock" ${sel === "stock" ? "selected" : ""}>${msg("receipt.generalInventory")}</option>`;
 }
 
 function renderReceipt() {
@@ -1331,50 +1330,50 @@ function renderReceipt() {
   $("#rBody").innerHTML = `
     <fieldset id="rForm" ${d.locked ? "disabled" : ""}>
     <div class="project-head">
-      <h2>Review receipt</h2>
-      <div class="meta">${d.store ? `<span>${esc(d.store)}</span>` : ""}<span>Purchased ${esc(fmtDate(d.receiptDate))}</span></div>
-      <p class="hint">Check each item's name, quantity and price, then choose which client it's for, or General inventory for supplies going into storage. If one item is shared, tap Split and divide the quantity. Nothing is saved until you tap Save.</p>
+      <h2>${msg("receipt.reviewTitle")}</h2>
+      <div class="meta">${d.store ? `<span>${esc(d.store)}</span>` : ""}<span>${msg("receipt.purchased", { date: esc(fmtDate(d.receiptDate)) })}</span></div>
+      <p class="hint">${msg("receipt.reviewHint")}</p>
     </div>
     <div class="panel">
-      <h3>Clients on this trip</h3>
+      <h3>${msg("receipt.clientsHeading")}</h3>
       <div class="dests">${d.dests.map((x, i) => `
         <div class="dest" data-d="${x.id}">
-          <select data-dsel aria-label="Project for client ${i + 1}">
-            <option value="">New project</option>
-            ${openProjects.map(s => `<option value="${esc(s.id)}" ${x.projectId === s.id ? "selected" : ""}>Add to ${esc(s.client)} (${esc(fmtDate(s.date))})</option>`).join("")}
+          <select data-dsel aria-label="${msg("receipt.projectForClient", { n: i + 1 })}">
+            <option value="">${msg("receipt.newProject")}</option>
+            ${openProjects.map(s => `<option value="${esc(s.id)}" ${x.projectId === s.id ? "selected" : ""}>${msg("receipt.addTo", { client: esc(s.client), date: esc(fmtDate(s.date)) })}</option>`).join("")}
           </select>
-          ${x.projectId ? "" : `<input type="text" data-dname id="dname-${x.id}" placeholder="Client name" value="${esc(x.client)}" aria-label="Client name">`}
-          ${d.dests.length > 1 ? `<button type="button" class="btn ghost" data-drm aria-label="Remove this client">Remove</button>` : ""}
+          ${x.projectId ? "" : `<input type="text" data-dname id="dname-${x.id}" placeholder="${msg("receipt.clientNamePlaceholder")}" value="${esc(x.client)}" aria-label="${msg("receipt.clientNamePlaceholder")}">`}
+          ${d.dests.length > 1 ? `<button type="button" class="btn ghost" data-drm aria-label="${msg("receipt.removeClientLabel")}">${msg("receipt.remove")}</button>` : ""}
         </div>`).join("")}</div>
-      <button type="button" class="btn" id="rAddDest">+ Add another client</button>
+      <button type="button" class="btn" id="rAddDest">${msg("receipt.addClient")}</button>
       <div class="row2">
-        <div class="field"><label for="rDate">Date for new projects</label><input type="date" id="rDate" value="${esc(d.date)}"></div>
-        ${myId ? "" : `<div class="field"><label for="rBy">Prepared by</label><input type="text" id="rBy" value="${esc(d.by)}" placeholder="Your name"></div>`}
+        <div class="field"><label for="rDate">${msg("receipt.dateNew")}</label><input type="date" id="rDate" value="${esc(d.date)}"></div>
+        ${myId ? "" : `<div class="field"><label for="rBy">${msg("receipt.preparedBy")}</label><input type="text" id="rBy" value="${esc(d.by)}" placeholder="${msg("receipt.yourName")}"></div>`}
       </div>
     </div>
-    <h3 class="rhead">Items (${d.lines.length})</h3>
+    <h3 class="rhead">${msg("receipt.itemsHeading", { count: d.lines.length })}</h3>
     <div class="rlines">${d.lines.map(lineHTML).join("")}</div>
-    <input class="vh" type="file" id="rScanFile" accept="image/*" capture="environment" aria-label="Barcode photo for this item" data-barcode>
-    <button type="button" class="btn" id="rAddLine">+ Add item</button>
+    <input class="vh" type="file" id="rScanFile" accept="image/*" capture="environment" aria-label="${msg("receipt.barcodePhotoLabel")}" data-barcode>
+    <button type="button" class="btn" id="rAddLine">${msg("receipt.addItem")}</button>
     <div class="panel" id="rSum"></div>
-    <label class="check"><input type="checkbox" id="rSavePrices" ${d.savePrices ? "checked" : ""}> Also add client items to inventory with their prices</label>
+    <label class="check"><input type="checkbox" id="rSavePrices" ${d.savePrices ? "checked" : ""}> ${msg("receipt.savePrices")}</label>
     </fieldset>
-    ${d.locked && !rSaving ? `<p class="hint warn" id="rLocked">Not saved yet: the answer didn't come back, so part of this receipt may have saved. Tap Try again to finish. It can't be changed until it's saved, so nothing is added twice.</p>` : ""}
-    <div class="modal-actions"><button type="button" class="btn danger" id="rDiscard" ${rSaving ? "disabled" : ""}>Discard</button><span class="spacer"></span><button type="button" class="btn primary big" id="rSave" ${rSaving ? "disabled" : ""} ${d.locked && !rSaving ? `aria-describedby="rLocked"` : ""}>${rSaving ? msg("app.saving") : d.locked ? msg("app.tryAgain") : "Save"}</button></div>`;
-  armButton($("#rDiscard"), "Tap again to discard", () => { draft = null; saveDraft(); ui.receipt = false; draw(); toast("Receipt discarded"); });
+    ${d.locked && !rSaving ? `<p class="hint warn" id="rLocked">${msg("receipt.notSavedYet")}</p>` : ""}
+    <div class="modal-actions"><button type="button" class="btn danger" id="rDiscard" ${rSaving ? "disabled" : ""}>${msg("receipt.discard")}</button><span class="spacer"></span><button type="button" class="btn primary big" id="rSave" ${rSaving ? "disabled" : ""} ${d.locked && !rSaving ? `aria-describedby="rLocked"` : ""}>${rSaving ? msg("app.saving") : d.locked ? msg("app.tryAgain") : msg("receipt.save")}</button></div>`;
+  armButton($("#rDiscard"), msg("receipt.tapToDiscard"), () => { draft = null; saveDraft(); ui.receipt = false; draw(); toast(msg("receipt.discarded")); });
   paintSum();
 }
 
 function invOptions(sel) {
   const all = Object.entries(products).sort((a, b) => String(a[1].name).localeCompare(String(b[1].name)));
-  return `<option value="">New item (not in inventory yet)</option>` + all.map(([k, p]) => `<option value="${esc(k)}" ${sel === k ? "selected" : ""}>${esc(nameWithBrand(p))}${p.code ? " · " + esc(p.code) : ""}</option>`).join("");
+  return `<option value="">${msg("receipt.newItemOption")}</option>` + all.map(([k, p]) => `<option value="${esc(k)}" ${sel === k ? "selected" : ""}>${esc(nameWithBrand(p))}${p.code ? " · " + esc(p.code) : ""}</option>`).join("");
 }
 // A receipt line for company equipment: where it goes says what it is, and a bought one's price
 function receiptEquipmentHTML(l) {
-  if (l.dest === "stock") return `<p class="hint equip">Company equipment · added to storage, not charged</p>`;
-  return `<p class="hint equip">Company equipment · bought for this client: charged on their project, not kept in storage</p>
+  if (l.dest === "stock") return `<p class="hint equip">${msg("receipt.equipStorage")}</p>`;
+  return `<p class="hint equip">${msg("receipt.equipBought")}</p>
         <p class="hint" data-charged>${esc(chargedText(l))}</p>
-        <label class="lbl">Charge a different price ($)<input type="number" data-f="typed" id="t-${l.id}" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${esc(l.typed ?? "")}" placeholder="Leave blank"></label>`;
+        <label class="lbl">${msg("receipt.chargeDifferent")}<input type="number" data-f="typed" id="t-${l.id}" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${esc(l.typed ?? "")}" placeholder="${msg("receipt.leaveBlank")}"></label>`;
 }
 function lineHTML(l) {
   const p = lineProd(l);
@@ -1383,58 +1382,58 @@ function lineHTML(l) {
   const codeClash = p && p.code && l.code && p.code !== l.code;
   return `
     <div class="rline${p ? " matched" : ""}" data-l="${l.id}">
-      ${l.raw ? `<div class="raw">Receipt: <span>${esc(l.raw)}</span></div>` : ""}
-      <label class="lbl">Inventory item${p && l.suggested ? ` <span class="tag">Suggested match, please check</span>` : ""}
+      ${l.raw ? `<div class="raw">${msg("receipt.raw", { raw: esc(l.raw) })}</div>` : ""}
+      <label class="lbl">${msg("receipt.inventoryItem")}${p && l.suggested ? ` <span class="tag">${msg("receipt.suggested")}</span>` : ""}
         <select data-f="match" id="m-${l.id}">${invOptions(l.match)}</select></label>
       ${p ? `
-        ${nameDiff ? `<div class="choice" role="group" aria-label="Name to use">
-          <span class="lbl">Name</span>
-          <button type="button" data-name="inv" aria-pressed="${l.useName === "inv"}">${esc(p.name)}<small>Inventory name</small></button>
-          <button type="button" data-name="receipt" aria-pressed="${l.useName === "receipt"}">${esc(l.name)}<small>From receipt</small></button>
+        ${nameDiff ? `<div class="choice" role="group" aria-label="${msg("receipt.nameToUse")}">
+          <span class="lbl">${msg("receipt.nameLabel")}</span>
+          <button type="button" data-name="inv" aria-pressed="${l.useName === "inv"}">${esc(p.name)}<small>${msg("receipt.inventoryName")}</small></button>
+          <button type="button" data-name="receipt" aria-pressed="${l.useName === "receipt"}">${esc(l.name)}<small>${msg("receipt.fromReceipt")}</small></button>
         </div>` : ""}
-        ${pack > 1 ? `<div class="pack"><span>1 case = ${pack} each</span>
-          <label class="check"><input type="checkbox" data-f="perEach" ${l.perEach ? "checked" : ""}> Priced per each</label></div>` : ""}
-        ${isEquipment(p) ? receiptEquipmentHTML(l) : priceDiff ? `<div class="choice warn" role="group" aria-label="Price to charge">
-          <span class="lbl">Price changed</span>
-          <button type="button" data-price="receipt" aria-pressed="${use === "receipt"}">${money(unitCost(l))}<small>Charge the receipt price</small></button>
-          <button type="button" data-price="inv" aria-pressed="${use === "inv"}">${money(p.price)}<small>Keep the client price</small></button>
+        ${pack > 1 ? `<div class="pack"><span>${msg("receipt.oneCase", { pack })}</span>
+          <label class="check"><input type="checkbox" data-f="perEach" ${l.perEach ? "checked" : ""}> ${msg("receipt.perEach")}</label></div>` : ""}
+        ${isEquipment(p) ? receiptEquipmentHTML(l) : priceDiff ? `<div class="choice warn" role="group" aria-label="${msg("receipt.priceToCharge")}">
+          <span class="lbl">${msg("receipt.priceChanged")}</span>
+          <button type="button" data-price="receipt" aria-pressed="${use === "receipt"}">${money(unitCost(l))}<small>${msg("receipt.chargeReceiptPrice")}</small></button>
+          <button type="button" data-price="inv" aria-pressed="${use === "inv"}">${money(p.price)}<small>${msg("receipt.keepClientPrice")}</small></button>
         </div>` : ""}
-        ${hasStock(p) ? `<div class="hint">${p.stock} in storage now</div>` : ""}`
-      : `<label class="lbl">Item name<input type="text" data-f="name" id="n-${l.id}" value="${esc(l.name)}" placeholder="Item name"></label>`}
-      <div class="lbl">Barcode (optional)
-        <div class="manual"><input type="text" data-f="code" id="c-${l.id}" value="${esc(l.code || (p && p.code) || "")}" inputmode="numeric" autocomplete="off" placeholder="Type or scan" ${p && p.code ? "readonly" : ""}>${p && p.code ? "" : `<button type="button" class="btn" data-scan>Scan</button>`}</div>
+        ${hasStock(p) ? `<div class="hint">${msg("receipt.inStorageNow", { count: p.stock })}</div>` : ""}`
+      : `<label class="lbl">${msg("receipt.itemName")}<input type="text" data-f="name" id="n-${l.id}" value="${esc(l.name)}" placeholder="${msg("receipt.itemName")}"></label>`}
+      <div class="lbl">${msg("receipt.barcodeOptional")}
+        <div class="manual"><input type="text" data-f="code" id="c-${l.id}" value="${esc(l.code || (p && p.code) || "")}" inputmode="numeric" autocomplete="off" placeholder="${msg("receipt.typeOrScan")}" ${p && p.code ? "readonly" : ""}>${p && p.code ? "" : `<button type="button" class="btn" data-scan>${msg("receipt.scan")}</button>`}</div>
       </div>
-      ${codeClash ? `<p class="hint warn">This inventory item already has barcode ${esc(p.code)}. Pick a different inventory item if this is a different product.</p>` : ""}
+      ${codeClash ? `<p class="hint warn">${msg("receipt.codeClash", { code: esc(p.code) })}</p>` : ""}
       <div class="rrow">
-        <label>${packOf(l) > 1 ? "Cases" : "Qty"}<input type="number" data-f="qty" id="q-${l.id}" min="0" inputmode="numeric" value="${l.qty}"></label>
-        <label>${packOf(l) > 1 ? "Per case" : "Each"} ($)<input type="number" data-f="price" id="p-${l.id}" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${l.price}"></label>
-        <label class="grow">For<select data-f="dest" id="d-${l.id}">${destOptions(l.dest)}</select></label>
+        <label>${msg(packOf(l) > 1 ? "receipt.cases" : "receipt.qty")}<input type="number" data-f="qty" id="q-${l.id}" min="0" inputmode="numeric" value="${l.qty}"></label>
+        <label>${msg(packOf(l) > 1 ? "receipt.perCase" : "receipt.each")}<input type="number" data-f="price" id="p-${l.id}" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${l.price}"></label>
+        <label class="grow">${msg("receipt.for")}<select data-f="dest" id="d-${l.id}">${destOptions(l.dest)}</select></label>
       </div>
       <p class="hint" data-note>${lineNote(l)}</p>
-      <div class="ractions"><span class="num" data-total>${totalText(l)}</span><span class="spacer"></span><button type="button" class="btn ghost" data-split>Split</button><button type="button" class="btn ghost" data-del>Remove</button></div>
+      <div class="ractions"><span class="num" data-total>${totalText(l)}</span><span class="spacer"></span><button type="button" class="btn ghost" data-split>${msg("receipt.split")}</button><button type="button" class="btn ghost" data-del>${msg("receipt.remove")}</button></div>
     </div>`;
 }
 function setCode(l, code) {
   l.code = code.trim();
   if (!l.code) return;
   const k = keyForCode(l.code);
-  if (products[k] && l.match !== k) { l.match = k; l.suggested = false; l.useName = "inv"; toast("Barcode found in inventory: " + products[k].name); }
+  if (products[k] && l.match !== k) { l.match = k; l.suggested = false; l.useName = "inv"; toast(msg("receipt.foundInInventory", { name: products[k].name })); }
 }
 
 function paintSum() {
   const d = draft, el = $("#rSum"); if (!d || !el) return;
-  const rows = [...d.dests.map((x, i) => ({ id: x.id, label: destLabel(x, i) })), { id: "stock", label: "General inventory" }]
+  const rows = [...d.dests.map((x, i) => ({ id: x.id, label: destLabel(x, i) })), { id: "stock", label: msg("receipt.generalLabel") }]
     .map(r => { const ls = d.lines.filter(l => l.dest === r.id); return { ...r, n: ls.reduce((a, l) => a + eaches(l), 0), $: ls.reduce((a, l) => a + Math.round(charge(l) * 100), 0) / 100, pre: ls.some(preMarkup) }; })
     .filter(r => r.n || r.id !== "stock");
   // At the receipt's prices, to compare with its subtotal
   const all = d.lines.reduce((a, l) => a + Math.round(int(l.qty) * round2(l.price) * 100), 0) / 100;
-  el.innerHTML = `<h3>Summary</h3><table class="sumtable"><tbody>
-    ${rows.map(r => `<tr><td>${esc(r.label)}</td><td>${r.n} item${r.n === 1 ? "" : "s"}</td><td>${money(r.$)}${r.pre ? " (before markup)" : ""}</td></tr>`).join("")}
-    <tr class="strong"><td>Items total</td><td></td><td>${money(all)}</td></tr>
-    ${d.subtotal != null ? `<tr><td>Receipt subtotal</td><td></td><td>${money(d.subtotal)}</td></tr>` : ""}
-    ${d.tax != null ? `<tr><td>Tax on receipt (not added)</td><td></td><td>${money(d.tax)}</td></tr>` : ""}
+  el.innerHTML = `<h3>${msg("receipt.summary")}</h3><table class="sumtable"><tbody>
+    ${rows.map(r => `<tr><td>${esc(r.label)}</td><td>${msg("receipt.sumItems", { count: r.n })}</td><td>${money(r.$)}${r.pre ? msg("receipt.beforeMarkup") : ""}</td></tr>`).join("")}
+    <tr class="strong"><td>${msg("receipt.itemsTotal")}</td><td></td><td>${money(all)}</td></tr>
+    ${d.subtotal != null ? `<tr><td>${msg("receipt.subtotal")}</td><td></td><td>${money(d.subtotal)}</td></tr>` : ""}
+    ${d.tax != null ? `<tr><td>${msg("receipt.tax")}</td><td></td><td>${money(d.tax)}</td></tr>` : ""}
   </tbody></table>
-  ${d.subtotal != null && Math.abs(d.subtotal - all) > 0.01 ? `<p class="hint warn">Items total doesn't match the receipt subtotal. Check for a missed or misread line.</p>` : ""}`;
+  ${d.subtotal != null && Math.abs(d.subtotal - all) > 0.01 ? `<p class="hint warn">${msg("receipt.totalMismatch")}</p>` : ""}`;
 }
 
 // A locked draft (saveReceipt) can't be changed: its fields are disabled, and these ignore anything that gets through
@@ -1517,17 +1516,17 @@ const stockIn = l => ({ action: l, quantity: eaches(l), unitCost: unitCost(l) })
 async function saveReceipt() {
   const d = draft;
   const lines = d.lines.filter(l => (lineProd(l) || l.name.trim()) && int(l.qty) > 0);
-  if (!lines.length) { toast("Add at least one item with a name and a quantity."); return; }
+  if (!lines.length) { toast(msg("receipt.addOne")); return; }
   // A price over the API's limit, read from the photo or typed, is fixed before anything is saved
   const over = lines.find(l => Number(l.price) > MAX_MONEY);
   if (over) { toast(moneyLimit()); const f = $("#p-" + over.id); f.setCustomValidity(moneyLimit()); f.focus(); return; }
   const usedDests = d.dests.filter(x => lines.some(l => l.dest === x.id));
   const unnamed = usedDests.find(x => !x.projectId && !x.client.trim());
-  if (unnamed) { toast("Enter a client name for each new project."); const f = $("#dname-" + unnamed.id); f && f.focus(); return; }
-  if (usedDests.some(x => !x.projectId) && !d.date) { toast("Choose a date for the new projects."); return; }
-  if (!myId && usedDests.some(x => !x.projectId) && !d.by.trim()) { toast("Enter who prepared these projects."); $("#rBy") && $("#rBy").focus(); return; }
+  if (unnamed) { toast(msg("receipt.needClient")); const f = $("#dname-" + unnamed.id); f && f.focus(); return; }
+  if (usedDests.some(x => !x.projectId) && !d.date) { toast(msg("receipt.needDate")); return; }
+  if (!myId && usedDests.some(x => !x.projectId) && !d.by.trim()) { toast(msg("receipt.needBy")); $("#rBy") && $("#rBy").focus(); return; }
   const toStock = lines.filter(l => l.dest === "stock");
-  if (!usedDests.length && !toStock.length) { toast("Nothing to save. Assign each item to a client or to General inventory."); return; }
+  if (!usedDests.length && !toStock.length) { toast(msg("receipt.nothingToSave")); return; }
   // From the first attempt until it's saved, the draft is locked: each destination and stock
   // line is one action, with its operation IDs (src/aws/db.js), so saving again after a lost
   // answer adds nothing twice. A changed line would be a new operation, adding again what an
@@ -1585,7 +1584,7 @@ async function saveReceipt() {
     let ok;
     if (x.projectId) {
       if (!projects.some(s => s.id === x.projectId)) {
-        toast("One of the chosen projects was deleted. Pick another and save again.");
+        toast(msg("receipt.projectDeleted"));
         d.lines = d.lines.filter(l => !usedDests.slice(0, usedDests.indexOf(x)).some(y => y.id === l.dest));
         retryable = false; failed(); return;
       }
@@ -1622,7 +1621,7 @@ async function saveReceipt() {
   if (savedIds.length === 1) ui.projectId = savedIds[0];
   ui.tab = "projects"; draw(); window.scrollTo(0, 0);
   const nStock = toStock.reduce((a, l) => a + eaches(l), 0);
-  toast([savedIds.length ? `Saved to ${savedIds.length} project${savedIds.length === 1 ? "" : "s"}` : "", nStock ? `${nStock} added to storage` : ""].filter(Boolean).join(" · "));
+  toast([savedIds.length ? msg("receipt.savedProjects", { count: savedIds.length }) : "", nStock ? msg("receipt.addedToStorage", { count: nStock }) : ""].filter(Boolean).join(" · "));
   if (!savedIds.length) { ui.tab = "prices"; draw(); }
 }
 
@@ -1654,8 +1653,8 @@ draw();
     try { isOwner = (await userNs.isOwner()) === true; } catch {}
     await readViewOnly();
   }
-  if (!db) { $("#notice").hidden = false; $("#notice").textContent = "Shared storage isn't available in this view. " + help().missing; return; }
-  const onErr = () => toast("Lost connection to shared storage. Reload the page.");
+  if (!db) { $("#notice").hidden = false; $("#notice").textContent = msg("app.unavailable", { help: help().missing }); return; }
+  const onErr = () => toast(msg("app.lostConnection"));
   let got = 0; const ready = () => { if (++got >= 2) connected = true; render(); };
   let pFirst = true, sFirst = true;
   db.collection("products").onSnapshot(snap => {

@@ -21,5 +21,7 @@ export default {
   "app.offlineNotice": "You're offline. Nothing can be saved until the connection is back.",
   "app.connecting": "Connecting to shared storage… If this doesn't clear, {help}.",
   "app.viewOnlyNotice": "You have view-only access. Ask the owner to give you Contributor access to scan and edit.",
+  "app.unavailable": "Shared storage isn't available in this view. {help}",
+  "app.lostConnection": "Lost connection to shared storage. Reload the page.",
   "app.backOnline": "Not saved yet. You're back online: tap Try again.",
 };
