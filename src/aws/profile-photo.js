@@ -6,6 +6,7 @@
 // server checks it again, and keeps only a plain 256 × 256 JPEG. Remove is DELETE /me/photo.
 import { armButton } from "../dom.js";
 import { avatarHTML } from "../avatar.js";
+import { msg } from "../i18n.js";
 import { decodePhoto, toJpeg } from "../photo.js";
 
 export const TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -16,38 +17,37 @@ export const MAX_FILE = 20 * 1024 * 1024;
 export const SIZE = 256, QUALITIES = [0.85, 0.7, 0.5], MAX_SENT = 60 * 1024;
 const ZOOM_MAX = 4, STEP = 8, BIG_STEP = 32, ZOOM_STEP = 0.1;
 
-const PICK = "Choose a JPEG, PNG or WebP photo.";
-// What went wrong, in words, by the API's reason
+// What went wrong, in words, by the API's reason; `fallback` is the catalog key for any other error
 const FAILURES = new Map([
-  ["photo_invalid", "That photo couldn't be used. Try another JPEG, PNG or WebP photo."],
-  ["photo_too_large", "That photo is too large to save. Zoom in a little, or try another photo."],
-  ["photo_limit", "You've changed your photo as many times as you can today. Try again tomorrow."],
+  ["photo_invalid", "profilePhoto.invalid"],
+  ["photo_too_large", "profilePhoto.tooLarge"],
+  ["photo_limit", "profilePhoto.limit"],
 ]);
-const failure = (e, what) => FAILURES.get(e.reason) || `Couldn't ${what} your photo. Check your connection and try again.`;
+const failure = (e, fallback) => msg(FAILURES.get(e.reason) || fallback);
 
 // `photo.url()` is the user's photo now (null for none), and `photo.set(url)` records a new
 // one, so every avatar on the page follows. `photo.name` is who they are, for the initials.
-const preview = (photo) => avatarHTML(photo.url(), photo.name, 96, photo.userId, "Your profile photo");
+const preview = (photo) => avatarHTML(photo.url(), photo.name, 96, photo.userId, msg("profilePhoto.yourPhoto"));
 
 export function photoSection(photo) {
   const url = photo.url();
-  return `<h3>Profile photo</h3>
+  return `<h3>${msg("profilePhoto.heading")}</h3>
     <div class="photo-row">
       <span id="photoNow">${preview(photo)}</span>
       <div class="actions">
-        <button type="button" class="btn" id="photoPick">${url ? "Change photo" : "Upload photo"}</button>
-        <button type="button" class="btn danger" id="photoRemove"${url ? "" : " hidden"}>Remove</button>
+        <button type="button" class="btn" id="photoPick">${msg(url ? "profilePhoto.change" : "profilePhoto.upload")}</button>
+        <button type="button" class="btn danger" id="photoRemove"${url ? "" : " hidden"}>${msg("profilePhoto.remove")}</button>
       </div>
     </div>
     <input type="file" id="photoFile" accept="${TYPES.join(",")}" hidden>
-    <p class="hint" id="photoHint">Your teammates see it next to your name. A JPEG, PNG or WebP photo.</p>
+    <p class="hint" id="photoHint">${msg("profilePhoto.hint")}</p>
     <div class="cropper" id="photoCrop" hidden>
-      <div class="crop-frame" id="cropFrame" tabindex="0" role="group" aria-label="Photo position" aria-describedby="cropHelp">
+      <div class="crop-frame" id="cropFrame" tabindex="0" role="group" aria-label="${msg("profilePhoto.position")}" aria-describedby="cropHelp">
         <canvas id="cropCanvas" width="${SIZE}" height="${SIZE}"></canvas>
       </div>
-      <p class="hint" id="cropHelp">Drag the photo, or use the arrow keys, to choose what's in the circle. Zoom with the slider, or + and -.</p>
-      <div class="field crop-zoom"><label for="cropZoom">Zoom</label><input type="range" id="cropZoom" min="1" max="${ZOOM_MAX}" step="0.01" value="1"></div>
-      <div class="actions"><button type="button" class="btn" id="cropCancel">Cancel</button><button type="button" class="btn primary" id="cropSave">Save photo</button></div>
+      <p class="hint" id="cropHelp">${msg("profilePhoto.cropHelp")}</p>
+      <div class="field crop-zoom"><label for="cropZoom">${msg("profilePhoto.zoom")}</label><input type="range" id="cropZoom" min="1" max="${ZOOM_MAX}" step="0.01" value="1"></div>
+      <div class="actions"><button type="button" class="btn" id="cropCancel">${msg("profilePhoto.cancel")}</button><button type="button" class="btn primary" id="cropSave">${msg("profilePhoto.save")}</button></div>
     </div>
     <p class="error" role="alert" id="photoFail" hidden></p>`;
 }
@@ -65,7 +65,7 @@ export function wirePhoto(m, api, photo) {
   function shown() {
     const url = photo.url();
     m.querySelector("#photoNow").innerHTML = preview(photo);
-    pick.textContent = url ? "Change photo" : "Upload photo";
+    pick.textContent = msg(url ? "profilePhoto.change" : "profilePhoto.upload");
     remove.hidden = !url;
   }
 
@@ -102,10 +102,10 @@ export function wirePhoto(m, api, photo) {
     file.value = "";
     say("");
     if (!chosen) return;
-    if (!TYPES.includes(chosen.type)) { say(PICK); return; }
-    if (chosen.size > MAX_FILE) { say("That photo is too large to open. Choose one under 20 MB."); return; }
+    if (!TYPES.includes(chosen.type)) { say(msg("profilePhoto.pick")); return; }
+    if (chosen.size > MAX_FILE) { say(msg("profilePhoto.tooLargeToOpen")); return; }
     const opened = await decodePhoto(chosen);
-    if (!opened) { say("That photo couldn't be opened. Try another JPEG, PNG or WebP photo."); return; }
+    if (!opened) { say(msg("profilePhoto.cantOpen")); return; }
     bmp = opened;
     // Covering the square, centred
     fit = scale = SIZE / Math.min(bmp.width, bmp.height);
@@ -159,13 +159,13 @@ export function wirePhoto(m, api, photo) {
       shown();
       pick.focus();
     } catch (e) {
-      say(failure(e, "save"));
+      say(failure(e, "profilePhoto.saveFailed"));
     }
     save.disabled = false;
     save.removeAttribute("aria-busy");
   });
 
-  armButton(remove, "Tap again to remove", async () => {
+  armButton(remove, msg("profilePhoto.tapAgain"), async () => {
     remove.disabled = true;
     say("");
     try {
@@ -174,7 +174,7 @@ export function wirePhoto(m, api, photo) {
       shown();
       pick.focus();
     } catch (e) {
-      say(failure(e, "remove"));
+      say(failure(e, "profilePhoto.removeFailed"));
     }
     remove.disabled = false;
   });
