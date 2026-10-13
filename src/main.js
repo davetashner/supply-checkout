@@ -1,5 +1,5 @@
 import "./theme.js";
-import { msg } from "./i18n.js";
+import { msg, applyStatic } from "./i18n.js";
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, markLost, saveItem, addLines, quickTake, moveLine } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY, MAX_BRAND, brandOf, nameWithBrand, brandHTML, visibleText } from "./format.js";
@@ -1634,6 +1634,7 @@ $("#scanFile").addEventListener("change", async e => { const c = await scanFromI
 $("#noCodeBtn").addEventListener("click", () => { const s = currentProject(); if (s) (modeOf(s) === "out" ? pickOutModal : pickReturnModal)(s); });
 $("#manualForm").addEventListener("submit", e => { e.preventDefault(); const i = $("#manualCode"); const c = i.value.trim(); i.value = ""; if (c) handleCode(c); });
 
+applyStatic();
 draw();
 
 (async () => {

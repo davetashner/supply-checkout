@@ -1,0 +1,22 @@
+// The fixed text of the page (src/index.html), set by applyStatic() in src/i18n.js
+export default {
+  "shell.home": "Supply Checkout home",
+  "shell.sections": "Sections",
+  "shell.projects": "Projects",
+  "shell.theme": "Theme",
+  "shell.themeSystem": "System theme",
+  "shell.themeLight": "Light theme",
+  "shell.themeDark": "Dark theme",
+  "shell.allProjects": "← All projects",
+  "shell.whatDoing": "What are you doing?",
+  "shell.checkOut": "Check out",
+  "shell.return": "Return",
+  "shell.scanBarcode": "Scan barcode",
+  "shell.barcodePhoto": "Barcode photo",
+  "shell.barcodeNumber": "Barcode number",
+  "shell.orType": "Or type the barcode",
+  "shell.enter": "Enter",
+  "shell.receiptPhoto": "Receipt photo",
+  "shell.fewer": "Fewer",
+  "shell.more": "More",
+};

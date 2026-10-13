@@ -19,3 +19,14 @@ export function msg(key, vars = {}) {
   const text = typeof entry === "string" ? entry : entry[plurals.select(Number(vars.count))];
   return text.replace(/\{(\w+)\}/g, (_, name) => String(vars[name]));
 }
+
+/**
+ * Sets the page's fixed text (src/index.html) from the catalog: an element's `data-i18n="key"` is its
+ * text, and `data-i18n-<attribute>="key"` is that attribute (aria-label, title, placeholder).
+ */
+export function applyStatic(root = document) {
+  for (const el of root.querySelectorAll("[data-i18n]")) el.textContent = msg(el.dataset.i18n);
+  for (const el of root.querySelectorAll("*")) {
+    for (const { name, value } of [...el.attributes]) if (name.startsWith("data-i18n-")) el.setAttribute(name.slice("data-i18n-".length), msg(value));
+  }
+}
