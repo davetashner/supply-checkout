@@ -705,14 +705,14 @@ function newProjectModal(existing) {
       const client = visibleText(m.querySelector("#fClient").value).trim(), date = m.querySelector("#fDate").value;
       if (!client || !date) return;
       if (editing) {
-        saving(form, () => closing(write(() => db.doc("projects/" + existing.id).update({ client, date }), "Saved", existing.id)));
+        saving(form, () => closing(write(() => db.doc("projects/" + existing.id).update({ client, date }), msg("checkout.saved"), existing.id)));
         return;
       }
       createdAt ||= new Date().toISOString();
       const body = { client, date, createdBy: myId || null, createdAt, status: "open", items: {} };
       if (needName) body.createdByName = visibleText(m.querySelector("#fBy").value).trim();
       saving(form, async () => {
-        const ok = await write(() => (ref ||= db.collection("projects").doc()).set(body), "Project created");
+        const ok = await write(() => (ref ||= db.collection("projects").doc()).set(body), msg("checkout.created"));
         if (ok) { addLocalProject(ref.id, body); closeModal(); ui.projectId = ref.id; ui.mode = "out"; draw(); }
         return ok;
       });
@@ -724,14 +724,14 @@ function newProjectModal(existing) {
 // recode (how to start over with another code) the number can be corrected in place: the form
 // opens again for the corrected code, looking it up in inventory and on the project afresh.
 function codeHTML(code, recode) {
-  return `<div class="code${recode ? " recode" : ""}" id="codeBox"><span>${esc(codeText(code))}</span>${recode ? ` <button type="button" class="btn ghost" id="fixCode">Not this number?</button>` : ""}</div>`;
+  return `<div class="code${recode ? " recode" : ""}" id="codeBox"><span>${esc(codeText(code))}</span>${recode ? ` <button type="button" class="btn ghost" id="fixCode">${msg("checkout.notThisNumber")}</button>` : ""}</div>`;
 }
 function wireRecode(m, code, recode) {
   const fix = m.querySelector("#fixCode");
   if (!fix) return;
   fix.addEventListener("click", () => {
     const box = m.querySelector("#codeBox");
-    box.innerHTML = `<form class="manual" id="fixForm"><label class="vh" for="fixInput">Barcode number</label><input type="text" id="fixInput" inputmode="numeric" autocomplete="off" value="${esc(code)}"><button type="submit" class="btn">Use this number</button></form>`;
+    box.innerHTML = `<form class="manual" id="fixForm"><label class="vh" for="fixInput">${msg("checkout.barcodeNumber")}</label><input type="text" id="fixInput" inputmode="numeric" autocomplete="off" value="${esc(code)}"><button type="submit" class="btn">${msg("checkout.useThisNumber")}</button></form>`;
     const input = box.querySelector("#fixInput");
     input.focus(); input.select();
     box.querySelector("#fixForm").addEventListener("submit", e => { e.preventDefault(); const c = input.value.trim(); if (c) recode(c); });
@@ -743,26 +743,26 @@ function wireRecode(m, code, recode) {
 function checkoutModal(s, code, key = keyOf(code), recode = null) {
   const on = s || openAdhoc() || {}, prod = products[key], line = own(on.items || {}, key), action = {};
   openModal(`
-    <h2>${s ? "Check out" : "Quick take"}</h2>
+    <h2>${msg(s ? "checkout.title" : "checkout.quickTakeTitle")}</h2>
     ${codeHTML(code, recode)}
     <form id="f" style="display:grid;gap:14px">
-      ${prod ? `<div class="item-known"><strong>${esc(nameWithBrand(prod))}</strong><span class="num">${isEquipment(prod) ? "Company equipment · not charged" : `${money(prod.price)} each`}</span></div>${hasStock(prod) ? `<div class="summary"><span>In storage</span><b>${prod.stock}</b></div>` : ""}`
-             : `<p class="hint" style="margin-top:-4px">${code ? "New barcode. Name it and set a price, and it'll be saved to inventory." : "Name the item and set a price."}</p>
-                <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required data-autofocus placeholder="${code ? "e.g. Nitrile gloves, box of 100" : "e.g. Leftover storage bins"}"></div>
-                <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money placeholder="0.00"></div>
-                ${code ? "" : `<label class="check"><input type="checkbox" id="fSave" checked> Save to inventory for next time</label>`}`}
-      ${line ? `<div class="summary"><span>Already on ${s ? "this project" : "General Use"}</span><b>${int(line.out)} taken</b></div>` : ""}
-      <div class="field"><label for="fQty">How many are you taking?</label>${stepperHTML("fQty", 1)}</div>
-      <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary" id="go">Add to project</button></div>
+      ${prod ? `<div class="item-known"><strong>${esc(nameWithBrand(prod))}</strong><span class="num">${isEquipment(prod) ? msg("checkout.equipmentNotCharged") : msg("checkout.priceEach", { price: money(prod.price) })}</span></div>${hasStock(prod) ? `<div class="summary"><span>${msg("checkout.inStorage")}</span><b>${prod.stock}</b></div>` : ""}`
+             : `<p class="hint" style="margin-top:-4px">${msg(code ? "checkout.newBarcode" : "checkout.nameItem")}</p>
+                <div class="field"><label for="fName">${msg("checkout.itemName")}</label><input type="text" id="fName" required data-autofocus placeholder="${msg(code ? "checkout.namePlaceholder" : "checkout.namePlaceholderNoCode")}"></div>
+                <div class="field"><label for="fPrice">${msg("checkout.priceLabel")}</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money placeholder="0.00"></div>
+                ${code ? "" : `<label class="check"><input type="checkbox" id="fSave" checked> ${msg("checkout.saveToInventory")}</label>`}`}
+      ${line ? `<div class="summary"><span>${msg(s ? "checkout.alreadyProject" : "checkout.alreadyGeneral")}</span><b>${msg("checkout.taken", { count: int(line.out) })}</b></div>` : ""}
+      <div class="field"><label for="fQty">${msg("checkout.howMany")}</label>${stepperHTML("fQty", 1)}</div>
+      <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("checkout.cancel")}</button><button type="submit" class="btn primary" id="go">${msg("checkout.addToProject")}</button></div>
     </form>`, m => {
     wireRecode(m, code, recode);
-    const goText = v => s ? `Add ${v} to project` : `Take ${v}`;
+    const goText = v => msg(s ? "checkout.addQty" : "checkout.takeQty", { count: v });
     const getQty = wireStepper(m, "fQty", v => setText(m.querySelector("#go"), goText(v)));
     m.querySelector("#go").textContent = goText(1);
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const form = m.querySelector("#f");
     onSubmit(form, () => {
-      const qty = getQty(); if (!qty) { toast("Choose at least 1."); return; }
+      const qty = getQty(); if (!qty) { toast(msg("checkout.atLeastOne")); return; }
       let name = prod && prod.name, price = prod ? Number(prod.price) || 0 : 0, oneOff = {}, save = false;
       if (!prod) {
         // A typed price is kept in whole cents, as the API takes it (ADR 0014)
@@ -781,8 +781,8 @@ function checkoutModal(s, code, key = keyOf(code), recode = null) {
         }
         // The server makes the line (or adds to the one there, which keeps its name)
         const fresh = (s ? currentProject() || s : openAdhoc()) || {}, cur = own(fresh.items || {}, key), what = cur ? cur.name : name;
-        if (!s) return closing(write(() => quickTake(db, action, key, qty, oneOff, todayISO()), `Took ${qty} × ${what} (General Use)`));
-        return closing(write(() => checkOut(db, action, s.id, key, qty, oneOff), `Checked out ${qty} × ${what}`, s.id));
+        if (!s) return closing(write(() => quickTake(db, action, key, qty, oneOff, todayISO()), msg("checkout.tookGeneral", { qty, what })));
+        return closing(write(() => checkOut(db, action, s.id, key, qty, oneOff), msg("checkout.checkedOut", { qty, what }), s.id));
       });
     });
   });
@@ -792,11 +792,11 @@ function checkoutModal(s, code, key = keyOf(code), recode = null) {
 function pickOutModal(s) {
   const all = Object.entries(products).map(([key, p]) => ({ key, ...p })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   openModal(`
-    <h2>Add without barcode</h2>
-    <button type="button" class="btn primary" id="newItem">+ New item</button>
-    ${all.length ? `<div class="field"><label for="fFind">Or pick from inventory</label><input type="search" id="fFind" placeholder="Search items" autocomplete="off"></div>
+    <h2>${msg("checkout.pickTitle")}</h2>
+    <button type="button" class="btn primary" id="newItem">${msg("checkout.newItem")}</button>
+    ${all.length ? `<div class="field"><label for="fFind">${msg("checkout.pickFromInventory")}</label><input type="search" id="fFind" placeholder="${msg("checkout.searchItems")}" autocomplete="off"></div>
     <div class="pick" id="pick"></div>` : ""}
-    <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
+    <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("checkout.cancel")}</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     m.querySelector("#newItem").addEventListener("click", () => checkoutModal(s, "", newKey()));
     const box = m.querySelector("#pick"), find = m.querySelector("#fFind");
@@ -805,7 +805,7 @@ function pickOutModal(s) {
       const q = find.value.trim().toLowerCase();
       // By name, brand or barcode
       const hits = all.filter(p => !q || [p.name, brandOf(p), p.code || ""].some(t => String(t).toLowerCase().includes(q)));
-      box.innerHTML = hits.length ? hits.map(p => `<button type="button" data-k="${esc(p.key)}"><span>${esc(p.name)}${brandHTML(p)}<span class="code" style="display:block">${esc(codeText(p.code))}</span></span><span class="num">${hasStock(p) ? p.stock + " in storage" : isEquipment(p) ? "Equipment" : money(p.price)}</span></button>`).join("") : `<p class="hint">No matches. Use + New item.</p>`;
+      box.innerHTML = hits.length ? hits.map(p => `<button type="button" data-k="${esc(p.key)}"><span>${esc(p.name)}${brandHTML(p)}<span class="code" style="display:block">${esc(codeText(p.code))}</span></span><span class="num">${hasStock(p) ? msg("checkout.stockInStorage", { count: p.stock }) : isEquipment(p) ? msg("checkout.equipment") : money(p.price)}</span></button>`).join("") : `<p class="hint">${msg("checkout.noMatches")}</p>`;
       box.querySelectorAll("[data-k]").forEach(b => b.addEventListener("click", () => { const p = products[b.dataset.k] || {}; checkoutModal(s, p.code || "", b.dataset.k); }));
     };
     find.addEventListener("input", paint); paint();
@@ -816,10 +816,10 @@ function pickReturnModal(s) {
   // Not what was bought for the client: it isn't coming back
   const ls = lines(s).filter(l => l.purchased !== true);
   openModal(`
-    <h2>Return an item</h2>
-    <p class="hint" style="margin-top:-6px">Pick the item you're bringing back.</p>
-    ${ls.length ? `<div class="pick">${ls.map(l => `<button type="button" data-k="${esc(l.key)}"><span>${esc(l.name)}<span class="code" style="display:block">${esc(codeText(l.code))}</span></span><span class="num">${int(l.out)} taken</span></button>`).join("")}</div>` : `<p>Nothing has been checked out on this project yet.</p>`}
-    <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
+    <h2>${msg("checkout.returnTitle")}</h2>
+    <p class="hint" style="margin-top:-6px">${msg("checkout.returnPick")}</p>
+    ${ls.length ? `<div class="pick">${ls.map(l => `<button type="button" data-k="${esc(l.key)}"><span>${esc(l.name)}<span class="code" style="display:block">${esc(codeText(l.code))}</span></span><span class="num">${msg("checkout.taken", { count: int(l.out) })}</span></button>`).join("")}</div>` : `<p>${msg("checkout.nothingOut")}</p>`}
+    <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("checkout.cancel")}</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     m.querySelectorAll("[data-k]").forEach(b => b.addEventListener("click", () => { const l = own(s.items || {}, b.dataset.k) || {}; returnModal(s, l.code || "", b.dataset.k); }));
   });
@@ -831,8 +831,8 @@ function pickReturnModal(s) {
 function codeEntryHTML(label) {
   return `<div class="scan-row">
       <label class="btn primary big" for="qScan">${esc(label)}</label>
-      <input class="vh" type="file" id="qScan" accept="image/*" capture="environment" aria-label="Barcode photo" data-barcode>
-      <form class="manual" id="qForm"><label class="vh" for="qCode">Barcode number</label><input type="text" id="qCode" inputmode="numeric" autocomplete="off" placeholder="Or type the barcode"><button type="submit" class="btn">Enter</button></form>
+      <input class="vh" type="file" id="qScan" accept="image/*" capture="environment" aria-label="${msg("checkout.barcodePhoto")}" data-barcode>
+      <form class="manual" id="qForm"><label class="vh" for="qCode">${msg("checkout.barcodeNumber")}</label><input type="text" id="qCode" inputmode="numeric" autocomplete="off" placeholder="${msg("checkout.orTypeBarcode")}"><button type="submit" class="btn">${msg("checkout.enter")}</button></form>
     </div>`;
 }
 function wireCodeEntry(m, onCode) {
@@ -845,11 +845,11 @@ function wireCodeEntry(m, onCode) {
 function quickTakeCode(c) { checkoutModal(null, c, keyForCode(c), quickTakeCode); }
 function quickTakeModal() {
   openModal(`
-    <h2>Quick take</h2>
-    <p class="hint" style="margin-top:-6px">For supplies taken for no job, or before you know which job. They go on General Use (no job).</p>
-    ${codeEntryHTML("Scan to take")}
-    <button type="button" class="btn" id="qPick">Item without a barcode</button>
-    <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
+    <h2>${msg("checkout.quickTakeTitle")}</h2>
+    <p class="hint" style="margin-top:-6px">${msg("checkout.quickIntro")}</p>
+    ${codeEntryHTML(msg("checkout.scanToTake"))}
+    <button type="button" class="btn" id="qPick">${msg("checkout.itemWithoutBarcode")}</button>
+    <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("checkout.cancel")}</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     m.querySelector("#qPick").addEventListener("click", () => pickOutModal(null));
     wireCodeEntry(m, quickTakeCode);
@@ -865,11 +865,11 @@ function returnAnyModal() {
   }
   const items = [...out.values()];
   openModal(`
-    <h2>Return</h2>
-    <p class="hint" style="margin-top:-6px">Scan what you're bringing back, or pick it. It goes back to the project it's out on.</p>
-    ${codeEntryHTML("Scan to return")}
-    ${items.length ? `<div class="pick">${items.map(l => `<button type="button" data-k="${esc(l.key)}"><span>${esc(l.name)}<span class="code" style="display:block">${esc(codeText(l.code))}</span></span></button>`).join("")}</div>` : `<p>Nothing is checked out right now.</p>`}
-    <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
+    <h2>${msg("returns.title")}</h2>
+    <p class="hint" style="margin-top:-6px">${msg("returns.intro")}</p>
+    ${codeEntryHTML(msg("returns.scanToReturn"))}
+    ${items.length ? `<div class="pick">${items.map(l => `<button type="button" data-k="${esc(l.key)}"><span>${esc(l.name)}<span class="code" style="display:block">${esc(codeText(l.code))}</span></span></button>`).join("")}</div>` : `<p>${msg("returns.nothingOut")}</p>`}
+    <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("returns.cancel")}</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     m.querySelectorAll("[data-k]").forEach(b => b.addEventListener("click", () => { const l = out.get(b.dataset.k); returnFrom(outOn(l.key), l.code || ""); }));
     wireCodeEntry(m, returnAnyCode);
@@ -878,13 +878,13 @@ function returnAnyModal() {
 function returnAnyCode(c) { returnFrom(outOn(keyForCode(c), c), c, returnAnyCode); }
 // The return form for the one project the item is out on, or a list to pick from, the General Use project first
 function returnFrom(hits, code, recode = null) {
-  if (!hits.length) { closeModal(); toast("Nothing of this is checked out right now."); return; }
+  if (!hits.length) { closeModal(); toast(msg("returns.nothingOfThis")); return; }
   if (hits.length === 1) { returnModal(hits[0].s, code, hits[0].k, true, recode); return; }
   openModal(`
-    <h2>Which project?</h2>
-    <p class="hint" style="margin-top:-6px">${esc(own(hits[0].s.items, hits[0].k).name)} is out on more than one project. Pick the one it's coming back from.</p>
-    <div class="pick">${hits.map(({ s, left }, i) => `<button type="button" data-i="${i}"><span>${esc(projectTitle(s))}<span class="code" style="display:block">${esc(fmtDate(s.date))}</span></span><span class="num">${left} out</span></button>`).join("")}</div>
-    <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
+    <h2>${msg("returns.whichProject")}</h2>
+    <p class="hint" style="margin-top:-6px">${msg("returns.onMany", { name: esc(own(hits[0].s.items, hits[0].k).name) })}</p>
+    <div class="pick">${hits.map(({ s, left }, i) => `<button type="button" data-i="${i}"><span>${esc(projectTitle(s))}<span class="code" style="display:block">${esc(fmtDate(s.date))}</span></span><span class="num">${msg("returns.outCount", { count: left })}</span></button>`).join("")}</div>
+    <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("returns.cancel")}</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     m.querySelectorAll("[data-i]").forEach(b => b.addEventListener("click", () => { const h = hits[Number(b.dataset.i)]; returnModal(h.s, code, h.k, true, recode); }));
   });
@@ -896,12 +896,12 @@ function returnModal(s, code, key = keyOf(code), named = false, recode = null) {
   if (!line) {
     // Still out on another open project: return it there instead (ADR 0017, section 5)
     const elsewhere = outOn(key, code).filter(x => x.s.id !== s.id);
-    const there = elsewhere.length === 1 ? `Return it to ${projectName(elsewhere[0].s)}` : "Return it from another project";
+    const there = elsewhere.length === 1 ? msg("returns.returnTo", { project: projectName(elsewhere[0].s) }) : msg("returns.returnFromOther");
     openModal(`
-      <h2>Not on this project</h2>
+      <h2>${msg("returns.notOnProject")}</h2>
       ${codeHTML(code, recode)}
-      <p style="margin:0">${prod ? `<strong>${esc(prod.name)}</strong> wasn't` : "This item wasn't"} checked out on this project, so there's nothing to return.${elsewhere.length ? " It's out on another project." : ""}</p>
-      <div class="modal-actions"><button type="button" class="btn" id="cancel">Close</button>${elsewhere.length ? `<button type="button" class="btn" id="elsewhere">${esc(there)}</button>` : ""}${isAdhoc(s) ? "" : `<button type="button" class="btn primary" id="switch">Check it out instead</button>`}</div>`, m => {
+      <p style="margin:0">${prod ? msg("returns.wasntNamed", { name: esc(prod.name) }) : msg("returns.wasntItem")}${elsewhere.length ? " " + msg("returns.outElsewhere") : ""}</p>
+      <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("returns.close")}</button>${elsewhere.length ? `<button type="button" class="btn" id="elsewhere">${esc(there)}</button>` : ""}${isAdhoc(s) ? "" : `<button type="button" class="btn primary" id="switch">${msg("returns.checkOutInstead")}</button>`}</div>`, m => {
       m.querySelector("#cancel").addEventListener("click", closeModal);
       wireRecode(m, code, recode);
       const other = m.querySelector("#elsewhere"), sw = m.querySelector("#switch");
@@ -916,41 +916,41 @@ function returnModal(s, code, key = keyOf(code), named = false, recode = null) {
   const already = Math.min(int(line.returned), o), left = equip ? equipmentCounts(line).still : o - already;
   if (!left) {
     openModal(`
-      <h2>Already returned</h2>
+      <h2>${msg("returns.alreadyTitle")}</h2>
       ${codeHTML(code, recode)}
-      <p style="margin:0">${equip ? `None of <strong>${esc(line.name)}</strong> is still out.` : `All ${o} of <strong>${esc(line.name)}</strong> have been returned.`} To correct the counts, tap the item's row on the project.</p>
-      <div class="modal-actions"><button type="button" class="btn primary" id="cancel">Close</button></div>`, m => {
+      <p style="margin:0">${equip ? msg("returns.noneOut", { name: esc(line.name) }) : msg("returns.allReturned", { count: o, name: esc(line.name) })} ${msg("returns.correctCounts")}</p>
+      <div class="modal-actions"><button type="button" class="btn primary" id="cancel">${msg("returns.close")}</button></div>`, m => {
       m.querySelector("#cancel").addEventListener("click", closeModal);
       wireRecode(m, code, recode);
     });
     return;
   }
   openModal(`
-    <h2>${named ? `Return to ${esc(projectName(s))}` : "Return"}</h2>
+    <h2>${named ? msg("returns.returnToProject", { project: esc(projectName(s)) }) : msg("returns.title")}</h2>
     ${codeHTML(code, recode)}
-    <div class="item-known"><strong>${esc(line.name)}</strong><span class="num">${o} taken${already ? ` · ${already} back` : ""}</span></div>
+    <div class="item-known"><strong>${esc(line.name)}</strong><span class="num">${msg("returns.taken", { count: o })}${already ? ` · ${msg("returns.back", { count: already })}` : ""}</span></div>
     <form id="f" style="display:grid;gap:14px">
-      <div class="field"><label for="fRet">How many are you returning now?</label>${stepperHTML("fRet", 1, left)}</div>
+      <div class="field"><label for="fRet">${msg("returns.howMany")}</label>${stepperHTML("fRet", 1, left)}</div>
       <div class="summary" id="sum"></div>
-      <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save return</button></div>
+      <div class="modal-actions"><button type="button" class="btn" id="cancel">${msg("returns.cancel")}</button><button type="submit" class="btn primary">${msg("returns.save")}</button></div>
     </form>`, m => {
     const paint = r => {
       const now = Math.min(int(r), left), back = already + now;
-      setHTML(m.querySelector("#sum"), equip ? `<span>Returned <b>${back}</b> of ${o}</span><span>Still out <b>${left - now}</b></span>`
-        : `<span>Returned <b>${back}</b> of ${o}</span><span>Used <b>${o - back}</b></span>${isAdhoc(s) ? "" : `<span>Charge <b>${money((o - back) * price)}</b></span>`}`);
+      setHTML(m.querySelector("#sum"), equip ? `<span>${msg("returns.summaryReturned", { back, taken: o })}</span><span>${msg("returns.summaryStillOut", { count: left - now })}</span>`
+        : `<span>${msg("returns.summaryReturned", { back, taken: o })}</span><span>${msg("returns.summaryUsed", { count: o - back })}</span>${isAdhoc(s) ? "" : `<span>${msg("returns.summaryCharge", { amount: money((o - back) * price) })}</span>`}`);
     };
     wireRecode(m, code, recode);
     const getR = wireStepper(m, "fRet", paint); paint(1);
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const form = m.querySelector("#f");
     onSubmit(form, () => {
-      const r = getR(); if (!r) { toast("Choose at least 1."); return; }
+      const r = getR(); if (!r) { toast(msg("returns.atLeastOne")); return; }
       saving(form, async () => {
         return closing(write(async () => {
           const done = await recordReturn(db, action, s.id, key, r);
           // Back on the project list (a return from anywhere), the project it went to opens
           if (named) { ui.tab = "projects"; ui.projectId = s.id; draw(); }
-          toast(`${done.quantity} returned · ${int(done.line.returned)} of ${int(done.line.out)} back`);
+          toast(msg("returns.done", { quantity: done.quantity, back: int(done.line.returned), out: int(done.line.out) }));
         }, undefined, s.id));
       });
     });
@@ -968,26 +968,26 @@ function lineModal(s, key) {
   // The open General Use project's line can move, whole, to an open client project (ADR 0017, section 5)
   const jobs = adhoc && s.status !== "closed" ? projects.filter(x => !isAdhoc(x) && x.status !== "closed") : null;
   openModal(`
-    <h2>${esc(bought ? lineLabel(l) : l.name || "Item")}</h2>
+    <h2>${esc(bought ? lineLabel(l) : l.name || msg("line.item"))}</h2>
     <div class="code">${esc(codeText(l.code))}</div>
     ${eq ? `<form id="f" style="display:grid;gap:14px">
-      <p class="hint" style="margin:0">Company equipment: not charged. Its counts change when it's checked out, returned, or marked lost at Finished Return.</p>
-      <div class="summary"><span>Taken <b>${eq.o}</b></span><span>Returned <b>${eq.r}</b></span>${eq.lost ? `<span>Lost or broken <b>${eq.lost}</b></span>` : ""}<span>Still out <b>${eq.still}</b></span></div>
+      <p class="hint" style="margin:0">${msg("line.equipmentHint")}</p>
+      <div class="summary"><span>${msg("line.summaryTaken", { count: eq.o })}</span><span>${msg("line.summaryReturned", { count: eq.r })}</span>${eq.lost ? `<span>${msg("line.summaryLost", { count: eq.lost })}</span>` : ""}<span>${msg("line.summaryStillOut", { count: eq.still })}</span></div>
       ${eq.still ? `<p class="hint" style="margin:0">${msg("app.stillOut")}</p>` : ""}
-      <div class="modal-actions">${eq.still ? "" : `<button type="button" class="btn danger" id="remove">Remove</button>`}<span class="spacer"></span><button type="button" class="btn primary" id="cancel">Close</button></div>
+      <div class="modal-actions">${eq.still ? "" : `<button type="button" class="btn danger" id="remove">${msg("line.remove")}</button>`}<span class="spacer"></span><button type="button" class="btn primary" id="cancel">${msg("line.close")}</button></div>
     </form>` : `<form id="f" style="display:grid;gap:14px">
-      ${adhoc ? `<p class="hint" style="margin:0">Taken for no job: not charged.</p>` : `<div class="field"><label for="fPrice">Price each on this project ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>`}
+      ${adhoc ? `<p class="hint" style="margin:0">${msg("line.adhocHint")}</p>` : `<div class="field"><label for="fPrice">${msg("line.priceLabel")}</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>`}
       <div class="row2">
-        <div class="field"><label for="fOut">Taken</label><input type="number" id="fOut" min="0" inputmode="numeric" value="${int(l.out)}"></div>
-        ${bought ? "" : `<div class="field"><label for="fRet">Returned</label><input type="number" id="fRet" min="0" inputmode="numeric" value="${int(l.returned)}"></div>`}
+        <div class="field"><label for="fOut">${msg("line.taken")}</label><input type="number" id="fOut" min="0" inputmode="numeric" value="${int(l.out)}"></div>
+        ${bought ? "" : `<div class="field"><label for="fRet">${msg("line.returned")}</label><input type="number" id="fRet" min="0" inputmode="numeric" value="${int(l.returned)}"></div>`}
       </div>
-      <div class="modal-actions"><button type="button" class="btn danger" id="remove">Remove</button><span class="spacer"></span><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
+      <div class="modal-actions"><button type="button" class="btn danger" id="remove">${msg("line.remove")}</button><span class="spacer"></span><button type="button" class="btn" id="cancel">${msg("line.cancel")}</button><button type="submit" class="btn primary">${msg("line.save")}</button></div>
     </form>`}
     ${jobs ? `<form id="mv" class="move" style="display:grid;gap:10px;margin-top:18px">
-      <h3>Move to a project</h3>
-      ${jobs.length ? `<p class="hint" style="margin:0">The whole line, with its counts, goes to that project at the price it was taken at. Storage doesn't change.</p>
-      <div class="field"><label for="fTo">Project</label><select id="fTo">${jobs.map(x => `<option value="${esc(x.id)}">${esc(projectName(x))}</option>`).join("")}</select></div>
-      <div class="modal-actions"><button type="submit" class="btn primary">Move</button></div>` : `<p class="hint" style="margin:0">There's no open project to move it to. Start one with + New project.</p>`}
+      <h3>${msg("line.moveHeading")}</h3>
+      ${jobs.length ? `<p class="hint" style="margin:0">${msg("line.moveHint")}</p>
+      <div class="field"><label for="fTo">${msg("line.project")}</label><select id="fTo">${jobs.map(x => `<option value="${esc(x.id)}">${esc(projectName(x))}</option>`).join("")}</select></div>
+      <div class="modal-actions"><button type="submit" class="btn primary">${msg("line.move")}</button></div>` : `<p class="hint" style="margin:0">${msg("line.noProject")}</p>`}
     </form>` : ""}`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const form = m.querySelector("#f"), mv = m.querySelector("#mv");
@@ -995,14 +995,14 @@ function lineModal(s, key) {
     const moves = Object.create(null);
     if (mv && jobs.length) onSubmit(mv, () => {
       const to = m.querySelector("#fTo").value, x = projects.find(j => j.id === to);
-      saving(mv, () => closing(write(() => moveLine(db, (moves[to] ||= {}), s.id, key, to), `Moved to ${projectTitle(x)}`, s.id)));
+      saving(mv, () => closing(write(() => moveLine(db, (moves[to] ||= {}), s.id, key, to), msg("line.moved", { project: projectTitle(x) }), s.id)));
     });
     // The form is busy until it's removed, so it's removed once. Refused for equipment still out
     // that this page didn't know about (someone took more meanwhile): the latest is showing.
     const remove = m.querySelector("#remove");
-    if (remove) armButton(remove, "Tap to remove", () => busy(form, () => closing(write(() => removeLine(s.id, key).catch(e => {
-      throw e && e.reason === "equipment_out" ? { code: "refused", message: `Some of this is still out, so it wasn't removed. ${msg("app.stillOut")}` } : e;
-    }), "Removed", s.id))));
+    if (remove) armButton(remove, msg("line.tapToRemove"), () => busy(form, () => closing(write(() => removeLine(s.id, key).catch(e => {
+      throw e && e.reason === "equipment_out" ? { code: "refused", message: msg("line.stillOutRefused", { reason: msg("app.stillOut") }) } : e;
+    }), msg("line.removed"), s.id))));
     if (!eq) onSubmit(form, () => {
       // Returned never above what's taken
       // Bought for the client: nothing comes back, so there's no returned to change
@@ -1011,7 +1011,7 @@ function lineModal(s, key) {
       // Typed prices are kept in whole cents (ADR 0014); the server records who typed one on a bought line
       const price = adhoc ? {} : { price: Math.max(0, round2(m.querySelector("#fPrice").value)) };
       const patch = bought ? { out, ...price } : { out, returned, ...price };
-      saving(form, () => closing(write(() => db.doc("projects/" + s.id).update({ items: { [key]: patch } }), "Saved", s.id)));
+      saving(form, () => closing(write(() => db.doc("projects/" + s.id).update({ items: { [key]: patch } }), msg("checkout.saved"), s.id)));
     });
   });
 }
@@ -1047,40 +1047,40 @@ const packInput = v => Math.min(MAX_PACK, Math.max(1, int(v)));
 // A count of single items as full packs and loose ones, for the line under the count
 function packsText(n, size) {
   const full = Math.floor(n / size), loose = n % size;
-  if (!full) return `= ${loose} loose, less than a full pack`;
-  const packs = `= ${full} full pack${full === 1 ? "" : "s"}`;
-  return loose ? `${packs} + ${loose} loose` : packs;
+  if (!full) return msg("product.packsLoose", { loose });
+  const packs = msg("product.packs", { count: full });
+  return loose ? msg("product.packsAndLoose", { packs, loose }) : packs;
 }
 
-const SUPPLY_HINT = "Price is what a client is charged. Cost is what you paid each, before tax, and isn't shown on projects.";
-const EQUIPMENT_HINT = "Company equipment goes to jobs and comes back. It's listed on projects but not charged. Value is what you paid for one.";
+const SUPPLY_HINT = () => msg("product.supplyHint");
+const EQUIPMENT_HINT = () => msg("product.equipmentHint");
 function productModal(key) {
   const p = key ? products[key] : null;
   // One count per form: every attempt at saving the same count is the same stock command.
   // And one key for a new item without a barcode, so trying again doesn't make a second item.
   const action = {}, newItemKey = newKey(), equip = isEquipment(p);
   openModal(`
-    <h2>${p ? "Edit item" : "Add item"}</h2>
+    <h2>${msg(p ? "product.editTitle" : "product.addTitle")}</h2>
     <form id="f" style="display:grid;gap:14px">
-      <fieldset class="field kinds"><legend>What is it?</legend>
-        <label class="check"><input type="radio" name="fKind" value="supply" ${equip ? "" : "checked"}> Supply (used up, charged)</label>
-        <label class="check"><input type="radio" name="fKind" value="equipment" ${equip ? "checked" : ""}> Company equipment (reused, not charged)</label>
+      <fieldset class="field kinds"><legend>${msg("product.kindLegend")}</legend>
+        <label class="check"><input type="radio" name="fKind" value="supply" ${equip ? "" : "checked"}> ${msg("product.kindSupply")}</label>
+        <label class="check"><input type="radio" name="fKind" value="equipment" ${equip ? "checked" : ""}> ${msg("product.kindEquipment")}</label>
       </fieldset>
-      <div class="field"><label for="fCode">Barcode${p ? "" : " (optional)"}</label>
+      <div class="field"><label for="fCode">${msg(p ? "product.barcode" : "product.barcodeOptional")}</label>
         ${p ? `<div class="code" style="margin:0">${esc(codeText(p.code))}</div>`
-            : `<div class="manual"><input type="text" id="fCode" inputmode="numeric" autocomplete="off" placeholder="Type, scan, or leave blank"><label class="btn" for="fScan">Scan</label></div><input class="vh" type="file" id="fScan" accept="image/*" capture="environment" data-barcode>`}
+            : `<div class="manual"><input type="text" id="fCode" inputmode="numeric" autocomplete="off" placeholder="${msg("product.barcodePlaceholder")}"><label class="btn" for="fScan">${msg("product.scan")}</label></div><input class="vh" type="file" id="fScan" accept="image/*" capture="environment" data-barcode>`}
       </div>
-      <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "data-autofocus" : ""}></div>
-      <div class="field"><label for="fBrand">Brand (optional)</label><input type="text" id="fBrand" maxlength="${MAX_BRAND}" autocomplete="off" value="${esc(p ? brandOf(p) : "")}" placeholder="e.g. Glad"></div>
-      <div class="field" id="fPriceField" ${equip ? "hidden" : ""}><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && !equip ? round2(p.price) : ""}" placeholder="0.00"></div>
-      <div class="field"><label for="fCost" id="fCostLabel">${equip ? "Value each" : "Cost each"} ($)</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="Leave blank if not known"></div>
-      <div class="field"><label for="fPack">Comes in packs of (optional)</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="Leave blank if bought one at a time" aria-describedby="fPackHint"><p class="hint" id="fPackHint">Receipts add packs × this many to storage.</p></div>
-      <div class="field"><label for="fReorder">Reorder at (optional)</label><input type="number" id="fReorder" min="0" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${reorderLevel(p) ?? ""}" placeholder="Leave blank for no alert" aria-describedby="fReorderHint"><p class="hint" id="fReorderHint">Inventory flags it as running low when storage is down to this many single items.</p></div>
-      <div class="field"><label for="fReorderQty">Usual order (optional)</label><input type="number" id="fReorderQty" min="1" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.reorderQty) ? p.reorderQty : ""}" placeholder="How many you usually buy"></div>
-      <div class="field"><label for="fStock">Single items in storage now</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="Leave blank if not counted"><p class="hint" id="fPacks" aria-live="polite" hidden></p></div>
-      <p class="hint" id="fKindHint">${equip ? EQUIPMENT_HINT : SUPPLY_HINT}</p>
-      ${p ? `<p class="hint">Price changes apply to new checkouts. Projects keep the price they were checked out at; change it on a project by tapping the row. So does a change between supply and equipment.</p>` : ""}
-      <div class="modal-actions">${p ? `<button type="button" class="btn danger" id="remove">Delete</button><span class="spacer"></span>` : ""}<button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
+      <div class="field"><label for="fName">${msg("product.name")}</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "data-autofocus" : ""}></div>
+      <div class="field"><label for="fBrand">${msg("product.brand")}</label><input type="text" id="fBrand" maxlength="${MAX_BRAND}" autocomplete="off" value="${esc(p ? brandOf(p) : "")}" placeholder="${msg("product.brandPlaceholder")}"></div>
+      <div class="field" id="fPriceField" ${equip ? "hidden" : ""}><label for="fPrice">${msg("product.price")}</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && !equip ? round2(p.price) : ""}" placeholder="0.00"></div>
+      <div class="field"><label for="fCost" id="fCostLabel">${msg(equip ? "product.valueEach" : "product.costEach")}</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="${msg("product.costPlaceholder")}"></div>
+      <div class="field"><label for="fPack">${msg("product.pack")}</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="${msg("product.packPlaceholder")}" aria-describedby="fPackHint"><p class="hint" id="fPackHint">${msg("product.packHint")}</p></div>
+      <div class="field"><label for="fReorder">${msg("product.reorder")}</label><input type="number" id="fReorder" min="0" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${reorderLevel(p) ?? ""}" placeholder="${msg("product.reorderPlaceholder")}" aria-describedby="fReorderHint"><p class="hint" id="fReorderHint">${msg("product.reorderHint")}</p></div>
+      <div class="field"><label for="fReorderQty">${msg("product.reorderQty")}</label><input type="number" id="fReorderQty" min="1" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.reorderQty) ? p.reorderQty : ""}" placeholder="${msg("product.reorderQtyPlaceholder")}"></div>
+      <div class="field"><label for="fStock">${msg("product.stock")}</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="${msg("product.stockPlaceholder")}"><p class="hint" id="fPacks" aria-live="polite" hidden></p></div>
+      <p class="hint" id="fKindHint">${equip ? EQUIPMENT_HINT() : SUPPLY_HINT()}</p>
+      ${p ? `<p class="hint">${msg("product.priceChanges")}</p>` : ""}
+      <div class="modal-actions">${p ? `<button type="button" class="btn danger" id="remove">${msg("product.delete")}</button><span class="spacer"></span>` : ""}<button type="button" class="btn" id="cancel">${msg("product.cancel")}</button><button type="submit" class="btn primary">${msg("product.save")}</button></div>
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     // Equipment has no client price, and its cost is its value
@@ -1088,8 +1088,8 @@ function productModal(key) {
     m.querySelectorAll("input[name=fKind]").forEach(r => r.addEventListener("change", () => {
       const eq = kindOf() === "equipment";
       m.querySelector("#fPriceField").hidden = eq;
-      m.querySelector("#fCostLabel").textContent = `${eq ? "Value each" : "Cost each"} ($)`;
-      m.querySelector("#fKindHint").textContent = eq ? EQUIPMENT_HINT : SUPPLY_HINT;
+      m.querySelector("#fCostLabel").textContent = msg(eq ? "product.valueEach" : "product.costEach");
+      m.querySelector("#fKindHint").textContent = eq ? EQUIPMENT_HINT() : SUPPLY_HINT();
     }));
     const scan = m.querySelector("#fScan");
     scan && scan.addEventListener("change", async () => { const c = await scanFromInput(scan); if (c) m.querySelector("#fCode").value = c; });
@@ -1101,7 +1101,7 @@ function productModal(key) {
     };
     stock.addEventListener("input", paintPacks); pack.addEventListener("input", paintPacks); paintPacks();
     const rm = m.querySelector("#remove"), form = m.querySelector("#f");
-    rm && armButton(rm, "Tap to delete", () => busy(form, () => closing(write(() => db.doc("products/" + key).delete(), "Item deleted"))));
+    rm && armButton(rm, msg("product.tapToDelete"), () => busy(form, () => closing(write(() => db.doc("products/" + key).delete(), msg("product.deleted")))));
     onSubmit(form, () => {
       const code = p ? (p.code || "") : m.querySelector("#fCode").value.trim();
       // Control and invisible characters pasted into the name or brand are cleaned, not sent: the
