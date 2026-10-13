@@ -12,17 +12,18 @@
 // errors are password.js's, shared with Account's Change password. Web build only, like the
 // rest of src/aws/.
 import { esc } from "../format.js";
+import { msg } from "../i18n.js";
 import { openModal, closeModal } from "../dom.js";
 import { clearPassword, passwordFailure, passwordFields, readPassword } from "./password.js";
 
 const ISSUER = "Supply Checkout";
 
-// What went wrong, in words
+// What went wrong, in words. `doing`: what was being done (a twoStep.failed… key), for an error with no reason of its own
 const failure = (e, doing) =>
   passwordFailure(e)
-    || (e.reason === "code_mismatch" ? "That code isn't right. Check the app and try the newest code."
-    : e.reason === "code_expired" ? "This setup expired. Close this and start again."
-    : `Couldn't ${doing}. Check your connection and try again.`);
+    || msg(e.reason === "code_mismatch" ? "twoStep.codeMismatch"
+    : e.reason === "code_expired" ? "twoStep.codeExpired"
+    : doing);
 
 // The key as the app shows it, in groups of four
 const grouped = (secret) => secret.replace(/(.{4})(?=.)/g, "$1 ");
@@ -34,29 +35,27 @@ const otpauth = (secret, email) =>
 // and they're moving to a new phone, so there's no password step. `onOn` runs once it's on
 // and this tab's session has ended.
 export function openTwoStep(session, email, onOn, { why = "", moving = false } = {}) {
-  openModal(`<h2>Two-step sign-in</h2>
+  openModal(`<h2>${msg("twoStep.title")}</h2>
     <div class="two-step" id="twoStep">
       ${why ? `<p class="two-step-why" role="status">${esc(why)}</p>` : ""}
-      <p class="hint">${moving
-        ? "Set up the authenticator app on your new phone. Your old phone's codes keep working until this is done."
-        : "You'll sign in with your email, a password and a 6-digit code from an authenticator app on your phone, such as Google Authenticator, Microsoft Authenticator or 1Password. Email codes and passkeys stop working for signing in."}</p>
+      <p class="hint">${msg(moving ? "twoStep.introMoving" : "twoStep.intro")}</p>
       <form id="passwordStep" class="two-step-form" method="post" novalidate${moving ? " hidden" : ""}>
-        <h3>1. Your password</h3>
+        <h3>${msg("twoStep.passwordHeading")}</h3>
         ${passwordFields(email)}
-        <div class="actions"><button type="submit" class="btn primary" id="savePassword">Continue</button><button type="button" class="btn ghost" id="keepPassword">Keep my current password</button></div>
+        <div class="actions"><button type="submit" class="btn primary" id="savePassword">${msg("twoStep.continue")}</button><button type="button" class="btn ghost" id="keepPassword">${msg("twoStep.keepPassword")}</button></div>
       </form>
       <form id="appStep" class="two-step-form" novalidate hidden>
-        <h3>${moving ? "Your authenticator app" : "2. Your authenticator app"}</h3>
-        <p>Scan this with the app, or enter the key by hand.</p>
+        <h3>${msg(moving ? "twoStep.appHeadingMoving" : "twoStep.appHeading")}</h3>
+        <p>${msg("twoStep.scan")}</p>
         <div class="two-step-qr" id="qr"></div>
-        <p>Key: <code id="totpKey"></code></p>
-        <p><a href="#" id="openApp">Open in an authenticator app on this device</a></p>
-        <div class="field"><label for="totpCode">Code from the app</label>
+        <p>${msg("twoStep.key", { key: '<code id="totpKey"></code>' })}</p>
+        <p><a href="#" id="openApp">${msg("twoStep.openApp")}</a></p>
+        <div class="field"><label for="totpCode">${msg("twoStep.codeLabel")}</label>
         <input type="text" id="totpCode" inputmode="numeric" autocomplete="one-time-code" maxlength="7" spellcheck="false"></div>
-        <div class="actions"><button type="submit" class="btn primary" id="turnOn">Turn on</button></div>
+        <div class="actions"><button type="submit" class="btn primary" id="turnOn">${msg("twoStep.turnOn")}</button></div>
       </form>
       <p class="error" role="alert" id="twoStepFail" hidden></p>
-      <div class="actions"><button type="button" class="btn ghost" id="twoStepClose">Cancel</button></div>
+      <div class="actions"><button type="button" class="btn ghost" id="twoStepClose">${msg("twoStep.cancel")}</button></div>
     </div>`, (m) => {
     const $ = (s) => m.querySelector(s);
     const box = $("#twoStep"), fail = $("#twoStepFail");
@@ -79,13 +78,13 @@ export function openTwoStep(session, email, onOn, { why = "", moving = false } =
       } catch (e) {
         busy(false);
         // Nothing to go back to when it's the first step
-        if (moving) say(failure(e, "start the setup"));
-        else { $("#passwordStep").hidden = false; say(failure(e, "start the setup")); }
+        if (moving) say(failure(e, "twoStep.failedStart"));
+        else { $("#passwordStep").hidden = false; say(failure(e, "twoStep.failedStart")); }
         return;
       }
       const link = otpauth(secret, email);
       const { qrSvg } = await import("./qr.js");
-      $("#qr").innerHTML = qrSvg(link, "QR code for your authenticator app");
+      $("#qr").innerHTML = qrSvg(link, msg("twoStep.qrLabel"));
       $("#totpKey").textContent = grouped(secret);
       $("#openApp").href = link;
       busy(false);
@@ -103,7 +102,7 @@ export function openTwoStep(session, email, onOn, { why = "", moving = false } =
         await session.api("POST", "/me/password", body);
       } catch (err) {
         busy(false);
-        say(failure(err, "set the password"));
+        say(failure(err, "twoStep.failedPassword"));
         return;
       }
       clearPassword(m);
@@ -118,16 +117,16 @@ export function openTwoStep(session, email, onOn, { why = "", moving = false } =
     const finish = () => {
       finishing = true;
       $("#totpCode").closest(".field").hidden = true;
-      $("#turnOn").textContent = "Sign out everywhere";
+      $("#turnOn").textContent = msg("twoStep.signOutEverywhere");
       $("#twoStepClose").hidden = true;
-      say("Two-step sign-in is on, but your other sessions weren't signed out yet. Sign out everywhere to finish.");
+      say(msg("twoStep.notSignedOut"));
       $("#turnOn").focus();
     };
 
     $("#appStep").addEventListener("submit", async (e) => {
       e.preventDefault();
       const code = $("#totpCode").value.replace(/\s/g, "");
-      if (!finishing && !/^\d{6}$/.test(code)) { say("Enter the 6-digit code from the app."); $("#totpCode").focus(); return; }
+      if (!finishing && !/^\d{6}$/.test(code)) { say(msg("twoStep.badCode")); $("#totpCode").focus(); return; }
       say("");
       busy(true);
       try {
@@ -135,7 +134,7 @@ export function openTwoStep(session, email, onOn, { why = "", moving = false } =
       } catch (err) {
         busy(false);
         if (err.reason === "signout_failed" && !finishing) finish();
-        else say(failure(err, finishing ? "sign you out everywhere" : "check the code"));
+        else say(failure(err, finishing ? "twoStep.failedSignOut" : "twoStep.failedCode"));
         return;
       }
       // Every session has ended, this one too: the only way on is to sign in again

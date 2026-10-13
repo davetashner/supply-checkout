@@ -7,6 +7,7 @@
 // otherwise removes them from every team, closes any team they're alone in, and deletes
 // their sign-in. Web build only, like the rest of src/aws/.
 import { esc } from "../format.js";
+import { msg } from "../i18n.js";
 import { openModal, closeModal } from "../dom.js";
 import { whatsNewSetting, wireWhatsNewSetting } from "./whats-new.js";
 import { photoSection, wirePhoto } from "./profile-photo.js";
@@ -17,31 +18,32 @@ const WORD = "DELETE";
 // What went wrong, in words: the server's own for the last owner, which names the teams
 const failure = (e) =>
   e.reason === "last_owner" ? e.message
-    : e.code === "bad_request" ? `Type ${WORD} to confirm.`
-    : "Couldn't delete your account. Check your connection and try again. Anything already done stays done.";
+    : e.code === "bad_request" ? msg("deleteAccount.typeWord", { word: WORD })
+    : msg("deleteAccount.failed");
 
 // Two-step sign-in as /me says it (`mfa`), with a button to set it up: owners need it for
 // billing. Nothing from an API that doesn't say.
 const TWO_STEP = {
-  off: ["Owners need two-step sign-in to manage billing. You'll sign in with a password and a code from an authenticator app on your phone.", "Set up two-step sign-in"],
-  totp: ["Two-step sign-in is on: signing in with your email takes your password and a code from your authenticator app.", "Move to a new phone"],
-  provider: ["You sign in with Google or Apple, which covers two-step sign-in here.", ""],
+  off: ["deleteAccount.twoStepOff", "deleteAccount.twoStepOffButton"],
+  totp: ["deleteAccount.twoStepOn", "deleteAccount.twoStepOnButton"],
+  provider: ["deleteAccount.twoStepProvider", ""],
 };
 function twoStepSection(mfa) {
-  const [text, button] = TWO_STEP[mfa] || [];
-  if (!text) return "";
-  return `<h3>Two-step sign-in</h3>
+  const [textKey, buttonKey] = TWO_STEP[mfa] || [];
+  if (!textKey) return "";
+  const text = msg(textKey), button = buttonKey && msg(buttonKey);
+  return `<h3>${msg("deleteAccount.twoStepHeading")}</h3>
     <p class="hint" id="twoStepState">${text}</p>
     ${button ? `<div class="actions"><button type="button" class="btn" id="twoStepOpen">${button}</button></div>` : ""}`;
 }
 
 // The password: Change password, or a note for a Google or Apple user, who has no password
 // here (the API refuses them, federated_sign_in)
-const passwordSection = (mfa) => `<h3>Password</h3>
+const passwordSection = (mfa) => `<h3>${msg("deleteAccount.passwordHeading")}</h3>
     ${mfa === "provider"
-      ? `<p class="hint" id="passwordState">You sign in with Google or Apple, so there's no Supply Checkout password to change. Change your password with Google or Apple.</p>`
-      : `<p class="hint" id="passwordState">Change the password you sign in with${mfa === "totp" ? "" : ", or set one if you've only signed in with an email code or a passkey"}.</p>
-    <div class="actions"><button type="button" class="btn" id="passwordOpen">Change password</button></div>`}`;
+      ? `<p class="hint" id="passwordState">${msg("deleteAccount.passwordProvider")}</p>`
+      : `<p class="hint" id="passwordState">${msg(mfa === "totp" ? "deleteAccount.passwordTwoStep" : "deleteAccount.passwordMayBeNone")}</p>
+    <div class="actions"><button type="button" class="btn" id="passwordOpen">${msg("deleteAccount.changePassword")}</button></div>`}`;
 
 // `onDeleted` runs once the account is gone. `twoStep.setUp(moving)` opens the setup
 // (`moving`: it's on already, and they're moving to a new phone); `twoStep.changePassword()`
@@ -49,20 +51,20 @@ const passwordSection = (mfa) => `<h3>Password</h3>
 // hides the banner once it's turned off. `photo` is the user's own photo (profile-photo.js),
 // or null when the API has no photos. `name` is the user's first and last name (name.js).
 export function openDeleteAccount(api, email, onDeleted, twoStep, whatsNew, photo, name) {
-  openModal(`<h2>Your account</h2>
-    <p>Signed in as <strong>${esc(email || "you")}</strong>.</p>
+  openModal(`<h2>${msg("deleteAccount.title")}</h2>
+    <p>${msg("deleteAccount.signedInAs", { email: esc(email || msg("deleteAccount.you")) })}</p>
     ${nameSection(name)}
     ${photo ? photoSection(photo) : ""}
     ${passwordSection(twoStep.mfa)}
     ${twoStepSection(twoStep.mfa)}
     ${whatsNewSetting(whatsNew.prefs)}
-    <h3>Delete your account</h3>
-    <p class="hint">This removes you from every team and deletes your sign-in, so you can't sign in again. A team you're the only member of is closed, and everything in it is deleted after 30 days. Teams other people are in keep their projects and inventory. It can't be undone.</p>
-    <p class="hint">If you're the only owner of a team other people are in, make someone else an owner or close the team first.</p>
+    <h3>${msg("deleteAccount.deleteHeading")}</h3>
+    <p class="hint">${msg("deleteAccount.deleteWarning")}</p>
+    <p class="hint">${msg("deleteAccount.lastOwner")}</p>
     <form id="deleteForm" class="delete-form" novalidate>
-      <div class="field"><label for="deleteConfirm">Type ${WORD} to confirm</label><input type="text" id="deleteConfirm" autocomplete="off" spellcheck="false" autocapitalize="characters"></div>
+      <div class="field"><label for="deleteConfirm">${msg("deleteAccount.confirmLabel", { word: WORD })}</label><input type="text" id="deleteConfirm" autocomplete="off" spellcheck="false" autocapitalize="characters"></div>
       <p class="error" role="alert" id="deleteFail" hidden></p>
-      <div class="modal-actions"><button type="button" class="btn" id="deleteCancel">Cancel</button><button type="submit" class="btn danger" id="deleteAccount" disabled>Delete account</button></div>
+      <div class="modal-actions"><button type="button" class="btn" id="deleteCancel">${msg("deleteAccount.cancel")}</button><button type="submit" class="btn danger" id="deleteAccount" disabled>${msg("deleteAccount.delete")}</button></div>
     </form>`, (m) => {
     const input = m.querySelector("#deleteConfirm"), button = m.querySelector("#deleteAccount"), fail = m.querySelector("#deleteFail");
     const ready = () => input.value.trim().toUpperCase() === WORD;
