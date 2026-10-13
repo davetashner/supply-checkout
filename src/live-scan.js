@@ -1,4 +1,5 @@
 import { zxReader, zxRead, grays, turned, verdict, spots, blankCanvas, part, deliver } from "./barcode.js";
+import { msg } from "./i18n.js";
 
 /* ---------- live barcode scanning (supply-checkout-005.7.1) ----------
    Tapping a barcode Scan button opens the camera in a scanner over the page, instead of
@@ -42,13 +43,13 @@ document.addEventListener("click", (e) => {
 });
 
 const MESSAGES = {
-  starting: "Starting the camera…",
-  live: "Hold the barcode inside the frame.",
-  steady: "Hold steady…",
-  limit: "No barcode read yet. Move closer, add light, or take a photo instead.",
-  paused: "Scanning paused.",
-  denied: "The camera is blocked for this site. Allow it in your browser's settings, or take a photo instead.",
-  none: "The camera isn't available. Take a photo instead.",
+  starting: "liveScan.starting",
+  live: "liveScan.live",
+  steady: "liveScan.steady",
+  limit: "liveScan.limit",
+  paused: "liveScan.paused",
+  denied: "liveScan.denied",
+  none: "liveScan.none",
 };
 
 let el = null, video = null, s = null;
@@ -64,13 +65,13 @@ function scanner() {
   el.innerHTML = `
     <div class="view"><video id="scanVideo" playsinline muted></video><div class="aim" aria-hidden="true"></div></div>
     <div class="bar">
-      <h2 id="scanTitle">Scan a barcode</h2>
+      <h2 id="scanTitle">${msg("liveScan.title")}</h2>
       <p id="scanStatus" role="status"></p>
       <div class="actions">
-        <button type="button" class="btn" id="scanLight" aria-pressed="false" hidden>Flashlight</button>
-        <button type="button" class="btn" id="scanAgain" hidden>Try again</button>
-        <button type="button" class="btn" id="scanPhoto">Take a photo instead</button>
-        <button type="button" class="btn primary" id="scanCancel">Cancel</button>
+        <button type="button" class="btn" id="scanLight" aria-pressed="false" hidden>${msg("liveScan.flashlight")}</button>
+        <button type="button" class="btn" id="scanAgain" hidden>${msg("liveScan.tryAgain")}</button>
+        <button type="button" class="btn" id="scanPhoto">${msg("liveScan.photo")}</button>
+        <button type="button" class="btn primary" id="scanCancel">${msg("liveScan.cancel")}</button>
       </div>
     </div>`;
   document.body.append(el);
@@ -87,7 +88,7 @@ const $s = (id) => el.querySelector(id);
 // was open (the receipt review, when new data arrives), replacing the input with a new one
 const current = (input) => (input.isConnected ? input : document.getElementById(input.id) || input);
 function show(state) {
-  $s("#scanStatus").textContent = MESSAGES[state];
+  $s("#scanStatus").textContent = msg(MESSAGES[state]);
   $s("#scanAgain").hidden = !(state === "limit" || state === "paused");
   if (state !== "live" && state !== "steady") $s("#scanLight").hidden = true;
 }

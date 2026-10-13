@@ -19,6 +19,7 @@
 //   as does no longer counting the item. A new reorder level keeps the order.
 import { hasStock, brandOf, fmtDate } from "./format.js";
 import { toCsv } from "./export.js";
+import { msg } from "./i18n.js";
 
 const whole = v => Number.isInteger(v) && v >= 0;
 /** The item's reorder level, or null when it has none. */
@@ -30,7 +31,7 @@ export const isAcked = p => isLow(p) && whole(p.ackedAtStock) && p.ackedAtStock 
 /** Marked ordered: a quantity and the date it was ordered. */
 export const isOnOrder = p => Number.isInteger(p.orderedQty) && p.orderedQty >= 1 && typeof p.orderedOn === "string";
 /** "On order: 24 since Oct 7, 2026" */
-export const onOrderText = p => `On order: ${p.orderedQty} since ${fmtDate(p.orderedOn)}`;
+export const onOrderText = p => msg("reorder.onOrder", { qty: p.orderedQty, date: fmtDate(p.orderedOn) });
 /** The team's marks on an item's alert, which a restock removes together (MARK_FIELDS in backend/src/data/reorder.ts). */
 const MARKS = ["ackedAtStock", "orderedQty", "orderedOn"];
 /** The item without its marks. */
@@ -62,8 +63,8 @@ export function reorderCsv(list) {
  */
 export function reorderText(list) {
   return list.map(p => {
-    const brand = brandOf(p), order = whole(p.reorderQty) ? `, order ${p.reorderQty}` : "";
-    const placed = isOnOrder(p) ? `, on order: ${p.orderedQty} since ${fmtDate(p.orderedOn)}` : "";
-    return `${nameOf(p)}${brand ? ` (${brand})` : ""}: ${hasStock(p) ? p.stock : "not counted"} left, reorder at ${p.reorderAt ?? "none"}${order}${placed}`;
+    const brand = brandOf(p), order = whole(p.reorderQty) ? msg("reorder.orderQty", { qty: p.reorderQty }) : "";
+    const placed = isOnOrder(p) ? msg("reorder.placed", { qty: p.orderedQty, date: fmtDate(p.orderedOn) }) : "";
+    return msg("reorder.line", { name: `${p.name || msg("reorder.unnamed")}${brand ? ` (${brand})` : ""}`, stock: hasStock(p) ? p.stock : msg("reorder.notCounted"), level: p.reorderAt ?? msg("reorder.none"), order, placed });
   }).join("\n");
 }

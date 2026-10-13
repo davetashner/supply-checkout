@@ -11,22 +11,24 @@
 // invite(), importCsv(), onChange }, where save sends { receipt: true } or { done: true }. act
 // is the app's side: { addItem(), newProject(), redraw() }.
 import { morph } from "./dom.js";
+import { msg } from "./i18n.js";
 
+// title, text and each action's label are catalog keys
 const STEPS = [
-  { id: "items", title: "Add your supplies", text: "Add each item with its barcode, price and how many are in storage, or import a list you already have. The import has a template to fill in.",
-    actions: [["addItem", "Add an item", "primary"], ["importCsv", "Import a CSV file", ""]] },
-  { id: "crew", title: "Invite your crew", text: "Invite the people who take supplies to jobs. They get an email with a link to join.",
-    actions: [["invite", "Invite people", ""]] },
-  { id: "project", title: "Create your first project", text: "A project is one client job: scan what goes out, then what comes back.",
-    actions: [["newProject", "Create a project", ""]] },
+  { id: "items", title: "firstRun.itemsTitle", text: "firstRun.itemsText",
+    actions: [["addItem", "firstRun.addItem", "primary"], ["importCsv", "firstRun.importCsv", ""]] },
+  { id: "crew", title: "firstRun.crewTitle", text: "firstRun.crewText",
+    actions: [["invite", "firstRun.invite", ""]] },
+  { id: "project", title: "firstRun.projectTitle", text: "firstRun.projectText",
+    actions: [["newProject", "firstRun.newProject", ""]] },
   // Only where receipt reading is available. Its action is the app's own file input's label
   // (#receiptFile in src/index.html), so a tap opens the camera or photo picker directly
-  { id: "receipt", title: "Scan a receipt", text: "Take a photo of a receipt from the store. Its items are read for you to check, then added to a project or to storage.",
-    actions: [["receiptFile", "Scan a receipt", ""]] },
+  { id: "receipt", title: "firstRun.receiptTitle", text: "firstRun.receiptText",
+    actions: [["receiptFile", "firstRun.receiptFile", ""]] },
 ];
 const action = ([a, label, cls]) => a === "receiptFile"
-  ? `<label class="btn ${cls}" for="receiptFile">${label}</label>`
-  : `<button type="button" class="btn ${cls}" data-act="${a}">${label}</button>`;
+  ? `<label class="btn ${cls}" for="receiptFile">${msg(label)}</label>`
+  : `<button type="button" class="btn ${cls}" data-act="${a}">${msg(label)}</button>`;
 
 export function createFirstRun(cap, act) {
   const { state } = cap;
@@ -53,8 +55,8 @@ export function createFirstRun(cap, act) {
   const stepHTML = (s) => `<li class="${done[s.id] ? "done" : ""}">
       <span class="check" aria-hidden="true"></span>
       <div class="step">
-        <h3>${done[s.id] ? `<span class="vh">Done: </span>` : ""}${s.title}</h3>
-        ${done[s.id] ? "" : `<p class="hint">${s.text}</p>
+        <h3>${done[s.id] ? `<span class="vh">${msg("firstRun.doneMark")}</span>` : ""}${msg(s.title)}</h3>
+        ${done[s.id] ? "" : `<p class="hint">${msg(s.text)}</p>
         <div class="chips">${s.actions.map(action).join("")}</div>`}
       </div>
     </li>`;
@@ -71,12 +73,12 @@ export function createFirstRun(cap, act) {
       box.hidden = closed || !visible;
       if (box.hidden) return;
       morph(box, all
-        ? `<div class="first-run-head"><h2 id="firstRunTitle">You're all set</h2></div>
-          <p>Your team has supplies, a crew and a first project. Scan items onto a project as they go out, and back in when they return.</p>
-          <div class="chips"><button type="button" class="btn primary" data-act="dismiss">Close</button></div>`
-        : `<div class="first-run-head"><h2 id="firstRunTitle">Get your team started</h2>
-          <button type="button" class="btn ghost" data-act="dismiss" aria-label="Dismiss the getting started checklist">Dismiss</button></div>
-          <p class="hint" id="firstRunProgress">${count} of ${steps.length} done</p>
+        ? `<div class="first-run-head"><h2 id="firstRunTitle">${msg("firstRun.allSet")}</h2></div>
+          <p>${msg("firstRun.allSetText")}</p>
+          <div class="chips"><button type="button" class="btn primary" data-act="dismiss">${msg("firstRun.close")}</button></div>`
+        : `<div class="first-run-head"><h2 id="firstRunTitle">${msg("firstRun.getStarted")}</h2>
+          <button type="button" class="btn ghost" data-act="dismiss" aria-label="${msg("firstRun.dismissLabel")}">${msg("firstRun.dismiss")}</button></div>
+          <p class="hint" id="firstRunProgress">${msg("firstRun.progress", { count, total: steps.length })}</p>
           <ol class="first-run-steps" aria-describedby="firstRunProgress">${steps.map(stepHTML).join("")}</ol>`);
     },
     // A receipt was saved (src/main.js's saveReceipt): its step is done, and stays done

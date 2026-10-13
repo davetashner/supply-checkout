@@ -1,4 +1,5 @@
 import { int, round2 } from "./format.js";
+import { msg } from "./i18n.js";
 
 // Money in whole cents (ADR 0014). toPrecision first, as in round2, so 100.49999… is 100.5
 const cents = n => Math.round(Number((n * 100).toPrecision(12)));
@@ -13,7 +14,7 @@ export function lines(project) {
 export const isEquipmentLine = l => !!l && l.kind === "equipment";
 // A line's name as the project and its CSV show it: equipment bought for the client says so
 // (ADR 0017, section 2a). It's charged like a supply, with them.
-export const lineLabel = l => `${l.name || "Unnamed item"}${l.purchased === true ? " (bought for this client)" : ""}`;
+export const lineLabel = l => l.purchased === true ? msg("projectMath.bought", { name: l.name || msg("projectMath.unnamed") }) : l.name || msg("projectMath.unnamed");
 // A line's counts as the project shows them (returned never above taken), and its price each in cents
 export function lineCounts(l) {
   const o = int(l.out), r = Math.min(int(l.returned), o);
@@ -33,7 +34,7 @@ export const lineCharge = l => { const { u, p } = lineCounts(l); return cents(u 
 export const lostCharge = l => isEquipmentLine(l) ? cents(Math.max(0, Number(l.lostCharge) || 0)) / 100 : 0;
 export function lostRows(project) {
   return lines(project).filter(l => lostCharge(l) > 0)
-    .map(l => ({ key: l.key, name: `${l.name || "Unnamed item"} (lost or broken)`, code: l.code, used: equipmentCounts(l).lost, charge: lostCharge(l) }));
+    .map(l => ({ key: l.key, name: msg("projectMath.lost", { name: l.name || msg("projectMath.unnamed") }), code: l.code, used: equipmentCounts(l).lost, charge: lostCharge(l) }));
 }
 // Totals add the rounded row charges, so the total always equals the sum of the rows. They count
 // supplies (and lines bought for the client) and charges for equipment lost or broken; equipment
@@ -56,7 +57,7 @@ export function totals(project) {
 // The team's General Use project (ADR 0017, section 4): what's taken for no job, with Quick take. It has
 // no client, so it's shown as "General Use (no job)", and nothing on it is charged to anyone.
 export const isAdhoc = s => !!s && s.kind === "adhoc";
-export const projectTitle = s => isAdhoc(s) ? "General Use (no job)" : s.client || "Untitled";
+export const projectTitle = s => isAdhoc(s) ? msg("projectMath.general") : s.client || msg("projectMath.untitled");
 // What's still out on a line: supplies not back, equipment neither back nor lost. A line bought
 // for the client isn't coming back, so it's never out.
 export const leftOut = l => l.purchased === true ? 0 : isEquipmentLine(l) ? equipmentCounts(l).still : lineCounts(l).u;
