@@ -6,6 +6,7 @@
 // the import can't go on (409 "aborted": items kept changing, the import expired, or a
 // planned key was taken), its message says what to do.
 import { esc, money, brandHTML } from "../format.js";
+import { msg } from "../i18n.js";
 import { openModal, closeModal, toast } from "../dom.js";
 // The template the dialog offers: the eight columns and three made-up example rows. Importing
 // it unchanged passes the preview (backend/test/imports-api.test.ts parses this file).
@@ -15,13 +16,12 @@ import TEMPLATE from "./import-template.csv?raw";
 const MAX_BYTES = 300_000;
 // Rows shown in the preview; the summary counts all of them
 const SHOWN = 100;
-const CHANGE = { code: "barcode", name: "name", brand: "brand", kind: "kind", price: "price", cost: "cost", packSize: "pack size", reorderAt: "reorder level", reorderQty: "usual order", stock: "stock" };
-const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+const CHANGE = { code: "importer.changeCode", name: "importer.changeName", brand: "importer.changeBrand", kind: "importer.changeKind", price: "importer.changePrice", cost: "importer.changeCost", packSize: "importer.changePackSize", reorderAt: "importer.changeReorderAt", reorderQty: "importer.changeReorderQty", stock: "importer.changeStock" };
 
 function actionText(r) {
-  if (r.action === "create") return "New";
-  if (r.action === "unchanged") return "No change";
-  return "Update " + r.changes.map((c) => CHANGE[c]).join(", ");
+  if (r.action === "create") return msg("importer.actionNew");
+  if (r.action === "unchanged") return msg("importer.actionUnchanged");
+  return msg("importer.actionUpdate", { changes: r.changes.map((c) => msg(CHANGE[c])).join(", ") });
 }
 
 function previewHTML(res) {
@@ -29,71 +29,71 @@ function previewHTML(res) {
   let html = "";
   if (res.errorCount) {
     const more = res.errorCount - res.errors.length;
-    html += `<p class="error" role="alert">${plural(res.errorCount, "row needs", "rows need")} fixing, so nothing can be imported yet. Fix ${res.errorCount === 1 ? "it" : "them"} in the file and choose it again.</p>
-      <ul class="import-errors">${res.errors.map((e) => `<li>Line ${e.line}${e.column ? ` (${esc(e.column)})` : ""}: ${esc(e.message)}</li>`).join("")}</ul>
-      ${more ? `<p class="hint">…and ${plural(more, "more problem")}.</p>` : ""}`;
+    html += `<p class="error" role="alert">${msg("importer.errorRows", { count: res.errorCount })}</p>
+      <ul class="import-errors">${res.errors.map((e) => `<li>${msg("importer.errorLine", { line: e.line, column: e.column ? ` (${esc(e.column)})` : "", message: esc(e.message) })}</li>`).join("")}</ul>
+      ${more ? `<p class="hint">${msg("importer.moreProblems", { count: more })}</p>` : ""}`;
   } else {
-    html += `<p><strong>${plural(s.rows, "row")}</strong>: ${s.created} new, ${s.updated} to update, ${s.unchanged} unchanged.</p>`;
+    html += `<p>${msg("importer.summary", { count: s.rows, created: s.created, updated: s.updated, unchanged: s.unchanged })}</p>`;
   }
-  if (res.ignoredColumns.length) html += `<p class="hint">Not imported: ${res.ignoredColumns.map((c) => `“${esc(c)}”`).join(", ")}.</p>`;
+  if (res.ignoredColumns.length) html += `<p class="hint">${msg("importer.notImported", { columns: res.ignoredColumns.map((c) => `“${esc(c)}”`).join(", ") })}</p>`;
   if (!res.errorCount) {
     // Company equipment has no price (ADR 0017)
-    const rows = res.rows.slice(0, SHOWN).map((r) => `<tr><td>${esc(r.name)}${brandHTML(r)}${r.barcode ? `<span class="code">${esc(r.barcode)}</span>` : ""}</td><td>${r.kind === "equipment" ? "Equipment" : money(r.price)}</td><td>${r.stock ?? "—"}</td><td>${r.reorderAt ?? "—"}</td><td>${esc(actionText(r))}</td></tr>`);
+    const rows = res.rows.slice(0, SHOWN).map((r) => `<tr><td>${esc(r.name)}${brandHTML(r)}${r.barcode ? `<span class="code">${esc(r.barcode)}</span>` : ""}</td><td>${r.kind === "equipment" ? msg("importer.equipment") : money(r.price)}</td><td>${r.stock ?? "—"}</td><td>${r.reorderAt ?? "—"}</td><td>${esc(actionText(r))}</td></tr>`);
     // Focusable, so the preview can be scrolled from the keyboard when it's taller or wider than the dialog
-    html += `<div class="table-wrap import-table" tabindex="0" role="region" aria-label="Preview of the import"><table><thead><tr><th>Item</th><th>Price</th><th>Stock</th><th>Reorder at</th><th>Change</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
-    if (res.rows.length > SHOWN) html += `<p class="hint">…and ${plural(res.rows.length - SHOWN, "more row")}.</p>`;
+    html += `<div class="table-wrap import-table" tabindex="0" role="region" aria-label="${msg("importer.previewLabel")}"><table><thead><tr><th>${msg("importer.colItem")}</th><th>${msg("importer.colPrice")}</th><th>${msg("importer.colStock")}</th><th>${msg("importer.colReorderAt")}</th><th>${msg("importer.colChange")}</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+    if (res.rows.length > SHOWN) html += `<p class="hint">${msg("importer.moreRows", { count: res.rows.length - SHOWN })}</p>`;
   }
   return html;
 }
 
-const doneText = (s) => s.created + s.updated ? `Imported: ${s.created} new, ${s.updated} updated` : "Everything in the file was already in inventory";
+const doneText = (s) => s.created + s.updated ? msg("importer.doneChanged", { created: s.created, updated: s.updated }) : msg("importer.doneNothing");
 
 // What each column means (ADR 0014)
 const GUIDE = [
-  ["name", "Required. The item's name."],
-  ["brand", "Optional. Who makes it, shown with the item's name (for example Glad or 3M). Blank keeps an item's brand."],
-  ["price", "Required for supplies. What a client is charged for one each, before tax. Blank for equipment."],
-  ["barcode", "Matches items already in inventory. Leave blank if the item has none."],
-  ["kind", "supply (used up and charged, the default when blank) or equipment (company equipment that goes to jobs and comes back, not charged)."],
-  ["cost", "What you paid for one each, before tax. It isn't shown on client projects. For equipment, what one is worth."],
-  ["stock", "How many eaches you have, as a whole number (not cases)."],
-  ["pack_size", "How many eaches come in one case or pack you buy. Blank means 1."],
-  ["reorder_at", "Optional. Flag the item as running low when storage is down to this many eaches. A blank cell keeps the level; clear it in the item editor."],
-  ["reorder_qty", "Optional. How many eaches you usually order. Blank keeps an item's."],
+  ["name", "importer.guideName"],
+  ["brand", "importer.guideBrand"],
+  ["price", "importer.guidePrice"],
+  ["barcode", "importer.guideBarcode"],
+  ["kind", "importer.guideKind"],
+  ["cost", "importer.guideCost"],
+  ["stock", "importer.guideStock"],
+  ["pack_size", "importer.guidePackSize"],
+  ["reorder_at", "importer.guideReorderAt"],
+  ["reorder_qty", "importer.guideReorderQty"],
 ];
 
 // save: the runtime's download (downloads.save in account.js)
 export function openImport(api, teamId, save) {
   const path = `/teams/${encodeURIComponent(teamId)}/imports`;
   let csv = "", importId = "";
-  openModal(`<h2>Import inventory</h2>
-    <p class="hint">Choose a CSV file whose first row names its columns: <strong>name</strong> and <strong>price</strong>, and if you have them brand, barcode, kind, cost, stock, pack_size, reorder_at and reorder_qty. Items already in inventory are matched by barcode, or by name, and updated. Importing a file again doesn't add anything twice.</p>
-    <p><button type="button" class="btn" id="importTemplate">Download a template</button></p>
-    <details class="import-guide"><summary>What goes in each column</summary><dl>${GUIDE.map(([c, d]) => `<dt>${c}</dt><dd>${d}</dd>`).join("")}</dl><p class="hint">An "each" is the smallest unit you take to a job: a bottle, a roll, a box of bags. The template's two example rows are made up; replace them with your items.</p></details>
-    <div class="field"><label for="importFile">CSV file</label><input type="file" id="importFile" accept=".csv,text/csv"></div>
+  openModal(`<h2>${msg("importer.title")}</h2>
+    <p class="hint">${msg("importer.intro")}</p>
+    <p><button type="button" class="btn" id="importTemplate">${msg("importer.template")}</button></p>
+    <details class="import-guide"><summary>${msg("importer.guideSummary")}</summary><dl>${GUIDE.map(([c, key]) => `<dt>${c}</dt><dd>${msg(key)}</dd>`).join("")}</dl><p class="hint">${msg("importer.guideNote")}</p></details>
+    <div class="field"><label for="importFile">${msg("importer.fileLabel")}</label><input type="file" id="importFile" accept=".csv,text/csv"></div>
     <p class="error" role="alert" id="importFail" hidden></p>
     <div class="import-result" id="importResult" aria-live="polite"></div>
-    <div class="modal-actions"><button type="button" class="btn" id="importCancel">Cancel</button><button type="button" class="btn primary" id="importGo" hidden>Import</button></div>`, (m) => {
+    <div class="modal-actions"><button type="button" class="btn" id="importCancel">${msg("importer.cancel")}</button><button type="button" class="btn primary" id="importGo" hidden>${msg("importer.import")}</button></div>`, (m) => {
     const out = m.querySelector("#importResult"), go = m.querySelector("#importGo"), fail = m.querySelector("#importFail");
-    const show = (html, ready) => { out.innerHTML = html; fail.hidden = true; go.hidden = !ready; go.disabled = false; go.textContent = "Import"; };
+    const show = (html, ready) => { out.innerHTML = html; fail.hidden = true; go.hidden = !ready; go.disabled = false; go.textContent = msg("importer.import"); };
     const failed = (text) => `<p class="error" role="alert">${esc(text)}</p>`;
     m.querySelector("#importCancel").addEventListener("click", closeModal);
     m.querySelector("#importTemplate").addEventListener("click", () => save({ filename: "inventory-template.csv", data: TEMPLATE }));
 
     async function preview() {
-      show(`<p class="muted" role="status">Checking the file…</p>`, false);
+      show(`<p class="muted" role="status">${msg("importer.checking")}</p>`, false);
       try {
         const res = await api("POST", path, { dryRun: true, csv });
         show(previewHTML(res), !res.errorCount);
       } catch (e) {
-        show(failed(e.code === "bad_request" ? e.message : e.code === "permission_denied" ? "Only the team's owners can import inventory." : "Couldn't check the file. Check your connection and choose it again."), false);
+        show(failed(e.code === "bad_request" ? e.message : e.code === "permission_denied" ? msg("importer.ownersOnly") : msg("importer.checkFailed")), false);
       }
     }
 
     m.querySelector("#importFile").addEventListener("change", async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      if (file.size > MAX_BYTES) { show(failed("This file is larger than 300 KB. Split it into smaller files and import each one."), false); return; }
+      if (file.size > MAX_BYTES) { show(failed(msg("importer.tooBig")), false); return; }
       csv = await file.text();
       // One ID per file: every retry of this import sends it again
       importId = crypto.randomUUID();
@@ -102,7 +102,7 @@ export function openImport(api, teamId, save) {
 
     go.addEventListener("click", async () => {
       go.disabled = true;
-      go.textContent = "Importing…";
+      go.textContent = msg("importer.importing");
       try {
         const res = await api("POST", path, { importId, csv });
         closeModal();
@@ -111,8 +111,8 @@ export function openImport(api, teamId, save) {
         // Inventory changed since the preview, so a row now clashes: show what's wrong
         if (e.code === "bad_request") { preview(); return; }
         go.disabled = false;
-        go.textContent = "Try again";
-        fail.textContent = e.code === "aborted" ? e.message : "The import didn't finish. Try again to finish it; nothing will be added twice.";
+        go.textContent = msg("importer.tryAgain");
+        fail.textContent = e.code === "aborted" ? e.message : msg("importer.unfinished");
         fail.hidden = false;
       }
     });
