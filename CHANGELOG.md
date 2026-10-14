@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.16.0](https://github.com/davetashner/supply-checkout/compare/v1.15.0...v1.16.0) (2026-10-14)
+
+
+### Features
+
+* a language switch and a draft Spanish catalog, not offered to anyone yet ([#784](https://github.com/davetashner/supply-checkout/issues/784)) ([46fe4b9](https://github.com/davetashner/supply-checkout/commit/46fe4b96d0b1f141fa6f053d11d9b817375259f2))
+* a message catalog and msg() for the app's text, with the first strings moved ([#780](https://github.com/davetashner/supply-checkout/issues/780)) ([05df7d7](https://github.com/davetashner/supply-checkout/commit/05df7d79923ce3650b5436874ba29f6c5fcb1d13))
+* keep a purged team's invoices 7 years in a locked bucket before its Stripe customer is deleted ([#779](https://github.com/davetashner/supply-checkout/issues/779)) ([2cc1e45](https://github.com/davetashner/supply-checkout/commit/2cc1e45a5f6cfdcd57f935bed590fffd6995e8b0))
+* offer Spanish to everyone ([#785](https://github.com/davetashner/supply-checkout/issues/785)) ([95d9a43](https://github.com/davetashner/supply-checkout/commit/95d9a433b658237af2fd2218fe1f382b5abd9fa9))
+* record which campaign link each sign-up came from, with no third-party pixels ([#765](https://github.com/davetashner/supply-checkout/issues/765)) ([51172d1](https://github.com/davetashner/supply-checkout/commit/51172d1f3a3b0fb5b8f267e78e4c2c51fc82c28e))
+* serve the app and site fonts from our own origin, not Google Fonts ([#778](https://github.com/davetashner/supply-checkout/issues/778)) ([8ca4f06](https://github.com/davetashner/supply-checkout/commit/8ca4f0619ac5000406ed1abefbd0806e8fef1621))
+* the account, sign-in and dialog screens' text moves into the message catalog ([#782](https://github.com/davetashner/supply-checkout/issues/782)) ([578ca42](https://github.com/davetashner/supply-checkout/commit/578ca42bafc9b3c4e1712c3381504f3da370de56))
+* the language you choose follows you to every device ([#787](https://github.com/davetashner/supply-checkout/issues/787)) ([31ee9c2](https://github.com/davetashner/supply-checkout/commit/31ee9c28583b0ebe7ef32ef6434b7e4fccd301db))
+* the privacy policy and the subprocessor list on supplycheckout.com ([#772](https://github.com/davetashner/supply-checkout/issues/772)) ([fa43378](https://github.com/davetashner/supply-checkout/commit/fa43378992b9fe94f8b7b149a3206cae680ab681))
+* the project, inventory, checkout and receipt screens' text moves into the message catalog ([#783](https://github.com/davetashner/supply-checkout/issues/783)) ([9ea2393](https://github.com/davetashner/supply-checkout/commit/9ea239381b380ba59c071781440ca076de457161))
+* the sign-in page speaks the language the app does ([#789](https://github.com/davetashner/supply-checkout/issues/789)) ([50f39b9](https://github.com/davetashner/supply-checkout/commit/50f39b9fb45a53a991fb8979e4cf687682786fc7))
+* the sign-in screen links to the terms, acceptable use policy and privacy policy ([#776](https://github.com/davetashner/supply-checkout/issues/776)) ([0a7edea](https://github.com/davetashner/supply-checkout/commit/0a7edea2e7b0e6acb338bf9efb033b25831d67fb))
+* the terms of service and acceptable use policy on supplycheckout.com ([#775](https://github.com/davetashner/supply-checkout/issues/775)) ([21a45dc](https://github.com/davetashner/supply-checkout/commit/21a45dc3e0402fceeaabd02c9ff6f51cf46c5183))
+
+
+### Bug Fixes
+
+* **observability:** API slow alarms only after more than 10 minutes of slow p95 ([#767](https://github.com/davetashner/supply-checkout/issues/767)) ([cc2b508](https://github.com/davetashner/supply-checkout/commit/cc2b5087e2bb2f0ad792835b63b8bca504b86da5))
+
 ## [1.15.0](https://github.com/davetashner/supply-checkout/compare/v1.14.0...v1.15.0) (2026-10-11)
 
 
