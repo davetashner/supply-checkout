@@ -95,6 +95,7 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
       state: saved.state,
       code_challenge: createHash("sha256").update(saved.verifier).digest("base64url"),
       code_challenge_method: "S256",
+      lang: "en",
     });
     expect(saved.verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
     await link.click();
@@ -156,6 +157,7 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
         state: saved.state,
         code_challenge: createHash("sha256").update(saved.verifier).digest("base64url"),
         code_challenge_method: "S256",
+        lang: "en",
         identity_provider: provider,
       });
       expect(saved.relinked).toBe(true);

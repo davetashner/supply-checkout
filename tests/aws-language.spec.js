@@ -45,3 +45,19 @@ test("on ?lang=es, switching saves English and loads the page again without ?lan
   expect(new URL(page.url()).search).toBe("");
   expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.language"))).toBe("en");
 });
+
+test.describe("the sign-in link", () => {
+  const link = async (page, path) => {
+    await openAws(page, new FakeBackend({ signedIn: false }), { path });
+    const href = await page.locator("#account a[href*='oauth2/authorize']").first().getAttribute("href");
+    return new URL(href).searchParams.get("lang");
+  };
+
+  test("asks Managed Login for the language the app speaks", async ({ page }) => {
+    expect(await link(page, "/?lang=es")).toBe("es");
+  });
+
+  test("names none for the pseudo-language, which Managed Login doesn't have", async ({ page }) => {
+    expect(await link(page, "/?lang=qps")).toBeNull();
+  });
+});
