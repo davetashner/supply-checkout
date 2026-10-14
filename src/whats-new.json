@@ -9,6 +9,13 @@
           "prs": [
             785
           ]
+        },
+        {
+          "title": "Sign-in in your language",
+          "text": "The sign-in page now speaks the language you use in the app, so Spanish shows there too.",
+          "prs": [
+            789
+          ]
         }
       ],
       "skip": {
