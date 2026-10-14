@@ -2,7 +2,7 @@
 // docs/infrastructure.md): Managed Login with the authorization code flow and PKCE. The
 // API redeems the code at /auth/session and keeps the refresh token in an HttpOnly cookie;
 // the access and ID tokens live only in this module's memory, never in storage.
-import { msg } from "../i18n.js";
+import { currentLanguage, msg } from "../i18n.js";
 import { request, json } from "./http.js";
 
 const PKCE_KEY = "supplyCheckout.signIn";
@@ -194,6 +194,8 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged,
       const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
       tab.set(PKCE_KEY, JSON.stringify(provider ? { verifier, state, relinked: true } : { verifier, state }));
       const q = new URLSearchParams({ response_type: "code", client_id: config.clientId, redirect_uri: redirectUri, scope: SCOPES, state, code_challenge: challenge, code_challenge_method: "S256" });
+      // Managed Login's own text in the language the app speaks (it takes the codes the app does, or none)
+      if (currentLanguage() !== "qps") q.set("lang", currentLanguage());
       if (provider) q.set("identity_provider", provider);
       return `${config.authUrl}/oauth2/authorize?${q}`;
     },
