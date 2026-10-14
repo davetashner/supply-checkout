@@ -26,9 +26,10 @@ let products = Object.create(null), projects = [], people = {};
 let olderSince = "", olderLoad = null, olderExist = false;
 // kind: the Inventory's Supplies / Equipment filter ("all" shows both); equip: with Equipment
 // picked, what's in storage ("in") or still out on open projects ("out")
+// iq, sort, desc: the Inventory's search, the field it's sorted by and whether that's reversed
 // q: the project list's search; year: its year filter ("" for all years); years: the year groups
 // someone opened (true) or closed (false) on the project list, for the session
-const ui = { tab: "projects", projectId: null, mode: "out", filter: "open", receipt: false, kind: "all", equip: "in", q: "", year: "", years: {} };
+const ui = { tab: "projects", projectId: null, mode: "out", filter: "open", receipt: false, kind: "all", equip: "in", q: "", iq: "", sort: "name", desc: false, year: "", years: {} };
 // The web build's first-run checklist for an owner's new team (src/first-run.js), or null
 let firstRun = null;
 
@@ -230,6 +231,7 @@ $("#main").addEventListener("click", e => {
   else if (t.dataset.cancelOrder) cancelOrder(t.dataset.cancelOrder);
   else if (t.dataset.filter) { ui.filter = t.dataset.filter; draw(); }
   else if (t.dataset.year) { const b = t.getAttribute("aria-expanded") === "true"; ui.years[t.dataset.year] = !b; draw(); }
+  else if (t.id === "itemDir") { ui.desc = !ui.desc; draw(); }
   else if (t.dataset.kind) { ui.kind = t.dataset.kind; draw(); }
   else if (t.dataset.equip) { ui.equip = t.dataset.equip; draw(); }
   else if (t.dataset.open) { ui.projectId = t.dataset.open; draw(); window.scrollTo(0, 0); }
@@ -351,9 +353,13 @@ function drawList() {
   const box = $("#projectSearch");
   if (box.value !== ui.q) box.value = ui.q;
 }
-$("#main").addEventListener("input", e => { if (e.target.id === "projectSearch") { ui.q = e.target.value; if (ui.q.trim()) loadOlder(); draw(); } });
+$("#main").addEventListener("input", e => {
+  if (e.target.id === "projectSearch") { ui.q = e.target.value; if (ui.q.trim()) loadOlder(); draw(); }
+  else if (e.target.id === "itemSearch") { ui.iq = e.target.value; draw(); }
+});
 // "older" is Before <year>: it loads the older projects, which adds their years to pick from
 $("#main").addEventListener("change", e => {
+  if (e.target.id === "itemSort") { ui.sort = e.target.value; draw(); return; }
   if (e.target.id !== "yearFilter") return;
   const v = e.target.value, older = v === "older";
   ui.year = older ? "" : v;
@@ -568,21 +574,59 @@ function drawPrices() {
   const levels = ui.kind === "low" || all.some(p => reorderLevel(p) !== null);
   const kinds = `<div class="chips" role="group" aria-label="${msg("inventory.showLabel")}">${KINDS.map(([k, label]) => chip("kind", k, msg(label), ui.kind === k)).join("")}${levels ? chip("kind", "low", lowLabel(all), ui.kind === "low") : ""}</div>`;
   if (ui.kind === "low") { drawLow(all, kinds); return; }
-  const list = ui.kind === "all" ? all : all.filter(p => isEquipment(p) === (ui.kind === "equipment"));
+  const ofKind = ui.kind === "all" ? all : all.filter(p => isEquipment(p) === (ui.kind === "equipment"));
   const out = ui.kind === "equipment" && ui.equip === "out";
+  const terms = ui.iq.toLowerCase().split(/\s+/).filter(Boolean);
+  const list = sortItems(terms.length ? ofKind.filter(p => matchesItem(p, terms)) : ofKind, ui.sort, ui.desc);
+  const tools = !out && all.length ? `<div class="bar item-tools">
+      <input type="search" id="itemSearch" aria-label="${msg("inventory.searchLabel")}" placeholder="${msg("inventory.searchPlaceholder")}" autocomplete="off">
+      <select id="itemSort" aria-label="${msg("inventory.sortLabel")}">${ITEM_SORTS.map(([k, label]) => `<option value="${k}" ${ui.sort === k ? "selected" : ""}>${msg(label)}</option>`).join("")}</select>
+      <button type="button" class="btn" id="itemDir" aria-label="${msg(ui.desc ? "inventory.sortDescLabel" : "inventory.sortAscLabel")}">${msg(ui.desc ? "inventory.sortDesc" : "inventory.sortAsc")}</button>
+    </div>` : "";
   const where = ui.kind === "equipment" ? `<div class="chips" role="group" aria-label="${msg("inventory.equipmentLabel")}">${chip("equip", "in", msg("inventory.inStorage"), !out)}${chip("equip", "out", msg("inventory.outOnJobs"), out)}</div>` : "";
-  const n = list.length;
   morph($("#main"), `
     <div class="bar">
-      <p class="muted" style="margin:0">${msg("inventory.intro", { count: n })}</p>
+      <p class="muted" style="margin:0">${msg("inventory.intro", { count: ofKind.length })}</p>
       ${canWrite ? `<button type="button" class="btn primary" id="addProduct">${msg("inventory.addItem")}</button>` : ""}
     </div>
     <div class="bar">${kinds}${where}</div>
+    ${tools}
     ${out ? equipmentOutHTML() : list.length ? `<div class="table-wrap"><table class="prices">
       <thead><tr><th>${msg("inventory.colItem")}</th><th>${msg("inventory.colInStorage")}</th><th>${msg("inventory.colPriceEach")}</th><th>${msg(ui.kind === "equipment" ? "inventory.colValueEach" : "inventory.colCostEach")}</th><th>${msg("inventory.colValue")}</th></tr></thead>
       <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || msg("inventory.unnamed"))}${lowBadge(p)}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span>${isEquipment(p) ? `<span class="kind">${msg("inventory.companyEquipment")}</span>` : ""}</td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td>${isEquipment(p) ? `<td class="muted">${msg("inventory.notCharged")}</td>` : `<td>${money(p.price)}</td>`}<td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
       <tfoot><tr><td>${msg("inventory.totalInStorage")}</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td></td><td>${money(list.reduce((a, p) => a + storageCents(p), 0) / 100)}</td></tr></tfoot>
-    </table></div>` : `<div class="empty">${!connected ? msg("inventory.loading") : !all.length ? msg("inventory.none") : ui.kind === "equipment" ? msg("inventory.noEquipment") : msg("inventory.noSupplies")}</div>`}`);
+    </table></div>` : `<div class="empty">${!connected ? msg("inventory.loading") : !all.length ? msg("inventory.none") : terms.length ? msg("inventory.noMatch", { query: esc(ui.iq.trim()) }) : ui.kind === "equipment" ? msg("inventory.noEquipment") : msg("inventory.noSupplies")}</div>`}`);
+  // Not in the HTML, so a redraw while someone types leaves the field (and its caret) alone;
+  // set here when the list is drawn afresh
+  const box = $("#itemSearch");
+  if (box && box.value !== ui.iq) box.value = ui.iq;
+}
+// Inventory search and sort (supply-checkout-7o8i). Every word typed must be in the item's name,
+// brand or barcode. Sort covers each field an item holds; an item without a value for the
+// field goes last, whichever way it's sorted.
+const ITEM_SORTS = [
+  ["name", "inventory.colItem", p => p.name],
+  ["brand", "inventory.sortBrand", brandOf],
+  ["code", "inventory.sortBarcode", p => p.code],
+  ["kind", "inventory.sortType", p => (isEquipment(p) ? "equipment" : "supply")],
+  ["stock", "inventory.colInStorage", p => (hasStock(p) ? p.stock : null)],
+  ["price", "inventory.colPriceEach", p => (isEquipment(p) ? null : Number(p.price) || 0)],
+  ["cost", "inventory.sortCost", p => (hasCost(p) ? p.cost : null)],
+  ["value", "inventory.colValue", p => (hasStock(p) ? storageCents(p) : null)],
+  ["pack", "inventory.sortPack", p => (Number.isInteger(p.packSize) ? p.packSize : null)],
+  ["reorderAt", "inventory.sortReorderAt", reorderLevel],
+  ["reorderQty", "inventory.sortReorderQty", p => (Number.isInteger(p.reorderQty) ? p.reorderQty : null)],
+];
+const matchesItem = (p, terms) => terms.every(t => [p.name, brandOf(p), p.code || ""].some(f => String(f).toLowerCase().includes(t)));
+function sortItems(list, key, desc) {
+  const get = ITEM_SORTS.find(([k]) => k === key)[2], sign = desc ? -1 : 1;
+  const blank = v => v === null || v === undefined || v === "";
+  return [...list].sort((a, b) => {
+    const x = get(a), y = get(b);
+    if (blank(x) || blank(y)) return blank(x) - blank(y);
+    const d = typeof x === "number" ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: "base" });
+    return d * sign;
+  });
 }
 // Low stock (supply-checkout-005.8, src/reorder.js). The count is what still needs someone to
 // look at it: low, and not acknowledged.
