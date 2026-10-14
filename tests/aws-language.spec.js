@@ -1,6 +1,6 @@
-// The language on Account in the web build (supply-checkout-3ilj): offered only where there's a choice (English
-// alone has none), saved on the device, and the page loads again in the language picked. Against the fake
-// backend in tests/fake-aws.js.
+// The language on Account in the web build (supply-checkout-3ilj): English and Spanish, each in its own name,
+// saved on the device, and the page loads again in the language picked. Against the fake backend in
+// tests/fake-aws.js.
 import { test, expect } from "./helpers.js";
 import { FakeBackend, openAws, connected } from "./fake-aws.js";
 
@@ -14,14 +14,24 @@ const open = async (page, path = "/") => {
   return backend;
 };
 
-test("English alone has nothing to choose, so Account has no language", async ({ page }) => {
+test("Account lists English and Spanish, in their own names, with English chosen", async ({ page }) => {
   await open(page);
   await page.locator("#accountOpen").click();
   await expect(dialog(page).getByRole("heading", { name: "Your account", exact: true })).toBeVisible();
-  await expect(dialog(page).locator("#languageSelect")).toHaveCount(0);
+  const select = dialog(page).getByLabel("Language");
+  await expect(select).toHaveValue("en");
+  await expect(select.locator("option")).toHaveText(["English", "Español"]);
 });
 
-test("on ?lang=es, Account lists both languages, in their own names, and switching saves English and loads the page again without ?lang", async ({ page }) => {
+test("Account's switch saves Spanish and loads the page again", async ({ page }) => {
+  const backend = await open(page);
+  await page.locator("#accountOpen").click();
+  await dialog(page).getByLabel("Language").selectOption("es");
+  await expect.poll(() => backend.pageLoads).toBe(2);
+  expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.language"))).toBe("es");
+});
+
+test("on ?lang=es, switching saves English and loads the page again without ?lang", async ({ page }) => {
   const backend = await open(page, "/?lang=es");
   await page.locator("#accountOpen").click();
   await expect(dialog(page).getByRole("heading", { name: "Su cuenta", exact: true })).toBeVisible();
