@@ -32,6 +32,7 @@ import { openChangePassword } from "./password.js";
 import { openReset } from "./reset-password.js";
 import { openInvoices } from "./invoices.js";
 import { showWhatsNew } from "./whats-new.js";
+import { syncLanguage } from "./language.js";
 import { openReport } from "./report.js";
 import { helpLink, wireHelp } from "./help.js";
 import { legalNotice } from "./legal.js";
@@ -708,6 +709,8 @@ export async function start(config) {
     let bar = teamBar(me, team, fr, name);
     // Drawn now, as the team opens, so it never moves anything under a finger later
     hideWhatsNew = showWhatsNew(session.api, me.user.preferences, bar);
+    // The language they chose on another device, or this one's chosen language for the server to keep
+    syncLanguage(session.api, me.user.preferences);
     // /me was just loaded
     meAt = Date.now();
     let viewOnly = viewOnlyFor(team);

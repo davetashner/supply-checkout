@@ -18,7 +18,8 @@ export default {
 
   "deleteAccount.languageHeading": "Idioma",
   "deleteAccount.languageLabel": "Idioma",
-  "deleteAccount.languageHint": "Se guarda en este dispositivo.",
+  "deleteAccount.languageHint": "Se guarda en su cuenta, así que lo usa cada dispositivo en el que inicie sesión.",
+  "deleteAccount.languageFailed": "No se pudo guardar su idioma. Intente de nuevo.",
   "deleteAccount.title": "Su cuenta",
   "deleteAccount.signedInAs": "Sesión iniciada como <strong>{email}</strong>.",
   "deleteAccount.you": "usted",

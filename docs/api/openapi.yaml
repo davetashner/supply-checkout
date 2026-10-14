@@ -1333,12 +1333,14 @@ paths:
       description: |
         The caller's own preferences, kept on the server so they follow them
         to every device (GET /me returns them as `user.preferences`). Send
-        either field or both; anything else is refused. `whatsNew` turns the
+        any of the fields; anything else is refused. `whatsNew` turns the
         What's New banner on or off. `whatsNewLastShown` is the caller's local
         date the banner was last shown, which the app sends when it shows it,
         so it's shown at most once a day: it must be a real date within two
         days of the server's UTC date (local dates run from a day behind to a
-        day ahead). `GET /me` returns the defaults if they can't be read, so
+        day ahead). `language` is `en` or `es`, the language the caller
+        chose: the app sends it when they pick one, and starts in it on any
+        device (it can't be cleared, only changed). `GET /me` returns the defaults if they can't be read, so
         reading them never fails it.
       requestBody:
         required: true
@@ -1351,6 +1353,7 @@ paths:
               properties:
                 whatsNew: { type: boolean }
                 whatsNewLastShown: { type: string, format: date }
+                language: { type: string, enum: [en, es] }
       responses:
         "200":
           description: The caller's preferences after the change.
@@ -3637,10 +3640,11 @@ components:
     Preferences:
       type: object
       description: The caller's own app preferences, the defaults until they change one.
-      required: [whatsNew, whatsNewLastShown]
+      required: [whatsNew, whatsNewLastShown, language]
       properties:
         whatsNew: { type: boolean, description: "Show the What's New banner. On by default." }
         whatsNewLastShown: { type: [string, "null"], format: date, description: "The caller's local date (YYYY-MM-DD) the banner was last shown, or null if never." }
+        language: { type: [string, "null"], enum: [en, es, null], description: "The language the caller chose, or null if they never chose one (the app then uses the device's)." }
     Invite:
       type: object
       description: A pending invite, to show. Accepting it needs the token from the invite email.

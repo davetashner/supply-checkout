@@ -7,7 +7,8 @@
 // otherwise removes them from every team, closes any team they're alone in, and deletes
 // their sign-in. Web build only, like the rest of src/aws/.
 import { esc } from "../format.js";
-import { chooseDeviceLanguage, currentLanguage, languageChoices, msg } from "../i18n.js";
+import { currentLanguage, languageChoices, msg } from "../i18n.js";
+import { saveLanguage } from "./language.js";
 import { openModal, closeModal } from "../dom.js";
 import { whatsNewSetting, wireWhatsNewSetting } from "./whats-new.js";
 import { photoSection, wirePhoto } from "./profile-photo.js";
@@ -27,7 +28,8 @@ function languageSection() {
   return `<h3>${msg("deleteAccount.languageHeading")}</h3>
     <div class="field"><label for="languageSelect">${msg("deleteAccount.languageLabel")}</label>
     <select id="languageSelect">${choices.map(([code, name]) => `<option value="${code}"${code === currentLanguage() ? " selected" : ""}>${name}</option>`).join("")}</select>
-    <p class="hint">${msg("deleteAccount.languageHint")}</p></div>`;
+    <p class="hint">${msg("deleteAccount.languageHint")}</p>
+    <p class="error" role="alert" id="languageFail" hidden>${msg("deleteAccount.languageFailed")}</p></div>`;
 }
 
 // Two-step sign-in as /me says it (`mfa`), with a button to set it up: owners need it for
@@ -87,7 +89,13 @@ export function openDeleteAccount(api, email, onDeleted, twoStep, whatsNew, phot
     wireName(m, api, name);
     // Every screen is made again in the new language, so the page loads again
     const language = m.querySelector("#languageSelect");
-    if (language) language.addEventListener("change", async () => { await chooseDeviceLanguage(language.value); location.reload(); });
+    if (language) language.addEventListener("change", async () => {
+      const failed = m.querySelector("#languageFail");
+      failed.hidden = true;
+      if (await saveLanguage(api, language.value)) return location.reload();
+      language.value = currentLanguage();
+      failed.hidden = false;
+    });
     if (photo) wirePhoto(m, api, photo);
     input.addEventListener("input", () => { button.disabled = !ready(); });
     m.querySelector("#deleteForm").addEventListener("submit", async (e) => {

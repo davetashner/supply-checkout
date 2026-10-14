@@ -20,7 +20,7 @@ import en from "./messages/en.js";
 /** Every language with a catalog, and the locale its dates, numbers and money use. */
 const LOCALES = { en: "en-US", es: "es-US", qps: "en-US" };
 /** The languages the browser's own language may pick. */
-const OFFERED = ["en", "es"];
+export const OFFERED = ["en", "es"];
 export const STORAGE_KEY = "supplyCheckout.language";
 
 let language = "en";
@@ -58,11 +58,11 @@ export async function setLanguage(lang) {
 }
 
 // Storage can throw (blocked site data, some sandboxed frames)
-const read = () => { try { return localStorage.getItem(STORAGE_KEY); } catch { return null; } };
+export const savedLanguage = () => { try { return localStorage.getItem(STORAGE_KEY); } catch { return null; } };
 const write = (lang) => { try { localStorage.setItem(STORAGE_KEY, lang); } catch { /* the choice lasts for this page only */ } };
 
 /** The language to start in, from the address, the device's choice and the browser's language. */
-export function chooseLanguage(search = location.search, saved = read(), browser = navigator.languages) {
+export function chooseLanguage(search = location.search, saved = savedLanguage(), browser = navigator.languages) {
   const asked = new URLSearchParams(search).get("lang");
   if (asked && asked in LOCALES) { write(asked); return asked; }
   if (saved && saved in LOCALES) return saved;

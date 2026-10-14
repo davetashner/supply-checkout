@@ -288,8 +288,8 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       db = table.db;
       const userId = newUser();
       const at = new Date("2026-10-08T14:00:00.000Z");
-      expect(await getPreferences(db, userId)).toEqual({ whatsNew: true, whatsNewLastShown: null });
-      expect(await setPreferences(db, userId, { whatsNew: false }, at)).toEqual({ whatsNew: false, whatsNewLastShown: null });
+      expect(await getPreferences(db, userId)).toEqual({ whatsNew: true, whatsNewLastShown: null, language: null });
+      expect(await setPreferences(db, userId, { whatsNew: false }, at)).toEqual({ whatsNew: false, whatsNewLastShown: null, language: null });
       expect(await setPreferences(db, userId, { whatsNewLastShown: "2026-10-09" }, at)).toEqual({ whatsNew: false, whatsNewLastShown: "2026-10-09" });
       expect(await getPreferences(db, userId)).toEqual({ whatsNew: false, whatsNewLastShown: "2026-10-09" });
       expect(await rawItem(db, `USER#${userId}`, "PREFERENCES")).toEqual({ PK: `USER#${userId}`, SK: "PREFERENCES", type: "preferences", whatsNew: false, whatsNewLastShown: "2026-10-09", updatedAt: at.toISOString() });
