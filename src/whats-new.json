@@ -24,6 +24,13 @@
           "prs": [
             787
           ]
+        },
+        {
+          "title": "Search and sort your inventory",
+          "text": "Search Inventory by item, brand or barcode, and sort it by any detail you keep on an item, such as stock, price, pack size or reorder level.",
+          "prs": [
+            791
+          ]
         }
       ],
       "skip": {
