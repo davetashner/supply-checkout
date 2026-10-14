@@ -808,6 +808,11 @@ test.describe("first sign-in and teams", () => {
     await expect(pick.locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
     expect((await lastSocket(page)).sent[1].channel).toBe("/users/u-pat");
     await expectAccessible(page);
+    // The chevron is drawn inset, not hard against the field's rounded edge
+    const style = await pick.evaluate((el) => { const c = getComputedStyle(el); return { appearance: c.appearance, pad: parseFloat(c.paddingRight), image: c.backgroundImage }; });
+    expect(style.appearance).toBe("none");
+    expect(style.pad).toBeGreaterThanOrEqual(30);
+    expect(style.image).toContain("linear-gradient");
     // Switching remembers the team and loads the page again
     await pick.selectOption("t1");
     await expect.poll(() => backend.pageLoads).toBe(2);
