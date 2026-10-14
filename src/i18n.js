@@ -31,7 +31,7 @@ let plurals = new Intl.PluralRules(LOCALES.en);
 // string marked ⟦ ⟧ and a third longer, so a string still in a template shows unmarked, and one too long for
 // its place overflows. {values} and HTML tags are kept as they are.
 const pseudo = (text) => {
-  const letters = text.replace(/\{\w+\}|<[^>]*>/g, "").length;
+  const letters = text.split(/\{\w+\}|<[^>]*>/).join("").length;
   return `⟦${text}${"·".repeat(Math.ceil(letters / 3))}⟧`;
 };
 const pseudoCatalog = () => Object.fromEntries(Object.entries(en).map(([key, entry]) => [key, typeof entry === "string" ? pseudo(entry) : Object.fromEntries(Object.entries(entry).map(([form, text]) => [form, pseudo(text)]))]));
