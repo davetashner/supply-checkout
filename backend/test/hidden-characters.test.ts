@@ -1,7 +1,7 @@
 // The characters an item's name and brand can't have (supply-checkout-1dg.12),
 // and the ordinary text that uses some of them and must still pass.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HIDDEN_TEXT_FLAGS, HIDDEN_TEXT_SOURCE, hasHiddenCharacter, hiddenCharacterProblem, withoutHiddenCharacters } from "../src/text/hidden-characters.js";
 
 type Case = [string, string, string];
@@ -206,7 +206,12 @@ describe("hidden characters (supply-checkout-1dg.12)", () => {
     for (const [shape, make] of Object.entries(shapes)) expect(time(make(200_000)), shape).toBeLessThan(1000);
   });
 
+  afterEach(() => vi.unstubAllGlobals());
+
   it("is the rule the app cleans pasted text by (visibleText in src/format.js), pattern for pattern", async () => {
+    // src/format.js reaches src/i18n.js, which chooses a language from the page as it loads
+    vi.stubGlobal("location", { search: "", href: "http://localhost/" });
+    vi.stubGlobal("document", { documentElement: {} });
     const app = (await import(new URL("../../src/format.js", import.meta.url).href)) as { HIDDEN_TEXT_SOURCE: string; HIDDEN_TEXT_FLAGS: string; visibleText: (t: string) => string };
     expect(app.HIDDEN_TEXT_SOURCE).toBe(HIDDEN_TEXT_SOURCE);
     expect(app.HIDDEN_TEXT_FLAGS).toBe(HIDDEN_TEXT_FLAGS);
