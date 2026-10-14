@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.17.0](https://github.com/davetashner/supply-checkout/compare/v1.16.0...v1.17.0) (2026-10-14)
+
+
+### Features
+
+* search the inventory and sort it by any item field ([#791](https://github.com/davetashner/supply-checkout/issues/791)) ([3ac261e](https://github.com/davetashner/supply-checkout/commit/3ac261ef8a7412582f381b65d9d06b820a8d8ccb))
+
+
+### Bug Fixes
+
+* draw the team dropdown's chevron inset from the field's edge ([#793](https://github.com/davetashner/supply-checkout/issues/793)) ([914e50c](https://github.com/davetashner/supply-checkout/commit/914e50c55975a671e8ded16b4eccab32b466fee2))
+
 ## [1.16.0](https://github.com/davetashner/supply-checkout/compare/v1.15.0...v1.16.0) (2026-10-14)
 
 
