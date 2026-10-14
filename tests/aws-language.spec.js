@@ -90,6 +90,14 @@ test.describe("follows the user across devices", () => {
     expect(await language(page)).toBe("es");
   });
 
+  test("a language the app doesn't have is ignored", async ({ page }) => {
+    const backend = await start(page, { user: prefs("fr") });
+    await connected(page);
+    await expect(page.locator("#tab-projects")).toHaveText("Projects");
+    expect(backend.pageLoads).toBe(1);
+    expect(await language(page)).toBeNull();
+  });
+
   test("a device already in that language just carries on", async ({ page }) => {
     const backend = await start(page, { saved: "es", user: prefs("es") });
     await connected(page);

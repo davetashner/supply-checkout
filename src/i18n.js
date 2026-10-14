@@ -60,7 +60,13 @@ export async function setLanguage(lang) {
 // Storage can throw (blocked site data, some sandboxed frames)
 export const savedLanguage = () => { try { return localStorage.getItem(STORAGE_KEY); } catch { return null; } };
 /** Keeps the choice on the device; false when storage won't take it (the choice then lasts for this page only). */
-export const write = (lang) => { try { localStorage.setItem(STORAGE_KEY, lang); } catch { /* not kept */ } return savedLanguage() === lang; };
+export const write = (lang) => {
+  // Only one of the languages the app has is ever stored, as its own code
+  const code = Object.keys(LOCALES).find((known) => known === lang);
+  if (!code) return false;
+  try { localStorage.setItem(STORAGE_KEY, code); } catch { /* not kept */ }
+  return savedLanguage() === code;
+};
 
 /** The language to start in, from the address, the device's choice and the browser's language. */
 export function chooseLanguage(search = location.search, saved = savedLanguage(), browser = navigator.languages) {
