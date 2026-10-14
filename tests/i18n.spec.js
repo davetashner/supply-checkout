@@ -67,10 +67,16 @@ test.describe("Spanish", () => {
 test.describe("a browser set to Spanish", () => {
   test.use({ locale: "es-US" });
 
-  test("still gets English until Spanish is offered to everyone", async ({ page }) => {
+  test("gets Spanish", async ({ page }) => {
+    await open(page);
+    await expect(page.locator("#tab-projects")).toHaveText("Proyectos");
+    await expect(page.locator("html")).toHaveAttribute("lang", "es");
+  });
+
+  test("a language picked on the device beats the browser's", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("supplyCheckout.language", "en"));
     await open(page);
     await expect(page.locator("#tab-projects")).toHaveText("Projects");
-    await expect(page.locator("html")).toHaveAttribute("lang", "en");
   });
 });
 

@@ -24,7 +24,6 @@ const failure = (e) =>
 // The language, saved on this device: shown only when there's more than one to choose from (i18n.js)
 function languageSection() {
   const choices = languageChoices();
-  if (!choices.length) return "";
   return `<h3>${msg("deleteAccount.languageHeading")}</h3>
     <div class="field"><label for="languageSelect">${msg("deleteAccount.languageLabel")}</label>
     <select id="languageSelect">${choices.map(([code, name]) => `<option value="${code}"${code === currentLanguage() ? " selected" : ""}>${name}</option>`).join("")}</select>

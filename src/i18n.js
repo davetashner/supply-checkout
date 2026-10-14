@@ -12,15 +12,15 @@
 // The language is chosen once, as this module loads (top-level await, so nothing that imports it runs
 // before the catalog is there): ?lang= in the address (a reviewer's preview, and kept on this device),
 // else the device's saved choice, else the browser's language if it's one the app offers to everyone
-// (OFFERED), else English. Spanish isn't offered to everyone until a native speaker has signed off the
-// catalog (supply-checkout-oopu); until then it's reached with ?lang=es.
+// (OFFERED), else English. Spanish was signed off by a native speaker (supply-checkout-oopu) and is offered to
+// everyone.
 
 import en from "./messages/en.js";
 
 /** Every language with a catalog, and the locale its dates, numbers and money use. */
 const LOCALES = { en: "en-US", es: "es-US", qps: "en-US" };
 /** The languages the browser's own language may pick. */
-const OFFERED = ["en"];
+const OFFERED = ["en", "es"];
 export const STORAGE_KEY = "supplyCheckout.language";
 
 let language = "en";
@@ -45,10 +45,9 @@ const AUTONYMS = { en: "English", es: "Español", qps: "Pseudo (qps)" };
 
 /**
  * The languages Account's switch lists, as [code, name] pairs: those offered to everyone and the one in use now
- * (a reviewer on ?lang=es sees Español and can go back), or none while English is all there is.
+ * (a reviewer on ?lang=qps sees the pseudo-language and can go back).
  */
-export const languageChoices = () =>
-  OFFERED.length > 1 || language !== "en" ? [...new Set([...OFFERED, language])].map((code) => [code, AUTONYMS[code]]) : [];
+export const languageChoices = () => [...new Set([...OFFERED, language])].map((code) => [code, AUTONYMS[code]]);
 
 /** Speaks `lang` from now on. Spanish's catalog is loaded when it's wanted, not with the app. */
 export async function setLanguage(lang) {
