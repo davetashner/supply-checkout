@@ -1,7 +1,7 @@
 // The language follows the user across devices (supply-checkout-ae27): /me's user.preferences.language is
 // the language they chose on any device, saved with PATCH /me/preferences. This device speaks it from the
 // next page load, and a choice made on this device before the server knew of one is sent up once.
-import { OFFERED, chooseDeviceLanguage, currentLanguage, savedLanguage } from "../i18n.js";
+import { OFFERED, chooseDeviceLanguage, currentLanguage, savedLanguage, write } from "../i18n.js";
 
 /**
  * Called as /me loads. The server's language wins when it differs from the one this page started in (the
@@ -12,7 +12,8 @@ import { OFFERED, chooseDeviceLanguage, currentLanguage, savedLanguage } from ".
 export async function syncLanguage(api, prefs) {
   if (!prefs || prefs.language === undefined || new URLSearchParams(location.search).has("lang")) return false;
   if (prefs.language) {
-    if (prefs.language === currentLanguage()) return false;
+    // Loading again only speaks it if the device keeps it: with storage blocked it would load in the old one, and again
+    if (prefs.language === currentLanguage() || !write(prefs.language)) return false;
     await chooseDeviceLanguage(prefs.language);
     location.reload();
     return true;
