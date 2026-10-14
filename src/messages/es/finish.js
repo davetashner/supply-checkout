@@ -1,0 +1,20 @@
+// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+export default {
+  "finish.title": "Antes de terminar",
+  "finish.intro": "Todavía hay herramientas de la empresa fuera. Para cada pieza, indique cuántas ya volvieron y cuántas se perdieron o se dañaron; las demás siguen fuera, en el trabajo, y el proyecto sigue abierto.",
+  "finish.legend": "{name} · {still} aún fuera",
+  "finish.back": "Ya volvió",
+  "finish.lost": "Perdidas o dañadas",
+  "finish.stillAtJob": "Aún en el trabajo: {count}",
+  "finish.charge": "Cobrar al cliente lo perdido o dañado ($, opcional)",
+  "finish.chargePlaceholder": "Déjelo en blanco para no cobrar",
+  "finish.worth": "Valor: {value} c/u.",
+  "finish.valueUnknown": "Se desconoce su valor.",
+  "finish.amountNote": "El monto es por todas, no por cada una.",
+  "finish.cancel": "Cancelar",
+  "finish.save": "Guardar",
+  "finish.moreThanOut": "Eso es más de las {still} que siguen fuera.",
+  "finish.moreItem": "Eso es más de lo que sigue fuera de {name}.",
+  "finish.ofThatItem": "ese artículo",
+  "finish.savedLeft": "Guardado. Quedan {count} en el trabajo, así que el proyecto sigue abierto.",
+};

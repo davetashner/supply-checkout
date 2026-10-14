@@ -17,7 +17,7 @@
 // (password.js). Help (help.js), the how-to lesson for the screen, and Report an issue (report.js) sit
 // beside Sign out; Report an issue is on the "Couldn't connect" screen too.
 import { esc, visibleText } from "../format.js";
-import { msg } from "../i18n.js";
+import { msg, dateText, dateTimeText, calendarDateText } from "../i18n.js";
 import { armButton, closeModal, openModal, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
 import { createDb } from "./db.js";
@@ -43,8 +43,8 @@ const ROLE = { owner: "account.asOwner", contributor: "account.asContributor", v
 // A screen's promise resolves with this key after the user verifies their email: start the
 // screens again with the new /me it holds (its invites, and whether they're verified)
 const AGAIN = Symbol("again");
-const day = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
-const moment = (iso) => new Date(iso).toLocaleString("en-US", { month: "long", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+const day = (iso) => dateText(iso, "long");
+const moment = (iso) => dateTimeText(iso, { style: "long", zone: true });
 // The team switcher asks /me again (dropping teams the user was removed from, adding ones
 // they joined) when the team's data is re-listed, at most this often; /me is the API's
 // heaviest route, so the polling fallback's re-lists (every 15 seconds) ask far less often
@@ -66,7 +66,7 @@ const endedReason = (team) => (Object.hasOwn(ENDED_NOTICES, team.readOnlyReason 
 // What the app says is read-only and why: a closed team, one read-only for billing, or null (the role says)
 const viewOnlyFor = (team) => (team.closedAt ? closedNotice() : team.subscriptionEnded ? msg(ENDED_NOTICES[endedReason(team)]) : null);
 // readOnlyLastDay, a calendar date (YYYY-MM-DD) the emails state too: shown as that date wherever the reader is
-const lastDay = (ymd) => new Date(`${ymd}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+const lastDay = (ymd) => calendarDateText(ymd, "long");
 // How long a Customer Portal link is offered before the button makes a new one: Stripe's
 // sessions are short-lived
 const PORTAL_LINK_MS = 4 * 60e3;

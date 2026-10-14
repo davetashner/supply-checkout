@@ -1,0 +1,23 @@
+// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+export default {
+  "profilePhoto.pick": "Elija una foto JPEG, PNG o WebP.",
+  "profilePhoto.invalid": "No se pudo usar esa foto. Pruebe con otra foto JPEG, PNG o WebP.",
+  "profilePhoto.tooLarge": "Esa foto es demasiado grande para guardarla. Acérquela un poco o pruebe con otra foto.",
+  "profilePhoto.limit": "Ya cambió su foto todas las veces posibles hoy. Intente de nuevo mañana.",
+  "profilePhoto.saveFailed": "No se pudo guardar su foto. Revise su conexión e intente de nuevo.",
+  "profilePhoto.removeFailed": "No se pudo quitar su foto. Revise su conexión e intente de nuevo.",
+  "profilePhoto.yourPhoto": "Su foto de perfil",
+  "profilePhoto.heading": "Foto de perfil",
+  "profilePhoto.change": "Cambiar foto",
+  "profilePhoto.upload": "Subir foto",
+  "profilePhoto.remove": "Quitar",
+  "profilePhoto.hint": "Sus compañeros la ven junto a su nombre. Una foto JPEG, PNG o WebP.",
+  "profilePhoto.position": "Posición de la foto",
+  "profilePhoto.cropHelp": "Arrastre la foto, o use las flechas del teclado, para elegir lo que queda dentro del círculo. Acerque con el control deslizante, o con + y -.",
+  "profilePhoto.zoom": "Zoom",
+  "profilePhoto.cancel": "Cancelar",
+  "profilePhoto.save": "Guardar foto",
+  "profilePhoto.tooLargeToOpen": "Esa foto es demasiado grande para abrirla. Elija una de menos de 20 MB.",
+  "profilePhoto.cantOpen": "No se pudo abrir esa foto. Pruebe con otra foto JPEG, PNG o WebP.",
+  "profilePhoto.tapAgain": "Toque otra vez para quitar",
+};

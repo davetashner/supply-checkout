@@ -1,0 +1,25 @@
+// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+export default {
+  "verifyEmail.emailChanged": "Su correo electrónico cambió; envíe un código nuevo.",
+  "verifyEmail.codeMismatch": "Ese código no es correcto. Revise el correo e intente de nuevo.",
+  "verifyEmail.codeExpired": "Ese código venció. Envíe uno nuevo.",
+  "verifyEmail.emailInUse": "Otra cuenta ya usa este correo electrónico, así que no se puede verificar aquí.",
+  "verifyEmail.tooMany": "Demasiados intentos por ahora. Espere unos minutos e intente de nuevo.",
+  "verifyEmail.sendFailed": "No se pudo enviar el código. Revise su conexión e intente de nuevo.",
+  "verifyEmail.checkFailed": "No se pudo comprobar el código. Revise su conexión e intente de nuevo.",
+
+  "verifyEmail.title": "Verificar su correo electrónico",
+  "verifyEmail.codeLabel": "Código del correo",
+  "verifyEmail.verify": "Verificar",
+  "verifyEmail.sendCode": "Enviar código",
+  "verifyEmail.tryAgain": "Intentar de nuevo",
+  "verifyEmail.cancel": "Cancelar",
+  "verifyEmail.about": "Enviaremos un código de 6 dígitos a <strong>{email}</strong>. Una vez verificado, podrá ver y unirse a los equipos que inviten este correo.",
+  "verifyEmail.sent": "Enviamos un código a <strong>{email}</strong>. Escríbalo abajo. Puede tardar un minuto en llegar; revise también su carpeta de correo no deseado.",
+  "verifyEmail.resendIn": "Reenviar código en {seconds} s",
+  "verifyEmail.resend": "Reenviar código",
+  "verifyEmail.notCaughtUp": "Su código se aceptó, pero su cuenta aún no se ha actualizado. Intente de nuevo en un momento, o cierre sesión e inicie sesión de nuevo.",
+  "verifyEmail.verified": "{email} está verificado.",
+  "verifyEmail.done": "Listo",
+  "verifyEmail.badCode": "Escriba el código de 6 dígitos del correo.",
+};

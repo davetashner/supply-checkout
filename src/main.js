@@ -1,5 +1,5 @@
 import "./theme.js";
-import { msg, applyStatic } from "./i18n.js";
+import { msg, applyStatic, locale, monthName } from "./i18n.js";
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, markLost, saveItem, addLines, quickTake, moveLine } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY, MAX_BRAND, brandOf, nameWithBrand, brandHTML, visibleText } from "./format.js";
@@ -153,7 +153,7 @@ function takerText(id) {
   const p = own(people, id);
   return p && p.name ? p.name : msg("app.someone");
 }
-const whenText = iso => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—"; };
+const whenText = iso => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleString(locale(), { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—"; };
 
 /* ---------- render ---------- */
 let seq = 0;
@@ -288,7 +288,6 @@ function groupMeta(list) {
   const cents = list.filter(s => !isAdhoc(s)).reduce((a, s) => a + Math.round(totals(s).charge * 100), 0);
   return `${msg("project.count", { count: list.length })}${isOwner ? ` · ${money(cents / 100)}` : ""}`;
 }
-const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 function groupedHTML(closed) {
   const years = new Map();
   const day = s => String(s.date || "");
@@ -300,7 +299,7 @@ function groupedHTML(closed) {
   return [...years].map(([y, list], i) => {
     const open = ui.years[y] ?? (i === 0 || y === thisYear || y === ui.year || !!ui.q), id = `yr-${y.replace(/\W/g, "")}`;
     const months = new Map();
-    list.forEach(s => { const m = yearOf(s) ? MONTHS[Number(s.date.slice(5, 7)) - 1] : msg("project.noDate"); months.set(m, [...(months.get(m) || []), s]); });
+    list.forEach(s => { const m = yearOf(s) ? monthName(Number(s.date.slice(5, 7)) - 1) : msg("project.noDate"); months.set(m, [...(months.get(m) || []), s]); });
     return `
       <section class="year-group" aria-labelledby="${id}-h">
         <h2 class="year-head" id="${id}-h"><button type="button" class="year-toggle" data-year="${esc(y)}" aria-expanded="${open}" aria-controls="${id}"><span>${esc(y)}</span><span class="group-meta">${groupMeta(list)}</span></button></h2>

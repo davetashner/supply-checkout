@@ -149,6 +149,7 @@ We don't use advertising or tracking cookies, and we don't use third-party analy
 | `supplyCheckout.owner` | Which account the saved team and receipt drafts belong to, so the next person to sign in can't see them | Until you sign out |
 | `supplyCheckout.firstRun.<team>` | Whether you've finished or dismissed the getting-started checklist | Until you clear your browser's data |
 | `supplyCheckout.theme` | Light or dark mode, if you chose one | Until you clear your browser's data |
+| `supplyCheckout.language` | The language you chose for the app, if you chose one | Until you clear your browser's data |
 | `supplyCheckout.campaign` | The campaign tags (`utm_source`, `utm_medium`, `utm_campaign`) from the link you arrived by, kept until you create your team, then removed. On our website and demo it's kept for the tab only. | Up to 7 days, or until the tab is closed on the website |
 | `supplyCheckout.signIn`, `supplyCheckout.invite` (this tab only) | Finishing a sign-in, and an invitation link you opened, across the trip to the sign-in page | Until the tab is closed or sign-in finishes |
 | `cwr_i`, `cwr_c` | Anonymous, short-lived credentials the error reporter uses to send reports. They don't identify you. | Until they expire or you clear your browser's data |

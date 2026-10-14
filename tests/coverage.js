@@ -1,7 +1,7 @@
 // Code coverage of the app's source (src/), collected from Chromium during the
 // Playwright suites and mapped back through the build's source maps. Enabled
 // with COVERAGE=1 (npm run test:coverage), for the build in BUILD.
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { CoverageReport } from "monocart-coverage-reports";
 import { currentBuild, distDir } from "../scripts/builds.mjs";
 
@@ -33,17 +33,18 @@ function uncovered(file) {
 
 // The builds write hidden source maps (no sourceMappingURL comment), so attach
 // them here.
+const mapPath = (url) => distDir(BUILD) + `${url.slice(ORIGIN.length)}.map`;
 function sourceMapFor(url) {
-  const path = url.slice(ORIGIN.length);
-  return JSON.parse(readFileSync(distDir(BUILD) + `${path}.map`, "utf8"));
+  return JSON.parse(readFileSync(mapPath(url), "utf8"));
 }
 
 export const options = {
   name: `Supply Checkout coverage (${BUILD} build)`,
   outputDir: OUTPUT,
   reports: ["console-summary", "v8", "lcovonly"],
-  // Only the app itself, not test helpers or third-party scripts.
-  entryFilter: (entry) => entry.url.startsWith(ORIGIN),
+  // Only the app itself, not test helpers or third-party scripts, and not the bundler's own runtime chunk
+  // (which has no source map, and no app code)
+  entryFilter: (entry) => entry.url.startsWith(ORIGIN) && existsSync(mapPath(entry.url)),
   onEntry: (entry) => { entry.sourceMap = sourceMapFor(entry.url); },
   // Report the app's own modules by their path in the repo
   sourceFilter: (path) => /(^|\/)src\//.test(path),
