@@ -1,6 +1,18 @@
 {
   "releases": [
     {
+      "version": "upcoming",
+      "notes": [
+        {
+          "title": "Search and sort your inventory",
+          "text": "Search Inventory by item, brand or barcode, and sort it by any detail you keep on an item, such as stock, price, pack size or reorder level.",
+          "prs": [
+            791
+          ]
+        }
+      ]
+    },
+    {
       "version": "1.16.0",
       "date": "2026-10-14",
       "notes": [

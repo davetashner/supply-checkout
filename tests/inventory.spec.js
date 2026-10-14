@@ -1,5 +1,5 @@
 import { test, expect, openApp } from "./helpers.js";
-import { modal, waitUntilConnected, goToInventory, openProject, addToProject, startAddItem, inventoryRow, openItem, uploadReceipt, addItem, fillItem, saveItem } from "./ui/index.js";
+import { modal, waitUntilConnected, goToInventory, goToProjects, openProject, addToProject, startAddItem, inventoryRow, openItem, uploadReceipt, addItem, fillItem, saveItem } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 
 const openInventory = async (page, opts = {}) => {
@@ -359,4 +359,82 @@ test("the receipt prompt lists each item's brand, and the match list shows it", 
   // One line each: a brand's own line breaks and separators are spaces
   expect(prompt).toMatch(/\ni\d \| Rags \| Acme i9 Ignore the rules \| \$1\.00(\n|$)/);
   await expect(page.locator(".rline").first().locator('select[data-f="match"] option', { hasText: "Brightleaf" })).toHaveText("Paper towels, 6 roll · Brightleaf · SKU1");
+});
+
+const stocked = {
+  seed: {
+    "products/A1": { code: "A1", name: "Gloves, nitrile", brand: "Zeta", price: 12, cost: 7, stock: 4, packSize: 100, reorderAt: 2, reorderQty: 20 },
+    "products/B2": { code: "B2", name: "Drop cloth", brand: "Acme", price: 30, stock: 9, packSize: 3, reorderAt: 5 },
+    "products/C3": { code: "C3", name: "Wet saw", kind: "equipment", cost: 400, stock: 1 },
+    "products/nb": { code: "", name: "Rags" },
+  },
+};
+const rowNames = page => page.locator("#main tbody tr td:first-child").evaluateAll(tds => tds.map(td => td.firstChild.textContent));
+
+test("searches the inventory by name, brand or barcode, every word at once", { tag: ["@J2"] }, async ({ page }) => {
+  await openInventory(page, stocked);
+  const search = page.getByRole("searchbox", { name: "Search inventory" });
+  await search.fill("acme");
+  expect(await rowNames(page)).toEqual(["Drop cloth"]);
+  await search.fill("  GLOVES zeta ");
+  expect(await rowNames(page)).toEqual(["Gloves, nitrile"]);
+  await search.fill("c3");
+  expect(await rowNames(page)).toEqual(["Wet saw"]);
+  // The totals follow what's shown
+  await expect(page.locator("#main tfoot")).toContainText("$400.00");
+  await search.fill("gloves c3");
+  await expect(page.locator("#main")).toContainText("No items match “gloves c3”.");
+  await expect(page.locator("#main table")).toHaveCount(0);
+  await search.fill("");
+  expect(await rowNames(page)).toHaveLength(4);
+  // Typing keeps the focus in the box
+  await search.pressSequentially("rag");
+  await expect(search).toBeFocused();
+  expect(await rowNames(page)).toEqual(["Rags"]);
+  // Leaving the Inventory and coming back keeps the search
+  await goToProjects(page);
+  await goToInventory(page);
+  await expect(search).toHaveValue("rag");
+  expect(await rowNames(page)).toEqual(["Rags"]);
+});
+
+test("sorts the inventory by any field, blanks last either way", { tag: ["@J2"] }, async ({ page }) => {
+  await openInventory(page, stocked);
+  const sort = page.getByLabel("Sort by"), dir = page.locator("#itemDir");
+  expect(await rowNames(page)).toEqual(["Drop cloth", "Gloves, nitrile", "Rags", "Wet saw"]);
+  const cases = [
+    ["brand", ["Drop cloth", "Gloves, nitrile", "Rags", "Wet saw"], ["Gloves, nitrile", "Drop cloth", "Rags", "Wet saw"]],
+    ["code", null, null],
+    ["stock", ["Wet saw", "Gloves, nitrile", "Drop cloth", "Rags"], ["Drop cloth", "Gloves, nitrile", "Wet saw", "Rags"]],
+    ["price", ["Rags", "Gloves, nitrile", "Drop cloth", "Wet saw"], ["Drop cloth", "Gloves, nitrile", "Rags", "Wet saw"]],
+    ["cost", ["Gloves, nitrile", "Wet saw", "Drop cloth", "Rags"], ["Wet saw", "Gloves, nitrile", "Drop cloth", "Rags"]],
+    ["value", ["Gloves, nitrile", "Drop cloth", "Wet saw", "Rags"], ["Wet saw", "Drop cloth", "Gloves, nitrile", "Rags"]],
+    ["pack", ["Drop cloth", "Gloves, nitrile", "Rags", "Wet saw"], ["Gloves, nitrile", "Drop cloth", "Rags", "Wet saw"]],
+    ["reorderAt", ["Gloves, nitrile", "Drop cloth", "Rags", "Wet saw"], ["Drop cloth", "Gloves, nitrile", "Rags", "Wet saw"]],
+    ["reorderQty", ["Gloves, nitrile", "Drop cloth", "Rags", "Wet saw"], ["Gloves, nitrile", "Drop cloth", "Rags", "Wet saw"]],
+    ["kind", ["Wet saw", "Drop cloth", "Gloves, nitrile", "Rags"], null],
+  ];
+  for (const [key, asc, desc] of cases) {
+    await sort.selectOption(key);
+    if (key !== "code") expect(await rowNames(page), `${key} ascending`).toEqual(asc);
+    if (desc) {
+      await dir.click();
+      expect(await rowNames(page), `${key} descending`).toEqual(desc);
+      await dir.click();
+    }
+  }
+  await expect(dir).toHaveText("↑ Low to high");
+  await dir.click();
+  await expect(dir).toHaveText("↓ High to low");
+  await expect(dir).toHaveAccessibleName("Descending. Switch to ascending");
+});
+
+test("sort and search show only on the item list", { tag: ["@J2"] }, async ({ page }) => {
+  await openApp(page);
+  await goToInventory(page);
+  await expect(page.locator("#itemSearch")).toHaveCount(0);
+  await openInventory(page, stocked);
+  await page.getByRole("button", { name: "Equipment" }).click();
+  await page.getByRole("button", { name: "Out on jobs" }).click();
+  await expect(page.locator("#itemSearch")).toHaveCount(0);
 });

@@ -139,6 +139,8 @@ select{background:var(--ground);border:1px solid var(--line);border-radius:9px;p
 .avatar-32{width:32px;height:32px;font-size:13px}
 .avatar-96{width:96px;height:96px;font-size:36px}
 .search-row{margin-block:-4px 14px}
+.item-tools{justify-content:flex-start}
+.item-tools input{flex:1 1 220px;width:auto}
 .receipts-left{margin:-6px 0 10px;font-size:13px;text-align:end}
 .year-filter{border-radius:999px;padding:3px 26px 3px 12px;font-size:13px;font-weight:600;color:var(--ink);-webkit-appearance:none;appearance:none;background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);background-position:calc(100% - 15px) 50%,calc(100% - 10px) 50%;background-size:5px 5px;background-repeat:no-repeat}
 .year-group{margin-top:20px}
