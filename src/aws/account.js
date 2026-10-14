@@ -32,6 +32,7 @@ import { openChangePassword } from "./password.js";
 import { openReset } from "./reset-password.js";
 import { openInvoices } from "./invoices.js";
 import { showWhatsNew } from "./whats-new.js";
+import { syncLanguage } from "./language.js";
 import { openReport } from "./report.js";
 import { helpLink, wireHelp } from "./help.js";
 import { legalNotice } from "./legal.js";
@@ -794,6 +795,9 @@ export async function start(config) {
       if (!await session.start()) return signIn();
       let me = await session.api("GET", "/me");
       claim(me.user.id);
+      // The language they chose on another device (the page loads again in it, before anything else is asked for),
+      // or this one's chosen language for the server to keep
+      if (await syncLanguage(session.api, me.user.preferences)) return;
       owner = local.get(OWNER_KEY) === me.user.id ? me.user.id : null;
       for (;;) {
         const team = await chooseTeam(me);

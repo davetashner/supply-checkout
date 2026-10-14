@@ -280,11 +280,12 @@ export class FakeBackend {
     // field, of the right type. Only for a user that has them (an API from before them has no route)
     if (path === "/me/preferences" && method === "PATCH") {
       if (!this.user.preferences) return err(404, "not_found");
-      const { whatsNew, whatsNewLastShown, ...rest } = call.body || {};
-      if (Object.keys(rest).length || (whatsNew === undefined && whatsNewLastShown === undefined)) return err(400, "bad_request");
+      const { whatsNew, whatsNewLastShown, language, ...rest } = call.body || {};
+      if (Object.keys(rest).length || (whatsNew === undefined && whatsNewLastShown === undefined && language === undefined)) return err(400, "bad_request");
+      if (language !== undefined && !["en", "es"].includes(language)) return err(400, "bad_request");
       if (whatsNew !== undefined && typeof whatsNew !== "boolean") return err(400, "bad_request");
       if (whatsNewLastShown !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(whatsNewLastShown)) return err(400, "bad_request");
-      const preferences = { ...this.user.preferences, ...(whatsNew === undefined ? {} : { whatsNew }), ...(whatsNewLastShown === undefined ? {} : { whatsNewLastShown }) };
+      const preferences = { ...this.user.preferences, ...(whatsNew === undefined ? {} : { whatsNew }), ...(whatsNewLastShown === undefined ? {} : { whatsNewLastShown }), ...(language === undefined ? {} : { language }) };
       this.user = { ...this.user, preferences };
       return [200, { preferences }];
     }

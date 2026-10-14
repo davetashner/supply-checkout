@@ -3,6 +3,8 @@
 //
 //   PK USER#<sub>  SK PREFERENCES  whatsNew           boolean: show the What's New banner (default on)
 //                                  whatsNewLastShown  YYYY-MM-DD: the user's local date it was last shown
+//                                  language           "en" or "es" (LANGUAGES): the language the user chose, absent
+//                                                     until they choose one (the app then uses the device's)
 //                                  updatedAt          ISO time of the last change
 //
 // GET /me returns them and PATCH /me/preferences changes them, with the
@@ -12,7 +14,8 @@
 // records the day it showed it, and doesn't show it again while that's today.
 //
 // Every value is checked here before anything reaches DynamoDB (an unknown
-// field, a non-boolean, a malformed or far-off date are InvalidInputError).
+// field, a non-boolean, a malformed or far-off date, a language that isn't
+// one of LANGUAGES are InvalidInputError).
 // IAM can't limit the sort key, so as defence in depth the key is checked to
 // be PREFERENCES before any call, and each update's condition names it: it
 // never creates or touches any other item.
@@ -33,19 +36,26 @@ export interface Preferences {
   readonly whatsNew: boolean;
   /** The user's local date (YYYY-MM-DD) the banner was last shown, or null if never. */
   readonly whatsNewLastShown: string | null;
+  /** The language the user chose (the app's and, later, their emails'), or null if they never chose one. */
+  readonly language: Language | null;
 }
+
+/** The languages the app has: the same codes as OFFERED in src/i18n.js. */
+export const LANGUAGES = ["en", "es"] as const;
+export type Language = (typeof LANGUAGES)[number];
 
 /** A change to make: either field or both, each already checked (preferencesChange). */
 export interface PreferencesChange {
   whatsNew?: boolean;
   whatsNewLastShown?: string;
+  language?: Language;
 }
 
 /** What a user who never changed anything gets. */
-export const DEFAULT_PREFERENCES: Preferences = { whatsNew: true, whatsNewLastShown: null };
+export const DEFAULT_PREFERENCES: Preferences = { whatsNew: true, whatsNewLastShown: null, language: null };
 
 /** The fields PATCH /me/preferences accepts. */
-export const PREFERENCE_FIELDS = ["whatsNew", "whatsNewLastShown"] as const;
+export const PREFERENCE_FIELDS = ["whatsNew", "whatsNewLastShown", "language"] as const;
 
 /**
  * How far a local date may be from the server's UTC date, in days. Local
@@ -68,6 +78,12 @@ export function localDate(value: unknown, now: Date): string {
   return value;
 }
 
+/** One of LANGUAGES, or InvalidInputError. */
+export function languageCode(value: unknown): Language {
+  if (typeof value !== "string" || !(LANGUAGES as readonly string[]).includes(value)) throw new InvalidInputError(`language must be one of ${LANGUAGES.join(", ")}`);
+  return value as Language;
+}
+
 /** A change from a request body (already limited to PREFERENCE_FIELDS), checked: at least one field, each of the right type. */
 export function preferencesChange(body: Record<string, unknown>, now: Date): PreferencesChange {
   const change: PreferencesChange = {};
@@ -79,6 +95,7 @@ export function preferencesChange(body: Record<string, unknown>, now: Date): Pre
     change.whatsNew = body.whatsNew;
   }
   if (body.whatsNewLastShown !== undefined) change.whatsNewLastShown = localDate(body.whatsNewLastShown, now);
+  if (body.language !== undefined) change.language = languageCode(body.language);
   if (Object.keys(change).length === 0) throw new InvalidInputError("Nothing to change");
   return change;
 }
@@ -93,9 +110,11 @@ function recordKey(userId: string) {
 /** What's stored, read defensively: anything not the right type counts as the default. */
 function fromItem(item: Record<string, unknown> | undefined): Preferences {
   const shown = item?.whatsNewLastShown;
+  const language = item?.language;
   return {
     whatsNew: typeof item?.whatsNew === "boolean" ? item.whatsNew : DEFAULT_PREFERENCES.whatsNew,
     whatsNewLastShown: typeof shown === "string" && DATE.test(shown) ? shown : DEFAULT_PREFERENCES.whatsNewLastShown,
+    language: typeof language === "string" && (LANGUAGES as readonly string[]).includes(language) ? (language as Language) : DEFAULT_PREFERENCES.language,
   };
 }
 
@@ -105,8 +124,8 @@ export async function getPreferences(db: Db, userId: string): Promise<Preference
     new GetCommand({
       TableName: db.tableName,
       Key: recordKey(userId),
-      ProjectionExpression: "#whatsNew, #shown",
-      ExpressionAttributeNames: { "#whatsNew": "whatsNew", "#shown": "whatsNewLastShown" },
+      ProjectionExpression: "#whatsNew, #shown, #language",
+      ExpressionAttributeNames: { "#whatsNew": "whatsNew", "#shown": "whatsNewLastShown", "#language": "language" },
       ConsistentRead: true,
     }),
   );
@@ -128,6 +147,11 @@ export async function setPreferences(db: Db, userId: string, change: Preferences
     names["#shown"] = "whatsNewLastShown";
     values[":shown"] = localDate(change.whatsNewLastShown, now);
     sets.push("#shown = :shown");
+  }
+  if (change.language !== undefined) {
+    names["#language"] = "language";
+    values[":language"] = languageCode(change.language);
+    sets.push("#language = :language");
   }
   const user = id(userId, "user ID");
   try {

@@ -32,7 +32,7 @@ The Service is for businesses in the United States. We store and process data in
 
 | What | Examples | Where it comes from |
 | --- | --- | --- |
-| Account details | Email address, first and last name, sign-in method (email code, password, passkey, or Google or Apple sign-in), whether two-step sign-in is on | You, at sign-up and in Account settings. If you sign in with Google or Apple, they send us your email address, whether it is verified, and your name. |
+| Account details | Email address, first and last name, the language you chose for the app, sign-in method (email code, password, passkey, or Google or Apple sign-in), whether two-step sign-in is on | You, at sign-up and in Account settings. If you sign in with Google or Apple, they send us your email address, whether it is verified, and your name. |
 | Team details | Team name, members and their roles, invitations (the invited email address and role) | Owners |
 | Your team's data | Inventory items (names, barcodes, prices, costs, stock counts, pack sizes), checkout projects, client or job names, dates, notes, stock history, CSV files you import | Owners and members |
 | Receipts | Receipt photos you scan, and the lines, prices and totals read from them | Members who scan receipts |
@@ -149,7 +149,7 @@ We don't use advertising or tracking cookies, and we don't use third-party analy
 | `supplyCheckout.owner` | Which account the saved team and receipt drafts belong to, so the next person to sign in can't see them | Until you sign out |
 | `supplyCheckout.firstRun.<team>` | Whether you've finished or dismissed the getting-started checklist | Until you clear your browser's data |
 | `supplyCheckout.theme` | Light or dark mode, if you chose one | Until you clear your browser's data |
-| `supplyCheckout.language` | The language you chose for the app, if you chose one | Until you clear your browser's data |
+| `supplyCheckout.language` | The language you chose for the app, if you chose one (also kept with your account, so your other devices use it) | Until you clear your browser's data |
 | `supplyCheckout.campaign` | The campaign tags (`utm_source`, `utm_medium`, `utm_campaign`) from the link you arrived by, kept until you create your team, then removed. On our website and demo it's kept for the tab only. | Up to 7 days, or until the tab is closed on the website |
 | `supplyCheckout.signIn`, `supplyCheckout.invite` (this tab only) | Finishing a sign-in, and an invitation link you opened, across the trip to the sign-in page | Until the tab is closed or sign-in finishes |
 | `cwr_i`, `cwr_c` | Anonymous, short-lived credentials the error reporter uses to send reports. They don't identify you. | Until they expire or you clear your browser's data |
