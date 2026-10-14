@@ -709,8 +709,6 @@ export async function start(config) {
     let bar = teamBar(me, team, fr, name);
     // Drawn now, as the team opens, so it never moves anything under a finger later
     hideWhatsNew = showWhatsNew(session.api, me.user.preferences, bar);
-    // The language they chose on another device, or this one's chosen language for the server to keep
-    syncLanguage(session.api, me.user.preferences);
     // /me was just loaded
     meAt = Date.now();
     let viewOnly = viewOnlyFor(team);
@@ -797,6 +795,9 @@ export async function start(config) {
       if (!await session.start()) return signIn();
       let me = await session.api("GET", "/me");
       claim(me.user.id);
+      // The language they chose on another device (the page loads again in it, before anything else is asked for),
+      // or this one's chosen language for the server to keep
+      if (await syncLanguage(session.api, me.user.preferences)) return;
       owner = local.get(OWNER_KEY) === me.user.id ? me.user.id : null;
       for (;;) {
         const team = await chooseTeam(me);
