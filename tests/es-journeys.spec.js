@@ -82,9 +82,8 @@ test("adds an item with its size in Spanish, in es-US units", { tag: ["@J2.1", "
   await noEnglish(page, "the item form");
   await form.getByRole("button", { name: "Guardar", exact: true }).click();
   const row = page.locator("#main tbody tr", { hasText: "Caja transparente" });
-  // The sides are labeled in Spanish, and decimals use a period, as in es-US. The unit is the code the item
-  // stores ("in"): the form's own list says "pulg", but format.sizeLine passes the code through.
-  await expect(row).toContainText("L 12 × An 6.5 × Al 4 in");
+  // The sides are labeled in Spanish, and decimals use a period, as in es-US; the unit is the form's own ("pulg")
+  await expect(row).toContainText("L 12 × An 6.5 × Al 4 pulg");
   await noEnglish(page, "Inventory with the new item");
 });
 

@@ -39,7 +39,7 @@ export const hasSize = p => DIM_FIELDS.some(f => side(p, f) !== null);
 export const inchesOf = (p, f) => { const n = side(p, f); return n === null ? null : dimUnit(p) === "cm" ? n / 2.54 : n; };
 // "L 12 × W 6 × H 4 in": each side labeled, so a side that's left out can't be mistaken for another
 export const sizeText = p => hasSize(p)
-  ? msg("format.sizeLine", { sides: DIM_FIELDS.filter(f => side(p, f) !== null).map(f => msg("format.size." + f, { n: side(p, f) })).join(" × "), unit: dimUnit(p) })
+  ? msg("format.sizeLine", { sides: DIM_FIELDS.filter(f => side(p, f) !== null).map(f => msg("format.size." + f, { n: side(p, f) })).join(" × "), unit: msg(dimUnit(p) === "cm" ? "product.unitCm" : "product.unitIn") })
   : "";
 // Rounds to cents, halves up (ADR 0014). toPrecision first, so 1.005 (really 1.00499…) is 1.01
 export const round2 = n => Math.round(Number(((Number(n) || 0) * 100).toPrecision(12))) / 100;
