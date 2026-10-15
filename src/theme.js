@@ -1,33 +1,65 @@
-// The System / Light / Dark theme control in the header. styles.css picks the dark
-// colors from prefers-color-scheme unless <html data-theme="light">, and always for
-// data-theme="dark"; System leaves the attribute off. The choice is kept per device.
-// main.js imports this first, so the theme is set in the same task that loads the app,
-// before it draws anything.
-const KEY = "supplyCheckout.theme";
-const THEMES = ["system", "light", "dark"];
+// The theme: a palette (Work Order, Evergreen, Slate or High contrast) and System / Light / Dark,
+// both chosen in Account's Appearance section (src/aws/appearance.js) and kept per device.
+// styles.css has Work Order on :root and the others under <html data-palette>; it picks the
+// dark colors from prefers-color-scheme unless <html data-theme="light">, and always for
+// data-theme="dark". System and Work Order leave their attribute off. main.js imports this
+// first, so the theme is set in the same task that loads the app, before it draws anything.
+const MODE_KEY = "supplyCheckout.theme";
+const PALETTE_KEY = "supplyCheckout.palette";
+export const MODES = ["system", "light", "dark"];
+export const PALETTES = ["workorder", "evergreen", "slate", "contrast"];
+const DEFAULT_MODE = "system", DEFAULT_PALETTE = "workorder";
 
-// Storage can throw (blocked site data, some sandboxed frames): then it's System
-function stored() {
+// Storage can throw (blocked site data, some sandboxed frames): then it's the default
+function stored(key, choices, fallback) {
   try {
-    const v = localStorage.getItem(KEY);
-    return THEMES.includes(v) ? v : "system";
-  } catch { return "system"; }
+    const v = localStorage.getItem(key);
+    return choices.includes(v) ? v : fallback;
+  } catch { return fallback; }
 }
 
-function apply(theme) {
-  if (theme === "system") document.documentElement.removeAttribute("data-theme");
-  else document.documentElement.dataset.theme = theme;
-  document.querySelectorAll("#theme button").forEach(b => b.setAttribute("aria-pressed", b.dataset.theme === theme));
+let mode = stored(MODE_KEY, MODES, DEFAULT_MODE);
+let palette = stored(PALETTE_KEY, PALETTES, DEFAULT_PALETTE);
+export const currentMode = () => mode;
+export const currentPalette = () => palette;
+
+function setAttr(name, value, none) {
+  if (value === none) document.documentElement.removeAttribute(name);
+  else document.documentElement.setAttribute(name, value);
 }
 
-apply(stored());
+// Sets the page's colors, and Account's choices when it's open
+function apply() {
+  setAttr("data-theme", mode, DEFAULT_MODE);
+  setAttr("data-palette", palette, DEFAULT_PALETTE);
+  document.querySelectorAll('input[name="themeMode"]').forEach(r => { r.checked = r.value === mode; });
+  document.querySelectorAll('input[name="themePalette"]').forEach(r => { r.checked = r.value === palette; });
+}
+
+// The default is kept by removing the key, so clearing storage and choosing it are the same
+function save(key, value, fallback) {
+  try { value === fallback ? localStorage.removeItem(key) : localStorage.setItem(key, value); } catch {}
+}
+
+// `value` is one of MODES or PALETTES: Account's radios are made from them
+export function chooseMode(value) {
+  mode = value;
+  apply();
+  save(MODE_KEY, value, DEFAULT_MODE);
+}
+
+export function choosePalette(value) {
+  palette = value;
+  apply();
+  save(PALETTE_KEY, value, DEFAULT_PALETTE);
+}
+
+apply();
 // Other tabs change the device preference without reloading this page. Re-read
-// storage so a queued event can't restore an older choice; clear() resets System.
+// storage so a queued event can't restore an older choice; clear() resets both.
 window.addEventListener("storage", e => {
-  if ((e.key === KEY || e.key === null) && e.storageArea === localStorage) apply(stored());
+  if (e.storageArea !== localStorage || (e.key !== null && e.key !== MODE_KEY && e.key !== PALETTE_KEY)) return;
+  mode = stored(MODE_KEY, MODES, DEFAULT_MODE);
+  palette = stored(PALETTE_KEY, PALETTES, DEFAULT_PALETTE);
+  apply();
 });
-document.querySelectorAll("#theme button").forEach(b => b.addEventListener("click", () => {
-  const theme = b.dataset.theme;
-  apply(theme);
-  try { theme === "system" ? localStorage.removeItem(KEY) : localStorage.setItem(KEY, theme); } catch {}
-}));
