@@ -492,7 +492,7 @@ test("a tap on a line survives a redraw, and a snapshot with no changes leaves t
   const row = lineRow(page, "Paper towels");
   await expect(row).toBeVisible();
   const tapped = await row.elementHandle();
-  const head = await page.getByRole("button", { name: "Finished Return" }).elementHandle();
+  const head = await page.getByRole("button", { name: "Finish return" }).elementHandle();
 
   // Press a line; another user checks out more of the other line, which redraws the project mid-tap
   await row.scrollIntoViewIfNeeded();

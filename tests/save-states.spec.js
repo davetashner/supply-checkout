@@ -275,7 +275,7 @@ test("finishing and reopening a project say they're saving, and a second tap sen
   expect(await writes(page)).toBe(2);
   await release(page);
   await expect(toast(page)).toHaveText("Project reopened");
-  await expect(page.getByRole("button", { name: "Finished Return" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Finish return" })).toBeEnabled();
   expect((await doc(page, "projects/s1")).status).toBe("open");
 });
 

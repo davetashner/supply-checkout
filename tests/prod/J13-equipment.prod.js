@@ -1,7 +1,7 @@
 // J13 Take company equipment to a job and bring it back, against prod (supply-checkout-o60.7).
 // Crew, on this browser project's long-lived team: adds a run-named item as company equipment
 // (3 in storage), takes 2 to a run-named project, sees it listed apart and not charged, sees it
-// in Inventory → Equipment → Out on jobs, returns 1, and at Finished Return says the last one was
+// in Inventory → Equipment → Out on jobs, returns 1, and at Finish return says the last one was
 // lost or broken (no charge), which closes the project. Cleanup deletes the item and project.
 import { addToProject, createProject, enterBarcode, fillItem, finishReturn, goToInventory, goToProjects, inventoryRow, modal, openProject, saveItem, saveReturn, startAddItem, startReturn } from "../ui/index.js";
 import { expect, test } from "./fixtures.mjs";
@@ -65,7 +65,7 @@ test("crew takes company equipment to a job, sees where it is, and brings it bac
     await expect(equipmentRow(page, ladder.name).locator("td").last()).toHaveText("1");
   });
 
-  await test.step("J13.4 Finished Return: the last one was lost or broken, and the project closes", async () => {
+  await test.step("J13.4 Finish return: the last one was lost or broken, and the project closes", async () => {
     await finishReturn(page);
     await expect(modal(page).getByRole("heading", { name: "Before you finish" })).toBeVisible();
     await expect(finishBox(page, 0).locator("legend")).toHaveText(`${ladder.name} · 1 still out`);

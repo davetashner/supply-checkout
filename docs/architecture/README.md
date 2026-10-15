@@ -227,7 +227,7 @@ stateDiagram-v2
   state "Open, shown as Checked out" as open
   state "Closed, shown as Returned" as closed
   [*] --> open : New project
-  open --> closed : Finished Return, sets closedAt
+  open --> closed : Finish return, sets closedAt
   closed --> open : Reopen
   open --> [*] : Delete project
   closed --> [*] : Delete project

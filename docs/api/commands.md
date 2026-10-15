@@ -41,7 +41,7 @@ a project through the adapter's `saveItem`. The demo and the tests' mock runtime
 | App action (src/main.js) | Artifact build | Web build (AWS adapter) |
 | --- | --- | --- |
 | Check out (`checkoutModal`) | `PATCH sheets/<id>` with the whole line, then `addStock(key, -qty)` | `POST /teams/{teamId}/projects/{projectId}/checkout`. No `addStock`. |
-| Lost or broken (`finishModal`, Finished Return) | `PATCH sheets/<id>` with the line's new `lost` (and `lostCharge` plus the charge), added to the line as saved now, with the action's mark; no stock write | `POST /teams/{teamId}/projects/{projectId}/lost`. No stock moves |
+| Lost or broken (`finishModal`, Finish return) | `PATCH sheets/<id>` with the line's new `lost` (and `lostCharge` plus the charge), added to the line as saved now, with the action's mark; no stock write | `POST /teams/{teamId}/projects/{projectId}/lost`. No stock moves |
 | Quick take (project list, ADR 0017 §4) | Works out `adhoc-<n>` from the projects it holds, `set`s the project if it doesn't exist, or moves on to the next number if it's been finished, then adds the line as a checkout does, with the action's mark, and reads it again to write the line once more if its mark isn't there (ADR 0017 §6) | `POST /teams/{teamId}/adhoc/checkout`. No `addStock` |
 | Move a General Use line to a client project (line editor, ADR 0017 §5) | Two writes with the move's mark: the counts onto the client project's line, then the General Use line replaced by a hidden "moved" marker (ADR 0017 §6) | `POST /teams/{teamId}/projects/{projectId}/move`. No stock moves |
 | Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `addStock(key, back - before)` | `POST /teams/{teamId}/projects/{projectId}/return`. No `addStock`. |
@@ -397,7 +397,7 @@ movement or the operation record changed.
 | `403 permission_denied`, `reason: "not_member"` | Not a member of the team | As for document writes |
 | `404 not_found` | No such project, or (stock adjustment) no such item | Show the message (the web build handles it as for `400`) |
 | `409 aborted` | The project is closed ("Reopen it to …"), or the line or item changed on every retry | Show the message. Safe to retry with the same ID |
-| `409 aborted`, `reason: "equipment_out"` | A document write closing a project (Finished Return), or removing an equipment line, while company equipment is still out on it | Ask about each piece still out (back, still at the job, or lost or broken), then close |
+| `409 aborted`, `reason: "equipment_out"` | A document write closing a project (Finish return), or removing an equipment line, while company equipment is still out on it | Ask about each piece still out (back, still at the job, or lost or broken), then close |
 | `409 aborted`, `reason: "adhoc_open"` | A document write reopening a finished General Use project while another General Use project is open | Show the message: finish the open one first |
 | `429`, `5xx`, timeout, network error | Unknown whether it ran | Retry with the same ID, with backoff |
 
