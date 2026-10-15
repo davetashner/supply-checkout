@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.18.0](https://github.com/davetashner/supply-checkout/compare/v1.17.0...v1.18.0) (2026-10-15)
+
+
+### Features
+
+* import item sizes from the inventory CSV ([#798](https://github.com/davetashner/supply-checkout/issues/798)) ([0d52b2b](https://github.com/davetashner/supply-checkout/commit/0d52b2b9df44749cc3e07c3e9f6b102938c7f51c))
+* record an item's length, width and height, in inches or centimeters ([#794](https://github.com/davetashner/supply-checkout/issues/794)) ([f2e9d0e](https://github.com/davetashner/supply-checkout/commit/f2e9d0e487750bb7e985950d74a1ca3e34ac4110))
+
+
+### Bug Fixes
+
+* align the scan instructions and return labels with the workflow ([#797](https://github.com/davetashner/supply-checkout/issues/797)) ([6a6dc52](https://github.com/davetashner/supply-checkout/commit/6a6dc52d5105be4482d8448b06c9bcd11360f645))
+* keep checkout confirmations from covering the next action ([#799](https://github.com/davetashner/supply-checkout/issues/799)) ([5023f92](https://github.com/davetashner/supply-checkout/commit/5023f926f139023b7211bbb2692a2eff5f16e152))
+* keep item names readable in the import preview on phones ([#800](https://github.com/davetashner/supply-checkout/issues/800)) ([522de7f](https://github.com/davetashner/supply-checkout/commit/522de7f650af7d13c2e585d0311bf1d27db052a3))
+* keep what's typed on the new-team screen when it redraws ([#801](https://github.com/davetashner/supply-checkout/issues/801)) ([632f9a7](https://github.com/davetashner/supply-checkout/commit/632f9a76810f1ad5e9ae7a1f7bce0b5af3004502))
+* migrate a reopened team's old SHEET# items to projects ([#804](https://github.com/davetashner/supply-checkout/issues/804)) ([cf84356](https://github.com/davetashner/supply-checkout/commit/cf84356532f218855f75456688b1798175d6ee04))
+* show an item's size unit in the app's language in the inventory row ([#808](https://github.com/davetashner/supply-checkout/issues/808)) ([6df3081](https://github.com/davetashner/supply-checkout/commit/6df308199dcc596bb0e6da6a02e3b05d701f3bf2))
+
 ## [1.17.0](https://github.com/davetashner/supply-checkout/compare/v1.16.0...v1.17.0) (2026-10-14)
 
 
