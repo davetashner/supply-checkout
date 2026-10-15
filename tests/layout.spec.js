@@ -1,5 +1,5 @@
 import { test, expect, openApp } from "./helpers.js";
-import { modal, goToInventory, goToProjects, openProject, enterBarcode, uploadReceipt } from "./ui/index.js";
+import { modal, goToInventory, goToProjects, openProject, enterBarcode, addToProject, uploadReceipt } from "./ui/index.js";
 import { usedState, fakeImage } from "./fixtures.js";
 
 // The page body must never scroll sideways on a phone or tablet; only tables may, inside their own container.
@@ -62,3 +62,28 @@ for (const width of [320, 360, 390, 430, 768]) {
 
 // And at each project's own screen, which covers phones and tablets in landscape
 test("every screen fits this device's width", async ({ page }) => checkEveryScreen(page));
+
+// A checkout's confirmation stays up for a few seconds. Opening the next checkout dialog before it
+// goes must not leave it over the dialog's Cancel and Add buttons (supply-checkout-005.25).
+test.describe("checkout confirmation on a phone", () => {
+  test.use({ viewport: { width: 360, height: 640 } });
+  test("does not cover the next dialog's buttons", async ({ page }) => {
+    await openApp(page, usedState);
+    await openProject(page, "Echo Studio");
+    await enterBarcode(page, "SKU1");
+    await addToProject(page);
+    await expect(page.locator("#toast")).toBeVisible();
+    await expect(page.locator("#overlay")).toBeHidden();
+    await enterBarcode(page, "SKU1");
+    await expect(modal(page).getByRole("heading", { name: "Check out" })).toBeVisible();
+    await expect(page.locator("#toast")).toBeVisible();
+    const toast = await page.locator("#toast").boundingBox();
+    for (const id of ["#cancel", "#go"]) {
+      const b = await modal(page).locator(id).boundingBox();
+      const apart = toast.y + toast.height <= b.y || b.y + b.height <= toast.y || toast.x + toast.width <= b.x || b.x + b.width <= toast.x;
+      expect(apart, `the confirmation overlaps ${id}`).toBe(true);
+    }
+    // It never takes a tap meant for what is under it
+    expect(await page.locator("#toast").evaluate((el) => getComputedStyle(el).pointerEvents)).toBe("none");
+  });
+});
