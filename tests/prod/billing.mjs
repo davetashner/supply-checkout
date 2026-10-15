@@ -122,8 +122,14 @@ const TEST_CARD = { number: "4242424242424242", expiry: "1234", cvc: "123", name
 // A fixed, fake US address for the billing address the Checkout Session requires (`billing_address_collection: required`)
 const TEST_ADDRESS = { line1: "123 Test Street", city: "New York", state: "NY", postal: TEST_CARD.postal };
 
-/** Fills the billing address fields Checkout shows (it requires them), whichever of them there are. */
+/**
+ * Fills the billing name and address fields Checkout shows (it requires them), whichever of them there are. The
+ * name is here and not only with the card: the free trial shows no card fields, so `typeCard` never runs, and
+ * Checkout kept answering REQUIRED on the empty name (the journeys run after v1.18.0).
+ */
 async function fillBillingAddress(page) {
+  const name = page.locator("#billingName");
+  if (await name.isVisible().catch(() => false)) await secretFill(name, TEST_CARD.name);
   const country = page.locator("#billingCountry");
   if (await country.isVisible().catch(() => false)) await country.selectOption("US");
   const line1 = page.locator("#billingAddressLine1");
@@ -177,7 +183,18 @@ export async function completeCheckout(page, { harness, email }) {
     if (await page.locator("#cardNumber").waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false)) await typeCard(page);
     await fillBillingAddress(page);
     await submit.click();
-    await page.waitForURL((u) => u.origin === PROD.app, { timeout: 120_000 });
+    try {
+      await page.waitForURL((u) => u.origin === PROD.app, { timeout: 120_000 });
+    } catch (err) {
+      // Which of the form's fields are still empty, by name only (never a value), so a changed Checkout form is diagnosable from the public log
+      /* global document -- this function runs in the page */
+      const empty = await page.evaluate(() => [...document.querySelectorAll("input, select, textarea")]
+        .filter((el) => el.offsetParent !== null && !el.value)
+        .map((el) => el.getAttribute("aria-label") || el.id || el.name || el.type)).catch(() => []);
+      // The first line only, as `described` does: the error's own cause could hold unmasked values
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error(`${String(err?.message ?? err).split("\n")[0]} [still empty: ${empty.join(", ") || "none"}]`);
+    }
   });
 }
 
