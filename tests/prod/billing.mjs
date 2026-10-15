@@ -119,6 +119,25 @@ export async function openCheckout(page, { harness, token, teamId }) {
 }
 
 const TEST_CARD = { number: "4242424242424242", expiry: "1234", cvc: "123", name: "Journeys Test", postal: "10001" };
+// A fixed, fake US address for the billing address the Checkout Session requires (`billing_address_collection: required`)
+const TEST_ADDRESS = { line1: "123 Test Street", city: "New York", state: "NY", postal: TEST_CARD.postal };
+
+/** Fills the billing address fields Checkout shows (it requires them), whichever of them there are. */
+async function fillBillingAddress(page) {
+  const country = page.locator("#billingCountry");
+  if (await country.isVisible().catch(() => false)) await country.selectOption("US");
+  const line1 = page.locator("#billingAddressLine1");
+  if (await line1.isVisible().catch(() => false)) await secretFill(line1, TEST_ADDRESS.line1);
+  const city = page.locator("#billingLocality");
+  if (await city.isVisible().catch(() => false)) await secretFill(city, TEST_ADDRESS.city);
+  const state = page.locator("#billingAdministrativeArea");
+  if (await state.isVisible().catch(() => false)) {
+    if ((await state.evaluate((el) => el.tagName)) === "SELECT") await state.selectOption(TEST_ADDRESS.state);
+    else await secretFill(state, TEST_ADDRESS.state);
+  }
+  const postal = page.locator("#billingPostalCode");
+  if (await postal.isVisible().catch(() => false)) await secretFill(postal, TEST_ADDRESS.postal);
+}
 
 /** Types a test card into Checkout's fields, or the Elements' frames (the Portal's form). */
 async function typeCard(page) {
@@ -156,6 +175,7 @@ export async function completeCheckout(page, { harness, email }) {
     const card = page.getByRole("radio", { name: /^card$/i });
     if (await card.isVisible().catch(() => false)) await card.check();
     if (await page.locator("#cardNumber").waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false)) await typeCard(page);
+    await fillBillingAddress(page);
     await submit.click();
     await page.waitForURL((u) => u.origin === PROD.app, { timeout: 120_000 });
   });
