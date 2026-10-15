@@ -24,6 +24,7 @@ import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aw
 import { type Db, connection, storable } from "./client.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
 import { brandOf } from "./brand.js";
+import { checkDimensionFields } from "./dimensions.js";
 import { hiddenCharacterProblem, withoutHiddenCharacters } from "../text/hidden-characters.js";
 import { AdhocOpenError, ConflictError, EquipmentOutError, InvalidInputError, NotFoundError, TooLargeError, isCancelledAsTooLarge, isItemTooLarge } from "./errors.js";
 import { BOUGHT_SUFFIX, adhocNumber, barcode, dateFormat, id as checkId, isAdhocId, keys, prefixes, productKey, teamPartition } from "./keys.js";
@@ -223,6 +224,8 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
     for (const field of ["price", "cost"] as const) if (Object.hasOwn(data, field)) data[field] = writtenMoney(data[field], before?.data, field);
     // The reorder level, usual order and the team's acknowledgment of a low-stock alert (reorder.ts)
     checkReorderFields(data, before?.data);
+    // The optional size, three sides in inches or centimeters (dimensions.ts)
+    checkDimensionFields(data);
   }
   if (collection === "projects") {
     if ("date" in data && typeof data.date !== "string") throw new InvalidInputError("Invalid date");

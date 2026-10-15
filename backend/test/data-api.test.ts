@@ -337,6 +337,31 @@ describe("documents (the app's db contract)", () => {
     expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { cost: 1.255 } } })).body.error.code).toBe("bad_request");
   });
 
+  it("keeps a product's optional size, in inches unless it says centimeters, and refuses a bad one (supply-checkout-hqdv)", async () => {
+    // A side with no unit is in inches; a product without a size has neither sides nor a unit
+    const put = await call("PUT", "/teams/team-a/products/d1", { body: { data: { ...product, length: 12, width: 6.5 } } });
+    expect(put.body.data).toEqual({ ...product, length: 12, width: 6.5, dimUnit: "in" });
+    expect((await call("PUT", "/teams/team-a/products/d2", { body: { data: { ...product, dimUnit: "cm" } } })).body.data).toEqual(product);
+    // PATCH changes the unit, adds a side, and a null removes one
+    expect((await call("PATCH", "/teams/team-a/products/d1", { body: { data: { dimUnit: "cm", height: 4 } } })).body.data).toMatchObject({ length: 12, width: 6.5, height: 4, dimUnit: "cm" });
+    const less = await call("PATCH", "/teams/team-a/products/d1", { body: { data: { width: null, height: null } } });
+    expect(less.body.data).toMatchObject({ length: 12, dimUnit: "cm" });
+    expect(less.body.data).not.toHaveProperty("width");
+    // No side left, no unit
+    const none = await call("PATCH", "/teams/team-a/products/d1", { body: { data: { length: null } } });
+    expect(none.body.data).not.toHaveProperty("dimUnit");
+    expect(table.get("TEAM#team-a", "PRODUCT#d1")).not.toHaveProperty("length");
+    // Anything else is refused, and the product is left as it was
+    const before = table.get("TEAM#team-a", "PRODUCT#d1");
+    for (const bad of [{ length: "12" }, { width: 0 }, { height: -2 }, { length: 1001 }, { length: 1.234 }, { length: [1] }, { length: 1, dimUnit: "ft" }, { length: 1, dimUnit: 5 }]) {
+      const res = await call("PATCH", "/teams/team-a/products/d1", { body: { data: bad } });
+      expect(res.body.error?.code, JSON.stringify(bad)).toBe("bad_request");
+      const again = await call("PUT", "/teams/team-a/products/d1", { body: { data: { ...product, ...bad } } });
+      expect(again.body.error?.code, JSON.stringify(bad)).toBe("bad_request");
+    }
+    expect(table.get("TEAM#team-a", "PRODUCT#d1")).toEqual(before);
+  });
+
   it("keeps a product's optional brand trimmed, drops a blank one, and refuses one that isn't short text (supply-checkout-005.9)", async () => {
     // Trimmed on PUT; a product without one has no brand field at all
     expect((await call("PUT", "/teams/team-a/products/p1", { body: { data: { ...product, brand: "  Kimberly-Clark  " } } })).body.data).toEqual({ ...product, brand: "Kimberly-Clark" });
