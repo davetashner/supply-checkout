@@ -425,6 +425,79 @@ describe("reopening a team", () => {
     expect(await purgeTeam(table.db("team-a"), "team-a", late)).toEqual({ deleted: 0, skipped: true });
   });
 
+  // supply-checkout-005.6.7: the projects-rename backfill skips closed teams, so one can come back holding SHEET# items
+  const oldSheet = (teamId: string, id: string, extra: Record<string, unknown> = {}) => ({
+    PK: `TEAM#${teamId}`, SK: `SHEET#${id}`, GSI1PK: `TEAM#${teamId}#SHEETS`, GSI1SK: `2026-08-01#${id}`, type: "sheet", id, version: 4, client: "Old", date: "2026-08-01", status: "open", items: {}, ...extra,
+  });
+
+  it("moves the old SHEET# items of a team it reopens to projects, and only that team's", async () => {
+    table.put(oldSheet("team-b", "old1"));
+    table.put(oldSheet("team-a", "other"));
+    await close("team-b");
+    expect((await reopen("team-b")).status).toBe(200);
+    expect(table.get("TEAM#team-b", "SHEET#old1")).toBeUndefined();
+    expect(table.get("TEAM#team-b", "PROJECT#old1")).toMatchObject({ GSI1PK: "TEAM#team-b#PROJECTS", GSI1SK: "2026-08-01#old1", type: "project", version: 4, client: "Old" });
+    // Another team's partition is never touched
+    expect(table.get("TEAM#team-a", "SHEET#other")).toMatchObject({ type: "sheet" });
+    expect(table.get("TEAM#team-a", "PROJECT#other")).toBeUndefined();
+    // It reads them, and nothing in the log names an ID or content
+    expect((await data("GET", "/teams/team-b/projects/old1", OWNER)).body).toMatchObject({ id: "old1" });
+    expect(JSON.stringify(logs)).not.toMatch(/old1|Old/);
+  });
+
+  it("reopens the team and logs an error when an old sheet can't be moved (a different project already has its key)", async () => {
+    table.put(oldSheet("team-b", "old1"));
+    table.put({ ...oldSheet("team-b", "old1", { client: "Different" }), SK: "PROJECT#old1", GSI1PK: "TEAM#team-b#PROJECTS", type: "project" });
+    await close("team-b");
+    expect((await reopen("team-b")).status).toBe(200);
+    expect(table.get("TEAM#team-b", "SHEET#old1")).toBeDefined();
+    expect(logs).toContainEqual(["error", "Reopened team still has old sheet items", expect.objectContaining({ teamId: "team-b", conflicts: 1 })]);
+  });
+
+  it("queues the seat sync and emails the owners before it moves anything, so a failed move costs neither", async () => {
+    table.put({ PK: "TEAM#team-b", SK: "MOVE#0123#2026-08-01T10:00:00.000Z#op1", type: "movement", productKey: "0123", sheetId: "old1", operationId: "op1" });
+    table.put(oldSheet("team-b", "old1"));
+    await close("team-b");
+    notices = [];
+    const order: string[] = [];
+    const real = table.failingUpdates;
+    table.failingUpdates = (input) => {
+      order.push(`move after ${notices.length} notices`);
+      return String(input.UpdateExpression).includes("REMOVE #o0") || (real?.(input) ?? false);
+    };
+    expect((await reopen("team-b")).status).toBe(200);
+    expect(meta("team-b")?.closedAt).toBeUndefined();
+    expect(notices.length).toBeGreaterThan(0);
+    expect(order.every((o) => o === `move after ${notices.length} notices`)).toBe(true);
+    expect(logs).toContainEqual(["error", "Reopened team's sheets not moved", { teamId: "team-b", code: "ProvisionedThroughputExceededException" }]);
+  });
+
+  it("reads one key and writes nothing for a team with no old sheets", async () => {
+    await close("team-b");
+    table.requests.length = 0;
+    expect((await reopen("team-b")).status).toBe(200);
+    const after = table.requests.filter(({ input }) => JSON.stringify(input).includes("SHEET#"));
+    expect(after.map(({ command }) => command)).toEqual(["QueryCommand"]);
+    expect(after[0].input).toMatchObject({ Limit: 1, ProjectionExpression: "SK", ExpressionAttributeValues: { ":pk": "TEAM#team-b", ":prefix": "SHEET#" } });
+  });
+
+  it("also moves the old sheets of a team reopened earlier, when asked to reopen it again", async () => {
+    await close("team-b");
+    expect((await reopen("team-b")).status).toBe(200);
+    table.put(oldSheet("team-b", "late1"));
+    notices = [];
+    expect((await reopen("team-b")).status).toBe(200);
+    expect(notices).toEqual([]);
+    expect(table.get("TEAM#team-b", "PROJECT#late1")).toMatchObject({ type: "project" });
+    expect(table.get("TEAM#team-b", "SHEET#late1")).toBeUndefined();
+  });
+
+  it("changes nothing in a team with no old sheets", async () => {
+    await close("team-b");
+    expect((await reopen("team-b")).status).toBe(200);
+    expect(logs.filter((l) => String(l[1]).includes("sheets"))).toEqual([]);
+  });
+
   it("emails every owner, and nobody else, once; reopening an open team changes nothing", async () => {
     await close("team-b");
     notices = [];

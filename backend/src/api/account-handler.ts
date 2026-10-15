@@ -227,6 +227,8 @@ import {
   cancelAccountDeletion,
   closeTeam,
   reopenTeam,
+  hasOldSheets,
+  renameProjects,
   countEmailCode,
   createInvite,
   createTeam,
@@ -407,6 +409,9 @@ const PHOTO_BASE64 = /^(?:data:image\/jpeg;base64,)?((?:[A-Za-z0-9+/]{4})*(?:[A-
 
 const photoInvalid = () => new ApiError(400, "bad_request", "That isn't a 256×256 JPEG photo", "photo_invalid");
 const photoTooLarge = () => new ApiError(413, "quota_exceeded", "That photo is too large", "photo_too_large");
+
+/** How long a request may spend moving old sheets before it stops starting new ones and leaves the rest to the runbook (the function times out at 10 s). */
+const SHEET_MIGRATION_BUDGET_MS = 4000;
 
 /** The data layer's errors, as the account routes answer them. */
 export function errorFor(error: unknown): ApiError {
@@ -918,7 +923,29 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       await queueSeatSync(teamId, team);
       await noticeOwners(db, ctx, { kind: "teamReopened", teamName: team.name }, REOPENED_NOTICES);
     }
+    // Last, and best effort: a timeout here must not cost a reopen its seat sync and notices (a retry sees reopenedNow false).
+    // Also for a team reopened earlier that still holds old sheets (the guard makes it one cheap Query otherwise)
+    await migrateOldSheets(db, teamId);
     return json(200, { team: teamBody(team, ctx.role) });
+  }
+
+  /**
+   * A team closed before the projects rename (supply-checkout-005.6.7) is skipped by the backfill and may come back holding
+   * SHEET# items, which the app no longer reads: moves them to PROJECT# now that it's open (the same code as the backfill,
+   * scoped to this team's partition). The reopen stands whatever happens here; a failure is logged for the runbook
+   * (`projects-rename --team <id> --apply`, docs/infrastructure.md).
+   */
+  async function migrateOldSheets(db: ReturnType<DbForAccount>, teamId: string): Promise<void> {
+    try {
+      if (!(await hasOldSheets(db, teamId))) return;
+      const r = await renameProjects(db, { apply: true, team: teamId, verify: false, writesPerSecond: Infinity, deadline: Date.now() + SHEET_MIGRATION_BUDGET_MS });
+      if (r.found > 0) obs.logger.info("Reopened team's sheets moved to projects", { teamId, moved: r.moved, duplicates: r.duplicates, movements: r.movements.renamed });
+      if (r.conflicts + r.failed + r.invalid + r.leftByLimit + r.movements.conflicts + r.movements.raced > 0) {
+        obs.logger.error("Reopened team still has old sheet items", { teamId, conflicts: r.conflicts, failed: r.failed, invalid: r.invalid, leftByTime: r.leftByLimit, movementConflicts: r.movements.conflicts, movementsRaced: r.movements.raced });
+      }
+    } catch (error) {
+      obs.logger.error("Reopened team's sheets not moved", { teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+    }
   }
 
   /**
