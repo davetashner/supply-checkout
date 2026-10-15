@@ -3524,6 +3524,10 @@ components:
         stock: { type: number, description: "The count in storage; absent if not counted. Read-only here: only the stock commands and the CSV import change it, and a write may only repeat the stored value." }
         reorderAt: { type: integer, minimum: 0, maximum: 1000000, description: "The reorder level, in eaches: the item is running low when it's counted and `stock <= reorderAt` (supply-checkout-005.8). Absent: no alert." }
         reorderQty: { type: integer, minimum: 1, maximum: 1000000, description: "How many the team usually orders, in eaches. Only shown on the reorder list." }
+        length: { type: number, exclusiveMinimum: 0, maximum: 1000, description: "Optional (supply-checkout-hqdv): one side of the item, in `dimUnit`, at most two decimals. Absent or null for none." }
+        width: { type: number, exclusiveMinimum: 0, maximum: 1000, description: "Optional: the second side, as `length`." }
+        height: { type: number, exclusiveMinimum: 0, maximum: 1000, description: "Optional: the third side, as `length`. The app asks for the three in the order length, width, height, and keeps them as typed." }
+        dimUnit: { type: string, enum: [in, cm], description: "The unit of the sides: inches (the default) or centimeters. Kept only while a side is; a write with a side and no unit stores `in`." }
         ackedAtStock:
           type: integer
           minimum: 0

@@ -12,6 +12,9 @@ const FIELDS = {
   stock: (form) => form.getByLabel("Single items in storage now", { exact: true }),
   reorderAt: (form) => form.getByLabel("Reorder at (optional)", { exact: true }),
   usualOrder: (form) => form.getByLabel("Usual order (optional)", { exact: true }),
+  length: (form) => form.getByLabel("Length", { exact: true }),
+  width: (form) => form.getByLabel("Width", { exact: true }),
+  height: (form) => form.getByLabel("Height", { exact: true }),
 };
 
 /** Fills the open item form's `fields` (see FIELDS), in the order given. */

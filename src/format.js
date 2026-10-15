@@ -28,6 +28,19 @@ export const newKey = () => "nb-" + Date.now().toString(36) + Math.random().toSt
 export const uid = () => Math.random().toString(36).slice(2, 9);
 // The largest price or cost the API takes, in dollars (ADR 0014; MAX_MONEY in backend/src/data/money.ts)
 export const MAX_MONEY = 1000000;
+// An item's optional size (supply-checkout-hqdv): length, width and height in `dimUnit`, inches
+// unless it says "cm". MAX_DIMENSION is the API's limit for one side (backend/src/data/dimensions.ts).
+export const MAX_DIMENSION = 1000;
+export const DIM_FIELDS = ["length", "width", "height"];
+const side = (p, f) => (p && typeof p[f] === "number" && p[f] > 0 ? p[f] : null);
+export const dimUnit = p => (p && p.dimUnit === "cm" ? "cm" : "in");
+export const hasSize = p => DIM_FIELDS.some(f => side(p, f) !== null);
+// One side in inches, to sort inches and centimeters together; null where it isn't given
+export const inchesOf = (p, f) => { const n = side(p, f); return n === null ? null : dimUnit(p) === "cm" ? n / 2.54 : n; };
+// "L 12 × W 6 × H 4 in": each side labeled, so a side that's left out can't be mistaken for another
+export const sizeText = p => hasSize(p)
+  ? msg("format.sizeLine", { sides: DIM_FIELDS.filter(f => side(p, f) !== null).map(f => msg("format.size." + f, { n: side(p, f) })).join(" × "), unit: dimUnit(p) })
+  : "";
 // Rounds to cents, halves up (ADR 0014). toPrecision first, so 1.005 (really 1.00499…) is 1.01
 export const round2 = n => Math.round(Number(((Number(n) || 0) * 100).toPrecision(12))) / 100;
 export const numOrNull = n => (n === null || n === undefined || n === "" || isNaN(Number(n))) ? null : round2(n);

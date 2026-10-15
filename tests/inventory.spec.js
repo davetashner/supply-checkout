@@ -438,3 +438,73 @@ test("sort and search show only on the item list", { tag: ["@J2"] }, async ({ pa
   await page.getByRole("button", { name: "Out on jobs" }).click();
   await expect(page.locator("#itemSearch")).toHaveCount(0);
 });
+
+const product = (page, key) => page.evaluate((k) => window.__mock.docs.get(k), key);
+
+test("adds an item with a size in inches, shows it labeled, and keeps it when edited", { tag: ["@J2.1", "@J2.2"] }, async ({ page }) => {
+  await openInventory(page);
+  await startAddItem(page);
+  // Unit defaults to inches
+  await expect(modal(page).getByLabel("Unit", { exact: true })).toHaveValue("in");
+  await fillItem(page, { name: "Clear bin", length: "12", width: "6.5", height: "4" });
+  await saveItem(page);
+  await expect(inventoryRow(page, "Clear bin")).toContainText("L 12 × W 6.5 × H 4 in");
+  const key = await page.evaluate(() => [...window.__mock.docs.keys()].find((k) => window.__mock.docs.get(k).name === "Clear bin"));
+  expect(await product(page, key)).toMatchObject({ length: 12, width: 6.5, height: 4, dimUnit: "in" });
+  // Editing something else leaves the size as it was
+  await inventoryRow(page, "Clear bin").click();
+  await expect(modal(page).getByLabel("Width", { exact: true })).toHaveValue("6.5");
+  await modal(page).getByLabel("Item name").fill("Clear bin, large");
+  await saveItem(page);
+  expect(await product(page, key)).toMatchObject({ name: "Clear bin, large", length: 12, width: 6.5, height: 4, dimUnit: "in" });
+});
+
+test("a size can be in centimeters, partly filled, rounded, capped and removed", { tag: ["@J2.3"] }, async ({ page }) => {
+  await openInventory(page);
+  await startAddItem(page);
+  await fillItem(page, { name: "Shoe box", length: "30", height: "10.456" });
+  await modal(page).getByLabel("Unit", { exact: true }).selectOption("cm");
+  await saveItem(page);
+  // Only the sides given are shown, each labeled; a side is stored to two decimals
+  await expect(inventoryRow(page, "Shoe box")).toContainText("L 30 × H 10.46 cm");
+  await expect(inventoryRow(page, "Shoe box")).not.toContainText("W ");
+  const key = await page.evaluate(() => [...window.__mock.docs.keys()].find((k) => window.__mock.docs.get(k).name === "Shoe box"));
+  expect(await product(page, key)).toMatchObject({ length: 30, height: 10.46, dimUnit: "cm" });
+  expect(await product(page, key)).not.toHaveProperty("width");
+  // Over the API's limit is held to it, in the saved value as well as the field's max
+  await inventoryRow(page, "Shoe box").click();
+  await expect(modal(page).getByLabel("Unit", { exact: true })).toHaveValue("cm");
+  await modal(page).getByLabel("Length", { exact: true }).evaluate((el) => { el.removeAttribute("max"); });
+  await modal(page).getByLabel("Length", { exact: true }).fill("5000");
+  await saveItem(page);
+  expect(await product(page, key)).toMatchObject({ length: 1000 });
+  // Blanking every side removes the size and its unit
+  await inventoryRow(page, "Shoe box").click();
+  for (const side of ["Length", "Width", "Height"]) await modal(page).getByLabel(side, { exact: true }).fill("");
+  await saveItem(page);
+  const gone = await product(page, key);
+  for (const f of ["length", "width", "height", "dimUnit"]) expect(gone).not.toHaveProperty(f);
+  await expect(inventoryRow(page, "Shoe box")).not.toContainText(" cm");
+});
+
+test("sorts the inventory by length, width or height, inches and centimeters together", { tag: ["@J2"] }, async ({ page }) => {
+  await openInventory(page, {
+    seed: {
+      "products/a": { code: "a", name: "Tote", price: 1, length: 20, width: 12, height: 10, dimUnit: "in" },
+      "products/b": { code: "b", name: "Shoe box", price: 1, length: 30, width: 20, height: 12, dimUnit: "cm" },
+      "products/c": { code: "c", name: "Crate", price: 1, length: 24, height: 15 },
+      "products/d": { code: "d", name: "Rags", price: 1 },
+    },
+  });
+  const sort = page.getByLabel("Sort by");
+  // 30 cm is about 11.8 in: shorter than the tote's 20 in and the crate's 24 in
+  await sort.selectOption("length");
+  expect(await rowNames(page)).toEqual(["Shoe box", "Tote", "Crate", "Rags"]);
+  await page.locator("#itemDir").click();
+  expect(await rowNames(page)).toEqual(["Crate", "Tote", "Shoe box", "Rags"]);
+  await page.locator("#itemDir").click();
+  await sort.selectOption("width");
+  expect(await rowNames(page)).toEqual(["Shoe box", "Tote", "Crate", "Rags"]);
+  await sort.selectOption("height");
+  expect(await rowNames(page)).toEqual(["Shoe box", "Tote", "Crate", "Rags"]);
+});

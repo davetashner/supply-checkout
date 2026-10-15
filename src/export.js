@@ -1,7 +1,7 @@
 // Exports: one project as CSV, and all of a team's data as CSV or JSON. Built from the
 // documents the app already holds and shows (both collections are loaded in full to draw
 // the lists), with the same math and labels as the screens, so an export matches them.
-import { hasStock, isEquipment, unitValue, brandOf } from "./format.js";
+import { hasStock, isEquipment, unitValue, brandOf, DIM_FIELDS, hasSize, dimUnit } from "./format.js";
 import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts, lostCharge, lostRows, lineLabel, projectTitle, isAdhoc } from "./project-math.js";
 
 // One CSV cell, guarded against formula (CSV) injection per OWASP: text a spreadsheet would
@@ -76,11 +76,11 @@ const whole = v => Number.isInteger(v) && v >= 0;
 // for an item without one (supply-checkout-005.9). The headers are ones the CSV import reads.
 export function inventoryCsv(products) {
   return toCsv([
-    ["Item", "Brand", "Barcode", "In storage", "Price each", "Value", "Kind", "Reorder at", "Usual order"],
+    ["Item", "Brand", "Barcode", "In storage", "Price each", "Value", "Kind", "Reorder at", "Usual order", "Length", "Width", "Height", "Size unit"],
     ...byName(products).map(p => {
       const counted = hasStock(p), equipment = isEquipment(p);
       const each = equipment ? unitValue(p) : Number(p.price) || 0;
-      return [p.name || "Unnamed item", brandOf(p), p.code || "", counted ? p.stock : "", equipment ? "" : fixed(p.price), counted ? fixed(p.stock * each) : "", equipment ? "Equipment" : "Supply", whole(p.reorderAt) ? p.reorderAt : "", whole(p.reorderQty) ? p.reorderQty : ""];
+      return [p.name || "Unnamed item", brandOf(p), p.code || "", counted ? p.stock : "", equipment ? "" : fixed(p.price), counted ? fixed(p.stock * each) : "", equipment ? "Equipment" : "Supply", whole(p.reorderAt) ? p.reorderAt : "", whole(p.reorderQty) ? p.reorderQty : "", ...DIM_FIELDS.map(f => (Number(p[f]) > 0 ? p[f] : "")), hasSize(p) ? dimUnit(p) : ""];
     }),
   ]);
 }

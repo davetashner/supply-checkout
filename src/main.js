@@ -2,7 +2,7 @@ import "./theme.js";
 import { msg, applyStatic, locale, monthName } from "./i18n.js";
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, markLost, saveItem, addLines, quickTake, moveLine } from "./moves.js";
-import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY, MAX_BRAND, brandOf, nameWithBrand, brandHTML, visibleText } from "./format.js";
+import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY, MAX_DIMENSION, DIM_FIELDS, dimUnit, hasSize, inchesOf, sizeText, MAX_BRAND, brandOf, nameWithBrand, brandHTML, visibleText } from "./format.js";
 import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts, lostRows, lineLabel, isAdhoc, projectTitle, leftOut } from "./project-math.js";
 import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
@@ -593,7 +593,7 @@ function drawPrices() {
     ${tools}
     ${out ? equipmentOutHTML() : list.length ? `<div class="table-wrap"><table class="prices">
       <thead><tr><th>${msg("inventory.colItem")}</th><th>${msg("inventory.colInStorage")}</th><th>${msg("inventory.colPriceEach")}</th><th>${msg(ui.kind === "equipment" ? "inventory.colValueEach" : "inventory.colCostEach")}</th><th>${msg("inventory.colValue")}</th></tr></thead>
-      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || msg("inventory.unnamed"))}${lowBadge(p)}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span>${isEquipment(p) ? `<span class="kind">${msg("inventory.companyEquipment")}</span>` : ""}</td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td>${isEquipment(p) ? `<td class="muted">${msg("inventory.notCharged")}</td>` : `<td>${money(p.price)}</td>`}<td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
+      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || msg("inventory.unnamed"))}${lowBadge(p)}${brandHTML(p)}<span class="code">${esc(codeText(p.code))}</span>${hasSize(p) ? `<span class="size">${esc(sizeText(p))}</span>` : ""}${isEquipment(p) ? `<span class="kind">${msg("inventory.companyEquipment")}</span>` : ""}</td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td>${isEquipment(p) ? `<td class="muted">${msg("inventory.notCharged")}</td>` : `<td>${money(p.price)}</td>`}<td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
       <tfoot><tr><td>${msg("inventory.totalInStorage")}</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td></td><td>${money(list.reduce((a, p) => a + storageCents(p), 0) / 100)}</td></tr></tfoot>
     </table></div>` : `<div class="empty">${!connected ? msg("inventory.loading") : !all.length ? msg("inventory.none") : terms.length ? msg("inventory.noMatch", { query: esc(ui.iq.trim()) }) : ui.kind === "equipment" ? msg("inventory.noEquipment") : msg("inventory.noSupplies")}</div>`}`);
   // Not in the HTML, so a redraw while someone types leaves the field (and its caret) alone;
@@ -614,6 +614,9 @@ const ITEM_SORTS = [
   ["cost", "inventory.sortCost", p => (hasCost(p) ? p.cost : null)],
   ["value", "inventory.colValue", p => (hasStock(p) ? storageCents(p) : null)],
   ["pack", "inventory.sortPack", p => (Number.isInteger(p.packSize) ? p.packSize : null)],
+  ["length", "inventory.sortLength", p => inchesOf(p, "length")],
+  ["width", "inventory.sortWidth", p => inchesOf(p, "width")],
+  ["height", "inventory.sortHeight", p => inchesOf(p, "height")],
   ["reorderAt", "inventory.sortReorderAt", reorderLevel],
   ["reorderQty", "inventory.sortReorderQty", p => (Number.isInteger(p.reorderQty) ? p.reorderQty : null)],
 ];
@@ -1117,6 +1120,13 @@ function productModal(key) {
       <div class="field" id="fPriceField" ${equip ? "hidden" : ""}><label for="fPrice">${msg("product.price")}</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && !equip ? round2(p.price) : ""}" placeholder="0.00"></div>
       <div class="field"><label for="fCost" id="fCostLabel">${msg(equip ? "product.valueEach" : "product.costEach")}</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="${msg("product.costPlaceholder")}"></div>
       <div class="field"><label for="fPack">${msg("product.pack")}</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="${msg("product.packPlaceholder")}" aria-describedby="fPackHint"><p class="hint" id="fPackHint">${msg("product.packHint")}</p></div>
+      <fieldset class="field dims"><legend>${msg("product.size")}</legend>
+        <div class="dim-row">
+          ${DIM_FIELDS.map(f => `<div class="field"><label for="f${f[0].toUpperCase()}${f.slice(1)}">${msg("product." + f)}</label><input type="number" id="f${f[0].toUpperCase()}${f.slice(1)}" min="0" max="${MAX_DIMENSION}" step="any" inputmode="decimal" value="${p && Number(p[f]) > 0 ? p[f] : ""}"></div>`).join("")}
+          <div class="field"><label for="fDimUnit">${msg("product.sizeUnit")}</label><select id="fDimUnit"><option value="in" ${dimUnit(p) === "in" ? "selected" : ""}>${msg("product.unitIn")}</option><option value="cm" ${dimUnit(p) === "cm" ? "selected" : ""}>${msg("product.unitCm")}</option></select></div>
+        </div>
+        <p class="hint">${msg("product.sizeHint")}</p>
+      </fieldset>
       <div class="field"><label for="fReorder">${msg("product.reorder")}</label><input type="number" id="fReorder" min="0" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${reorderLevel(p) ?? ""}" placeholder="${msg("product.reorderPlaceholder")}" aria-describedby="fReorderHint"><p class="hint" id="fReorderHint">${msg("product.reorderHint")}</p></div>
       <div class="field"><label for="fReorderQty">${msg("product.reorderQty")}</label><input type="number" id="fReorderQty" min="1" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.reorderQty) ? p.reorderQty : ""}" placeholder="${msg("product.reorderQtyPlaceholder")}"></div>
       <div class="field"><label for="fStock">${msg("product.stock")}</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="${msg("product.stockPlaceholder")}"><p class="hint" id="fPacks" aria-live="polite" hidden></p></div>
@@ -1162,6 +1172,9 @@ function productModal(key) {
       opt("#fCost", "cost", v => Math.max(0, round2(v)));
       opt("#fPack", "packSize", packInput);
       opt("#fBrand", "brand", visibleText);
+      // Each side: blank, or below the smallest the API takes, removes it. With no side the unit goes too.
+      for (const f of DIM_FIELDS) { const n = round2(m.querySelector("#f" + f[0].toUpperCase() + f.slice(1)).value); if (n > 0) body[f] = Math.min(MAX_DIMENSION, n); else delete body[f]; }
+      if (hasSize(body)) body.dimUnit = m.querySelector("#fDimUnit").value; else delete body.dimUnit;
       opt("#fReorder", "reorderAt", v => Math.min(MAX_COUNT, int(v)));
       opt("#fReorderQty", "reorderQty", v => Math.min(MAX_COUNT, Math.max(1, int(v))));
       // A new reorder level starts afresh: the team's acknowledgment was of the old one
