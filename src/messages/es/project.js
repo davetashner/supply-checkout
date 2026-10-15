@@ -60,7 +60,7 @@ export default {
   "project.scanReturn": "Escanear para devolver",
   "project.noCodeOut": "Agregar artículo sin código de barras",
   "project.noCodeReturn": "Devolver artículo sin código de barras",
-  "project.hintOut": "Tome una foto del código de barras y elija cuántos va a retirar.",
+  "project.hintOut": "Escanee el código de barras con la cámara, o busque el artículo sin código, y elija cuántos va a retirar.",
   "project.hintReturn": "Escanee un artículo que devuelve e indique cuántos no se usaron. Lo que no se devuelva cuenta como usado. Toque Terminar devolución cuando todo esté de vuelta.",
   "project.emptyAdhoc": "Aún no hay nada en Uso general. Retire artículos con Retiro rápido en la lista de proyectos.",
   "project.empty": "Aún no hay insumos en este proyecto. Escanee un código de barras para retirar uno.",

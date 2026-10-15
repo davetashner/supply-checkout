@@ -44,7 +44,7 @@ test("a viewer sees projects and inventory, gets no controls to change them, and
     await expect(lineRow(page, item.name)).toBeVisible();
     await expect(page.locator("#scanbar")).toBeHidden();
     await expect(page.getByRole("button", { name: "Edit details" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Finished Return" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Finish return" })).toHaveCount(0);
     await lineRow(page, item.name).click();
     await expect(page.locator("#overlay")).toBeHidden();
 

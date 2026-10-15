@@ -132,7 +132,7 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
     await expect(toast(page)).toHaveText("Saved");
     expect((await doc(page, "projects/adhoc-1")).items.G1).toMatchObject({ out: 5, returned: 1, price: 12.5 });
 
-    // Finished Return asks about the ladder, with no charge to anyone
+    // Finish return asks about the ladder, with no charge to anyone
     await finishReturn(page);
     await expect(modal(page).locator("fieldset.finish")).toHaveCount(1);
     await modal(page).getByLabel("Lost or broken", { exact: true }).fill("1");

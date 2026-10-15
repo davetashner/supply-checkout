@@ -1,7 +1,7 @@
 // A line on a project: its editor, and moving it (src/main.js lineModal)
 export default {
   "line.item": "Item",
-  "line.equipmentHint": "Company equipment: not charged. Its counts change when it's checked out, returned, or marked lost at Finished Return.",
+  "line.equipmentHint": "Company equipment: not charged. Its counts change when it's checked out, returned, or marked lost at Finish return.",
   "line.summaryTaken": "Taken <b>{count}</b>",
   "line.summaryReturned": "Returned <b>{count}</b>",
   "line.summaryLost": "Lost or broken <b>{count}</b>",

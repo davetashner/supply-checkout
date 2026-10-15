@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
-import { InvalidInputError, keyOfBarcode, MAX_BRAND_LENGTH, MAX_IMPORT_BYTES, MAX_IMPORT_ROWS, parseInventoryCsv, planImport, ROWS_PER_CHUNK } from "../src/data/index.js";
+import { checkDimensionFields, InvalidInputError, keyOfBarcode, MAX_BRAND_LENGTH, MAX_IMPORT_BYTES, MAX_IMPORT_ROWS, parseInventoryCsv, planImport, ROWS_PER_CHUNK } from "../src/data/index.js";
 import { parseCsv } from "../src/data/csv.js";
 import type { Observability } from "../src/observability/index.js";
 import { MemoryTable } from "./memory-table.js";
@@ -375,6 +375,61 @@ describe("importing again", () => {
       { line: 5, column: "reorder_at", message: "reorder_at must be from 0 to 1,000,000" },
       { line: 6, column: "reorder_at", message: "reorder_at isn't a number" },
     ]);
+  });
+
+  it("imports sizes, keeps them on blank cells, and takes the inventory export's columns back (supply-checkout-mcdq)", async () => {
+    seedProduct("0123", { code: "0123", name: "Gloves", price: 10, length: 4, width: 2, dimUnit: "cm" }, 2);
+    seedProduct("0456", { code: "0456", name: "Bags", price: 4 }, 1);
+    // Blank cells and a unit with no size to go with it keep what's there: nothing changes
+    let res = await post({ importId: randomUUID(), csv: "name,barcode,price,length,width,height,size unit\nGloves,0123,10,,,,\nBags,0456,4,,,,cm\n" });
+    expect(res.body.summary).toEqual({ rows: 2, created: 0, updated: 0, unchanged: 2 });
+    expect(product("0123")).toMatchObject({ version: 2, length: 4, width: 2, dimUnit: "cm" });
+    expect(product("0456")).not.toHaveProperty("dimUnit");
+    const csv = "name,barcode,price,length,width,height,dim_unit\nGloves,0123,10,,3.5,1,\nBags,0456,4,10,,,\nRags,,1,5,6,7,INCHES\nMops,,1,1,,,Centimeters\n";
+    const preview = await post({ dryRun: true, csv });
+    expect(preview.body.rows.map((r: { changes: string[] }) => r.changes)).toEqual([["width", "height"], ["length", "dimUnit"], ["name", "price", "length", "width", "height", "dimUnit"], ["name", "price", "length", "dimUnit"]]);
+    expect(preview.body.rows[2]).toMatchObject({ length: 5, width: 6, height: 7, dimUnit: "in" });
+    res = await post({ importId: randomUUID(), csv });
+    expect(res.body.summary).toEqual({ rows: 4, created: 2, updated: 2, unchanged: 0 });
+    // A side with no unit cell keeps the item's unit, or is in inches; the other sides stay
+    expect(product("0123")).toMatchObject({ length: 4, width: 3.5, height: 1, dimUnit: "cm" });
+    expect(product("0456")).toMatchObject({ length: 10, dimUnit: "in" });
+    const named = (name: string) => Object.values(Object.fromEntries([...table.items].filter(([, i]) => i.name === name)))[0];
+    expect(named("Rags")).toMatchObject({ length: 5, width: 6, height: 7, dimUnit: "in" });
+    expect(named("Mops")).toMatchObject({ length: 1, dimUnit: "cm" });
+    // A unit alone changes the unit of a size the item has
+    res = await post({ importId: randomUUID(), csv: "name,barcode,price,size_unit\nGloves,0123,10,in\n" });
+    expect(res.body.summary.updated).toBe(1);
+    expect(product("0123")).toMatchObject({ length: 4, dimUnit: "in" });
+    // Every item the import wrote passes the check every writer of products makes
+    for (const item of [product("0123"), product("0456"), named("Rags"), named("Mops")]) {
+      const copy = { ...(item as Record<string, unknown>) };
+      checkDimensionFields(copy);
+      expect(copy).toEqual(item);
+    }
+    // The inventory export's own columns: its sizes come back, and nothing changes
+    const exported = "Item,Brand,Barcode,In storage,Price each,Value,Kind,Reorder at,Usual order,Length,Width,Height,Size unit\nGloves,,0123,,10.00,,Supply,,,4,3.5,1,in\nBags,,0456,,4.00,,Supply,,,10,,,in\n";
+    res = await post({ importId: randomUUID(), csv: exported });
+    expect(res.body.summary).toEqual({ rows: 2, created: 0, updated: 0, unchanged: 2 });
+  });
+
+  it("reports a bad size or unit cell by its column, and imports nothing (supply-checkout-mcdq)", async () => {
+    const bad = await post({ dryRun: true, csv: "name,price,length,width,height,size_unit\nA,1,0,1,1,in\nB,1,1,1001,1,in\nC,1,1,1,1.234,in\nD,1,x,-1,1,in\nE,1,1,1,1,feet\nF,1,1000,0.01,1.5,cm\n" });
+    expect(bad.body.errors).toEqual([
+      { line: 2, column: "length", message: "length must be above 0" },
+      { line: 3, column: "width", message: "width can't be more than 1,000" },
+      { line: 4, column: "height", message: "height can have at most two decimals" },
+      { line: 5, column: "length", message: "length isn't a number" },
+      { line: 5, column: "width", message: "width can't be negative" },
+      { line: 6, column: "size_unit", message: "size_unit is in or cm" },
+    ]);
+    expect(await post({ dryRun: true, csv: "name,price,length,length\nA,1,1,1\n" })).toMatchObject({ status: 400 });
+    // Two names for the unit column are one column twice
+    expect(() => parseInventoryCsv("name,price,length,size_unit,dim_unit\nA,1,1,in,cm\n")).toThrow("The size_unit column appears twice");
+    // A bare "unit" column is some other unit (each, case, box): it's ignored, and doesn't fail the file
+    const other = parseInventoryCsv("name,price,length,unit\nA,1,2,each\nB,1,3,case\n");
+    expect(other.ignoredColumns).toEqual(["unit"]);
+    expect(other.rows.map((r) => [r.length, r.dimUnit])).toEqual([[2, undefined], [3, undefined]]);
   });
 
   it("gives an item without a barcode the file's barcode when their names match", async () => {

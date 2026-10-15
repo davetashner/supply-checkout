@@ -266,6 +266,10 @@ function productDocKey(value: unknown): string {
   return key;
 }
 
+// The artifact has no item size (length, width, height, dimUnit), so those fields are ignored here.
+// That can't drop a stored size: an import never replaces or merges into a stored item. A key the
+// team already has is compared (productContent) and either skipped as present or stopped as a
+// conflict, and only new items are written, so a stored size is never read, changed or lost.
 const PRODUCT_FIELDS = new Set(["key", "kind", "code", "name", "brand", "price", "cost", "packSize", "stock", "updatedAt", "ops"]);
 const PROJECT_FIELDS = new Set(["id", "kind", "client", "date", "status", "createdAt", "closedAt", "createdBy", "createdByName", "preparedBy", "source", "items", "totals", "ops", "savedReceipts"]);
 const LINE_FIELDS = new Set(["kind", "code", "name", "price", "cost", "out", "returned", "lost", "lostCharge", "takenBy", "takenAt", "purchased", "priceSet", "priceSetBy", "priceSetAt", "ops"]);

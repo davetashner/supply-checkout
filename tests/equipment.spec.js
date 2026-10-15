@@ -311,7 +311,7 @@ test.describe("the web build's checkout command", () => {
     await expect(lineRow(page, "Step ladder")).toHaveCount(1);
   });
 
-  test("Finished Return sends the return and the lost command, then closes the project", { tag: ["@J13.4", "@J4.3"] }, async ({ page }) => {
+  test("Finish return sends the return and the lost command, then closes the project", { tag: ["@J13.4", "@J4.3"] }, async ({ page }) => {
     const docs = Object.fromEntries(Object.entries(seed).map(([k, v]) => [`t1/${k}`, v]));
     const backend = new FakeBackend({ docs });
     await openAws(page, backend);
@@ -341,7 +341,7 @@ test.describe("the web build's checkout command", () => {
     // Another phone took one more, and this page hasn't heard yet
     backend.doc("t1", "projects", "s2").data.items["LAD-1"].out = 4;
     await finishReturn(page);
-    await expect(page.locator("#toast")).toHaveText("Equipment is still out on this project, so it wasn't finished. Tap Finished Return again to say where each piece is.");
+    await expect(page.locator("#toast")).toHaveText("Equipment is still out on this project, so it wasn't finished. Tap Finish return again to say where each piece is.");
     expect(backend.doc("t1", "projects", "s2").data.status).toBe("open");
     // The latest is showing: one still out
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("1");
@@ -369,7 +369,7 @@ test.describe("the web build's checkout command", () => {
 
 const finishBox = (page, i) => modal(page).locator(`fieldset.finish[data-i="${i}"]`);
 
-test.describe("J13.4 Finished Return asks about each piece of equipment still out", { tag: ["@J13.4", "@J4.3"] }, () => {
+test.describe("J13.4 Finish return asks about each piece of equipment still out", { tag: ["@J13.4", "@J4.3"] }, () => {
   test("pieces back go into storage, the rest stay out at the job, and the project stays open", async ({ page }) => {
     await open(page);
     await openProject(page, "Delta Dental");

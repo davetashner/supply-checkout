@@ -15,7 +15,10 @@ export const DIMENSION_UNITS = ["in", "cm"] as const;
 /** The largest single side, in the unit given: 1,000 in is over 25 m. */
 export const MAX_DIMENSION = 1000;
 
-const unitOk = (value: unknown): value is (typeof DIMENSION_UNITS)[number] => DIMENSION_UNITS.some((u) => u === value);
+/** One of the units. */
+export type DimensionUnit = (typeof DIMENSION_UNITS)[number];
+
+const unitOk = (value: unknown): value is DimensionUnit => DIMENSION_UNITS.some((u) => u === value);
 
 /**
  * Checks and normalizes a product's size fields in `data`, in place: a null removes the field;

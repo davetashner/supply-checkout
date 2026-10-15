@@ -644,6 +644,28 @@ describe.skipIf(!endpoint)("the artifact import (DynamoDB Local)", () => {
     expect(check.mismatches).toEqual([]);
   });
 
+  it("never replaces a stored item, so an item's size survives an import over it (supply-checkout-wa37)", async () => {
+    const { ctx } = await team();
+    const size = { length: 10, width: 4.5, height: 2, dimUnit: "cm" };
+    const sized = { code: "5551", name: "Sponge", price: 2, ...size };
+    const file = (price: number) => edited((doc) => {
+      doc.inventory = [{ key: "sponge", code: "5551", name: "Sponge", price }];
+      doc.projects = [];
+      delete doc.sheets;
+    });
+    await setDocument(db, ctx, "products", "sponge", sized);
+    // Same values as the artifact has: present, skipped, size untouched
+    const same = await run(ctx, file(2));
+    expect(same.plan).toMatchObject({ products: [], productsPresent: 1, conflicts: [] });
+    expect(same.result.productsCreated).toBe(0);
+    expect((await getDocument(db, ctx, "products", "sponge"))?.data).toMatchObject(size);
+    // Other values: a conflict that stops the import, so nothing is written over the item
+    const plan = await planArtifactImport(db, ctx, parseArtifactExport(file(3)));
+    expect(plan.conflicts).toHaveLength(1);
+    await expect(applyArtifactImport(db, ctx, plan)).rejects.toBeInstanceOf(ConflictError);
+    expect((await getDocument(db, ctx, "products", "sponge"))?.data).toEqual(sized);
+  });
+
   it("refuses, and writes nothing, when the team has other values under the same keys or barcodes", async () => {
     const { ctx } = await team();
     await setDocument(db, ctx, "products", "036000291452", { code: "036000291452", name: "Paper towels", price: 10 });

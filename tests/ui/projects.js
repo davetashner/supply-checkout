@@ -32,8 +32,8 @@ export const startReturn = (page) => page.getByRole("button", { name: "Return", 
 /** The return dialog's save button. */
 export const saveReturn = (page) => modal(page).getByRole("button", { name: "Save return", exact: true }).click();
 
-/** Finished Return on the open project. */
-export const finishReturn = (page) => page.getByRole("button", { name: "Finished Return", exact: true }).click();
+/** Finish return on the open project. */
+export const finishReturn = (page) => page.getByRole("button", { name: "Finish return", exact: true }).click();
 
 /** The open project's line for `name`. */
 export const lineRow = (page, name) => page.locator("#projectBody tbody tr", { hasText: name });

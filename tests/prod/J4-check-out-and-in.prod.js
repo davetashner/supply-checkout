@@ -1,7 +1,7 @@
 // J4 Check supplies out and back in, against prod (supply-checkout-o60.7). Crew, on this browser
 // project's long-lived team, with two run-named items (never real-looking stock): creates a
 // run-named project, checks one item out by typed barcode and the other with the stand-in camera
-// (tests/camera.js on the live page), returns part, and taps Finished Return; the storage counts
+// (tests/camera.js on the live page), returns part, and taps Finish return; the storage counts
 // follow. A second person (the long-lived viewer, in a context of their own) watches the
 // project list and sees the checkout within 2 seconds. Everything is deleted by cleanup.
 import { installCamera } from "../camera.js";
@@ -56,7 +56,7 @@ test("crew checks supplies out by barcode and camera, returns part and finishes,
       await expect(page.locator("#projectBody .totals")).toContainText("Taken4");
     });
 
-    await test.step("J4.3 Return what came back unused, and tap Finished Return", async () => {
+    await test.step("J4.3 Return what came back unused, and tap Finish return", async () => {
       await startReturn(page);
       await enterBarcode(page, typed.code);
       await modal(page).locator("#fRet").fill("1");

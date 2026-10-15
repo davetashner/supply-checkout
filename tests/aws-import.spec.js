@@ -14,7 +14,7 @@ const SUMMARY = { rows: 3, created: 1, updated: 1, unchanged: 1 };
 const PREVIEW = {
   status: "preview",
   rows: [
-    { line: 2, name: "Nitrile gloves", brand: "Ansell", barcode: "0123", price: 13, stock: 10, reorderAt: 5, reorderQty: 24, key: "0123", action: "update", changes: ["brand", "price", "reorderAt", "reorderQty", "stock"] },
+    { line: 2, name: "Nitrile gloves", brand: "Ansell", barcode: "0123", price: 13, stock: 10, reorderAt: 5, reorderQty: 24, key: "0123", action: "update", changes: ["brand", "price", "reorderAt", "reorderQty", "length", "width", "height", "dimUnit", "stock"] },
     { line: 3, name: "Rags", barcode: "", price: 1.5, key: "nb-1", action: "create", changes: ["name", "price"] },
     { line: 4, name: "Bins <b>", barcode: "", price: 3, stock: 2, reorderAt: 1, reorderQty: 6, key: "nb-2", action: "unchanged", changes: [] },
   ],
@@ -47,7 +47,7 @@ test("an owner previews a file, imports it, and every retry sends the same impor
   await expect(result).toContainText("Not imported: “Notes”.");
   const rows = result.locator("tbody tr");
   await expect(rows).toHaveCount(3);
-  await expect(rows.nth(0)).toHaveText(/Nitrile gloves\s*Ansell\s*0123\s*\$13\.00\s*10\s*5\s*Update brand, price, reorder level, usual order, stock/);
+  await expect(rows.nth(0)).toHaveText(/Nitrile gloves\s*Ansell\s*0123\s*\$13\.00\s*10\s*5\s*Update brand, price, reorder level, usual order, length, width, height, size unit, stock/);
   await expect(rows.nth(0).locator(".item-brand")).toHaveText("Ansell");
   await expect(rows.nth(1).locator(".item-brand")).toHaveCount(0);
   await expect(rows.nth(1)).toHaveText(/Rags\s*\$1\.50\s*—\s*—\s*New/);
@@ -69,6 +69,22 @@ test("an owner previews a file, imports it, and every retry sends the same impor
   const [, first, second] = backend.requests("POST", PATH).map((c) => c.body);
   expect(first).toEqual({ importId: expect.stringMatching(/^[0-9a-f-]{36}$/), csv: CSV });
   expect(second).toEqual(first);
+});
+
+test("the preview keeps item names readable at phone width, scrolling the table sideways", async ({ page }) => {
+  const backend = new FakeBackend();
+  const name = "Heavy duty nitrile gloves large";
+  backend.on("POST", PATH, ok({ ...PREVIEW, rows: [{ ...PREVIEW.rows[0], name }, ...PREVIEW.rows.slice(1)] }));
+  await page.setViewportSize({ width: 360, height: 740 });
+  await openImport(page, backend);
+  await choose(page);
+  const cell = page.locator("#importResult tbody tr").first().locator("td").first();
+  await expect(cell).toContainText(name);
+  const lines = await cell.evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
+  expect(lines).toBeLessThanOrEqual(5);
+  const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, view: innerWidth, modal: document.querySelector("#modal").scrollWidth, modalBox: document.querySelector("#modal").clientWidth }));
+  expect(widths.page).toBeLessThanOrEqual(widths.view);
+  expect(widths.modal).toBeLessThanOrEqual(widths.modalBox);
 });
 
 test("shows the server's words when an import can't go on as it is", { tag: ["@J2.4"] }, async ({ page }) => {
@@ -170,8 +186,10 @@ test("offers a template with a column guide, and the template goes through the p
   await openImport(page, backend);
   const guide = dialog(page).locator("details.import-guide");
   await guide.getByText("What goes in each column").click();
-  for (const column of ["name", "brand", "price", "barcode", "kind", "cost", "stock", "pack_size", "reorder_at", "reorder_qty"]) await expect(guide.locator("dt", { hasText: new RegExp(`^${column}$`) })).toBeVisible();
+  for (const column of ["name", "brand", "price", "barcode", "kind", "cost", "stock", "pack_size", "reorder_at", "reorder_qty", "length, width, height", "size_unit"]) await expect(guide.locator("dt", { hasText: new RegExp(`^${column}$`) })).toBeVisible();
   await expect(guide).toContainText("A blank cell keeps the level; clear it in the item editor.");
+  await expect(guide).toContainText("A blank cell keeps the item's size; clear it in the item editor.");
+  await expect(guide).toContainText("A unit on an item with no size is ignored.");
   await expect(guide).toContainText("before tax. It isn't shown on client projects.");
   expect(await modalViolations(page)).toEqual([]);
 

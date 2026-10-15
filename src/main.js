@@ -57,7 +57,7 @@ async function write(fn, okMsg, projectId) {
     else if (e && e.code === "quota_exceeded") toast(msg("app.storageFull"));
     // Someone else saved this first (the web build's versioned writes, ADR 0006). Close the
     // editor so the latest values show, rather than an edit made on the old ones.
-    // Finished Return on a project with equipment out that this page didn't know about (someone
+    // Finish return on a project with equipment out that this page didn't know about (someone
     // took more meanwhile): the server refuses to close it (ADR 0017, docs/api/commands.md)
     // Reopening a General Use project while another is open, which this page didn't know about
     else if (e && e.reason === "adhoc_open") { toast(msg("app.adhocOpen")); }
@@ -473,7 +473,7 @@ const finish = id => write(() => db.doc("projects/" + id).update({ status: "clos
 // lost or broken (with what to charge the client for them, if anything), and the rest are still
 // at the job. Backs are returns and losses are the lost command (src/moves.js), each its own
 // action per line, so Try again after a failure saves each once. The project closes only when
-// nothing is left out; otherwise it stays open, and the next Finished Return asks again.
+// nothing is left out; otherwise it stays open, and the next Finish return asks again.
 function finishModal(s, out) {
   const acts = out.map(() => ({ back: {}, lost: {} }));
   openModal(`
