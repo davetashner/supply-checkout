@@ -346,7 +346,8 @@ paths:
       summary: Import items from a CSV file, all or nothing, with a dry-run preview. Owners only.
       description: |
         The server reads the file (columns `name`, `brand`, `barcode`, `kind`, `price`,
-        `cost`, `stock`, `pack_size`, matched without regard to case or
+        `cost`, `stock`, `pack_size`, `reorder_at`, `reorder_qty`, `length`, `width`,
+        `height`, `size_unit`, matched without regard to case or
         spacing; other columns are left out) and validates every row against the whole
         inventory before it writes anything. A row matches an existing item by
         barcode, or by name when the row or the item has no barcode, and
@@ -357,6 +358,12 @@ paths:
         price (a price for it is a row error), and its `cost` is its value; a
         supply row makes an equipment item a supply again. Money may have `$` and thousands separators and is
         rounded to cents; stock and pack size are whole numbers (ADR 0014).
+        A size (supply-checkout-mcdq) is checked as the product routes check it: each
+        of `length`, `width` and `height` above 0, at most 1000, with at most two
+        decimals; `size_unit` is `in` or `cm` (also `inch`, `inches`, `centimeter`,
+        `centimeters`; `dim_unit` names the same column. A bare `unit` column is ignored, since spreadsheets use it for other things). A side with no
+        unit is in the item's unit, or inches; a unit alone changes the unit of a
+        size the item has and is ignored when it has none.
 
         - `dryRun: true`: writes nothing. 200 with `status: "preview"` (or
           `"invalid"` with every problem) and what each row will do.
@@ -3484,9 +3491,13 @@ components:
         packSize: { type: integer, minimum: 1, maximum: 10000 }
         reorderAt: { type: integer, minimum: 0, maximum: 1000000, description: "From a `reorder_at` column (supply-checkout-005.13). Absent: the item's level is kept." }
         reorderQty: { type: integer, minimum: 1, maximum: 1000000, description: "From a `reorder_qty` column. Absent: the item's usual order is kept." }
+        length: { type: number, exclusiveMinimum: 0, maximum: 1000, description: "From a `length` column. Absent: the item's is kept." }
+        width: { type: number, exclusiveMinimum: 0, maximum: 1000, description: "From a `width` column. Absent: the item's is kept." }
+        height: { type: number, exclusiveMinimum: 0, maximum: 1000, description: "From a `height` column. Absent: the item's is kept." }
+        dimUnit: { type: string, enum: [in, cm], description: "From a `size_unit` column. Absent: the item's unit is kept (inches for a new size)." }
         key: { type: string, description: The product key the row writes. }
         action: { type: string, enum: [create, update, unchanged] }
-        changes: { type: array, items: { type: string, enum: [code, name, brand, kind, price, cost, packSize, reorderAt, reorderQty, stock] } }
+        changes: { type: array, items: { type: string, enum: [code, name, brand, kind, price, cost, packSize, reorderAt, reorderQty, length, width, height, dimUnit, stock] } }
     ImportRowError:
       type: object
       required: [line, message]
