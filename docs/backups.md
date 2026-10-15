@@ -19,7 +19,7 @@ The CDK is in `infra/lib/stacks/backup-stack.ts` (workload account), `infra/lib/
 | Deletion records' copy | `supply-checkout-<env>-deletions-copy-<region>-<backup account>` bucket, **backup account** | The same records, replicated by S3 as they're written, so they survive losing the workload account | 400 days | **Compliance-mode** Object Lock on every replica |
 
 - **Recovery point objectives.** PITR can restore to about 5 minutes before now. If the workload account itself is lost or compromised, the copy in the backup account is up to 24 hours old.
-- **Recovery time.** Unknown until the first drill. Record it in the [drill log](#drill-log).
+- **Recovery time.** The restore itself took **9.1 minutes** in the first drill (2026-10-15, about 2,400 items, point-in-time recovery into a new table). The rest of a recovery (stopping writes, re-applying deletions, copying back, checking) is estimated in [Expected downtime](#expected-downtime) and not measured yet. Record each drill in the [drill log](#drill-log).
 - **Regions.** Everything is in the primary region (us-east-1 in the MVP). A region outage is handled by the second region's replica in phase 2 ([ADR 0010](adr/0010-multi-region-active-active.md)), not by backups. A cross-region copy can be added later as a second copy action.
 - **Buckets.** The web bucket holds releases, which CI can rebuild, and the logs bucket holds access logs. Both are versioned, and old versions expire after 30 days. Neither is in AWS Backup: nothing in them would be lost for good if the account were.
 - **Audit items.** Operator audit items ([ADR 0015](adr/0015-platform-operator-role.md)) are in the table, so they're in PITR and in both vaults.
@@ -259,7 +259,7 @@ The backup stack tells the observability stack's P2 topic:
 
 ## Restore drill
 
-Run it after setup, then every quarter and after any change to the backup stacks. **It hasn't been run yet**: the first run is the owner's, and closes `supply-checkout-8x1`.
+Run it after setup, then every quarter and after any change to the backup stacks. **It was first run on 2026-10-15** by the owner (`supply-checkout-8x1`; see the [drill log](#drill-log)).
 
 A restore always creates a new table. The live table is never overwritten, and the restore role can only create tables named `supply-checkout-<env>-app-restore-*`. Putting a restored table back into service is [its own procedure](#put-a-restored-table-back-into-service).
 
@@ -497,7 +497,7 @@ The app is down from step 3 (writes stopped) to step 8 (writes back on). The res
 | Check and verify | 15 minutes |
 | Writes back on | 5 minutes |
 
-For today's table (well under 100,000 items) expect **30 to 45 minutes**. Record the real times in the [drill log](#drill-log), and change this table after the first drill.
+For today's table (well under 100,000 items) expect **30 to 45 minutes**. The first drill measured the restore (step 1) at 9.1 minutes for about 2,400 items; the other steps in this table are still estimates. Record the real times in the [drill log](#drill-log), and change this table when a drill measures them.
 
 ### The steps
 
@@ -653,4 +653,4 @@ Times are wall-clock minutes. For drill B, "copy" is the copy job and "restore" 
 
 | Date | Drill | Recovery point (UTC) | Target | Items (restored / live) | Copy | Restore | Result | By |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Not run yet | | | | | | | | |
+| 2026-10-15 | A (PITR, script) | 2026-10-15 12:06:20 | `supply-checkout-prod-app-restore-20261015-1216` (deleted afterwards) | 2389 / 2389 (difference 0) | n/a | 9.1 min | Passed: same table key, same indexes (GSI1, GSI2, GSI3). Spot checks: 11 of 12 the same, 1 differed (the operator watch's heartbeat item, rewritten every few minutes, so expected), 0 missing from live. | owner |
