@@ -1,6 +1,18 @@
 {
   "releases": [
     {
+      "version": "upcoming",
+      "notes": [
+        {
+          "title": "Record an item's size",
+          "text": "Add length, width and height to an item, in inches or centimeters. See the size in Inventory and sort by any side. It's in the inventory download too.",
+          "prs": [
+            794
+          ]
+        }
+      ]
+    },
+    {
       "version": "1.17.0",
       "date": "2026-10-14",
       "notes": [
