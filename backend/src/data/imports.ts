@@ -1,6 +1,6 @@
 // CSV inventory import (supply-checkout-1dg.4, ADR 0014): an owner uploads a
 // spreadsheet of items (name, brand, barcode, price, cost, stock, pack_size,
-// reorder_at, reorder_qty) and
+// reorder_at, reorder_qty, length, width, height, size_unit) and
 // every row goes in, or none does.
 //
 // All or nothing, for more rows than one DynamoDB transaction can hold (100
@@ -56,6 +56,7 @@ import { MAX_BRAND_LENGTH } from "./brand.js";
 import { type Db, connection, storable } from "./client.js";
 import { type Movement, OPERATION_TTL_DAYS } from "./commands.js";
 import { parseCsv } from "./csv.js";
+import { DIMENSION_FIELDS, type DimensionUnit, MAX_DIMENSION } from "./dimensions.js";
 import { MAX_DOCUMENT_BYTES, isReservedField } from "./documents.js";
 import { hiddenCharacterProblem } from "../text/hidden-characters.js";
 import { ConflictError, InvalidInputError, TooLargeError, isCancelledAsTooLarge, startsWithAny } from "./errors.js";
@@ -94,10 +95,10 @@ const MAX_NUMBER_TEXT = 32;
 const MAX_ATTEMPTS = 6;
 const IMPORT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-type Field = "name" | "brand" | "barcode" | "kind" | "price" | "cost" | "stock" | "packSize" | "reorderAt" | "reorderQty";
+type Field = "name" | "brand" | "barcode" | "kind" | "price" | "cost" | "stock" | "packSize" | "reorderAt" | "reorderQty" | "length" | "width" | "height" | "dimUnit";
 
 /** The column names errors use, as the file would spell them. */
-const LABEL: Record<Field, string> = { name: "name", brand: "brand", barcode: "barcode", kind: "kind", price: "price", cost: "cost", stock: "stock", packSize: "pack_size", reorderAt: "reorder_at", reorderQty: "reorder_qty" };
+const LABEL: Record<Field, string> = { name: "name", brand: "brand", barcode: "barcode", kind: "kind", price: "price", cost: "cost", stock: "stock", packSize: "pack_size", reorderAt: "reorder_at", reorderQty: "reorder_qty", length: "length", width: "width", height: "height", dimUnit: "size_unit" };
 
 /**
  * Header names, lowercased with spaces, underscores and hyphens removed
@@ -115,6 +116,8 @@ const HEADERS = new Map<string, Field>([
   ["stock", "stock"], ["instorage", "stock"], ["onhand", "stock"],
   ["packsize", "packSize"], ["casesize", "packSize"],
   ["reorderat", "reorderAt"], ["reorderlevel", "reorderAt"], ["reorderpoint", "reorderAt"],
+  ["length", "length"], ["width", "width"], ["height", "height"],
+  ["sizeunit", "dimUnit"], ["dimunit", "dimUnit"], ["unit", "dimUnit"],
   ["reorderqty", "reorderQty"], ["reorderquantity", "reorderQty"], ["usualorder", "reorderQty"],
 ]);
 
@@ -140,6 +143,12 @@ export interface ImportRow {
   readonly reorderAt?: number;
   /** How many the team usually orders. Absent: keep the item's. */
   readonly reorderQty?: number;
+  /** The item's size (supply-checkout-mcdq), as dimensions.ts takes it. Absent: keep the item's (a blank cell). */
+  readonly length?: number;
+  readonly width?: number;
+  readonly height?: number;
+  /** Absent: keep the item's unit, or inches for a size with none. A unit on an item with no size is dropped. */
+  readonly dimUnit?: DimensionUnit;
 }
 
 /** A problem with one row (or with the header, on its line). Nothing is imported while there are any. */
@@ -157,7 +166,7 @@ export interface PlannedRow extends ImportRow {
   /** The product key it writes: the matched item's, or a new one. */
   readonly key: string;
   readonly action: ImportAction;
-  /** The fields that change (all of the row's for a new item): code, name, brand, kind, price, cost, packSize, reorderAt, reorderQty, stock. */
+  /** The fields that change (all of the row's for a new item): code, name, brand, kind, price, cost, packSize, reorderAt, reorderQty, length, width, height, dimUnit, stock. */
   readonly changes: string[];
 }
 
@@ -215,6 +224,10 @@ interface StagedRow {
   readonly packSize?: number;
   readonly reorderAt?: number;
   readonly reorderQty?: number;
+  readonly length?: number;
+  readonly width?: number;
+  readonly height?: number;
+  readonly dimUnit?: DimensionUnit;
 }
 
 class CellError extends Error {
@@ -261,6 +274,23 @@ function wholeCell(field: Field, raw: string, min: number, max: number): number 
   return n;
 }
 
+/** A side of an item's size, by dimensions.ts's rules: above 0, at most MAX_DIMENSION, two decimals. */
+function sideCell(field: Field, raw: string): number {
+  const n = Number(numberText(field, raw, "a number"));
+  if (n <= 0) throw new CellError(field, `${LABEL[field]} must be above 0`);
+  if (n > MAX_DIMENSION) throw new CellError(field, `${LABEL[field]} can't be more than ${MAX_DIMENSION.toLocaleString("en-US")}`);
+  if (Math.round(n * 100) / 100 !== n) throw new CellError(field, `${LABEL[field]} can have at most two decimals`);
+  return n;
+}
+
+/** The size unit: in or cm, in any case ("inches" and "centimeters" too). */
+function unitCell(raw: string): DimensionUnit {
+  const u = raw.normalize("NFKC").trim().toLowerCase();
+  if (u === "in" || u === "inch" || u === "inches") return "in";
+  if (u === "cm" || u === "centimeter" || u === "centimeters") return "cm";
+  throw new CellError("dimUnit", "size_unit is in or cm");
+}
+
 export interface ParsedImport {
   readonly rows: ImportRow[];
   readonly errors: RowError[];
@@ -292,7 +322,7 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
   }
   for (const required of ["name", "price"] as const) {
     if (!columns.includes(required)) {
-      throw new InvalidInputError(`The file needs a ${LABEL[required]} column. Its first row names the columns: name, brand, barcode, kind, price, cost, stock, pack_size, reorder_at, reorder_qty`);
+      throw new InvalidInputError(`The file needs a ${LABEL[required]} column. Its first row names the columns: name, brand, barcode, kind, price, cost, stock, pack_size, reorder_at, reorder_qty, length, width, height, size_unit`);
     }
   }
   if (!body.length) throw new InvalidInputError("The file has no rows under its header");
@@ -340,6 +370,10 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
     // As the product routes take them (reorder.ts): whole eaches, the level from 0, the usual order from 1
     const reorderAt = read("reorderAt", (raw) => wholeCell("reorderAt", raw, 0, MAX_QUANTITY));
     const reorderQty = read("reorderQty", (raw) => wholeCell("reorderQty", raw, 1, MAX_QUANTITY));
+    const length = read("length", (raw) => sideCell("length", raw));
+    const width = read("width", (raw) => sideCell("width", raw));
+    const height = read("height", (raw) => sideCell("height", raw));
+    const dimUnit = read("dimUnit", unitCell);
     if (problems.length || name === undefined) {
       errors.push(...problems);
       continue;
@@ -356,6 +390,10 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
       ...(packSize === undefined ? {} : { packSize }),
       ...(reorderAt === undefined ? {} : { reorderAt }),
       ...(reorderQty === undefined ? {} : { reorderQty }),
+      ...(length === undefined ? {} : { length }),
+      ...(width === undefined ? {} : { width }),
+      ...(height === undefined ? {} : { height }),
+      ...(dimUnit === undefined ? {} : { dimUnit }),
     });
   }
   return { rows, errors, ignoredColumns };
@@ -380,7 +418,7 @@ function kindCell(raw: string): "supply" | "equipment" {
 }
 
 /** The fields an import sets, in the order `changes` lists them. */
-const IMPORTED = ["code", "name", "brand", "kind", "price", "cost", "packSize", "reorderAt", "reorderQty", "stock"] as const;
+const IMPORTED = ["code", "name", "brand", "kind", "price", "cost", "packSize", "reorderAt", "reorderQty", "length", "width", "height", "dimUnit", "stock"] as const;
 
 /** An item's data after a row is applied: the row's values over what's there, and blank cells keep what's there. */
 function applyRow(current: Item | undefined, row: ImportRow): { data: Item; changes: string[] } {
@@ -406,6 +444,12 @@ function applyRow(current: Item | undefined, row: ImportRow): { data: Item; chan
   if (row.reorderAt !== undefined && row.reorderAt !== before.reorderAt) delete data.ackedAtStock;
   if (row.reorderAt !== undefined) data.reorderAt = row.reorderAt;
   if (row.reorderQty !== undefined) data.reorderQty = row.reorderQty;
+  // The size (dimensions.ts): blank cells keep what's there. A size with no unit is in the item's
+  // unit, or inches. A unit alone changes the unit of a size the item has, and is dropped when it
+  // has none (a unit with no size isn't kept).
+  for (const side of DIMENSION_FIELDS) if (row[side] !== undefined) data[side] = row[side];
+  if (DIMENSION_FIELDS.some((side) => data[side] !== undefined)) data.dimUnit = row.dimUnit ?? data.dimUnit ?? "in";
+  else delete data.dimUnit;
   if (row.stock !== undefined) data.stock = row.stock;
   // Restocked above the reorder level (the file's, if it sets one): the low-stock marks
   // (acknowledgment, order) end (reorder.ts). A blank reorder cell keeps the item's level.
@@ -518,7 +562,7 @@ function importId(value: unknown): string {
 }
 
 function staged(row: PlannedRow): StagedRow {
-  const { line, key, name, brand, barcode, kind, price, cost, stock, packSize, reorderAt, reorderQty } = row;
+  const { line, key, name, brand, barcode, kind, price, cost, stock, packSize, reorderAt, reorderQty, length, width, height, dimUnit } = row;
   return {
     line,
     ...(row.action === "create" ? { create: true as const } : {}),
@@ -533,6 +577,10 @@ function staged(row: PlannedRow): StagedRow {
     ...(packSize === undefined ? {} : { packSize }),
     ...(reorderAt === undefined ? {} : { reorderAt }),
     ...(reorderQty === undefined ? {} : { reorderQty }),
+    ...(length === undefined ? {} : { length }),
+    ...(width === undefined ? {} : { width }),
+    ...(height === undefined ? {} : { height }),
+    ...(dimUnit === undefined ? {} : { dimUnit }),
   };
 }
 
