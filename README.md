@@ -2,7 +2,7 @@
 
 A shared supply tracker for taking supplies from storage to client jobs and bringing back what wasn't used.
 
-- **Projects** – one per client and date, recording who prepared it. Scan a barcode (or pick an item without one) to check supplies out, scan again on return to record what came back unused, then tap **Finished Return**. Each project totals what was used and what to charge, and downloads as CSV. Owners can export every project and the inventory at once, as CSV or JSON (**Export data**). A team moving from the artifact to the web app sends us the JSON file ([Moving to the web app](docs/moving-to-the-web-app.md)).
+- **Projects** – one per client and date, recording who prepared it. Scan a barcode (or pick an item without one) to check supplies out, scan again on return to record what came back unused, then tap **Finish return**. Each project totals what was used and what to charge, and downloads as CSV. Owners can export every project and the inventory at once, as CSV or JSON (**Export data**). A team moving from the artifact to the web app sends us the JSON file ([Moving to the web app](docs/moving-to-the-web-app.md)).
 - **Inventory** – items, prices and how many are in storage. Checkouts subtract from storage; returns add back.
 - **Receipts** – photograph a store receipt and Claude reads the line items and prices, suggests matches against existing inventory, and lets you assign each item to a client's project or to general inventory before anything is saved.
 

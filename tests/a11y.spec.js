@@ -39,7 +39,7 @@ for (const colorScheme of ["light", "dark"]) {
       await openProject(page, "Echo Studio");
       await expect(page.locator("#projectBody table.equipment tbody tr")).toHaveCount(1);
       await expectAccessible(page);
-      // Finished Return's question about the piece still out, with the charge field showing
+      // Finish return's question about the piece still out, with the charge field showing
       await finishReturn(page);
       await modal(page).getByLabel("Lost or broken", { exact: true }).fill("1");
       await modal(page).getByLabel("Lost or broken", { exact: true }).dispatchEvent("input");

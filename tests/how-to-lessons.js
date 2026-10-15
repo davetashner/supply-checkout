@@ -90,7 +90,7 @@ export const LESSONS = {
         await modal(page).locator("#fRet").fill("1");
         await expect(modal(page)).toContainText("Used 1");
       },
-      // 8. The project after the return, before Finished Return
+      // 8. The project after the return, before Finish return
       async (page) => {
         await modal(page).getByRole("button", { name: "Save return", exact: true }).click();
         await expect(page.locator(".totals")).toContainText("Returned1");
@@ -161,9 +161,9 @@ export const LESSONS = {
         await modal(page).getByRole("button", { name: "Add 1 to project", exact: true }).click();
         await scrollToTop(page.locator(".totals"));
       },
-      // 5. Finished Return asks where the ladder is
+      // 5. Finish return asks where the ladder is
       async (page) => {
-        await page.getByRole("button", { name: "Finished Return", exact: true }).click();
+        await page.getByRole("button", { name: "Finish return", exact: true }).click();
         await expect(modal(page).getByRole("heading", { name: "Before you finish" })).toBeVisible();
       },
       // 6. Lost or broken, with a charge

@@ -6,7 +6,7 @@ export default {
   "app.viewOnly": "You have view-only access. Ask the owner for Contributor access to make changes.",
   "app.storageFull": "Storage is full. Delete old projects or items to make room.",
   "app.adhocOpen": "Another General Use project is open. Finish it before reopening this one.",
-  "app.equipmentOut": "Equipment is still out on this project, so it wasn't finished. Tap Finished Return again to say where each piece is.",
+  "app.equipmentOut": "Equipment is still out on this project, so it wasn't finished. Tap Finish return again to say where each piece is.",
   "app.changedJustNow": "Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed.",
   "app.signedOut": "You're signed out, so that wasn't saved. Sign in, then make your change again.",
   "app.notSaved": "That didn't save. Check your connection and try again.",

@@ -101,7 +101,7 @@
         },
         {
           "id": "J4.3",
-          "text": "Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return** (which first asks where any company equipment still out is, J13.4).",
+          "text": "Back from the job, switch to **Return**, scan what came back unused, and tap **Finish return** (which first asks where any company equipment still out is, J13.4).",
           "status": "built",
           "tests": ["backend/test/commands-api.test.ts", "backend/test/commands.test.ts"]
         }
@@ -307,7 +307,7 @@
         },
         {
           "id": "J13.4",
-          "text": "Tap **Finished Return**: for each piece still out, say it's back, still at the job, or lost or broken (with an optional charge to the client).",
+          "text": "Tap **Finish return**: for each piece still out, say it's back, still at the job, or lost or broken (with an optional charge to the client).",
           "status": "built",
           "beads": ["supply-checkout-h9to"],
           "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
@@ -339,7 +339,7 @@
         },
         {
           "id": "J14.4",
-          "text": "When the van is restocked, tap **Finished Return** on **General Use (no job)**. The next quick take starts a new one.",
+          "text": "When the van is restocked, tap **Finish return** on **General Use (no job)**. The next quick take starts a new one.",
           "status": "built",
           "beads": ["supply-checkout-mdae"],
           "tests": ["backend/test/adhoc-api.test.ts", "backend/test/adhoc.test.ts"]

@@ -1,6 +1,6 @@
 // J14 Take supplies without a job, against prod (supply-checkout-o60.7). Crew, on this browser
 // project's long-lived team, with a run-named item and project: Quick take onto General Use (no
-// job), Return from the project list, move the line to the run's project, and Finished Return on
+// job), Return from the project list, move the line to the run's project, and Finish return on
 // General Use, so the next run starts with none open. Cleanup deletes the item, the project and
 // the General Use project (finished, with no lines left).
 import { addItem, createProject, goToInventory, goToProjects, inventoryRow, lineRow, modal, saveReturn, startReturn, finishReturn } from "../ui/index.js";
@@ -75,7 +75,7 @@ test("crew takes supplies without a job, returns some, moves the rest to a clien
     await page.getByRole("button", { name: "← All projects", exact: true }).first().click();
   });
 
-  await test.step("J14.4 Finished Return on General Use: the next quick take starts a new one", async () => {
+  await test.step("J14.4 Finish return on General Use: the next quick take starts a new one", async () => {
     await card(page, GENERAL_USE).click();
     await finishReturn(page);
     await expect(page.locator(".project-head .pill")).toHaveText("Returned");

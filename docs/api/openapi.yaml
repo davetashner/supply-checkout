@@ -3740,7 +3740,7 @@ components:
                 can't be reopened (nor its invoices listed).
                 `stock_changed`: a stock count sent with `expectedStock` found
                 the stock already changed from it (the message says what it is now).
-                `equipment_out`: Finished Return (closing a project), or removing
+                `equipment_out`: Finish return (closing a project), or removing
                 an equipment line, while company equipment is still out on it;
                 each piece must be back, lost or broken first (ADR 0017).
                 `adhoc_open`: reopening a finished General Use project while another
