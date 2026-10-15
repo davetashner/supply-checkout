@@ -52,7 +52,7 @@ export {
 } from "./model.js";
 export type { Page } from "./query.js";
 export * from "./teams.js";
-export { renameProjects } from "./projects-rename.js";
+export { hasOldSheets, renameProjects } from "./projects-rename.js";
 export * from "./invites.js";
 export * from "./products.js";
 export { MAX_BRAND_LENGTH, brandOf } from "./brand.js";

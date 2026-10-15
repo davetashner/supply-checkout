@@ -80,6 +80,10 @@ export interface ProjectsRenameOptions {
   readonly indexWaitMs?: number;
   /** Skip the verification afterwards (it waits for GSI1 to settle): for a request that moves one team's few items, such as a reopen. Default true. */
   readonly verify?: boolean;
+  /** Stop starting new sheets (and skip the movements) once the clock passes this time, in ms since the epoch: they count as left by the limit. For a request with a timeout. */
+  readonly deadline?: number;
+  /** The clock the deadline is read from (Date.now); tests may stand in for it. */
+  readonly clock?: () => number;
   /** Waits; tests may stand in for it. */
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -185,6 +189,22 @@ const oldMovements = (db: Db, pk: string, from: Spelling, to: Spelling) =>
       ConsistentRead: true,
     }),
   );
+
+/** Whether a team's partition holds a sheet item (a key-only Query with a Limit of 1: cheap whatever the team's history). */
+export async function hasOldSheets(db: Db, teamId: string): Promise<boolean> {
+  if (!ID.test(teamId)) throw new Error("Invalid team ID");
+  const { Items } = await connection(db).doc.send(
+    new QueryCommand({
+      TableName: db.tableName,
+      KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+      ExpressionAttributeValues: { ":pk": `${TEAM}${teamId}`, ":prefix": SHEETS.sk },
+      ProjectionExpression: "SK",
+      Limit: 1,
+      ConsistentRead: true,
+    }),
+  );
+  return (Items?.length ?? 0) > 0;
+}
 
 /** How many items GSI1 has in one partition. */
 async function indexCount(db: Db, partition: string): Promise<number> {
@@ -505,7 +525,7 @@ export async function renameProjects(db: Db, options: ProjectsRenameOptions): Pr
         invalid++;
         continue;
       }
-      if (budget <= 0) {
+      if (budget <= 0 || (options.deadline !== undefined && (options.clock ?? Date.now)() >= options.deadline)) {
         leftByLimit++;
         continue;
       }

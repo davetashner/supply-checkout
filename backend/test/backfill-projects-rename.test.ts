@@ -13,7 +13,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { type Db } from "../src/data/index.js";
 import { connection, dbFromConnection, storable } from "../src/data/client.js";
 import { dateFormat } from "../src/data/keys.js";
-import { itemBytes, projectTotals, renamedItem, renameHash, renameProjects, PROJECTS, SHEETS, type ProjectsRenameOptions } from "../src/data/projects-rename.js";
+import { hasOldSheets, itemBytes, projectTotals, renamedItem, renameHash, renameProjects, PROJECTS, SHEETS, type ProjectsRenameOptions } from "../src/data/projects-rename.js";
 import { exportPath, formatRenameReport, main } from "../scripts/backfill.js";
 import { endpoint, rawItem, REGION, useTable } from "./helpers.js";
 
@@ -336,6 +336,21 @@ describe.skipIf(!endpoint)("the projects rename on DynamoDB Local", () => {
     expect(report.verification).toBeUndefined();
     expect(await partition(db, teamId, "SHEET#")).toHaveLength(0);
     expect(await partition(db, teamId, "PROJECT#")).toHaveLength(2);
+  });
+
+  it("stops starting sheets once the deadline passes, leaves the rest and the movements, and hasOldSheets sees them", async () => {
+    const { db } = table;
+    const teamId = await seedTeam(db, 3, { movements: 1 });
+    expect(await hasOldSheets(db, teamId)).toBe(true);
+    let ticks = 0;
+    // The first sheet starts in time (clock 0), then the clock is past the deadline
+    const report = await renameProjects(db, { apply: true, team: teamId, verify: false, writesPerSecond: Infinity, deadline: 10, clock: () => (ticks++ === 0 ? 0 : 99) });
+    expect(report).toMatchObject({ moved: 1, leftByLimit: 2, movements: { skipped: true, found: 0 } });
+    expect(await partition(db, teamId, "SHEET#")).toHaveLength(2);
+    expect(await hasOldSheets(db, teamId)).toBe(true);
+    await renameProjects(db, opts({ team: teamId }));
+    expect(await hasOldSheets(db, teamId)).toBe(false);
+    await expect(hasOldSheets(db, "bad id")).rejects.toThrow("Invalid team ID");
   });
 
   it("never moves a sheet once its team starts being purged mid-run", async () => {

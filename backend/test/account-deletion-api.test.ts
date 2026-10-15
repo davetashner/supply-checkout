@@ -454,13 +454,42 @@ describe("reopening a team", () => {
     expect(logs).toContainEqual(["error", "Reopened team still has old sheet items", expect.objectContaining({ teamId: "team-b", conflicts: 1 })]);
   });
 
-  it("reopens the team and logs an error when the move itself fails", async () => {
+  it("queues the seat sync and emails the owners before it moves anything, so a failed move costs neither", async () => {
     table.put({ PK: "TEAM#team-b", SK: "MOVE#0123#2026-08-01T10:00:00.000Z#op1", type: "movement", productKey: "0123", sheetId: "old1", operationId: "op1" });
+    table.put(oldSheet("team-b", "old1"));
     await close("team-b");
-    table.failingUpdates = (input) => String(input.UpdateExpression).includes("REMOVE #o0");
+    notices = [];
+    const order: string[] = [];
+    const real = table.failingUpdates;
+    table.failingUpdates = (input) => {
+      order.push(`move after ${notices.length} notices`);
+      return String(input.UpdateExpression).includes("REMOVE #o0") || (real?.(input) ?? false);
+    };
     expect((await reopen("team-b")).status).toBe(200);
     expect(meta("team-b")?.closedAt).toBeUndefined();
+    expect(notices.length).toBeGreaterThan(0);
+    expect(order.every((o) => o === `move after ${notices.length} notices`)).toBe(true);
     expect(logs).toContainEqual(["error", "Reopened team's sheets not moved", { teamId: "team-b", code: "ProvisionedThroughputExceededException" }]);
+  });
+
+  it("reads one key and writes nothing for a team with no old sheets", async () => {
+    await close("team-b");
+    table.requests.length = 0;
+    expect((await reopen("team-b")).status).toBe(200);
+    const after = table.requests.filter(({ input }) => JSON.stringify(input).includes("SHEET#"));
+    expect(after.map(({ command }) => command)).toEqual(["QueryCommand"]);
+    expect(after[0].input).toMatchObject({ Limit: 1, ProjectionExpression: "SK", ExpressionAttributeValues: { ":pk": "TEAM#team-b", ":prefix": "SHEET#" } });
+  });
+
+  it("also moves the old sheets of a team reopened earlier, when asked to reopen it again", async () => {
+    await close("team-b");
+    expect((await reopen("team-b")).status).toBe(200);
+    table.put(oldSheet("team-b", "late1"));
+    notices = [];
+    expect((await reopen("team-b")).status).toBe(200);
+    expect(notices).toEqual([]);
+    expect(table.get("TEAM#team-b", "PROJECT#late1")).toMatchObject({ type: "project" });
+    expect(table.get("TEAM#team-b", "SHEET#late1")).toBeUndefined();
   });
 
   it("changes nothing in a team with no old sheets", async () => {
