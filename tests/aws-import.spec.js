@@ -80,8 +80,14 @@ test("the preview keeps item names readable at phone width, scrolling the table 
   await choose(page);
   const cell = page.locator("#importResult tbody tr").first().locator("td").first();
   await expect(cell).toContainText(name);
-  const lines = await cell.evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
-  expect(lines).toBeLessThanOrEqual(5);
+  // The lines the name's own text takes, not the cell's height, which also holds the brand and barcode lines
+  const lines = await cell.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el.firstChild);
+    return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+  });
+  // 30 characters in a column at least 14 characters wide: a few lines, where one letter per line took 17
+  expect(lines).toBeLessThanOrEqual(4);
   const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, view: innerWidth, modal: document.querySelector("#modal").scrollWidth, modalBox: document.querySelector("#modal").clientWidth }));
   expect(widths.page).toBeLessThanOrEqual(widths.view);
   expect(widths.modal).toBeLessThanOrEqual(widths.modalBox);
