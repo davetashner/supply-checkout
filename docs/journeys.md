@@ -329,7 +329,7 @@ Every function writes to a log group of its own, which the stack creates and Clo
 
 | Severity | Meaning | Who is told, and how | Response |
 | --- | --- | --- | --- |
-| **P1** | A critical journey is blocked, or customers are being wrongly locked out | SMS and email to both of us through SNS, at any hour | Start within 15 minutes. Post on the status page (`supply-checkout-iuw`) if it lasts more than 15 minutes. |
+| **P1** | A critical journey is blocked, or customers are being wrongly locked out | Email to both of us through SNS, at any hour (SMS too once `supply-checkout-w0e9` is done) | Start within 15 minutes. Post on the status page (`supply-checkout-iuw`) if it lasts more than 15 minutes. |
 | **P2** | A journey is degraded, or will soon be blocked | Email | Same business day |
 | **P3** | A trend worth a look | Weekly review | Next weekly review |
 
