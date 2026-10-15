@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "returns.title": "Devolver",
   "returns.intro": "Escanee lo que devuelve, o elíjalo. Vuelve al proyecto del que salió.",

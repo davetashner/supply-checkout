@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "resetPassword.tooMany": "Demasiadas solicitudes de restablecimiento por ahora. Intente de nuevo en una hora, o restablezca su contraseña en la página de inicio de sesión.",
   "resetPassword.badEmail": "Escriba su correo electrónico, como nombre@example.com.",

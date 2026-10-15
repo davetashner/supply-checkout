@@ -12,7 +12,7 @@
 // The language is chosen once, as this module loads (top-level await, so nothing that imports it runs
 // before the catalog is there): ?lang= in the address (a reviewer's preview, and kept on this device),
 // else the device's saved choice, else the browser's language if it's one the app offers to everyone
-// (OFFERED), else English. Spanish was signed off by a native speaker (supply-checkout-oopu) and is offered to
+// (OFFERED), else English. The owner reviewed the Spanish catalog (supply-checkout-oopu, 2026-10-15) and it is offered to
 // everyone.
 
 import en from "./messages/en.js";

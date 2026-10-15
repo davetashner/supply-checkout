@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "liveScan.starting": "Iniciando la cámara…",
   "liveScan.live": "Mantenga el código de barras dentro del marco.",

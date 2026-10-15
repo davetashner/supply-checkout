@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "settings.title": "Configuración del equipo",
   "settings.markupLabel": "Recargo sobre las herramientas de la empresa compradas para un cliente (%)",

@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "app.notConnected": "No hay conexión con el almacenamiento compartido.",
   "app.offline": "Sin conexión, así que no se guardó. Intente de nuevo cuando vuelva la conexión.",
