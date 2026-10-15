@@ -77,6 +77,22 @@ test("an unverified user verifies their email before naming a team, and then see
   expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toMatch(/123456|"at-\d"/);
 });
 
+test("a team name typed before verifying the email is still there when the screen starts again (supply-checkout-005.29)", { tag: ["@J3"] }, async ({ page }) => {
+  const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
+  await openAws(page, backend);
+  await account(page).getByLabel("Team name").fill("Bravo Co");
+  await account(page).getByRole("button", { name: "Verify email" }).click();
+  await sendCode(page);
+  await enter(page, "123456");
+  await expect(dialog(page).locator("#verifyDone")).toHaveText("pat@example.com is verified.");
+  await expect(account(page).locator("#verifyPrompt")).toBeHidden();
+  await expect(account(page).getByLabel("Team name")).toHaveValue("Bravo Co");
+  // ... and it makes the team under that name
+  await dialog(page).getByRole("button", { name: "Done" }).click();
+  await account(page).getByRole("button", { name: "Create team" }).click();
+  await expect(page.locator(".teambar")).toContainText("Team: Bravo Co");
+});
+
 test("explains a short, expired or refused code, too many tries, and a lost connection", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
   backend.on("POST", "/me/email/code", error(429, "quota_exceeded"));
