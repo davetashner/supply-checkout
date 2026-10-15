@@ -4,6 +4,13 @@
       "version": "upcoming",
       "notes": [
         {
+          "title": "Import item sizes from a CSV",
+          "text": "The inventory import now reads Length, Width, Height and Size unit, so a file from Export data comes back in with its sizes.",
+          "prs": [
+            798
+          ]
+        },
+        {
           "title": "Record an item's size",
           "text": "Add length, width and height to an item, in inches or centimeters. See the size in Inventory and sort by any side. It's in the inventory download too.",
           "prs": [
