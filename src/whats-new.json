@@ -1,7 +1,8 @@
 {
   "releases": [
     {
-      "version": "upcoming",
+      "version": "1.18.0",
+      "date": "2026-10-15",
       "notes": [
         {
           "title": "Import item sizes from a CSV",
