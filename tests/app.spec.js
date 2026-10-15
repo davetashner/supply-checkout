@@ -1,5 +1,5 @@
 import { test, expect, openApp } from "./helpers.js";
-import { modal, goToInventory, goToProjects, createProject, openProject, enterBarcode, addToProject, startReturn, saveReturn, finishReturn, lineRow, inventoryRow } from "./ui/index.js";
+import { modal, goToInventory, goToProjects, createProject, openProject, enterBarcode, addToProject, startReturn, saveReturn, finishReturn, lineRow, inventoryRow, receiptPrompt } from "./ui/index.js";
 import { usedState } from "./fixtures.js";
 
 test("creates a project recording client, date and who prepared it", { tag: ["@J4.1"] }, async ({ page }) => {
@@ -106,7 +106,7 @@ test("receipt review merges duplicates and splits items between a client and sto
     await page.setInputFiles("#receiptFile", { name: "receipt.jpg", mimeType: "image/jpeg", buffer: Buffer.from("fake image") });
 
     await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
-    const prompt = await page.evaluate(() => window.__mock.sampleCalls[0]);
+    const prompt = await receiptPrompt(page);
     expect(prompt).toContain("i1 | Storage bins, 12 qt");
   });
 

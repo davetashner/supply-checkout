@@ -1,7 +1,7 @@
 // Projects and items saved by older versions, or edited elsewhere, can be
 // missing fields. The app fills in sensible defaults instead of breaking.
 import { test, expect, openApp } from "./helpers.js";
-import { modal, goToInventory, openProject, enterBarcode, addToProject, startReturn, lineRow, inventoryRow, uploadReceipt, continueReview } from "./ui/index.js";
+import { modal, goToInventory, openProject, enterBarcode, addToProject, startReturn, lineRow, inventoryRow, uploadReceipt, continueReview, receiptPrompt } from "./ui/index.js";
 import { fakeImage } from "./fixtures.js";
 
 const bare = {
@@ -60,13 +60,13 @@ test("lines and items without names or prices use placeholders", { tag: ["@J4"] 
 test("receipt reading works with an empty inventory", { tag: ["@J5"] }, async ({ page }) => {
   await openApp(page, { receipt: { items: [{ name: "Rags", qty: 1, price: 2 }] } });
   await uploadReceipt(page, fakeImage);
-  expect(await page.evaluate(() => window.__mock.sampleCalls[0])).toContain("(empty)");
+  expect(await receiptPrompt(page)).toContain("(empty)");
 });
 
 test("receipt reading works with unnamed, unpriced inventory items", { tag: ["@J5"] }, async ({ page }) => {
   await openApp(page, { ...bare, receipt: { items: [{ name: "Rags", qty: 1, price: 2, match: "i1" }] } });
   await page.setInputFiles("#receiptFile", fakeImage);
-  expect(await page.evaluate(() => window.__mock.sampleCalls[0])).toContain("i1 |  |  | $0.00");
+  expect(await receiptPrompt(page)).toContain("i1 |  |  | $0.00");
   // The matched item has no price, so the receipt price differs
   await expect(page.locator(".rline").first()).toContainText("Price changed");
   await page.locator(".rline").first().getByRole("button", { name: /Keep the client price/ }).click();
