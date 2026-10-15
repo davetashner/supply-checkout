@@ -5,6 +5,7 @@
 import { test, expect, openApp } from "./helpers.js";
 import { modal, waitUntilConnected, goToInventory, goToProjects } from "./ui/app.js";
 import { usedState } from "./fixtures.js";
+import { UI_WORDS, unmarked } from "./ui/language.js";
 
 const open = async (page, search = "") => {
   await openApp(page, { ...usedState, search });
@@ -80,10 +81,6 @@ test.describe("a browser set to Spanish", () => {
   });
 });
 
-// Words of the app's own text. Any of them in a screen's text outside the pseudo-language's ⟦ ⟧ marks is
-// text that is still in a template. None is a word in the seeded projects and items.
-const UI_WORDS = /\b(Save|Cancel|Close|Return|Returned|Taken|Used|Charge|Price|Total|Loading|Search|Edit|Delete|Remove|Scan|Add|New|Check|Inventory|Projects|Item|Items|Barcode|Client|Date|Done|Try|Reopen|Finished)\b/;
-const unmarked = (page) => page.evaluate(() => document.body.innerText.replace(/⟦[^⟧]*⟧/g, " "));
 const noOverflow = (page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
 
 test.describe("the pseudo-language", () => {
