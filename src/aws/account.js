@@ -79,7 +79,11 @@ let box;
 // Shows a screen in place of the app, and wires it up
 function show(html, mount) {
   document.body.classList.add("account-open");
+  // A screen drawn again (verifying the email starts the screens again, behind the modal)
+  // keeps what was typed in its text fields, which the new HTML would otherwise empty
+  const typed = Object.fromEntries([...box.querySelectorAll("input[type=text][id]")].map((f) => [f.id, f.value]));
   box.innerHTML = html;
+  for (const f of box.querySelectorAll("input[type=text][id]")) if (typed[f.id]) f.value = typed[f.id];
   if (mount) mount(box);
   // data-autofocus rather than autofocus, as in openModal (src/dom.js). Not under an open
   // modal (verifying an email starts the screens again behind it): it keeps the focus.
