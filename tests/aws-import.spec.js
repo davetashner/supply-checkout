@@ -71,6 +71,22 @@ test("an owner previews a file, imports it, and every retry sends the same impor
   expect(second).toEqual(first);
 });
 
+test("the preview keeps item names readable at phone width, scrolling the table sideways", async ({ page }) => {
+  const backend = new FakeBackend();
+  const name = "Heavy duty nitrile gloves large";
+  backend.on("POST", PATH, ok({ ...PREVIEW, rows: [{ ...PREVIEW.rows[0], name }, ...PREVIEW.rows.slice(1)] }));
+  await page.setViewportSize({ width: 360, height: 740 });
+  await openImport(page, backend);
+  await choose(page);
+  const cell = page.locator("#importResult tbody tr").first().locator("td").first();
+  await expect(cell).toContainText(name);
+  const lines = await cell.evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
+  expect(lines).toBeLessThanOrEqual(5);
+  const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, view: innerWidth, modal: document.querySelector("#modal").scrollWidth, modalBox: document.querySelector("#modal").clientWidth }));
+  expect(widths.page).toBeLessThanOrEqual(widths.view);
+  expect(widths.modal).toBeLessThanOrEqual(widths.modalBox);
+});
+
 test("shows the server's words when an import can't go on as it is", { tag: ["@J2.4"] }, async ({ page }) => {
   const backend = new FakeBackend();
   const message = "This import expired before it finished. Choose the file again to finish; rows already imported won't be added twice.";
