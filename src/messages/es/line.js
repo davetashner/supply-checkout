@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "line.item": "Artículo",
   "line.equipmentHint": "Herramienta de la empresa: sin cargo. Sus cantidades cambian al retirarla, devolverla o marcarla como perdida en Terminar devolución.",

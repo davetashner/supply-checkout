@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "name.tooLong": "Escriba un nombre y apellido de hasta {max} caracteres en total.",
   "name.failed": "No se pudo guardar su nombre. Revise su conexión e intente de nuevo.",

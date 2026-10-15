@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 // Los nombres de las columnas del archivo (name, price, brand, barcode, kind, cost, stock, pack_size, reorder_at, reorder_qty) se quedan en inglés: así los lee el servidor.
 export default {
   "importer.changeCode": "código de barras",

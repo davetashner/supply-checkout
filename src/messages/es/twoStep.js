@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "twoStep.codeMismatch": "Ese código no es correcto. Revise la aplicación e intente con el código más reciente.",
   "twoStep.codeExpired": "Esta configuración venció. Cierre esto y empiece de nuevo.",

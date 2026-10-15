@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "project.count": { one: "{count} proyecto", other: "{count} proyectos" },
   "project.itemsOut": { one: "{count} artículo fuera", other: "{count} artículos fuera" },

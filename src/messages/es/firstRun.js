@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "firstRun.itemsTitle": "Agregue sus insumos",
   "firstRun.itemsText": "Agregue cada artículo con su código de barras, su precio y cuántos hay en el almacén, o importe una lista que ya tenga. La importación tiene una plantilla para llenar.",

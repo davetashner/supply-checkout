@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "profilePhoto.pick": "Elija una foto JPEG, PNG o WebP.",
   "profilePhoto.invalid": "No se pudo usar esa foto. Pruebe con otra foto JPEG, PNG o WebP.",

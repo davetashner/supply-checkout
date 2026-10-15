@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "deleteAccount.typeWord": "Escriba {word} para confirmar.",
   "deleteAccount.failed": "No se pudo eliminar su cuenta. Revise su conexión e intente de nuevo. Lo que ya se hizo queda hecho.",

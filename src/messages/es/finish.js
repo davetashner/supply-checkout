@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "finish.title": "Antes de terminar",
   "finish.intro": "Todavía hay herramientas de la empresa fuera. Para cada pieza, indique cuántas ya volvieron y cuántas se perdieron o se dañaron; las demás siguen fuera, en el trabajo, y el proyecto sigue abierto.",

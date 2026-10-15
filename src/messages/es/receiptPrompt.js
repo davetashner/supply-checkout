@@ -1,4 +1,4 @@
-// Borrador de traducción (supply-checkout-oopu): aún sin revisión de un hablante nativo del oficio.
+// Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
 export default {
   "receiptPrompt.not_granted": "La lectura de recibos necesita permiso para usar Claude. Recargue la página y permítalo para intentar de nuevo.",
   "receiptPrompt.sampling_disabled": "La lectura de recibos no está disponible para esta cuenta.",
