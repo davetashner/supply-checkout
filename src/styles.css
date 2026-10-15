@@ -272,6 +272,9 @@ fieldset.finish legend{font-weight:600;padding:0 4px}
 
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--ground);padding:10px 16px;border-radius:10px;box-shadow:var(--shadow);z-index:30;max-width:calc(100% - 32px);font-weight:500}
 .toast[hidden]{display:none}
+/* Never over a dialog's buttons (they sit at the bottom) or a tap meant for what is under it */
+.toast{pointer-events:none}
+body:has(.overlay:not([hidden])) .toast{bottom:auto;top:calc(12px + env(safe-area-inset-top,0px))}
 @media (prefers-reduced-motion:no-preference){.modal{animation:rise .16s ease-out}@keyframes rise{from{transform:translateY(10px);opacity:.6}}}
 
 /* Live barcode scanner (src/live-scan.js): the camera fills the screen, the buttons below it */
