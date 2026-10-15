@@ -361,7 +361,7 @@ paths:
         A size (supply-checkout-mcdq) is checked as the product routes check it: each
         of `length`, `width` and `height` above 0, at most 1000, with at most two
         decimals; `size_unit` is `in` or `cm` (also `inch`, `inches`, `centimeter`,
-        `centimeters`; `dim_unit` and `unit` name the same column). A side with no
+        `centimeters`; `dim_unit` names the same column. A bare `unit` column is ignored, since spreadsheets use it for other things). A side with no
         unit is in the item's unit, or inches; a unit alone changes the unit of a
         size the item has and is ignored when it has none.
 

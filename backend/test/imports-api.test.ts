@@ -385,7 +385,7 @@ describe("importing again", () => {
     expect(res.body.summary).toEqual({ rows: 2, created: 0, updated: 0, unchanged: 2 });
     expect(product("0123")).toMatchObject({ version: 2, length: 4, width: 2, dimUnit: "cm" });
     expect(product("0456")).not.toHaveProperty("dimUnit");
-    const csv = "name,barcode,price,length,width,height,unit\nGloves,0123,10,,3.5,1,\nBags,0456,4,10,,,\nRags,,1,5,6,7,INCHES\nMops,,1,1,,,Centimeters\n";
+    const csv = "name,barcode,price,length,width,height,dim_unit\nGloves,0123,10,,3.5,1,\nBags,0456,4,10,,,\nRags,,1,5,6,7,INCHES\nMops,,1,1,,,Centimeters\n";
     const preview = await post({ dryRun: true, csv });
     expect(preview.body.rows.map((r: { changes: string[] }) => r.changes)).toEqual([["width", "height"], ["length", "dimUnit"], ["name", "price", "length", "width", "height", "dimUnit"], ["name", "price", "length", "dimUnit"]]);
     expect(preview.body.rows[2]).toMatchObject({ length: 5, width: 6, height: 7, dimUnit: "in" });
@@ -426,6 +426,10 @@ describe("importing again", () => {
     expect(await post({ dryRun: true, csv: "name,price,length,length\nA,1,1,1\n" })).toMatchObject({ status: 400 });
     // Two names for the unit column are one column twice
     expect(() => parseInventoryCsv("name,price,length,size_unit,dim_unit\nA,1,1,in,cm\n")).toThrow("The size_unit column appears twice");
+    // A bare "unit" column is some other unit (each, case, box): it's ignored, and doesn't fail the file
+    const other = parseInventoryCsv("name,price,length,unit\nA,1,2,each\nB,1,3,case\n");
+    expect(other.ignoredColumns).toEqual(["unit"]);
+    expect(other.rows.map((r) => [r.length, r.dimUnit])).toEqual([[2, undefined], [3, undefined]]);
   });
 
   it("gives an item without a barcode the file's barcode when their names match", async () => {

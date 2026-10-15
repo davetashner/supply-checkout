@@ -117,7 +117,7 @@ const HEADERS = new Map<string, Field>([
   ["packsize", "packSize"], ["casesize", "packSize"],
   ["reorderat", "reorderAt"], ["reorderlevel", "reorderAt"], ["reorderpoint", "reorderAt"],
   ["length", "length"], ["width", "width"], ["height", "height"],
-  ["sizeunit", "dimUnit"], ["dimunit", "dimUnit"], ["unit", "dimUnit"],
+  ["sizeunit", "dimUnit"], ["dimunit", "dimUnit"],
   ["reorderqty", "reorderQty"], ["reorderquantity", "reorderQty"], ["usualorder", "reorderQty"],
 ]);
 
