@@ -569,16 +569,21 @@ test.describe("first sign-in and teams", () => {
   test.describe("campaign tags (supply-checkout-kajm)", () => {
     const KEY = "supplyCheckout.campaign";
     // Typing can be wiped if the screen redraws just after it shows (seen in Firefox on CI), and a
-    // blank name sends nothing, so type, check, and press until the request has gone
+    // blank name sends nothing, so type, check, and press until the request has gone. The request is
+    // sent a moment after the press: wait for it (a count read straight after the click can be 0 in a
+    // slow browser), and never type again once it has gone, because the screen has moved on and the
+    // field is no longer there (supply-checkout-ykzn: a second fill waited on it until the time ran out).
     const create = async (page, backend, name = "Bravo Co", { reaches = true } = {}) => {
       const field = page.getByLabel("Team name");
       const before = backend.requests("POST", "/teams").length;
+      const sent = () => backend.requests("POST", "/teams").length > before;
       await expect(async () => {
+        if (sent()) return;
         await field.fill(name);
         await expect(field).toHaveValue(name, { timeout: 1000 });
         await page.getByRole("button", { name: "Create team" }).click();
-        expect(backend.requests("POST", "/teams").length).toBeGreaterThan(before);
-      }).toPass({ timeout: 15000 });
+        await expect.poll(sent, { timeout: 3000 }).toBe(true);
+      }).toPass({ timeout: 30000 });
       if (reaches) await expect(page.locator(".teambar")).toContainText(`Team: ${name}`);
     };
 
