@@ -323,6 +323,21 @@ describe.skipIf(!endpoint)("the projects rename on DynamoDB Local", () => {
     }
   });
 
+  it("moves a reopened team's sheets and movements without the verification wait (supply-checkout-005.6.7)", async () => {
+    const { db } = table;
+    const teamId = await seedTeam(db, 2, { movements: 2 });
+    const key = { PK: `TEAM#${teamId}`, SK: "META" };
+    await connection(db).doc.send(new UpdateCommand({ TableName: db.tableName, Key: key, UpdateExpression: "SET purgeAfter = :p", ExpressionAttributeValues: { ":p": "2026-12-01T00:00:00.000Z" } }));
+    // While it's closed the backfill leaves it alone; reopening removes the closure
+    expect(await renameProjects(db, opts({ team: teamId }))).toMatchObject({ skippedTeams: 1, moved: 0 });
+    await connection(db).doc.send(new UpdateCommand({ TableName: db.tableName, Key: key, UpdateExpression: "REMOVE purgeAfter" }));
+    const report = await renameProjects(db, { apply: true, team: teamId, verify: false, writesPerSecond: Infinity });
+    expect(report).toMatchObject({ found: 2, moved: 2, failed: 0, conflicts: 0, movements: { found: 2, renamed: 2 } });
+    expect(report.verification).toBeUndefined();
+    expect(await partition(db, teamId, "SHEET#")).toHaveLength(0);
+    expect(await partition(db, teamId, "PROJECT#")).toHaveLength(2);
+  });
+
   it("never moves a sheet once its team starts being purged mid-run", async () => {
     const { db } = table;
     const teamId = await seedTeam(db, 1);

@@ -227,6 +227,7 @@ import {
   cancelAccountDeletion,
   closeTeam,
   reopenTeam,
+  renameProjects,
   countEmailCode,
   createInvite,
   createTeam,
@@ -914,11 +915,30 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     if (reopenedNow) {
       obs.count(BusinessMetric.TeamsReopened, 1, { teamId, ...testMark(ctx.test) });
       obs.logger.info("Team reopened", { teamId });
+      await migrateOldSheets(db, teamId);
       // Members may have left while it was closed
       await queueSeatSync(teamId, team);
       await noticeOwners(db, ctx, { kind: "teamReopened", teamName: team.name }, REOPENED_NOTICES);
     }
     return json(200, { team: teamBody(team, ctx.role) });
+  }
+
+  /**
+   * A team closed before the projects rename (supply-checkout-005.6.7) is skipped by the backfill and may come back holding
+   * SHEET# items, which the app no longer reads: moves them to PROJECT# now that it's open (the same code as the backfill,
+   * scoped to this team's partition). The reopen stands whatever happens here; a failure is logged for the runbook
+   * (`projects-rename --team <id> --apply`, docs/infrastructure.md).
+   */
+  async function migrateOldSheets(db: ReturnType<DbForAccount>, teamId: string): Promise<void> {
+    try {
+      const r = await renameProjects(db, { apply: true, team: teamId, verify: false, writesPerSecond: Infinity });
+      if (r.found > 0) obs.logger.info("Reopened team's sheets moved to projects", { teamId, moved: r.moved, duplicates: r.duplicates, movements: r.movements.renamed });
+      if (r.conflicts + r.failed + r.invalid + r.movements.conflicts + r.movements.raced > 0) {
+        obs.logger.error("Reopened team still has old sheet items", { teamId, conflicts: r.conflicts, failed: r.failed, invalid: r.invalid, movementConflicts: r.movements.conflicts, movementsRaced: r.movements.raced });
+      }
+    } catch (error) {
+      obs.logger.error("Reopened team's sheets not moved", { teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+    }
   }
 
   /**

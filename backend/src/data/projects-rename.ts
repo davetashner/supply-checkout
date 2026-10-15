@@ -78,6 +78,8 @@ export interface ProjectsRenameOptions {
   readonly writesPerSecond?: number;
   /** How long to wait for GSI1 (INDEX_WAIT_MS). */
   readonly indexWaitMs?: number;
+  /** Skip the verification afterwards (it waits for GSI1 to settle): for a request that moves one team's few items, such as a reopen. Default true. */
+  readonly verify?: boolean;
   /** Waits; tests may stand in for it. */
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -545,7 +547,7 @@ export async function renameProjects(db: Db, options: ProjectsRenameOptions): Pr
   }
 
   const report = { apply, from: from.sk, to: to.sk, teams: surveys.length, invalidTeams, teamMissing, skippedTeams, found, moved, duplicates, conflicts, gone, failed, retries, invalid, leftByLimit, bytes, largest, movements, ...(exported === undefined ? {} : { exported }) };
-  if (!apply) return report;
+  if (!apply || options.verify === false) return report;
   return { ...report, verification: await verify(db, done, from, to, options.indexWaitMs ?? INDEX_WAIT_MS, sleep) };
 }
 
