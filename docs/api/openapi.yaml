@@ -2036,6 +2036,9 @@ paths:
         "500":
           description: "`internal`: Stripe couldn't be reached or refused the request. Nothing about the team changed; try again."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: "`unavailable` with `reason: \"billing_not_configured\"`: the plan's price isn't set up in this Stripe mode. Nothing about the team changed; try again later."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /teams/{teamId}/billing/portal:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     post:
@@ -2089,7 +2092,10 @@ paths:
           description: "`aborted` with `reason: \"no_billing_account\"`: the team has no Stripe customer yet. Subscribe first (`createCheckout`)."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "500":
-          description: "`internal`: Stripe couldn't be reached or refused the request, or the portal isn't set up in this Stripe mode. Try again."
+          description: "`internal`: Stripe couldn't be reached or refused the request. Try again."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: "`unavailable` with `reason: \"billing_not_configured\"`: the Customer Portal isn't set up in this Stripe mode. Try again later."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /teams/{teamId}/billing/invoices:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
@@ -3728,7 +3734,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_reset, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output, photo_invalid, photo_too_large, photo_limit, feedback_limit, name_invalid, name_refused]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, billing_not_configured, mfa_required, mfa_sign_in_again, password_reset, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output, photo_invalid, photo_too_large, photo_limit, feedback_limit, name_invalid, name_refused]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -3757,6 +3763,8 @@ components:
                 owner subscribes, or pays.
                 `no_billing_account`: the team has no Stripe customer yet, so
                 there's no Customer Portal to open.
+                `billing_not_configured` (503): this Stripe mode is missing the
+                plan's price or the Customer Portal's configuration.
                 `mfa_required`: a billing route for an owner without two-step
                 sign-in on. `mfa_sign_in_again`: a billing route for an owner
                 whose session (the token's `auth_time`) began before two-step

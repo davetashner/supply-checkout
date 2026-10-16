@@ -275,6 +275,10 @@ export function trialAllowed(
 export function errorFor(error: unknown): ApiError {
   if (error instanceof TeamClosedError) return new ApiError(403, "permission_denied", error.message, "team_closed");
   if (error instanceof TeamDeletingError) return new ApiError(409, "aborted", error.message, "team_deleting");
+  // Our Stripe setup is incomplete, not the request: a 503 the client can name, still logged and counted as a failure
+  if (error instanceof PriceNotFoundError || error instanceof PortalConfigurationNotFoundError) {
+    return new ApiError(503, "unavailable", "Billing isn't available just now. Try again later.", "billing_not_configured");
+  }
   return dataErrorFor(error);
 }
 
