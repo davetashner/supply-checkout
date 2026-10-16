@@ -3,11 +3,23 @@
 @font-face{font-family:"Barlow Condensed";font-style:normal;font-weight:700;font-display:swap;src:url(./fonts/barlow-condensed-latin-700-normal.woff2) format("woff2")}
 @font-face{font-family:"Public Sans";font-style:normal;font-weight:100 900;font-display:swap;src:url(./fonts/public-sans-latin-wght-normal.woff2) format("woff2")}
 @font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:500;font-display:swap;src:url(./fonts/ibm-plex-mono-latin-500-normal.woff2) format("woff2")}
+/* Themes (src/theme.js, picked in Account): Work Order is the default, on :root; the others set
+   <html data-palette>. Each has light and dark colors, and dark is chosen as before: from
+   prefers-color-scheme unless data-theme="light", and always for data-theme="dark". A palette's
+   dark rules add an attribute, so they win over its light ones. --out and --accent are for text;
+   --out-fill and --accent-fill are what Check out and Return fill with, and they differ in
+   lightness as well as hue, so the two modes don't look alike with red-green color blindness */
+/* Themes (src/theme.js, picked in Account): Work Order is the default, on :root; the others set
+   <html data-palette>. Each has light and dark colors, and dark is chosen as before: from
+   prefers-color-scheme unless data-theme="light", and always for data-theme="dark". A palette's
+   dark rules add an attribute, so they win over its light ones. --out and --accent are for text;
+   --out-fill and --accent-fill are what Check out and Return fill with, and they differ in
+   lightness as well as hue, so the two modes don't look alike with red-green color blindness */
 :root{
-  --ground:#EDF1EE; --surface:#FFFFFF; --sunk:#E3E9E5; --ink:#17211E; --muted:#56655F; --line:#D2DBD6;
-  --accent:#0E6B58; --accent-ink:#FFFFFF; --accent-soft:#D5EBE4;
-  --out:#8F450B; --out-soft:#F6E4D3; --danger:#B3261E; --danger-soft:#F7DEDB;
-  --shadow:0 10px 40px rgba(18,33,28,.18);
+  --ground:#EEF1F6; --surface:#FFFFFF; --sunk:#E2E7F0; --ink:#141B2D; --muted:#4F596D; --line:#D2D9E5;
+  --accent:#1F4FD1; --accent-soft:#DCE5FC; --accent-fill:#1F4FD1; --accent-ink:#FFFFFF;
+  --out:#844700; --out-soft:#FDEFD3; --out-fill:#F59E0B; --out-ink:#1F1300; --danger:#B42318; --danger-soft:#FBE0DC;
+  --shadow:0 10px 40px rgba(20,27,45,.18);
   --display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
   --body:"Public Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
@@ -15,17 +27,77 @@
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
     color-scheme:dark;
-    --ground:#101614; --surface:#18201D; --sunk:#131A18; --ink:#E3ECE8; --muted:#95A69F; --line:#2B3632;
-    --accent:#43C3A0; --accent-ink:#06231C; --accent-soft:#16352D;
-    --out:#EA9F57; --out-soft:#3A2717; --danger:#F08A80; --danger-soft:#3C1C19;
+    --ground:#0E1320; --surface:#171E30; --sunk:#111827; --ink:#E6EAF2; --muted:#9AA4B8; --line:#283249;
+    --accent:#7FA4FF; --accent-soft:#1B2A52; --accent-fill:#3D63D6; --accent-ink:#FFFFFF;
+    --out:#F7BE5C; --out-soft:#3B2B10; --out-fill:#F5A524; --out-ink:#1F1300; --danger:#FF8A80; --danger-soft:#3D1C1C;
     --shadow:0 10px 40px rgba(0,0,0,.5);
   }
 }
 :root[data-theme="dark"]{
   color-scheme:dark;
-  --ground:#101614; --surface:#18201D; --sunk:#131A18; --ink:#E3ECE8; --muted:#95A69F; --line:#2B3632;
-  --accent:#43C3A0; --accent-ink:#06231C; --accent-soft:#16352D;
-  --out:#EA9F57; --out-soft:#3A2717; --danger:#F08A80; --danger-soft:#3C1C19;
+  --ground:#0E1320; --surface:#171E30; --sunk:#111827; --ink:#E6EAF2; --muted:#9AA4B8; --line:#283249;
+  --accent:#7FA4FF; --accent-soft:#1B2A52; --accent-fill:#3D63D6; --accent-ink:#FFFFFF;
+  --out:#F7BE5C; --out-soft:#3B2B10; --out-fill:#F5A524; --out-ink:#1F1300; --danger:#FF8A80; --danger-soft:#3D1C1C;
+  --shadow:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-palette="evergreen"]{
+  --ground:#F1F4F1; --surface:#FFFFFF; --sunk:#E6EBE7; --ink:#13201B; --muted:#52615A; --line:#D3DCD6;
+  --accent:#0B5D4B; --accent-soft:#D6ECE4; --accent-fill:#0B5D4B; --accent-ink:#FFFFFF;
+  --out:#714400; --out-soft:#FBEDCF; --out-fill:#F2B544; --out-ink:#2A1A00; --danger:#B3261E; --danger-soft:#F7DEDB;
+  --shadow:0 10px 40px rgba(20,27,45,.18);
+}
+@media (prefers-color-scheme: dark){
+  :root[data-palette="evergreen"]:not([data-theme="light"]){
+    --ground:#0F1513; --surface:#18211D; --sunk:#121A17; --ink:#E6EEEA; --muted:#9AABA4; --line:#2B3833;
+    --accent:#7CCBB1; --accent-soft:#173A31; --accent-fill:#2A7562; --accent-ink:#FFFFFF;
+    --out:#F5C96F; --out-soft:#3A2C12; --out-fill:#F2B544; --out-ink:#2A1A00; --danger:#F08A80; --danger-soft:#3C1C19;
+    --shadow:0 10px 40px rgba(0,0,0,.5);
+  }
+}
+:root[data-palette="evergreen"][data-theme="dark"]{
+  --ground:#0F1513; --surface:#18211D; --sunk:#121A17; --ink:#E6EEEA; --muted:#9AABA4; --line:#2B3833;
+  --accent:#7CCBB1; --accent-soft:#173A31; --accent-fill:#2A7562; --accent-ink:#FFFFFF;
+  --out:#F5C96F; --out-soft:#3A2C12; --out-fill:#F2B544; --out-ink:#2A1A00; --danger:#F08A80; --danger-soft:#3C1C19;
+  --shadow:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-palette="slate"]{
+  --ground:#F6F6F6; --surface:#FFFFFF; --sunk:#E8ECEC; --ink:#262626; --muted:#4A4A4A; --line:#D9DDDD;
+  --accent:#273249; --accent-soft:#E3E7EF; --accent-fill:#273249; --accent-ink:#FFFFFF;
+  --out:#7A4A00; --out-soft:#FBEFD9; --out-fill:#E9A93B; --out-ink:#212121; --danger:#B3261E; --danger-soft:#F7DEDB;
+  --shadow:0 10px 40px rgba(20,27,45,.18);
+}
+@media (prefers-color-scheme: dark){
+  :root[data-palette="slate"]:not([data-theme="light"]){
+    --ground:#212121; --surface:#272727; --sunk:#1A1A1A; --ink:#F6F6F6; --muted:#B5B5B5; --line:#3A3A3A;
+    --accent:#A9B6D3; --accent-soft:#2B3447; --accent-fill:#465783; --accent-ink:#FFFFFF;
+    --out:#F2C26B; --out-soft:#3A2E17; --out-fill:#E9A93B; --out-ink:#212121; --danger:#F08A80; --danger-soft:#3C1C19;
+    --shadow:0 10px 40px rgba(0,0,0,.5);
+  }
+}
+:root[data-palette="slate"][data-theme="dark"]{
+  --ground:#212121; --surface:#272727; --sunk:#1A1A1A; --ink:#F6F6F6; --muted:#B5B5B5; --line:#3A3A3A;
+  --accent:#A9B6D3; --accent-soft:#2B3447; --accent-fill:#465783; --accent-ink:#FFFFFF;
+  --out:#F2C26B; --out-soft:#3A2E17; --out-fill:#E9A93B; --out-ink:#212121; --danger:#F08A80; --danger-soft:#3C1C19;
+  --shadow:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-palette="contrast"]{
+  --ground:#FFFFFF; --surface:#FFFFFF; --sunk:#EBEBEB; --ink:#000000; --muted:#333333; --line:#6E6E6E;
+  --accent:#0035C9; --accent-soft:#DDE5FF; --accent-fill:#0035C9; --accent-ink:#FFFFFF;
+  --out:#7A3300; --out-soft:#FFEFC7; --out-fill:#FFB300; --out-ink:#000000; --danger:#A30000; --danger-soft:#FFE0E0;
+  --shadow:0 10px 40px rgba(20,27,45,.18);
+}
+@media (prefers-color-scheme: dark){
+  :root[data-palette="contrast"]:not([data-theme="light"]){
+    --ground:#000000; --surface:#0D0D0D; --sunk:#1A1A1A; --ink:#FFFFFF; --muted:#D6D6D6; --line:#8F8F8F;
+    --accent:#A8C1FF; --accent-soft:#14244D; --accent-fill:#2448C9; --accent-ink:#FFFFFF;
+    --out:#FFCF5C; --out-soft:#3D2E00; --out-fill:#FFC233; --out-ink:#000000; --danger:#FF9E96; --danger-soft:#3D0D0D;
+    --shadow:0 10px 40px rgba(0,0,0,.5);
+  }
+}
+:root[data-palette="contrast"][data-theme="dark"]{
+  --ground:#000000; --surface:#0D0D0D; --sunk:#1A1A1A; --ink:#FFFFFF; --muted:#D6D6D6; --line:#8F8F8F;
+  --accent:#A8C1FF; --accent-soft:#14244D; --accent-fill:#2448C9; --accent-ink:#FFFFFF;
+  --out:#FFCF5C; --out-soft:#3D2E00; --out-fill:#FFC233; --out-ink:#000000; --danger:#FF9E96; --danger-soft:#3D0D0D;
   --shadow:0 10px 40px rgba(0,0,0,.5);
 }
 *{box-sizing:border-box}
@@ -46,16 +118,11 @@ button,input,select{font:inherit;color:inherit}
 .tabs{display:flex;background:var(--sunk);border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px}
 .tabs button{border:0;background:none;padding:6px 14px;border-radius:7px;cursor:pointer;font-weight:600;color:var(--muted)}
 .tabs button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
-.theme{display:flex;gap:2px;padding:3px;border:1px solid var(--line);border-radius:10px;background:var(--sunk)}
-.theme button{display:grid;place-items:center;border:0;background:none;padding:5px;border-radius:7px;cursor:pointer;color:var(--muted)}
-.theme button:hover{color:var(--ink)}
-.theme button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
-.theme svg{width:18px;height:18px}
 
 /* Buttons */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:9px 14px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap}
 .btn:hover{border-color:var(--muted)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary{background:var(--accent-fill);border-color:var(--accent-fill);color:var(--accent-ink)}
 .btn.primary:hover{filter:brightness(1.07)}
 .btn.danger{color:var(--danger);border-color:var(--danger)}
 .btn.danger.armed{background:var(--danger);color:var(--surface)}
@@ -166,8 +233,15 @@ select{background:var(--ground);border:1px solid var(--line);border-radius:9px;p
 .mode[hidden]{display:none}
 .mode{display:grid;grid-template-columns:1fr 1fr;background:var(--sunk);border-radius:10px;padding:3px;gap:3px}
 .mode button{border:0;background:none;border-radius:8px;padding:9px;font-family:var(--display);font-weight:700;font-size:17px;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;color:var(--muted)}
-.mode button[aria-pressed="true"][data-mode="out"]{background:var(--out);color:var(--surface)}
-.mode button[aria-pressed="true"][data-mode="return"]{background:var(--accent);color:var(--accent-ink)}
+/* Each mode has its arrow as well as its color, so it never depends on color alone */
+.mode button{display:flex;align-items:center;justify-content:center;gap:8px}
+.mode button::before{content:"";flex:none;width:18px;height:18px;background:currentColor;-webkit-mask:var(--icon) center/contain no-repeat;mask:var(--icon) center/contain no-repeat}
+.mode button[data-mode="out"]{--icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 17L17 7M9 7h8v8'/%3E%3C/svg%3E")}
+.mode button[data-mode="return"]{--icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 10l-5 5 5 5'/%3E%3Cpath d='M20 4v7a4 4 0 0 1-4 4H4'/%3E%3C/svg%3E")}
+.mode button[aria-pressed="true"][data-mode="out"]{background:var(--out-fill);color:var(--out-ink)}
+.mode button[aria-pressed="true"][data-mode="return"]{background:var(--accent-fill);color:var(--accent-ink)}
+/* The scan button takes the mode's color, so the panel says one thing */
+.scanbar:has(.mode [data-mode="out"][aria-pressed="true"]) .scan-row .btn.primary{background:var(--out-fill);border-color:var(--out-fill);color:var(--out-ink)}
 .scan-row{display:flex;gap:10px;flex-wrap:wrap}
 .scan-row .btn.big{flex:1 1 220px}
 .manual{display:flex;gap:8px;flex:1 1 240px}
@@ -212,7 +286,7 @@ td.charge{color:var(--ink);font-weight:500}
 /* Low stock (src/reorder.js): the badge on Inventory rows and the tab, and Running low's list */
 .low-badge{display:inline-block;margin-left:8px;padding:1px 8px;border-radius:999px;background:var(--out-soft);color:var(--out);font-family:var(--body);font-size:12px;font-weight:700;white-space:nowrap}
 .low-badge.acked{background:var(--sunk);color:var(--muted);font-weight:600}
-.tab-count{display:inline-block;min-width:18px;margin-left:6px;padding:0 5px;border-radius:999px;background:var(--out);color:var(--surface);font-size:12px;line-height:18px;text-align:center}
+.tab-count{display:inline-block;min-width:18px;margin-left:6px;padding:0 5px;border-radius:999px;background:var(--out-fill);color:var(--out-ink);font-size:12px;line-height:18px;text-align:center}
 .row-actions{display:flex;gap:8px;flex-wrap:wrap}
 .btn.small{padding:5px 10px;font-size:13px}
 table.reorder td:last-child{white-space:nowrap}

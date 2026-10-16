@@ -91,19 +91,15 @@ for (const colorScheme of ["light", "dark"]) {
   });
 }
 
-test("the theme control switches and keeps the choice across a reload", async ({ page }) => {
-  await page.emulateMedia({ colorScheme: "light" });
+// The demo has no Account, so no theme control: it's Work Order, following the device
+test("follows the device's light or dark setting", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
   await openDemo(page);
-  const theme = page.getByRole("group", { name: "Theme" });
-  await theme.getByRole("button", { name: "Dark theme" }).click();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   // --ground in styles.css
   const background = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-  expect(await background()).toBe("rgb(16, 22, 20)");
-  await page.reload();
-  await expect(page.getByRole("button", { name: /Acme Offices/ })).toBeVisible();
-  await expect(theme.getByRole("button", { name: "Dark theme" })).toHaveAttribute("aria-pressed", "true");
-  expect(await background()).toBe("rgb(16, 22, 20)");
+  expect(await background()).toBe("rgb(14, 19, 32)");
+  await page.emulateMedia({ colorScheme: "light" });
+  expect(await background()).toBe("rgb(238, 241, 246)");
 });
 
 test.describe("at 320px", () => {

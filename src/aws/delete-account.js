@@ -1,5 +1,5 @@
 // Your account, from the team bar's Account button or the screens before a team is open:
-// the name (name.js), the profile photo (profile-photo.js), the password (changed in password.js), two-step sign-in (set up in mfa.js), the What's New
+// the name (name.js), the theme (appearance.js), the profile photo (profile-photo.js), the password (changed in password.js), two-step sign-in (set up in mfa.js), the What's New
 // banner on or off (whats-new.js), and deleting the account (DELETE /me in
 // docs/api/openapi.yaml). The user types DELETE to confirm, and
 // the button stays off until they have. The server refuses while they're the only owner of
@@ -13,6 +13,7 @@ import { openModal, closeModal } from "../dom.js";
 import { whatsNewSetting, wireWhatsNewSetting } from "./whats-new.js";
 import { photoSection, wirePhoto } from "./profile-photo.js";
 import { nameSection, wireName } from "./name.js";
+import { appearanceSection, wireAppearance } from "./appearance.js";
 
 const WORD = "DELETE";
 
@@ -66,6 +67,7 @@ export function openDeleteAccount(api, email, onDeleted, twoStep, whatsNew, phot
     <p>${msg("deleteAccount.signedInAs", { email: esc(email || msg("deleteAccount.you")) })}</p>
     ${nameSection(name)}
     ${languageSection()}
+    ${appearanceSection()}
     ${photo ? photoSection(photo) : ""}
     ${passwordSection(twoStep.mfa)}
     ${twoStepSection(twoStep.mfa)}
@@ -87,6 +89,7 @@ export function openDeleteAccount(api, email, onDeleted, twoStep, whatsNew, phot
     if (change) change.addEventListener("click", twoStep.changePassword);
     wireWhatsNewSetting(m, api, whatsNew.prefs, whatsNew.off);
     wireName(m, api, name);
+    wireAppearance(m);
     // Every screen is made again in the new language, so the page loads again
     const language = m.querySelector("#languageSelect");
     if (language) language.addEventListener("change", async () => {
