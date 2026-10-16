@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.19.0](https://github.com/davetashner/supply-checkout/compare/v1.18.0...v1.19.0) (2026-10-16)
+
+
+### Features
+
+* add themes, picked in Account, with Work Order as the new default ([#812](https://github.com/davetashner/supply-checkout/issues/812)) ([39f5f34](https://github.com/davetashner/supply-checkout/commit/39f5f346f0cecf866c2e0572b123fb2143e97acc))
+* move the site, favicon, share card and sign-in page to Work Order ([#816](https://github.com/davetashner/supply-checkout/issues/816)) ([0f29ba7](https://github.com/davetashner/supply-checkout/commit/0f29ba7189d1b7b3681e6c83038b898bc52dabde))
+
 ## [1.18.0](https://github.com/davetashner/supply-checkout/compare/v1.17.0...v1.18.0) (2026-10-15)
 
 
