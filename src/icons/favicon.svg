@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
   <style>
-    .tile { fill: #0E6B58 }
+    .tile { fill: #1F4FD1 }
     .bars { fill: #FFFFFF }
     @media (prefers-color-scheme: dark) {
-      .tile { fill: #43C3A0 }
-      .bars { fill: #06231C }
+      .tile { fill: #7FA4FF }
+      .bars { fill: #0E1320 }
     }
   </style>
   <rect class="tile" width="16" height="16" rx="3"/>

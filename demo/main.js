@@ -14,7 +14,7 @@ installMockClaude({
   ...demoState(),
   userName: "Demo user",
   // A plain circle, so the demo user's avatar isn't a broken image
-  avatarUrl: "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><circle cx="1" cy="1" r="1" fill="#0E6B58"/></svg>'),
+  avatarUrl: "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><circle cx="1" cy="1" r="1" fill="#1F4FD1"/></svg>'),
   // Receipt reading returns the canned receipt, after a pause like a real read
   sampleDelay: 1200,
 });

@@ -134,15 +134,16 @@ export function opsJwtAuthorizer(scope: Construct, props: { readonly envName: st
   return new HttpJwtAuthorizer("OpsCognitoJwt", issuer, { authorizerName: "ops-cognito-jwt", jwtAudience: [clientId] });
 }
 
-// Managed Login colors, from the app's tokens in src/styles.css. Cognito wants
+// Managed Login colors, from the app's default Work Order palette in src/styles.css
+// (accent is the text and link color, fill the filled button's). Cognito wants
 // 8-digit lowercase RGBA hex without the #.
-const light = { ground: "edf1eeff", surface: "ffffffff", ink: "17211eff", muted: "56655fff", line: "d2dbd6ff", accent: "0e6b58ff", accentInk: "ffffffff", accentHover: "0a5546ff", accentSoft: "d5ebe4ff", danger: "b3261eff" };
-const dark = { ground: "101614ff", surface: "18201dff", ink: "e3ece8ff", muted: "95a69fff", line: "2b3632ff", accent: "43c3a0ff", accentInk: "06231cff", accentHover: "6fd3b7ff", accentSoft: "16352dff", danger: "f08a80ff" };
+const light = { ground: "eef1f6ff", surface: "ffffffff", ink: "141b2dff", muted: "4f596dff", line: "d2d9e5ff", accent: "1f4fd1ff", accentHover: "1a43b3ff", fill: "1f4fd1ff", fillHover: "1a43b3ff", accentInk: "ffffffff", accentSoft: "dce5fcff", danger: "b42318ff", dangerSoft: "fbe0dcff" };
+const dark = { ground: "0e1320ff", surface: "171e30ff", ink: "e6eaf2ff", muted: "9aa4b8ff", line: "283249ff", accent: "7fa4ffff", accentHover: "a3beffff", fill: "3d63d6ff", fillHover: "3458c4ff", accentInk: "ffffffff", accentSoft: "1b2a52ff", danger: "ff8a80ff", dangerSoft: "3d1c1cff" };
 
 const button = (c: typeof light) => ({
-  defaults: { backgroundColor: c.accent, textColor: c.accentInk },
-  hover: { backgroundColor: c.accentHover, textColor: c.accentInk },
-  active: { backgroundColor: c.accentHover, textColor: c.accentInk },
+  defaults: { backgroundColor: c.fill, textColor: c.accentInk },
+  hover: { backgroundColor: c.fillHover, textColor: c.accentInk },
+  active: { backgroundColor: c.fillHover, textColor: c.accentInk },
   disabled: { backgroundColor: c.line, borderColor: c.line },
 });
 
@@ -193,6 +194,6 @@ export const managedLoginBranding = {
       lightMode: { defaults: { backgroundColor: light.surface, borderColor: light.accent, textColor: light.accent }, hover: { backgroundColor: light.accentSoft, borderColor: light.accent, textColor: light.accent }, active: { backgroundColor: light.accentSoft, borderColor: light.accent, textColor: light.accent } },
       darkMode: { defaults: { backgroundColor: dark.surface, borderColor: dark.accent, textColor: dark.accent }, hover: { backgroundColor: dark.accentSoft, borderColor: dark.accent, textColor: dark.accent }, active: { backgroundColor: dark.accentSoft, borderColor: dark.accent, textColor: dark.accent } },
     },
-    alert: { borderRadius: 10, lightMode: { error: { backgroundColor: "f7dedbff", borderColor: light.danger } }, darkMode: { error: { backgroundColor: "3c1c19ff", borderColor: dark.danger } } },
+    alert: { borderRadius: 10, lightMode: { error: { backgroundColor: light.dangerSoft, borderColor: light.danger } }, darkMode: { error: { backgroundColor: dark.dangerSoft, borderColor: dark.danger } } },
   },
 } as const;

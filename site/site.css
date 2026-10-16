@@ -4,16 +4,17 @@
 @font-face{font-family:"Public Sans";font-style:normal;font-weight:100 900;font-display:swap;src:url(./fonts/public-sans-latin-wght-normal.woff2) format("woff2")}
 :root {
   color-scheme: light dark;
-  --ground: #EDF1EE; --surface: #FFFFFF; --sunk: #E3E9E5; --ink: #17211E; --muted: #56655F; --line: #D2DBD6;
-  --accent: #0E6B58; --accent-ink: #FFFFFF; --accent-soft: #D5EBE4;
-  --shadow: 0 18px 50px rgba(18, 33, 28, .22);
+  /* Work Order, the app's default palette (src/styles.css): --accent for text, --accent-fill behind --accent-ink */
+  --ground: #EEF1F6; --surface: #FFFFFF; --sunk: #E2E7F0; --ink: #141B2D; --muted: #4F596D; --line: #D2D9E5;
+  --accent: #1F4FD1; --accent-fill: #1F4FD1; --accent-ink: #FFFFFF; --accent-soft: #DCE5FC;
+  --shadow: 0 18px 50px rgba(20, 27, 45, .22);
   --display: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
   --body: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --ground: #101614; --surface: #18201D; --sunk: #131A18; --ink: #E3ECE8; --muted: #95A69F; --line: #2B3632;
-    --accent: #43C3A0; --accent-ink: #06231C; --accent-soft: #16352D;
+    --ground: #0E1320; --surface: #171E30; --sunk: #111827; --ink: #E6EAF2; --muted: #9AA4B8; --line: #283249;
+    --accent: #7FA4FF; --accent-fill: #3D63D6; --accent-ink: #FFFFFF; --accent-soft: #1B2A52;
     --shadow: 0 18px 50px rgba(0, 0, 0, .55);
   }
 }
@@ -38,7 +39,7 @@ nav a:not(.btn):hover { color: var(--ink); }
 
 .btn { display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 9px 16px; font-weight: 700; text-decoration: none; white-space: nowrap; }
 .btn:hover { border-color: var(--muted); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--accent-ink); }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.big { padding: 14px 22px; font-size: 18px; border-radius: 12px; }
 
@@ -51,8 +52,8 @@ nav a:not(.btn):hover { color: var(--ink); }
 
 /* A phone around a clip. The clips are 390 x 664, so the screen keeps that ratio */
 .phone { margin: 0; justify-self: center; width: min(280px, 100%); }
-.screen { aspect-ratio: 390 / 664; border-radius: 34px; padding: 9px; background: #101614; box-shadow: var(--shadow), inset 0 0 0 2px #2b3632; }
-.screen video { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 26px; background: #EDF1EE; }
+.screen { aspect-ratio: 390 / 664; border-radius: 34px; padding: 9px; background: #0E1320; box-shadow: var(--shadow), inset 0 0 0 2px #283249; }
+.screen video { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 26px; background: #EEF1F6; }
 
 .feature { display: grid; grid-template-columns: 1fr; gap: 28px; align-items: center; padding-block: 48px; border-top: 1px solid var(--line); }
 .feature h2 { font-size: clamp(32px, 6vw, 48px); }
