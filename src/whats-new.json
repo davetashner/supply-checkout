@@ -1,6 +1,18 @@
 {
   "releases": [
     {
+      "version": "upcoming",
+      "notes": [
+        {
+          "title": "A new theme: Dusk",
+          "text": "Dusk pairs dusty rose with soft blue, on warm white or charcoal. Pick it under Account → Appearance.",
+          "prs": [
+            817
+          ]
+        }
+      ]
+    },
+    {
       "version": "1.19.0",
       "date": "2026-10-16",
       "notes": [
