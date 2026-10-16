@@ -43,7 +43,7 @@ While working on a change, run just the file and browser you're touching, e.g. `
 | --- | --- |
 | `app.spec.js` | Core flows: projects, checkout and return, storage counts, items without barcodes, receipt review, CSV export, view-only access |
 | `a11y.spec.js` | axe-core WCAG 2.1 A/AA scan of every screen, in light and dark mode |
-| `theme.spec.js` | The theme, picked in Account's Appearance section: each palette (Work Order, Evergreen, Slate, High contrast) in light and dark applied before the page finishes loading, choices applied at once and saved, other tabs following along, axe's contrast check over Account in every palette and mode, and falling back to the defaults when storage throws |
+| `theme.spec.js` | The theme, picked in Account's Appearance section: each palette (Work Order, Evergreen, Slate, Dusk, High contrast) in light and dark applied before the page finishes loading, choices applied at once and saved, other tabs following along, axe's contrast check over Account in every palette and mode, and falling back to the defaults when storage throws |
 | `layout.spec.js` | No sideways scrolling at 320px and 390px phone widths |
 | `resilience.spec.js` | Missing capabilities, failed receipt reads, full storage, lost write permission, and resuming an unsaved receipt |
 | `projects.spec.js` | Editing, filtering, reopening and deleting projects; editing and removing lines; picking and returning items without barcodes |

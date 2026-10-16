@@ -1,5 +1,5 @@
 // The theme (src/theme.js), picked in Account's Appearance section (src/aws/appearance.js): a
-// palette (Work Order by default, Evergreen, Slate or High contrast) and System / Light / Dark.
+// palette (Work Order by default, Evergreen, Slate, Dusk or High contrast) and System / Light / Dark.
 // A choice overrides the OS setting and is kept per device, System follows the OS, other tabs
 // follow along, and storage that throws falls back to the defaults without errors.
 import AxeBuilder from "@axe-core/playwright";
@@ -13,9 +13,10 @@ const GROUND = {
   workorder: { light: "rgb(238, 241, 246)", dark: "rgb(14, 19, 32)" },
   evergreen: { light: "rgb(241, 244, 241)", dark: "rgb(15, 21, 19)" },
   slate: { light: "rgb(246, 246, 246)", dark: "rgb(33, 33, 33)" },
+  dusk: { light: "rgb(247, 244, 245)", dark: "rgb(30, 27, 29)" },
   contrast: { light: "rgb(255, 255, 255)", dark: "rgb(0, 0, 0)" },
 };
-const NAMES = { workorder: "Work Order", evergreen: "Evergreen", slate: "Slate", contrast: "High contrast" };
+const NAMES = { workorder: "Work Order", evergreen: "Evergreen", slate: "Slate", dusk: "Dusk", contrast: "High contrast" };
 
 const background = (page) => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
 const saved = (page, key) => page.evaluate((k) => localStorage.getItem(k), key);

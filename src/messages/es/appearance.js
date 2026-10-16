@@ -5,6 +5,7 @@ export default {
   "appearance.workorder": "Orden de trabajo",
   "appearance.evergreen": "Verde bosque",
   "appearance.slate": "Pizarra",
+  "appearance.dusk": "Crepúsculo",
   "appearance.contrast": "Alto contraste",
   "appearance.mode": "Claro u oscuro",
   "appearance.system": "Igual que este dispositivo",

@@ -5,6 +5,7 @@ export default {
   "appearance.workorder": "Work Order",
   "appearance.evergreen": "Evergreen",
   "appearance.slate": "Slate",
+  "appearance.dusk": "Dusk",
   "appearance.contrast": "High contrast",
   "appearance.mode": "Light or dark",
   "appearance.system": "Match this device",

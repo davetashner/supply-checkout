@@ -10,6 +10,7 @@ const SWATCHES = {
   workorder: ["#1F4FD1", "#F59E0B", "#EEF1F6"],
   evergreen: ["#0B5D4B", "#F2B544", "#F1F4F1"],
   slate: ["#273249", "#E9A93B", "#F6F6F6"],
+  dusk: ["#6E585D", "#E9A93B", "#F7F4F5"],
   contrast: ["#0035C9", "#FFB300", "#FFFFFF"],
 };
 
