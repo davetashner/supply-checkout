@@ -1,7 +1,8 @@
 {
   "releases": [
     {
-      "version": "upcoming",
+      "version": "1.19.0",
+      "date": "2026-10-16",
       "notes": [
         {
           "title": "Pick a theme in Account",
