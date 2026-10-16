@@ -113,7 +113,7 @@ export function page({ title, html }, { description }) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)} · Supply Checkout</title>
 <meta name="description" content="${escapeHtml(description)}">
-<meta name="theme-color" content="#EDF1EE">
+<meta name="theme-color" content="#EEF1F6">
 <link rel="icon" href="../icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../site.css">
 <link rel="stylesheet" href="../legal.css">

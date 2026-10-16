@@ -7,12 +7,12 @@ import { chromium } from "@playwright/test";
 const poster = readFileSync(new URL("../site/clips/J4-checkout.jpg", import.meta.url)).toString("base64");
 const html = `<!doctype html><meta charset="utf-8"><style>
   html,body{margin:0}
-  body{width:1200px;height:630px;background:#EDF1EE;color:#17211E;font:600 22px/1.4 "Public Sans",system-ui,sans-serif;display:flex;align-items:center;overflow:hidden}
+  body{width:1200px;height:630px;background:#EEF1F6;color:#141B2D;font:600 22px/1.4 "Public Sans",system-ui,sans-serif;display:flex;align-items:center;overflow:hidden}
   .copy{padding:0 0 0 80px;width:640px}
-  .brand{font:700 30px/1 "Barlow Condensed","Arial Narrow",system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:#0E6B58;margin-bottom:28px}
+  .brand{font:700 30px/1 "Barlow Condensed","Arial Narrow",system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:#1F4FD1;margin-bottom:28px}
   h1{font:700 78px/1.02 "Barlow Condensed","Arial Narrow",system-ui,sans-serif;margin:0 0 26px}
-  p{margin:0;color:#56655F;font-weight:400;font-size:28px}
-  .phone{margin-left:auto;margin-right:96px;width:330px;height:560px;padding:9px;border-radius:44px;background:#101614;box-shadow:0 24px 60px rgba(18,33,28,.3)}
+  p{margin:0;color:#4F596D;font-weight:400;font-size:28px}
+  .phone{margin-left:auto;margin-right:96px;width:330px;height:560px;padding:9px;border-radius:44px;background:#0E1320;box-shadow:0 24px 60px rgba(20,27,45,.3)}
   .phone img{display:block;width:100%;height:100%;object-fit:cover;object-position:top;border-radius:36px}
 </style>
 <div class="copy"><div class="brand">Supply Checkout</div><h1>Scan supplies out to the job. Scan them back.</h1><p>Bill clients for exactly what was used.</p></div>

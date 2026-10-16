@@ -18,7 +18,7 @@
 /* A control the step names: what it says on the screen */
 .copy b { font-weight: 700; background: var(--accent-soft); padding: 0 6px; border-radius: 6px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .steps figure, .clip figure { margin: 0; justify-self: center; width: min(320px, 100%); }
-.steps img, .clip video { display: block; width: 100%; height: auto; border-radius: 20px; border: 1px solid var(--line); box-shadow: var(--shadow); background: #EDF1EE; }
+.steps img, .clip video { display: block; width: 100%; height: auto; border-radius: 20px; border: 1px solid var(--line); box-shadow: var(--shadow); background: #EEF1F6; }
 
 .clip { padding-block: 32px; border-top: 1px solid var(--line); }
 .clip figcaption { margin-top: 14px; color: var(--muted); font-size: 17px; }
@@ -46,6 +46,5 @@
   .clip figure { justify-self: start; width: 300px; }
 }
 
-/* Body-size text in the accent colour: a darker green than the buttons' in light mode, for 4.5:1 */
-:root { --accent-text: #0B5747; }
-@media (prefers-color-scheme: dark) { :root { --accent-text: #43C3A0; } }
+/* Body-size text in the accent colour: Work Order's accent is 4.5:1 or more on the page in both modes */
+:root { --accent-text: var(--accent); }

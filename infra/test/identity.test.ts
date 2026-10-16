@@ -138,15 +138,21 @@ describe("Managed Login domain", () => {
     expect(branding.Properties.UseCognitoProvidedValues).toBeUndefined();
     expect(branding.Properties.Settings).toEqual(managedLoginBranding);
 
-    // Every color is 8-digit lowercase RGBA hex, and the accents match src/styles.css
+    // Every color is 8-digit lowercase RGBA hex, and the accents match Work Order, the default
+    // palette in src/styles.css: its light values come first in the file, then its dark ones
     const colors = JSON.stringify(managedLoginBranding).match(/"[a-zA-Z]*[cC]olor":"[^"]*"/g) ?? [];
     expect(colors.length).toBeGreaterThan(20);
     for (const c of colors) expect(c).toMatch(/:"[0-9a-f]{8}"$/);
     const css = readFileSync(new URL("../../src/styles.css", import.meta.url), "utf8");
-    const accents = [...css.matchAll(/--accent:#([0-9A-Fa-f]{6});/g)].map((m) => `${m[1]?.toLowerCase()}ff`);
+    const token = (name: string) => [...css.matchAll(new RegExp(`--${name}:#([0-9A-Fa-f]{6});`, "g"))].map((m) => `${m[1]?.toLowerCase()}ff`);
+    const [lightFill, darkFill] = token("accent-fill");
+    const [lightAccent, darkAccent] = token("accent");
     const button = managedLoginBranding.components.primaryButton;
-    expect(accents).toContain(button.lightMode.defaults.backgroundColor);
-    expect(accents).toContain(button.darkMode.defaults.backgroundColor);
+    expect(button.lightMode.defaults.backgroundColor).toBe(lightFill);
+    expect(button.darkMode.defaults.backgroundColor).toBe(darkFill);
+    const link = managedLoginBranding.componentClasses.link;
+    expect(link.lightMode.defaults.textColor).toBe(lightAccent);
+    expect(link.darkMode.defaults.textColor).toBe(darkAccent);
     expect(managedLoginBranding.categories.global.colorSchemeMode).toBe("DYNAMIC");
   });
 });

@@ -744,66 +744,66 @@
               "lightMode": {
                 "defaults": {
                   "backgroundColor": "ffffffff",
-                  "borderColor": "d2dbd6ff"
+                  "borderColor": "d2d9e5ff"
                 },
-                "placeholderColor": "56655fff"
+                "placeholderColor": "4f596dff"
               },
               "darkMode": {
                 "defaults": {
-                  "backgroundColor": "18201dff",
-                  "borderColor": "2b3632ff"
+                  "backgroundColor": "171e30ff",
+                  "borderColor": "283249ff"
                 },
-                "placeholderColor": "95a69fff"
+                "placeholderColor": "9aa4b8ff"
               }
             },
             "inputLabel": {
               "lightMode": {
-                "textColor": "17211eff"
+                "textColor": "141b2dff"
               },
               "darkMode": {
-                "textColor": "e3ece8ff"
+                "textColor": "e6eaf2ff"
               }
             },
             "inputDescription": {
               "lightMode": {
-                "textColor": "56655fff"
+                "textColor": "4f596dff"
               },
               "darkMode": {
-                "textColor": "95a69fff"
+                "textColor": "9aa4b8ff"
               }
             },
             "link": {
               "lightMode": {
                 "defaults": {
-                  "textColor": "0e6b58ff"
+                  "textColor": "1f4fd1ff"
                 },
                 "hover": {
-                  "textColor": "0a5546ff"
+                  "textColor": "1a43b3ff"
                 }
               },
               "darkMode": {
                 "defaults": {
-                  "textColor": "43c3a0ff"
+                  "textColor": "7fa4ffff"
                 },
                 "hover": {
-                  "textColor": "6fd3b7ff"
+                  "textColor": "a3beffff"
                 }
               }
             },
             "focusState": {
               "lightMode": {
-                "borderColor": "0e6b58ff"
+                "borderColor": "1f4fd1ff"
               },
               "darkMode": {
-                "borderColor": "43c3a0ff"
+                "borderColor": "7fa4ffff"
               }
             },
             "divider": {
               "lightMode": {
-                "borderColor": "d2dbd6ff"
+                "borderColor": "d2d9e5ff"
               },
               "darkMode": {
-                "borderColor": "2b3632ff"
+                "borderColor": "283249ff"
               }
             }
           },
@@ -813,10 +813,10 @@
                 "enabled": false
               },
               "lightMode": {
-                "color": "edf1eeff"
+                "color": "eef1f6ff"
               },
               "darkMode": {
-                "color": "101614ff"
+                "color": "0e1320ff"
               }
             },
             "form": {
@@ -832,60 +832,60 @@
               },
               "lightMode": {
                 "backgroundColor": "ffffffff",
-                "borderColor": "d2dbd6ff"
+                "borderColor": "d2d9e5ff"
               },
               "darkMode": {
-                "backgroundColor": "18201dff",
-                "borderColor": "2b3632ff"
+                "backgroundColor": "171e30ff",
+                "borderColor": "283249ff"
               }
             },
             "pageText": {
               "lightMode": {
-                "headingColor": "17211eff",
-                "bodyColor": "17211eff",
-                "descriptionColor": "56655fff"
+                "headingColor": "141b2dff",
+                "bodyColor": "141b2dff",
+                "descriptionColor": "4f596dff"
               },
               "darkMode": {
-                "headingColor": "e3ece8ff",
-                "bodyColor": "e3ece8ff",
-                "descriptionColor": "95a69fff"
+                "headingColor": "e6eaf2ff",
+                "bodyColor": "e6eaf2ff",
+                "descriptionColor": "9aa4b8ff"
               }
             },
             "primaryButton": {
               "lightMode": {
                 "defaults": {
-                  "backgroundColor": "0e6b58ff",
+                  "backgroundColor": "1f4fd1ff",
                   "textColor": "ffffffff"
                 },
                 "hover": {
-                  "backgroundColor": "0a5546ff",
+                  "backgroundColor": "1a43b3ff",
                   "textColor": "ffffffff"
                 },
                 "active": {
-                  "backgroundColor": "0a5546ff",
+                  "backgroundColor": "1a43b3ff",
                   "textColor": "ffffffff"
                 },
                 "disabled": {
-                  "backgroundColor": "d2dbd6ff",
-                  "borderColor": "d2dbd6ff"
+                  "backgroundColor": "d2d9e5ff",
+                  "borderColor": "d2d9e5ff"
                 }
               },
               "darkMode": {
                 "defaults": {
-                  "backgroundColor": "43c3a0ff",
-                  "textColor": "06231cff"
+                  "backgroundColor": "3d63d6ff",
+                  "textColor": "ffffffff"
                 },
                 "hover": {
-                  "backgroundColor": "6fd3b7ff",
-                  "textColor": "06231cff"
+                  "backgroundColor": "3458c4ff",
+                  "textColor": "ffffffff"
                 },
                 "active": {
-                  "backgroundColor": "6fd3b7ff",
-                  "textColor": "06231cff"
+                  "backgroundColor": "3458c4ff",
+                  "textColor": "ffffffff"
                 },
                 "disabled": {
-                  "backgroundColor": "2b3632ff",
-                  "borderColor": "2b3632ff"
+                  "backgroundColor": "283249ff",
+                  "borderColor": "283249ff"
                 }
               }
             },
@@ -893,35 +893,35 @@
               "lightMode": {
                 "defaults": {
                   "backgroundColor": "ffffffff",
-                  "borderColor": "0e6b58ff",
-                  "textColor": "0e6b58ff"
+                  "borderColor": "1f4fd1ff",
+                  "textColor": "1f4fd1ff"
                 },
                 "hover": {
-                  "backgroundColor": "d5ebe4ff",
-                  "borderColor": "0e6b58ff",
-                  "textColor": "0e6b58ff"
+                  "backgroundColor": "dce5fcff",
+                  "borderColor": "1f4fd1ff",
+                  "textColor": "1f4fd1ff"
                 },
                 "active": {
-                  "backgroundColor": "d5ebe4ff",
-                  "borderColor": "0e6b58ff",
-                  "textColor": "0e6b58ff"
+                  "backgroundColor": "dce5fcff",
+                  "borderColor": "1f4fd1ff",
+                  "textColor": "1f4fd1ff"
                 }
               },
               "darkMode": {
                 "defaults": {
-                  "backgroundColor": "18201dff",
-                  "borderColor": "43c3a0ff",
-                  "textColor": "43c3a0ff"
+                  "backgroundColor": "171e30ff",
+                  "borderColor": "7fa4ffff",
+                  "textColor": "7fa4ffff"
                 },
                 "hover": {
-                  "backgroundColor": "16352dff",
-                  "borderColor": "43c3a0ff",
-                  "textColor": "43c3a0ff"
+                  "backgroundColor": "1b2a52ff",
+                  "borderColor": "7fa4ffff",
+                  "textColor": "7fa4ffff"
                 },
                 "active": {
-                  "backgroundColor": "16352dff",
-                  "borderColor": "43c3a0ff",
-                  "textColor": "43c3a0ff"
+                  "backgroundColor": "1b2a52ff",
+                  "borderColor": "7fa4ffff",
+                  "textColor": "7fa4ffff"
                 }
               }
             },
@@ -929,14 +929,14 @@
               "borderRadius": 10,
               "lightMode": {
                 "error": {
-                  "backgroundColor": "f7dedbff",
-                  "borderColor": "b3261eff"
+                  "backgroundColor": "fbe0dcff",
+                  "borderColor": "b42318ff"
                 }
               },
               "darkMode": {
                 "error": {
-                  "backgroundColor": "3c1c19ff",
-                  "borderColor": "f08a80ff"
+                  "backgroundColor": "3d1c1cff",
+                  "borderColor": "ff8a80ff"
                 }
               }
             }
