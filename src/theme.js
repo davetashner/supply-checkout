@@ -1,4 +1,4 @@
-// The theme: a palette (Work Order, Evergreen, Slate or High contrast) and System / Light / Dark,
+// The theme: a palette (Work Order, Evergreen, Slate, Dusk or High contrast) and System / Light / Dark,
 // both chosen in Account's Appearance section (src/aws/appearance.js) and kept per device.
 // styles.css has Work Order on :root and the others under <html data-palette>; it picks the
 // dark colors from prefers-color-scheme unless <html data-theme="light">, and always for
@@ -7,7 +7,7 @@
 const MODE_KEY = "supplyCheckout.theme";
 const PALETTE_KEY = "supplyCheckout.palette";
 export const MODES = ["system", "light", "dark"];
-export const PALETTES = ["workorder", "evergreen", "slate", "contrast"];
+export const PALETTES = ["workorder", "evergreen", "slate", "dusk", "contrast"];
 const DEFAULT_MODE = "system", DEFAULT_PALETTE = "workorder";
 
 // Storage can throw (blocked site data, some sandboxed frames): then it's the default
