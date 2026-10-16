@@ -1,6 +1,18 @@
 {
   "releases": [
     {
+      "version": "upcoming",
+      "notes": [
+        {
+          "title": "Pick a theme in Account",
+          "text": "Choose Work Order (the new default), Evergreen, Slate or High contrast, each in light or dark, under Account → Appearance. Check out and Return now look different at a glance.",
+          "prs": [
+            812
+          ]
+        }
+      ]
+    },
+    {
       "version": "1.18.0",
       "date": "2026-10-15",
       "notes": [
