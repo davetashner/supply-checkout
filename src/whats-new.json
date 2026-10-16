@@ -10,7 +10,10 @@
             812
           ]
         }
-      ]
+      ],
+      "skip": {
+        "816": "The new colors on the site and sign-in page follow the themes note (#812)"
+      }
     },
     {
       "version": "1.18.0",
