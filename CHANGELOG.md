@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.20.0](https://github.com/davetashner/supply-checkout/compare/v1.19.0...v1.20.0) (2026-10-17)
+
+
+### Features
+
+* add Dusk, a dusty rose and soft blue theme ([#817](https://github.com/davetashner/supply-checkout/issues/817)) ([db179d3](https://github.com/davetashner/supply-checkout/commit/db179d3614d6d6e9caea896dad3a9a2de0605136))
+
+
+### Bug Fixes
+
+* answer 503 billing_not_configured when Stripe is missing our price or portal ([#819](https://github.com/davetashner/supply-checkout/issues/819)) ([a678a78](https://github.com/davetashner/supply-checkout/commit/a678a780abf18b10a52870cc58c3dc0148307ee5))
+
 ## [1.19.0](https://github.com/davetashner/supply-checkout/compare/v1.18.0...v1.19.0) (2026-10-16)
 
 
