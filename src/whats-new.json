@@ -1,7 +1,8 @@
 {
   "releases": [
     {
-      "version": "upcoming",
+      "version": "1.20.0",
+      "date": "2026-10-17",
       "notes": [
         {
           "title": "A new theme: Dusk",
