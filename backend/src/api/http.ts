@@ -30,7 +30,10 @@ export type ErrorCode =
  * ended, so it can't start another checkout. `subscription_ended`: the
  * team's subscription ended, so it's read-only until an owner subscribes.
  * `no_billing_account`: the team has no Stripe customer yet (no owner has
- * started a checkout), so there's no Customer Portal to open. `mfa_required`:
+ * started a checkout), so there's no Customer Portal to open.
+ * `billing_not_configured` (503): this Stripe mode is missing our catalog's
+ * price or Customer Portal configuration (run the catalog script); it's
+ * logged with the detail and counted, which alarms. `mfa_required`:
  * a billing route for an owner without two-step sign-in (an authenticator
  * app) on. `mfa_sign_in_again`: a billing route for an owner whose session
  * began before two-step sign-in was turned on, so they sign in again with
@@ -79,6 +82,7 @@ export type ErrorReason =
   | "already_subscribed"
   | "subscription_ended"
   | "no_billing_account"
+  | "billing_not_configured"
   | "mfa_required"
   | "mfa_sign_in_again"
   | "password_reset"

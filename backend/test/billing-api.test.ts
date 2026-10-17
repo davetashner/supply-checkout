@@ -581,10 +581,12 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
     expect(JSON.stringify(logs)).not.toContain("cus_secret_detail");
   });
 
-  it("fails with 500 when the price isn't in Stripe as the catalog says", async () => {
+  it("fails with 503 billing_not_configured, logged and counted, when the price isn't in Stripe as the catalog says", async () => {
     stripe.state.prices = [{ ...(PRICES[0] as StripePriceLike), recurring: { interval: "year" } }];
-    const { status } = await checkout();
-    expect(status).toBe(500);
+    const { status, body } = await checkout();
+    expect(status).toBe(503);
+    expect(body.error).toMatchObject({ code: "unavailable", reason: "billing_not_configured" });
+    expect(counts[BusinessMetric.CheckoutSessionErrors]).toBe(1);
     expect(logs.find((l) => l[0] === "Checkout failed")?.[1]).toMatchObject({ teamId: TEAM, reason: "price_not_found", code: "PriceNotFoundError" });
     expect(stripe.state.customers).toHaveLength(0);
   });
@@ -803,7 +805,7 @@ describe("POST /teams/{teamId}/billing/portal", () => {
   it("never falls back to the usual configuration for a comped team when the comped one isn't there", async () => {
     stripe.state.configurations = stripe.state.configurations.filter((c) => c.id !== "bpc_comped");
     patchTeam({ compPlan: "starter", compUntil: new Date(now + 30 * DAY).toISOString() });
-    expect((await portal()).status).toBe(500);
+    expect((await portal()).status).toBe(503);
     expect(stripe.state.portalSessions).toHaveLength(0);
   });
 
@@ -871,10 +873,11 @@ describe("POST /teams/{teamId}/billing/portal", () => {
       ],
     ],
     ["one with no metadata", [{ id: "bpc_c", active: true, metadata: null }]],
-  ])("fails with 500 and counts it when our configuration isn't there (%s), never falling back to the default", async (_, configurations) => {
+  ])("fails with 503 billing_not_configured and counts it when our configuration isn't there (%s), never falling back to the default", async (_, configurations) => {
     stripe.state.configurations = configurations as PortalConfigurationLike[];
-    const { status } = await portal();
-    expect(status).toBe(500);
+    const { status, body } = await portal();
+    expect(status).toBe(503);
+    expect(body.error).toMatchObject({ code: "unavailable", reason: "billing_not_configured" });
     expect(stripe.state.portalSessions).toHaveLength(0);
     expect(counts[BusinessMetric.BillingPortalErrors]).toBe(1);
     expect(counts[BusinessMetric.CheckoutSessionErrors]).toBeUndefined();
