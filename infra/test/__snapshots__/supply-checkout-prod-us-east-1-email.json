@@ -2155,6 +2155,8 @@
               "Condition": {
                 "ForAllValues:StringEquals": {
                   "dynamodb:LeadingKeys": [
+                    "FEEDBACK#STATUS#new",
+                    "FEEDBACK#STATUS#triaged",
                     "FEEDBACK#STATUS#resolved"
                   ],
                   "dynamodb:Attributes": [
@@ -2169,8 +2171,12 @@
                     "message",
                     "contactOk",
                     "release",
+                    "createdAt",
+                    "statusAt",
                     "resolvedAt",
-                    "notifiedAt"
+                    "notifiedReceivedAt",
+                    "notifiedTriagedAt",
+                    "notifiedResolvedAt"
                   ]
                 },
                 "StringEquals": {
@@ -2190,7 +2196,7 @@
                   ]
                 ]
               },
-              "Sid": "ResolvedReportsIndexOnly"
+              "Sid": "ReportStatusIndexOnly"
             },
             {
               "Action": "dynamodb:UpdateItem",
@@ -2207,8 +2213,12 @@
                     "type",
                     "status",
                     "contactOk",
-                    "notifiedAt",
-                    "notifyOutcome"
+                    "notifiedReceivedAt",
+                    "notifiedReceivedOutcome",
+                    "notifiedTriagedAt",
+                    "notifiedTriagedOutcome",
+                    "notifiedResolvedAt",
+                    "notifiedResolvedOutcome"
                   ]
                 },
                 "StringEqualsIfExists": {
@@ -2351,7 +2361,7 @@
           },
           "S3Key": "<asset hash>.zip"
         },
-        "Description": "Emails the sender of a resolved report, if they ticked contact OK, that it is fixed and in which release (supply-checkout-7id1)",
+        "Description": "Emails the sender of a report, if they ticked contact OK, that it was received, is being looked at, and is fixed (supply-checkout-7id1, c8vj.1)",
         "Environment": {
           "Variables": {
             "NODE_OPTIONS": "--enable-source-maps",

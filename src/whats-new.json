@@ -4,8 +4,8 @@
       "version": "upcoming",
       "notes": [
         {
-          "title": "Hear back when a reported issue is fixed",
-          "text": "If you tick that we may contact you when you use Report an issue, we'll email you once the fix is live, with the release it's in. It follows your language setting.",
+          "title": "Hear back about issues you report",
+          "text": "If you say we may contact you in Report an issue, we'll email you when we get it, when we look into it and when it's fixed, with its release. It follows your language setting.",
           "prs": [
             831
           ]
