@@ -463,7 +463,8 @@ export class ApiStack extends SupplyCheckoutStack {
             // session can't read, list, change or delete a report (the item is the owner's to
             // triage), only the report's own attributes (no email), and nothing returned. IAM
             // can't limit the sort key; the partition holds nothing else. The handler sets the
-            // team tag only after the caller's membership check, from the path
+            // team tag is the path's; the handler's membership check (authorizeTeam) is what stops
+            // a non-member, the tag only limits the session to that team's partition
             new PolicyStatement({
               sid: "WriteFeedbackReport",
               effect: Effect.ALLOW,
@@ -481,7 +482,8 @@ export class ApiStack extends SupplyCheckoutStack {
             // the path's team's reports partition, naming only the list's attributes (no contact
             // choice, bead or dismissal reason) with a projection required. The partition holds
             // every member's reports and IAM can't filter on `userId`, so the handler's query
-            // filters on the token's user; the team tag is set only after the membership check
+            // filters on the token's user. The handler's membership check (authorizeTeam) is what stops
+            // a cross-team read; the tag only limits the session to the path's team
             new PolicyStatement({
               sid: "ReadOwnFeedbackReports",
               effect: Effect.ALLOW,

@@ -572,6 +572,15 @@ describe("GET /teams/{teamId}/feedback/mine", () => {
     expect(fresh.calls.filter((c) => c.command === "QueryCommand")).toHaveLength(20);
   });
 
+  it("never returns a report with no userId, or one whose userId differs from the caller's only in case", async () => {
+    const base = { PK: "FEEDBACK#team-a", type: "feedback", shortId: "x", createdAt: new Date(NOW).toISOString(), category: "bug", status: "new" };
+    table.put({ ...base, SK: "REPORT#nouser", reportId: "nouser", message: "no user" });
+    table.put({ ...base, SK: "REPORT#upper", reportId: "upper", message: "upper case", userId: CREW.toUpperCase() });
+    table.put({ ...base, SK: "REPORT#mine", reportId: "mine", message: "mine", userId: CREW });
+    expect((await mine(CREW)).body.reports.map((r: { summary: string }) => r.summary)).toEqual(["mine"]);
+    expect((await mine(OWNER)).body.reports).toEqual([]);
+  });
+
   it("refuses a system context", async () => {
     await expect(listOwnFeedback(table.db("team-a"), { teamId: "team-a", userId: "system", role: "system" } as never)).rejects.toThrow("Only a member");
   });

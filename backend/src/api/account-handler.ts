@@ -1550,9 +1550,11 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
 
   /**
    * GET /teams/{teamId}/feedback/mine: the caller's own reports in the team
-   * and what happened to each, any role. The team is the path's, after the
-   * membership check (someone who left gets the 403); the user is the
-   * token's, never a parameter. Nothing is logged but the count.
+   * and what happened to each, any role. The team is the path's. The membership
+   * check in this handler (authorizeTeam, via teamContext) is what stops a
+   * cross-team read (someone who left gets the 403); the session's IAM tag
+   * only limits it to the path's team's partition. The user is the token's,
+   * never a parameter. Nothing is logged but the count.
    */
   async function listMyReports(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     const { teamId, ctx } = await teamContext(event, userId);
