@@ -176,7 +176,8 @@ test("an item's price and cost over the limit say so, and the item isn't saved u
 test("editing an item keeps its cost, pack size and any other fields", { tag: ["@J2.3"] }, async ({ page }) => {
   await openInventory(page, costed);
   await inventoryRow(page, "Paper towels").click();
-  await expect(modal(page).getByLabel("Cost each ($)")).toHaveValue("6.25");
+  await expect(modal(page).getByLabel("Cost per pack ($)")).toHaveValue("75");
+  await expect(modal(page).locator("#fCostEach")).toHaveText("= $6.25 each");
   await expect(modal(page).getByLabel("Comes in packs of")).toHaveValue("12");
   await modal(page).getByLabel("Item name").fill("Paper towels, 8 roll");
   await modal(page).getByRole("button", { name: "Save" }).click();
@@ -194,12 +195,15 @@ test("edits cost and pack size, rounds old money values, and clears them when bl
   await expect(modal(page).getByLabel("Cost each ($)")).toHaveValue("1.01");
   await expect(modal(page).getByLabel("Comes in packs of")).toHaveValue("");
   await modal(page).getByLabel("Comes in packs of").fill("6");
+  // The untouched cost shows as a pack's worth but is saved as it was
+  await expect(modal(page).getByLabel("Cost per pack ($)")).toHaveValue("6.06");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(page.locator("#overlay")).toBeHidden();
   expect(await page.evaluate(() => window.__mock.docs.get("products/nb-bins"))).toMatchObject({ price: 2.68, cost: 1.01, packSize: 6, stock: 2 });
 
   await inventoryRow(page, "Storage bins").click();
-  await modal(page).getByLabel("Cost each ($)").fill("");
+  await modal(page).getByLabel("Cost per pack ($)").fill("");
+  await expect(modal(page).locator("#fCostEach")).toBeHidden();
   await modal(page).getByLabel("Comes in packs of").fill("");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(inventoryRow(page, "Storage bins").locator("td").nth(3)).toHaveText("—");
@@ -212,13 +216,58 @@ test("edits cost and pack size, rounds old money values, and clears them when bl
   await expect(modal(page).getByLabel("Cost each ($)")).toHaveValue("");
   await modal(page).getByLabel("Item name").fill("Trash bags, case");
   await modal(page).getByLabel("Price each ($)").fill("0.75");
-  await modal(page).getByLabel("Cost each ($)").fill("0.5");
+  await modal(page).getByLabel("Cost each ($)").fill("22.5");
   await modal(page).getByLabel("Single items in storage now").fill("90");
   await modal(page).getByLabel("Comes in packs of").fill("45");
+  await expect(modal(page).locator("#fCostEach")).toHaveText("= $0.50 each");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(inventoryRow(page, "Trash bags").locator("td").nth(4)).toHaveText("$45.00");
   const bags = await page.evaluate(() => [...window.__mock.docs.entries()].find(([, d]) => d.name === "Trash bags, case")[1]);
   expect(bags).toEqual({ code: "", name: "Trash bags, case", price: 0.75, cost: 0.5, stock: 90, packSize: 45, updatedAt: expect.any(String) });
+});
+
+// A pack size turns the cost field into a pack's cost; the item keeps the cost of one
+test("a pack's cost is entered per pack and saved as the cost of one item", { tag: ["@J2.3"] }, async ({ page }) => {
+  await openInventory(page);
+  await startAddItem(page);
+  const cost = modal(page).getByLabel(/^Cost (each|per pack) \(\$\)$/), each = modal(page).locator("#fCostEach"), size = modal(page).getByLabel("Comes in packs of");
+  await modal(page).getByLabel("Item name").fill("AA batteries");
+  await cost.fill("6.99");
+  // No pack size, or packs of 1: the cost is for one, and nothing is worked out
+  await expect(modal(page).getByText("Cost each ($)")).toBeVisible();
+  await expect(each).toBeHidden();
+  await size.fill("1");
+  await expect(modal(page).getByText("Cost each ($)")).toBeVisible();
+  await expect(each).toBeHidden();
+  await size.fill("4");
+  await expect(modal(page).getByText("Cost per pack ($)")).toBeVisible();
+  await expect(each).toHaveText("= $1.75 each");
+  // Equipment has no packs of cost: its value is for one
+  await modal(page).getByLabel("Equipment").check();
+  await expect(modal(page).getByText("Value each ($)")).toBeVisible();
+  await expect(each).toBeHidden();
+  await modal(page).getByLabel("Supply").check();
+  await expect(each).toHaveText("= $1.75 each");
+  await modal(page).getByLabel("Single items in storage now").fill("8");
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#overlay")).toBeHidden();
+  const get = () => page.evaluate(() => [...window.__mock.docs.entries()].find(([, d]) => d.name === "AA batteries")[1]);
+  expect(await get()).toMatchObject({ cost: 1.75, packSize: 4, stock: 8 });
+  // Opening and saving without touching the cost keeps it
+  await inventoryRow(page, "AA batteries").click();
+  await expect(cost).toHaveValue("7");
+  await expect(each).toHaveText("= $1.75 each");
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#overlay")).toBeHidden();
+  expect((await get()).cost).toBe(1.75);
+  // Clearing the pack size makes the typed cost the cost of one
+  await inventoryRow(page, "AA batteries").click();
+  await cost.fill("2");
+  await size.fill("");
+  await expect(modal(page).getByText("Cost each ($)")).toBeVisible();
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#overlay")).toBeHidden();
+  expect(await get()).toMatchObject({ cost: 2 });
 });
 
 // ADR 0014: storage counts single items; pack size only matters when buying
@@ -227,7 +276,8 @@ test("asks for the pack size first, as optional, and says the count is single it
   await startAddItem(page);
   const labels = await modal(page).locator(".field label").allTextContents();
   expect(labels.indexOf("Comes in packs of (optional)")).toBeGreaterThan(-1);
-  expect(labels.indexOf("Comes in packs of (optional)")).toBeLessThan(labels.indexOf("Single items in storage now"));
+  expect(labels.indexOf("Single items in storage now")).toBeGreaterThan(-1);
+  expect(labels.indexOf("Single items in storage now")).toBeLessThan(labels.indexOf("Comes in packs of (optional)"));
   await expect(modal(page).getByLabel("Comes in packs of")).toHaveAttribute("placeholder", "Leave blank if bought one at a time");
   await expect(modal(page).locator("#fPackHint")).toHaveText("Receipts add packs × this many to storage.");
   await expect(modal(page).getByLabel("Comes in packs of")).toHaveAttribute("aria-describedby", "fPackHint");

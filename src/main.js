@@ -1118,11 +1118,11 @@ function productModal(key) {
       <div class="field"><label for="fName">${msg("product.name")}</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "data-autofocus" : ""}></div>
       <div class="field"><label for="fBrand">${msg("product.brand")}</label><input type="text" id="fBrand" maxlength="${MAX_BRAND}" autocomplete="off" value="${esc(p ? brandOf(p) : "")}" placeholder="${msg("product.brandPlaceholder")}"></div>
       <div class="field" id="fPriceField" ${equip ? "hidden" : ""}><label for="fPrice">${msg("product.price")}</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && !equip ? round2(p.price) : ""}" placeholder="0.00"></div>
-      <div class="field"><label for="fCost" id="fCostLabel">${msg(equip ? "product.valueEach" : "product.costEach")}</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="${msg("product.costPlaceholder")}"></div>
+      <div class="field"><label for="fCost" id="fCostLabel">${msg(equip ? "product.valueEach" : "product.costEach")}</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="${msg("product.costPlaceholder")}"><p class="hint" id="fCostEach" aria-live="polite" hidden></p></div>
+      <div class="field"><label for="fStock">${msg("product.stock")}</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="${msg("product.stockPlaceholder")}"><p class="hint" id="fPacks" aria-live="polite" hidden></p></div>
       <div class="field"><label for="fPack">${msg("product.pack")}</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="${msg("product.packPlaceholder")}" aria-describedby="fPackHint"><p class="hint" id="fPackHint">${msg("product.packHint")}</p></div>
       <div class="field"><label for="fReorder">${msg("product.reorder")}</label><input type="number" id="fReorder" min="0" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${reorderLevel(p) ?? ""}" placeholder="${msg("product.reorderPlaceholder")}" aria-describedby="fReorderHint"><p class="hint" id="fReorderHint">${msg("product.reorderHint")}</p></div>
       <div class="field"><label for="fReorderQty">${msg("product.reorderQty")}</label><input type="number" id="fReorderQty" min="1" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.reorderQty) ? p.reorderQty : ""}" placeholder="${msg("product.reorderQtyPlaceholder")}"></div>
-      <div class="field"><label for="fStock">${msg("product.stock")}</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="${msg("product.stockPlaceholder")}"><p class="hint" id="fPacks" aria-live="polite" hidden></p></div>
       <fieldset class="field dims"><legend>${msg("product.size")}</legend>
         <div class="dim-row">
           ${DIM_FIELDS.map(f => `<div class="field"><label for="f${f[0].toUpperCase()}${f.slice(1)}">${msg("product." + f)}</label><input type="number" id="f${f[0].toUpperCase()}${f.slice(1)}" min="0" max="${MAX_DIMENSION}" step="any" inputmode="decimal" value="${p && Number(p[f]) > 0 ? p[f] : ""}"></div>`).join("")}
@@ -1137,10 +1137,25 @@ function productModal(key) {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     // Equipment has no client price, and its cost is its value
     const kindOf = () => m.querySelector("input[name=fKind]:checked").value;
+    // With a pack size the cost field takes what a pack cost, and the item is saved at the cost of one
+    // (ADR 0014). A cost the person hasn't touched is saved as it was, so opening and saving changes nothing.
+    const costIn = m.querySelector("#fCost"), costEach = m.querySelector("#fCostEach"), packIn = m.querySelector("#fPack");
+    let costTouched = false;
+    const packNow = () => kindOf() === "equipment" ? 1 : packSizeOf({ packSize: packInput(packIn.value) });
+    const paintCost = () => {
+      const size = packNow(), eq = kindOf() === "equipment";
+      m.querySelector("#fCostLabel").textContent = msg(eq ? "product.valueEach" : size > 1 ? "product.costPack" : "product.costEach");
+      if (!costTouched) costIn.value = p && hasCost(p) ? round2(round2(p.cost) * size) : "";
+      const each = costIn.value.trim() === "" ? null : Math.max(0, round2(round2(costIn.value) / size));
+      costEach.hidden = size === 1 || each === null;
+      costEach.textContent = costEach.hidden ? "" : msg("product.costEachIs", { cost: money(each) });
+    };
+    costIn.addEventListener("input", () => { costTouched = true; paintCost(); });
+    packIn.addEventListener("input", paintCost);
     m.querySelectorAll("input[name=fKind]").forEach(r => r.addEventListener("change", () => {
       const eq = kindOf() === "equipment";
       m.querySelector("#fPriceField").hidden = eq;
-      m.querySelector("#fCostLabel").textContent = msg(eq ? "product.valueEach" : "product.costEach");
+      paintCost();
       m.querySelector("#fKindHint").textContent = eq ? EQUIPMENT_HINT() : SUPPLY_HINT();
     }));
     const scan = m.querySelector("#fScan");
@@ -1151,7 +1166,7 @@ function productModal(key) {
       packs.hidden = !(n > 0 && size > 1);
       packs.textContent = packs.hidden ? "" : packsText(n, size);
     };
-    stock.addEventListener("input", paintPacks); pack.addEventListener("input", paintPacks); paintPacks();
+    stock.addEventListener("input", paintPacks); pack.addEventListener("input", paintPacks); paintPacks(); paintCost();
     const rm = m.querySelector("#remove"), form = m.querySelector("#f");
     rm && armButton(rm, msg("product.tapToDelete"), () => busy(form, () => closing(write(() => db.doc("products/" + key).delete(), msg("product.deleted")))));
     onSubmit(form, () => {
@@ -1169,7 +1184,9 @@ function productModal(key) {
       if (kindOf() === "equipment") { body.kind = "equipment"; delete body.price; }
       const opt = (id, field, val) => { const v = m.querySelector(id).value.trim(); if (v === "") delete body[field]; else body[field] = val(v); };
       opt("#fStock", "stock", int);
-      opt("#fCost", "cost", v => Math.max(0, round2(v)));
+      // An untouched cost is the stored cost of one, rounded to cents as before; a typed one is a pack's (or one's)
+      if (costTouched) opt("#fCost", "cost", v => Math.max(0, round2(round2(v) / packNow())));
+      else if (p && hasCost(p)) body.cost = Math.max(0, round2(p.cost));
       opt("#fPack", "packSize", packInput);
       opt("#fBrand", "brand", visibleText);
       // Each side: blank, or below the smallest the API takes, removes it. With no side the unit goes too.

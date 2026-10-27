@@ -20,6 +20,8 @@ export default {
   "product.price": "Price each ($)",
   "product.valueEach": "Value each ($)",
   "product.costEach": "Cost each ($)",
+  "product.costPack": "Cost per pack ($)",
+  "product.costEachIs": "= {cost} each",
   "product.costPlaceholder": "Leave blank if not known",
   "product.pack": "Comes in packs of (optional)",
   "product.packPlaceholder": "Leave blank if bought one at a time",
