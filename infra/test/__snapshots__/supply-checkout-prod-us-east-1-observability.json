@@ -7128,6 +7128,597 @@
         }
       }
     },
+    "OpsChecksReturnsDigestLogs80D67D37": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "OpsChecksReturnsDigestRole086FD7B5": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the returns-digest check",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OpsChecksReturnsDigestRoleDefaultPolicyABA83381": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "OpsChecksReturnsDigestLogs80D67D37",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "RETURNED#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "GSI2PK",
+                    "GSI2SK",
+                    "client",
+                    "date",
+                    "status",
+                    "closedAt",
+                    "createdByName"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app/index/GSI2"
+                  ]
+                ]
+              },
+              "Sid": "ReturnedProjectsIndexOnly"
+            },
+            {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "OPS#OWNERS#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "GSI3PK",
+                    "GSI3SK",
+                    "email"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app/index/GSI3"
+                  ]
+                ]
+              },
+              "Sid": "OwnerEmailsIndexOnly"
+            },
+            {
+              "Action": "dynamodb:GetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAM#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "name",
+                    "status",
+                    "trialEndsAt",
+                    "createdAt",
+                    "closedAt",
+                    "purging",
+                    "stripeSubscriptionId",
+                    "pastDueSince",
+                    "subscriptionEndedAt",
+                    "compPlan",
+                    "compUntil",
+                    "test"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "ReadTeamBilling"
+            },
+            {
+              "Action": "dynamodb:GetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "USER#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "language"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "ReadOwnerLanguage"
+            },
+            {
+              "Action": [
+                "dynamodb:DeleteItem",
+                "dynamodb:PutItem"
+              ],
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "DIGEST#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "type",
+                    "sentAt",
+                    "expiresAt"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "DigestRecords"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "dynamodb.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "TableKeyThroughDynamoDb"
+            },
+            {
+              "Action": "ses:SendEmail",
+              "Condition": {
+                "StringEquals": {
+                  "ses:FromAddress": "noreply@supplycheckout.com"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":configuration-set/supply-checkout-prod-transactional"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":identity/supplycheckout.com"
+                    ]
+                  ]
+                }
+              ],
+              "Sid": "SendAppEmail"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsChecksReturnsDigestRoleDefaultPolicyABA83381",
+        "Roles": [
+          {
+            "Ref": "OpsChecksReturnsDigestRole086FD7B5"
+          }
+        ]
+      }
+    },
+    "OpsChecksReturnsDigest8D62CA50": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Emails each team's owners a daily digest of the projects returned in the past day",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "TABLE_NAME": "supply-checkout-prod-app",
+            "EMAIL_FROM_ADDRESS": "noreply@supplycheckout.com",
+            "EMAIL_CONFIGURATION_SET": "supply-checkout-prod-transactional",
+            "EMAIL_REGION": "us-east-1",
+            "EMAIL_APP_URL": "https://app.supplycheckout.com",
+            "EMAIL_SUPPORT_ADDRESS": "support@supplycheckout.com",
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "FunctionName": "supply-checkout-prod-returns-digest",
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "OpsChecksReturnsDigestLogs80D67D37"
+          }
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "OpsChecksReturnsDigestRole086FD7B5",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 540,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "OpsChecksReturnsDigestRoleDefaultPolicyABA83381",
+        "OpsChecksReturnsDigestRole086FD7B5"
+      ]
+    },
+    "OpsChecksReturnsDigestEventInvokeConfig42D8ED1A": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "OpsChecksReturnsDigest8D62CA50"
+        },
+        "MaximumRetryAttempts": 2,
+        "Qualifier": "$LATEST"
+      }
+    },
+    "OpsChecksReturnsDigestXRayWrite650D3330": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsChecksReturnsDigestXRayWrite650D3330",
+        "Roles": [
+          {
+            "Ref": "OpsChecksReturnsDigestRole086FD7B5"
+          }
+        ]
+      }
+    },
+    "OpsChecksReturnsDigestScheduleBDDA8244": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Runs the returns-digest function on cron(5 22 * * ? *)",
+        "ScheduleExpression": "cron(5 22 * * ? *)",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Fn::GetAtt": [
+                "OpsChecksReturnsDigest8D62CA50",
+                "Arn"
+              ]
+            },
+            "Id": "Target0",
+            "RetryPolicy": {
+              "MaximumRetryAttempts": 0
+            }
+          }
+        ]
+      }
+    },
+    "OpsChecksReturnsDigestScheduleAllowEventRulesupplycheckoutproduseast1observabilityOpsChecksReturnsDigestD819EA32E1BC4A6C": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "OpsChecksReturnsDigest8D62CA50",
+            "Arn"
+          ]
+        },
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "OpsChecksReturnsDigestScheduleBDDA8244",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "OpsChecksReturnsDigestNotRunning1C5B6B4A": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Returns digest not running (J4, us-east-1). No ReturnsDigestTeams sample from the daily returns digest for 2 days: its schedule is disabled or deleted, or every run fails before it lists the day's returns. Owners aren't getting their daily digest. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-returns-digest-not-running",
+        "ComparisonOperator": "LessThanThreshold",
+        "DatapointsToAlarm": 2,
+        "EvaluationPeriods": 2,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "ReturnsDigestTeams (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "ReturnsDigestTeams",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 86400,
+              "Stat": "SampleCount"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "breaching"
+      }
+    },
     "OperatorAuditWatchLogsC88D29BF": {
       "Type": "AWS::Logs::LogGroup",
       "Properties": {
@@ -13090,7 +13681,7 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-east-1\",{\"label\":\"NeedsAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-east-1\",{\"label\":\"SecurityAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-west-2\",{\"label\":\"NeedsAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-west-2\",{\"label\":\"SecurityAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"text\",\"width\":12,\"height\":6,\"x\":12,\"y\":7,\"properties\":{\"markdown\":\"### Which event?\\n\\nNeedsAttention: `WelcomeEmailFailures`, `WelcomeEmailsRefused`, `PasswordResetHintsCapped`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures`, `EmailCodeVerifyFailures`, `SeatQuantityDrift`, `EntitlementDrift`, `TeamClosedNoticeFailures`, `TeamReopenedNoticeFailures`, `ReopenedTeamSubscriptionsEnded`, `ReopenResyncsLate`, `ReopenedTeamSubscriptionsUndecided`, `ClosedTeamRenewalsCharged`, `ClosedTeamSubscriptionsNotFound`, `StripeCustomersAlreadyDeleted`, `HeldTeamsPurged`, `LapseFailures`, `LapseClosuresHeld`, `LapseCheckoutOverdue`, `ReceiptTrialCapReached` (the trial cap once a day).\\n\\nSecurityAttention: `SignOutRevokeFailures`, `SecurityNoticeFailures`.\\n\\nAn alarm in ALARM doesn't email again, so look at every metric, not just the first email's. Find it in the metrics console (SupplyCheckout, by Region), or in Logs Insights over the functions' log groups: `filter ispresent(NeedsAttention) or ispresent(SecurityAttention)`. What to do: docs/observability.md, *When Needs attention fires* and *When Security attention fires*.\"}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"API: requests, 4xx and 5xx\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-east-1\",{\"label\":\"NeedsAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-east-1\",{\"label\":\"SecurityAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-west-2\",{\"label\":\"NeedsAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-west-2\",{\"label\":\"SecurityAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"text\",\"width\":12,\"height\":6,\"x\":12,\"y\":7,\"properties\":{\"markdown\":\"### Which event?\\n\\nNeedsAttention: `WelcomeEmailFailures`, `WelcomeEmailsRefused`, `PasswordResetHintsCapped`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures`, `EmailCodeVerifyFailures`, `SeatQuantityDrift`, `EntitlementDrift`, `TeamClosedNoticeFailures`, `TeamReopenedNoticeFailures`, `ReopenedTeamSubscriptionsEnded`, `ReopenResyncsLate`, `ReopenedTeamSubscriptionsUndecided`, `ClosedTeamRenewalsCharged`, `ClosedTeamSubscriptionsNotFound`, `StripeCustomersAlreadyDeleted`, `HeldTeamsPurged`, `LapseFailures`, `LapseClosuresHeld`, `LapseCheckoutOverdue`, `ReturnsDigestFailures`, `ReceiptTrialCapReached` (the trial cap once a day).\\n\\nSecurityAttention: `SignOutRevokeFailures`, `SecurityNoticeFailures`.\\n\\nAn alarm in ALARM doesn't email again, so look at every metric, not just the first email's. Find it in the metrics console (SupplyCheckout, by Region), or in Logs Insights over the functions' log groups: `filter ispresent(NeedsAttention) or ispresent(SecurityAttention)`. What to do: docs/observability.md, *When Needs attention fires* and *When Security attention fires*.\"}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"API: requests, 4xx and 5xx\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

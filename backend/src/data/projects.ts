@@ -14,7 +14,7 @@ import { type Db, connection, storable } from "./client.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
 import { barcode, date, id as checkId, keys, productKey, strip } from "./keys.js";
 import { money } from "./money.js";
-import { listProjectItems, projectAttributes, projectItemsByDatePage, readProjectItem } from "./project-items.js";
+import { listProjectItems, projectAttributes, projectItemsByDatePage, readProjectItem, returnedAttributes } from "./project-items.js";
 import { type Page, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 import { hasHiddenCharacter, withoutHiddenCharacters } from "../text/hidden-characters.js";
@@ -171,6 +171,8 @@ export async function updateProject(
 ): Promise<Project> {
   writable(db, ctx);
   const fields: Record<string, unknown> = {};
+  // The returns index keys (GSI2, for the daily digest): set when the project closes, removed when it reopens
+  let unindex = false;
   if (changes.client !== undefined) fields.client = client(changes.client);
   if (changes.date !== undefined) {
     fields.date = date(changes.date);
@@ -180,10 +182,24 @@ export async function updateProject(
   if (changes.status !== undefined) {
     if (changes.status !== "open" && changes.status !== "closed") throw new InvalidInputError("Invalid status");
     fields.status = changes.status;
-    if (changes.status === "closed") fields.closedAt = new Date().toISOString();
+    if (changes.status === "closed") {
+      fields.closedAt = new Date().toISOString();
+      Object.assign(fields, returnedAttributes(ctx.teamId, projectId, { status: "closed", closedAt: fields.closedAt }));
+    } else {
+      unindex = true;
+    }
   }
+  const update = versionedSet(fields, expectedVersion);
   const { Attributes } = await connection(db).doc
-    .send(new UpdateCommand({ TableName: db.tableName, Key: existingKey(ctx, projectId), ...versionedSet(fields, expectedVersion), ReturnValues: "ALL_NEW" }))
+    .send(
+      new UpdateCommand({
+        TableName: db.tableName,
+        Key: existingKey(ctx, projectId),
+        ...update,
+        ...(unindex ? { UpdateExpression: `${update.UpdateExpression} REMOVE GSI2PK, GSI2SK` } : {}),
+        ReturnValues: "ALL_NEW",
+      }),
+    )
     .catch(conflictOnConditionFailure("This project changed; reload and try again"));
   return strip<Project>(Attributes) as Project;
 }

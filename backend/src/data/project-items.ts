@@ -9,7 +9,7 @@
 import { GetCommand, QueryCommand, type QueryCommandOutput } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { InvalidInputError } from "./errors.js";
-import { dateFormat, gsi1, keys, prefixes, teamPartition } from "./keys.js";
+import { dateFormat, gsi1, gsi2Returns, keys, prefixes, teamPartition } from "./keys.js";
 import type { Page } from "./query.js";
 import { GSI1 } from "./schema.js";
 
@@ -23,16 +23,30 @@ export function projectKey(teamId: string, projectId: string): { PK: string; SK:
 /**
  * A project item's server-owned attributes: its key, its date index keys and
  * its type. A project without a valid date sorts before every dated one in
- * the index (after them, newest first) rather than dropping out.
+ * the index (after them, newest first) rather than dropping out. A closed
+ * project (`closed`: its status and `closedAt`, as the server stamped it) is
+ * also in the returns index (GSI2, RETURNED_PREFIX in schema.ts) for the daily
+ * digest; an open one, or a `closedAt` that isn't an ISO time, isn't.
  */
-export function projectAttributes(teamId: string, projectId: string, rawDate: unknown): Item {
+export function projectAttributes(teamId: string, projectId: string, rawDate: unknown, closed?: { readonly status?: unknown; readonly closedAt?: unknown }): Item {
   let day = "";
   try {
     day = dateFormat(rawDate);
   } catch {
     // no date, or not one: sorts first
   }
-  return { ...keys.project(teamId, projectId), GSI1PK: gsi1.projectsPartition(teamId), GSI1SK: `${day}#${projectId}`, type: "project" };
+  return { ...keys.project(teamId, projectId), GSI1PK: gsi1.projectsPartition(teamId), GSI1SK: `${day}#${projectId}`, type: "project", ...returnedAttributes(teamId, projectId, closed) };
+}
+
+/** The returns index keys of a closed project, or none. */
+export function returnedAttributes(teamId: string, projectId: string, closed?: { readonly status?: unknown; readonly closedAt?: unknown }): Item {
+  if (closed?.status !== "closed" || typeof closed.closedAt !== "string") return {};
+  try {
+    return gsi2Returns.project(closed.closedAt, teamId, projectId);
+  } catch {
+    // A closedAt that isn't a time as toISOString writes it: left out of the index
+    return {};
+  }
 }
 
 async function getItem(db: Db, key: Item): Promise<Item | undefined> {
