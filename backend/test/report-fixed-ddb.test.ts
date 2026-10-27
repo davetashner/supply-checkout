@@ -4,6 +4,7 @@
 // the status index, the filter, and the once-only mark with the real
 // expressions.
 
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   claimFixedNotice,
@@ -18,7 +19,7 @@ import {
   sendFeedback,
 } from "../src/data/index.js";
 import { recordFeedbackBead, resolveFeedback } from "../src/data/feedback-owner.js";
-import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
+import { endpoint, rawItem, useTable } from "./helpers.js";
 
 const at = (iso: string) => new Date(iso);
 const NOW = at("2026-10-27T12:00:00.000Z");
@@ -27,7 +28,7 @@ describe.skipIf(!endpoint)("the report fixed email's data (DynamoDB Local)", () 
   const table = useTable();
 
   async function resolvedReport(teamName: string, options: { contactOk: boolean; message?: string; resolvedAt?: string; release?: string }) {
-    const ownerId = newUser();
+    const ownerId = randomUUID();
     const made = await createTeam(table.db, { userId: ownerId, email: `owner.${ownerId}@example.com` }, { name: teamName }, at("2026-10-20T00:00:00.000Z"));
     const sent = await sendFeedback(table.db, made.context, feedbackInput({ category: "bug", message: options.message ?? "The scan froze", expected: "A scan", contactOk: options.contactOk }), `key-${ownerId}-0001`, at("2026-10-20T01:00:00.000Z"));
     await recordFeedbackBead(table.db, made.team.teamId, sent.reportId, "supply-checkout-abc.1");
@@ -39,7 +40,7 @@ describe.skipIf(!endpoint)("the report fixed email's data (DynamoDB Local)", () 
     const yes = await resolvedReport("Yes Co", { contactOk: true, message: "Tell me" });
     await resolvedReport("No Co", { contactOk: false });
     await resolvedReport("Old Co", { contactOk: true, resolvedAt: "2026-10-12T11:59:59.999Z" });
-    const triaged = await createTeam(table.db, { userId: newUser() }, { name: "Triaged Co" }, at("2026-10-20T00:00:00.000Z"));
+    const triaged = await createTeam(table.db, { userId: randomUUID() }, { name: "Triaged Co" }, at("2026-10-20T00:00:00.000Z"));
     const sent = await sendFeedback(table.db, triaged.context, feedbackInput({ category: "bug", message: "Not yet", contactOk: true }), "key-triaged-0001", at("2026-10-20T01:00:00.000Z"));
     await recordFeedbackBead(table.db, triaged.team.teamId, sent.reportId, "supply-checkout-abc.2");
 
@@ -81,7 +82,7 @@ describe.skipIf(!endpoint)("the report fixed email's data (DynamoDB Local)", () 
   });
 
   it("claims nothing for a report that is not resolved, did not tick contact OK, or does not exist", async () => {
-    const triaged = await createTeam(table.db, { userId: newUser() }, { name: "T Co" }, at("2026-10-20T00:00:00.000Z"));
+    const triaged = await createTeam(table.db, { userId: randomUUID() }, { name: "T Co" }, at("2026-10-20T00:00:00.000Z"));
     const sent = await sendFeedback(table.db, triaged.context, feedbackInput({ category: "bug", message: "x", contactOk: true }), "key-claim-0001", at("2026-10-20T01:00:00.000Z"));
     expect(await claimFixedNotice(table.db, { teamId: triaged.team.teamId, reportId: sent.reportId }, "sent", NOW)).toBe(false);
     const { report } = await resolvedReport("NoContact Co", { contactOk: false });
@@ -96,7 +97,7 @@ describe.skipIf(!endpoint)("the report fixed email's data (DynamoDB Local)", () 
     expect(await readFixedTeam(table.db, made.team.teamId)).toEqual({ closed: false, purging: false });
     expect(await readFixedTeam(table.db, "no-such-team")).toBeUndefined();
     expect(await isReportTeamMember(table.db, made.team.teamId, ownerId)).toBe(true);
-    expect(await isReportTeamMember(table.db, made.team.teamId, newUser())).toBe(false);
+    expect(await isReportTeamMember(table.db, made.team.teamId, randomUUID())).toBe(false);
     await closeTeam(table.db, made.context, { confirmName: "Standing Co", onlyMember: true }, NOW);
     expect(await readFixedTeam(table.db, made.team.teamId)).toEqual({ closed: true, purging: false });
   });
