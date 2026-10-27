@@ -60,7 +60,7 @@ test("edits an item's name, price and count", { tag: ["@J2.3"] }, async ({ page 
   await expect(modal(page)).toContainText("No barcode");
   await expect(modal(page)).toContainText("Price changes apply to new checkouts");
   await modal(page).getByLabel("Item name").fill("Storage bins, 16 qt");
-  await modal(page).getByLabel("Price each ($)").fill("7");
+  await modal(page).getByLabel("Price to client, each ($)").fill("7");
   await modal(page).getByLabel("Single items in storage now").fill("");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(inventoryRow(page, "Storage bins, 16 qt").locator("td").nth(1)).toHaveText("—");
@@ -156,7 +156,7 @@ test("shows cost each, and values storage at cost where it's known", { tag: ["@J
 test("an item's price and cost over the limit say so, and the item isn't saved until they're fixed", { tag: ["@J2.2"] }, async ({ page }) => {
   await openInventory(page);
   await inventoryRow(page, "Storage bins").click();
-  const price = modal(page).getByLabel("Price each ($)"), cost = modal(page).getByLabel("Cost each ($)");
+  const price = modal(page).getByLabel("Price to client, each ($)"), cost = modal(page).getByLabel("Cost each ($)");
   const message = (field) => field.evaluate((el) => el.validationMessage);
   const before = await page.evaluate(() => window.__mock.docs.get("products/nb-bins"));
   for (const field of [price, cost]) {
@@ -191,7 +191,7 @@ test("edits cost and pack size, rounds old money values, and clears them when bl
   await openInventory(page, costed);
   await inventoryRow(page, "Storage bins").click();
   // Values saved before rounding show, and save, rounded to cents
-  await expect(modal(page).getByLabel("Price each ($)")).toHaveValue("2.68");
+  await expect(modal(page).getByLabel("Price to client, each ($)")).toHaveValue("2.68");
   await expect(modal(page).getByLabel("Cost each ($)")).toHaveValue("1.01");
   await expect(modal(page).getByLabel("Comes in packs of")).toHaveValue("");
   await modal(page).getByLabel("Comes in packs of").fill("6");
@@ -215,7 +215,7 @@ test("edits cost and pack size, rounds old money values, and clears them when bl
   await startAddItem(page);
   await expect(modal(page).getByLabel("Cost each ($)")).toHaveValue("");
   await modal(page).getByLabel("Item name").fill("Trash bags, case");
-  await modal(page).getByLabel("Price each ($)").fill("0.75");
+  await modal(page).getByLabel("Price to client, each ($)").fill("0.75");
   await modal(page).getByLabel("Cost each ($)").fill("22.5");
   await modal(page).getByLabel("Single items in storage now").fill("90");
   await modal(page).getByLabel("Comes in packs of").fill("45");
@@ -283,6 +283,16 @@ test("asks for the pack size first, as optional, and says the count is single it
   await expect(modal(page).getByLabel("Comes in packs of")).toHaveAttribute("aria-describedby", "fPackHint");
   await expect(modal(page)).not.toContainText("not packs");
   await expect(modal(page).locator("#fPacks")).toBeHidden();
+});
+
+// The cost comes first, and the price is labeled as what the client pays, so the two aren't mixed up
+test("asks for an item's cost before its price to client", { tag: ["@J2.1"] }, async ({ page }) => {
+  await openInventory(page);
+  await startAddItem(page);
+  const labels = await modal(page).locator(".field label").allTextContents();
+  expect(labels.indexOf("Cost each ($)")).toBeGreaterThan(-1);
+  expect(labels.indexOf("Cost each ($)")).toBeLessThan(labels.indexOf("Price to client, each ($)"));
+  await expect(modal(page).locator("#fKindHint")).toHaveText("Cost is what you paid each, before tax, and isn't shown on projects. Price to client is what they're charged.");
 });
 
 test("shows a count as full packs and loose items while either field changes", { tag: ["@J2.3"] }, async ({ page }) => {

@@ -32,7 +32,7 @@ test("the owner adds, edits and deletes an item, imports a CSV, and sets the equ
 
   await test.step("J2.2 Type a barcode, then the name, price and how many are in storage", async () => {
     await fillItem(page, { barcode: added.code, name: added.name, stock: "6" });
-    await modal(page).getByLabel("Price each ($)").fill("4.5");
+    await modal(page).getByLabel("Price to client, each ($)").fill("4.5");
     await saveItem(page);
     const row = inventoryRow(page, added.name);
     await expect(row).toContainText(`Barcode ${added.code}`);
@@ -44,7 +44,7 @@ test("the owner adds, edits and deletes an item, imports a CSV, and sets the equ
     // Its own row's form, not another test's item that moved under the tap (openItem)
     await openItem(page, added.name);
     await modal(page).getByLabel("Item name").fill(added.renamed);
-    await modal(page).getByLabel("Price each ($)").fill("5");
+    await modal(page).getByLabel("Price to client, each ($)").fill("5");
     await saveItem(page);
     await expect(inventoryRow(page, added.renamed).locator("td").nth(2)).toHaveText("$5.00");
     await openItem(page, added.renamed);

@@ -54,7 +54,7 @@ test("lines and items without names or prices use placeholders", { tag: ["@J4"] 
   await goToInventory(page);
   await expect(inventoryRow(page, "Unnamed item")).toContainText("Barcode NP1");
   await inventoryRow(page, "Unnamed item").click();
-  await expect(modal(page).getByLabel("Price each ($)")).toHaveValue("0");
+  await expect(modal(page).getByLabel("Price to client, each ($)")).toHaveValue("0");
 });
 
 test("receipt reading works with an empty inventory", { tag: ["@J5"] }, async ({ page }) => {

@@ -15,7 +15,7 @@ export default {
   "checkout.itemName": "Item name",
   "checkout.namePlaceholder": "e.g. Nitrile gloves, box of 100",
   "checkout.namePlaceholderNoCode": "e.g. Leftover storage bins",
-  "checkout.priceLabel": "Price each ($)",
+  "checkout.priceLabel": "Price to client, each ($)",
   "checkout.saveToInventory": "Save to inventory for next time",
   "checkout.alreadyProject": "Already on this project",
   "checkout.alreadyGeneral": "Already on General Use",

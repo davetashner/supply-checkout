@@ -50,9 +50,9 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     await inventory(page);
     await startAddItem(page);
     await expect(modal(page).getByLabel("Supply (used up, charged)")).toBeChecked();
-    await expect(modal(page).getByLabel("Price each ($)")).toBeVisible();
+    await expect(modal(page).getByLabel("Price to client, each ($)")).toBeVisible();
     await modal(page).getByLabel("Company equipment (reused, not charged)").check();
-    await expect(modal(page).getByLabel("Price each ($)")).toBeHidden();
+    await expect(modal(page).getByLabel("Price to client, each ($)")).toBeHidden();
     await expect(modal(page).getByLabel("Value each ($)")).toBeVisible();
     await expect(modal(page)).toContainText("It's listed on projects but not charged.");
     await modal(page).getByPlaceholder("Type, scan, or leave blank").fill("CORD-50");
@@ -72,8 +72,8 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     await expect(modal(page).getByLabel("Value each ($)")).toHaveValue("120");
     await modal(page).getByLabel("Supply (used up, charged)").check();
     await expect(modal(page).getByLabel("Cost each ($)")).toBeVisible();
-    await expect(modal(page)).toContainText("Price is what a client is charged.");
-    await modal(page).getByLabel("Price each ($)").fill("15");
+    await expect(modal(page)).toContainText("Price to client is what they're charged.");
+    await modal(page).getByLabel("Price to client, each ($)").fill("15");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(page.locator("#overlay")).toBeHidden();
     const supply = await doc(page, "products/LAD-1");
