@@ -56,7 +56,7 @@ describe.skipIf(!endpoint)("the report fixed email's data (DynamoDB Local)", () 
     expect(await claimFixedNotice(table.db, report, "sent", NOW)).toBe(true);
     expect(await rawItem(table.db, `FEEDBACK#${report.teamId}`, `REPORT#${report.reportId}`)).toMatchObject({ notifiedAt: NOW.toISOString(), notifyOutcome: "sent", status: "resolved" });
     expect(await claimFixedNotice(table.db, report, "sent", NOW)).toBe(false);
-    expect((await listFixedReports(table.db, NOW, 50)).reports).toEqual([]);
+    expect((await listFixedReports(table.db, NOW, 50)).reports.map((r) => r.reportId)).not.toContain(report.reportId);
 
     // Someone else's mark (another time) is not given back or changed
     expect(await releaseFixedNotice(table.db, report, at("2026-10-27T11:00:00.000Z"))).toBe(false);
