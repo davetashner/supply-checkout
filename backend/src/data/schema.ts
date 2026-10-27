@@ -33,6 +33,18 @@ export const GSI2 = "GSI2";
 export const GSI2PK = "GSI2PK";
 export const GSI2SK = "GSI2SK";
 
+/**
+ * Projects returned (closed) in a day, for the daily returns digest
+ * (supply-checkout-phhw): a closed project item also carries GSI2PK
+ * `RETURNED#<yyyy-mm-dd>` (UTC day of its `closedAt`) and GSI2SK
+ * `<closedAt>#<teamId>#<projectId>`, so one Query per day lists every team's
+ * returns in a time window without reading any team's partition. Sparse: only
+ * a project with status "closed" and a `closedAt` has them (projectAttributes
+ * in project-items.ts); reopening drops them. Documents and imports refuse
+ * every GSI<n>PK and GSI<n>SK field, so a request can't set them.
+ */
+export const RETURNED_PREFIX = "RETURNED#";
+
 /** The GSI1 partition of every import still committing (see GSI1). */
 export const COMMITTING_IMPORTS_PARTITION = "IMPORTS#COMMITTING";
 
@@ -602,6 +614,33 @@ export const LAPSE_PREFIX = "LAPSE#";
 
 /** The only attributes the lapsed-team job may name in a `LAPSE#` partition (GetItem and PutItem). */
 export const LAPSE_RECORD_ATTRIBUTES = [PK, SK, "type", "sentAt", "expiresAt"] as const;
+
+/**
+ * The daily returns digest (supply-checkout-phhw, ops/returns-digest-handler.ts).
+ * What it may read of a returned project, from GSI2's `RETURNED#<day>`
+ * partitions: the keys, the status and `closedAt` (re-checked), and what the
+ * email shows (client, date, the preparer's name). Never lines, prices or notes.
+ */
+export const DIGEST_RETURN_ATTRIBUTES = [PK, SK, GSI2PK, GSI2SK, "client", "date", "status", "closedAt", "createdByName"] as const;
+
+/** What it may read of a team's META item: the name for the email, what billingAccess reads, the closure, and the test mark (which only tags its metrics). */
+export const DIGEST_TEAM_ATTRIBUTES = [PK, SK, "name", "status", "trialEndsAt", "createdAt", "closedAt", "purging", "stripeSubscriptionId", "pastDueSince", "subscriptionEndedAt", "compPlan", "compUntil", "test"] as const;
+
+/** What it may read of a team's owners in the operators' index: the keys and the owner's email. */
+export const DIGEST_OWNER_ATTRIBUTES = [PK, SK, GSI3PK, GSI3SK, "email"] as const;
+
+/** What it may read of an owner's own preferences item (`USER#<sub>`, `PREFERENCES`): the language the email is in. */
+export const DIGEST_LANGUAGE_ATTRIBUTES = [PK, SK, "language"] as const;
+
+/**
+ * The partition prefix of the digest's own records, `DIGEST#<teamId>`: that
+ * one owner was sent one window's digest (claimed before sending, released if
+ * the send fails). Outside the team's partition, kept DIGEST_RECORD_DAYS (TTL).
+ */
+export const DIGEST_PREFIX = "DIGEST#";
+
+/** The only attributes the digest may name in a `DIGEST#` partition (PutItem and DeleteItem). */
+export const DIGEST_RECORD_ATTRIBUTES = [PK, SK, "type", "sentAt", "expiresAt"] as const;
 
 /**
  * The sort key of the item in a user's own `USER#<sub>` partition that holds

@@ -34,7 +34,7 @@ import {
 } from "../lib/observability/web-alarms.js";
 import { rumAppMonitorName } from "../lib/web/rum.js";
 import { webOutputParameters } from "../lib/stacks/web-stack.js";
-import { LAPSE_LIST_ATTRIBUTES, LAPSE_READ_ATTRIBUTES, LAPSE_RECORD_ATTRIBUTES, OPERATOR_AUDIT_HEARTBEAT } from "../../backend/src/data/schema.js";
+import { DIGEST_RECORD_ATTRIBUTES, DIGEST_RETURN_ATTRIBUTES, DIGEST_TEAM_ATTRIBUTES, LAPSE_LIST_ATTRIBUTES, LAPSE_READ_ATTRIBUTES, LAPSE_RECORD_ATTRIBUTES, OPERATOR_AUDIT_HEARTBEAT } from "../../backend/src/data/schema.js";
 import { DELETION_PREFIXES, LIFECYCLE_EXPIRATION } from "../../backend/src/deletions/names.js";
 import { PHOTOS_METRICS_ID } from "../../backend/src/photos/names.js";
 import { PHOTOS_DOWNLOAD_ALARM_BYTES } from "../lib/observability/photos-alarm.js";
@@ -55,6 +55,10 @@ import {
   PURGE_OVERDUE_AFTER_HOURS,
   PURGE_SILENT_ALARM_HOURS,
   SEAT_RECONCILE_HOUR_UTC,
+  RETURNS_DIGEST_BUDGET_MS,
+  RETURNS_DIGEST_HOUR_UTC,
+  RETURNS_DIGEST_MINUTE_UTC,
+  RETURNS_DIGEST_SILENT_ALARM_DAYS,
   SEAT_RECONCILE_SILENT_ALARM_DAYS,
   STRIPE_DELETION_RETRY_ALARM_HOURS,
   STRIPE_DELETION_STUCK_DAYS,
@@ -664,7 +668,7 @@ describe("journey alarms (docs/journeys.md)", () => {
       // The purge's own alarm is with the purge, and the operator audit and group watches' are with the watches, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
-        .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-seat-reconcile-not-running" && !/operator-audit|operator-group|deletion-record|photo-downloads|support-smtp|site-down|web-router|ops-page-down|rum-events/.test(String(a.AlarmName)));
+        .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-seat-reconcile-not-running" && a.AlarmName !== "supply-checkout-prod-p2-returns-digest-not-running" && !/operator-audit|operator-group|deletion-record|photo-downloads|support-smtp|site-down|web-router|ops-page-down|rum-events/.test(String(a.AlarmName)));
       const specs = journeyAlarmSpecs(r, "t", "api", "prod").filter((s) => r === config.primaryRegion || !s.primaryOnly);
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -1074,12 +1078,13 @@ describe("alarms added with the email code routes, the live update budget, team 
       BusinessMetric.LapseFailures,
       BusinessMetric.LapseClosuresHeld,
       BusinessMetric.LapseCheckoutOverdue,
+      BusinessMetric.ReturnsDigestFailures,
     ].sort());
     // The trial cap's, once a day, from the receipts function itself; the security events through Security attention
     expect(NEEDS_ATTENTION_ONCE_A_DAY).toEqual([BusinessMetric.ReceiptTrialCapReached]);
     expect([...SECURITY_ATTENTION_METRICS].sort()).toEqual([BusinessMetric.SecurityNoticeFailures, BusinessMetric.SignOutRevokeFailures]);
     const names = Object.values(observability().findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
-    for (const gone of ["sign-out-not-revoking", "security-notices-failing", "welcome-emails-failing", "welcome-emails-refused", "password-reset-hints-capped", "email-verification-not-saved", "email-codes-failing", "receipt-trials-paused", "seat-counts-drifting", "entitlements-drifting", "team-closed-notices-failing", "team-reopened-notices-failing", "reopened-team-subscription-ended", "reopen-resync-late", "reopened-team-subscription-undecided", "closed-team-charged", "closed-team-subscription-not-found", "stripe-customer-already-deleted", "held-team-purged", "lapse-job-failing", "lapse-closures-held", "lapse-checkout-held"]) {
+    for (const gone of ["sign-out-not-revoking", "security-notices-failing", "welcome-emails-failing", "welcome-emails-refused", "password-reset-hints-capped", "email-verification-not-saved", "email-codes-failing", "receipt-trials-paused", "seat-counts-drifting", "entitlements-drifting", "team-closed-notices-failing", "team-reopened-notices-failing", "reopened-team-subscription-ended", "reopen-resync-late", "reopened-team-subscription-undecided", "closed-team-charged", "closed-team-subscription-not-found", "stripe-customer-already-deleted", "held-team-purged", "lapse-job-failing", "lapse-closures-held", "lapse-checkout-held", "returns-digest-failing"]) {
       expect(names.filter((n) => n.endsWith(`-${gone}`)), gone).toEqual([]);
     }
   });
@@ -1186,14 +1191,15 @@ describe("scheduled checks", () => {
       "supply-checkout-prod-email-quota",
       "supply-checkout-prod-operator-audit-watch",
       "supply-checkout-prod-operator-group-watch",
+      "supply-checkout-prod-returns-digest",
       "supply-checkout-prod-seat-reconcile",
       "supply-checkout-prod-stuck-imports",
       "supply-checkout-prod-team-lapse",
       "supply-checkout-prod-team-purge",
     ]);
     const rules = Object.values(t.findResources("AWS::Events::Rule")).map((r) => r.Properties).filter((r) => r.ScheduleExpression !== undefined);
-    expect(rules).toHaveLength(6);
-    expect(rules.map((r) => r.ScheduleExpression).sort()).toEqual([`cron(0 ${SEAT_RECONCILE_HOUR_UTC} * * ? *)`, "rate(1 hour)", "rate(1 hour)", `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${GROUP_WATCH_EVERY_MINUTES} minutes)`].sort());
+    expect(rules).toHaveLength(7);
+    expect(rules.map((r) => r.ScheduleExpression).sort()).toEqual([`cron(0 ${SEAT_RECONCILE_HOUR_UTC} * * ? *)`, `cron(${RETURNS_DIGEST_MINUTE_UTC} ${RETURNS_DIGEST_HOUR_UTC} * * ? *)`, "rate(1 hour)", "rate(1 hour)", `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${GROUP_WATCH_EVERY_MINUTES} minutes)`].sort());
     for (const rule of rules) expect(rule.Targets).toEqual([expect.objectContaining({ RetryPolicy: { MaximumRetryAttempts: 0 } })]);
     t.hasResourceProperties("AWS::Lambda::Function", { FunctionName: "supply-checkout-prod-team-purge", Timeout: 300 });
     t.hasResourceProperties("AWS::Lambda::Function", {
@@ -1404,6 +1410,94 @@ describe("scheduled checks", () => {
     });
     const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
     expect(west).not.toContain("supply-checkout-prod-p2-seat-reconcile-not-running");
+  });
+
+  it("alarm when the daily returns digest stops sending its gauge for two days, in the primary region only (J4, supply-checkout-phhw)", () => {
+    const { region } = build();
+    const east = Template.fromStack(region(EAST).observability);
+    east.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-returns-digest-not-running",
+      Metrics: [
+        Match.objectLike({
+          MetricStat: Match.objectLike({
+            Metric: Match.objectLike({ Namespace: "SupplyCheckout", MetricName: BusinessMetric.ReturnsDigestTeams, Dimensions: [{ Name: "Region", Value: EAST }] }),
+            Stat: "SampleCount",
+            Period: 86400,
+          }),
+        }),
+      ],
+      Threshold: 1,
+      ComparisonOperator: "LessThanThreshold",
+      EvaluationPeriods: RETURNS_DIGEST_SILENT_ALARM_DAYS,
+      DatapointsToAlarm: RETURNS_DIGEST_SILENT_ALARM_DAYS,
+      TreatMissingData: "breaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("docs/journeys.md"),
+    });
+    const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
+    expect(west).not.toContain("supply-checkout-prod-p2-returns-digest-not-running");
+  });
+
+  it("let the daily returns digest read the day's returns, owners' emails, teams' billing fields and owners' language, keep its claims, and send the app's email, and nothing else (supply-checkout-phhw)", () => {
+    const t = observability();
+    const found = statements(t, "supply-checkout-prod-returns-digest");
+    expect(found.map((s) => s.Sid ?? s.Action)).toEqual([
+      ["logs:CreateLogStream", "logs:PutLogEvents"],
+      "ReturnedProjectsIndexOnly",
+      "OwnerEmailsIndexOnly",
+      "ReadTeamBilling",
+      "ReadOwnerLanguage",
+      "DigestRecords",
+      "TableKeyThroughDynamoDb",
+      "SendAppEmail",
+    ]);
+    const by = (sid: string) => found.find((x) => x.Sid === sid) as Record<string, unknown>;
+    // Only the returns index's partitions, only the attributes the email shows, projected
+    expect(by("ReturnedProjectsIndexOnly")).toEqual({
+      Sid: "ReturnedProjectsIndexOnly",
+      Effect: "Allow",
+      Action: "dynamodb:Query",
+      Resource: expect.anything(),
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["RETURNED#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...DIGEST_RETURN_ATTRIBUTES] }, StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } },
+    });
+    expect(JSON.stringify(by("ReturnedProjectsIndexOnly").Resource)).toContain("/index/GSI2");
+    // Never lines, prices or notes of a project
+    for (const secret of ["items", "price", "cost", "notes", "email"]) expect(DIGEST_RETURN_ATTRIBUTES as readonly string[]).not.toContain(secret);
+    expect(by("OwnerEmailsIndexOnly")).toMatchObject({ Action: "dynamodb:Query", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["OPS#OWNERS#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI3PK", "GSI3SK", "email"] }, StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } } });
+    expect(by("ReadTeamBilling")).toEqual({
+      Sid: "ReadTeamBilling",
+      Effect: "Allow",
+      Action: "dynamodb:GetItem",
+      Resource: expect.anything(),
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...DIGEST_TEAM_ATTRIBUTES] }, StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } },
+    });
+    // An owner's language and nothing else of their partition
+    expect(by("ReadOwnerLanguage")).toEqual({
+      Sid: "ReadOwnerLanguage",
+      Effect: "Allow",
+      Action: "dynamodb:GetItem",
+      Resource: expect.anything(),
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "language"] }, StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } },
+    });
+    // Its claims: DIGEST# partitions only, returning nothing
+    expect(by("DigestRecords")).toEqual({
+      Sid: "DigestRecords",
+      Effect: "Allow",
+      Action: ["dynamodb:DeleteItem", "dynamodb:PutItem"],
+      Resource: expect.anything(),
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DIGEST#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...DIGEST_RECORD_ATTRIBUTES] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } },
+    });
+    for (const s of found.filter((s) => JSON.stringify(s.Action).includes("dynamodb:GetItem"))) expect(s.Condition, String(s.Sid)).toMatchObject({ StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } });
+    // No Scan, no UpdateItem, no write to a team's or user's partition, no Stripe key
+    expect(JSON.stringify(found)).not.toMatch(/dynamodb:(Scan|UpdateItem|BatchWriteItem|TransactWriteItems)|secretsmanager/);
+    // The returns read and the claims never name the same partitions as a team's data
+    expect(JSON.stringify(by("DigestRecords"))).not.toContain("TEAM#");
+    const [fn] = functions(t).filter((f) => f.FunctionName === "supply-checkout-prod-returns-digest");
+    expect(fn?.Timeout).toBe(RETURNS_DIGEST_BUDGET_MS / 1000 + 60);
+    // A failed send fails the run and Lambda tries it twice more: the claims leave out whoever was sent
+    const configs = Object.values(t.findResources("AWS::Lambda::EventInvokeConfig")).map((r) => r.Properties);
+    const logical = Object.entries(t.findResources("AWS::Lambda::Function")).find(([, r]) => r.Properties.FunctionName === "supply-checkout-prod-returns-digest")?.[0];
+    expect(configs.filter((c) => JSON.stringify(c.FunctionName) === JSON.stringify({ Ref: logical }))).toEqual([expect.objectContaining({ MaximumRetryAttempts: 2, Qualifier: "$LATEST" })]);
   });
 
   it("let the lapsed-team job read teams' billing fields and owners' emails, close a team, keep its own records, send the app's email and read the Stripe key, and nothing else (supply-checkout-qdx)", () => {
@@ -1756,7 +1850,9 @@ describe("dashboard", () => {
  *   math expressions themselves are free). An anomaly detection band adds 2,
  *   and a high-resolution alarm (a period under a minute) costs 3 times as much.
  *   The limit is 76 metrics (about $6.60 a month, half of before) plus 2, from
- *   the security reviews of supply-checkout-7pe.1. An alarm already in ALARM
+ *   the security reviews of supply-checkout-7pe.1, plus 1 for the daily returns
+ *   digest (supply-checkout-phhw): its metric in Needs attention, and a
+ *   "not running" alarm on its own gauge (as the seat reconciliation's). An alarm already in ALARM
  *   doesn't email again, so a source that keeps an aggregate in ALARM hides
  *   every other source behind it: "Security attention" keeps the security
  *   events apart from "Needs attention" (1), and "Deletion record rewritten"
@@ -1768,7 +1864,7 @@ describe("dashboard", () => {
  *   expression's own metrics included. A SEARCH can match any number, so the
  *   deployed dashboard has none.
  */
-const ALARM_METRICS_LIMIT = 79;
+const ALARM_METRICS_LIMIT = 80;
 
 type Json = Record<string, unknown>;
 

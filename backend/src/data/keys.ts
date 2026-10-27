@@ -3,7 +3,7 @@
 // into another key (for example, a project ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
-import { CAMPAIGN_SK, CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, FEEDBACK_PREFIX, FEEDBACK_STATUS_PREFIX, INVITE_LIMIT_PREFIX, LAPSE_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, RECEIPT_TRIAL_CAP_PARTITION, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, PASSWORD_RESET_SK, PHOTO_SK, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, PREFERENCES_SK, TOTP_ON_SK, VERIFIED_EMAIL_SK, WELCOME_SK } from "./schema.js";
+import { CAMPAIGN_SK, CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, DIGEST_PREFIX, EMAIL_CODE_SENT_SK, FEEDBACK_PREFIX, FEEDBACK_STATUS_PREFIX, INVITE_LIMIT_PREFIX, LAPSE_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, RECEIPT_TRIAL_CAP_PARTITION, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, PASSWORD_RESET_SK, PHOTO_SK, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, PREFERENCES_SK, RETURNED_PREFIX, TOTP_ON_SK, VERIFIED_EMAIL_SK, WELCOME_SK } from "./schema.js";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -259,6 +259,11 @@ export const keys = {
   /** The lapsed-team job's lease: one run at a time (claimLapseRun). `RUN` is no team ID (those are UUIDs), and its sort key no record of a team's. */
   lapseRun: () => ({ PK: `${LAPSE_PREFIX}RUN`, SK: "LEASE" }),
   lapseWarned: (teamId: string, deleteAfter: string) => ({ PK: `${LAPSE_PREFIX}${id(teamId, "team ID")}`, SK: `WARNED#${isoInstant(deleteAfter)}` }),
+  /** The daily returns digest's record that one owner was sent the digest for the window ending at `windowEnd` (ISO 8601). */
+  digestSent: (teamId: string, windowEnd: string, userId: string) => ({
+    PK: `${DIGEST_PREFIX}${id(teamId, "team ID")}`,
+    SK: `SENT#${isoInstant(windowEnd)}#${id(userId, "user ID")}`,
+  }),
   /** The team's settings (ADR 0017, section 2a): owners write it; only owners read its markup. */
   settings: (teamId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: "SETTINGS" }),
   /**
@@ -322,6 +327,17 @@ export const gsi1 = {
     GSI1PK: COMMITTING_IMPORTS_PARTITION,
     GSI1SK: `${createdAt}#${id(importId, "import ID")}`,
   }),
+};
+
+/** GSI2 keys: the returns index (RETURNED_PREFIX in schema.ts). */
+export const gsi2Returns = {
+  /** The index keys of a project closed at `closedAt` (an ISO time as toISOString writes it). */
+  project: (closedAt: string, teamId: string, projectId: string) => ({
+    GSI2PK: `${RETURNED_PREFIX}${isoInstant(closedAt).slice(0, 10)}`,
+    GSI2SK: `${closedAt}#${id(teamId, "team ID")}#${id(projectId, "project ID")}`,
+  }),
+  /** The partition of one UTC day (yyyy-mm-dd). */
+  day: (day: string) => `${RETURNED_PREFIX}${dateFormat(day)}`,
 };
 
 /** GSI3 keys: the operators' index (ADR 0015; schema.ts). */

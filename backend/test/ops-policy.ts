@@ -5,11 +5,18 @@
 import {
   COMMITTING_IMPORTS_PARTITION,
   COMP_ATTRIBUTES,
+  DIGEST_LANGUAGE_ATTRIBUTES,
+  DIGEST_OWNER_ATTRIBUTES,
+  DIGEST_PREFIX,
+  DIGEST_RECORD_ATTRIBUTES,
+  DIGEST_RETURN_ATTRIBUTES,
+  DIGEST_TEAM_ATTRIBUTES,
   FEEDBACK_PREFIX,
   FEEDBACK_READ_ATTRIBUTES,
   FEEDBACK_STATUS_ATTRIBUTES,
   FEEDBACK_STATUS_PREFIX,
   GSI1,
+  GSI2,
   GSI3,
   IMPORT_INDEX_ATTRIBUTES,
   LAPSE_CLOSE_ATTRIBUTES,
@@ -24,6 +31,7 @@ import {
   OPS_TEAMS_PARTITION,
   RECEIPT_USAGE_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
+  RETURNED_PREFIX,
   STUCK_IMPORT_ATTRIBUTES,
   TEST_MARK_ATTRIBUTES,
 } from "../src/data/schema.js";
@@ -169,6 +177,47 @@ export function lapsePolicy(denied: { command: string; input: Input }[] = []) {
           return lapse(partitionKey(input)) && within(Object.keys(input.Item as object), LAPSE_RECORD_ATTRIBUTES) && within(namedAttributes(input), LAPSE_RECORD_ATTRIBUTES);
         case "UpdateCommand":
           return teamMeta(input) && within(namedAttributes(input), LAPSE_CLOSE_ATTRIBUTES) && (input.ReturnValues === undefined || input.ReturnValues === "NONE");
+        default:
+          return false;
+      }
+    })();
+    if (!ok) denied.push({ command, input });
+    return ok;
+  };
+}
+
+/**
+ * The calls the daily returns digest's role allows (infra/lib/observability/ops-checks.ts,
+ * supply-checkout-phhw): Query on GSI2's `RETURNED#` partitions naming only
+ * DIGEST_RETURN_ATTRIBUTES and GSI3's OPS#OWNERS# partitions naming only
+ * DIGEST_OWNER_ATTRIBUTES (Select SPECIFIC_ATTRIBUTES); GetItem on a team's META item
+ * naming only DIGEST_TEAM_ATTRIBUTES and on a user's `PREFERENCES` item naming only
+ * DIGEST_LANGUAGE_ATTRIBUTES (both projected); PutItem and DeleteItem in `DIGEST#`
+ * partitions naming only DIGEST_RECORD_ATTRIBUTES. Nothing else.
+ */
+export function digestPolicy(denied: { command: string; input: Input }[] = []) {
+  const within = (names: Iterable<string>, allowed: readonly string[]) => [...names].every((a) => allowed.includes(a));
+  const digest = (pk: unknown) => typeof pk === "string" && pk.startsWith(DIGEST_PREFIX);
+  return (command: string, input: Input): boolean => {
+    const ok = (() => {
+      switch (command) {
+        case "QueryCommand": {
+          const pk = (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
+          if (input.Select !== "SPECIFIC_ATTRIBUTES" || typeof pk !== "string") return false;
+          if (input.IndexName === GSI2) return pk.startsWith(RETURNED_PREFIX) && within(namedAttributes(input), DIGEST_RETURN_ATTRIBUTES);
+          return input.IndexName === GSI3 && pk.startsWith(OPS_OWNERS_PREFIX) && within(namedAttributes(input), DIGEST_OWNER_ATTRIBUTES);
+        }
+        case "GetCommand": {
+          // dynamodb:Select SPECIFIC_ATTRIBUTES on both GetItem statements: projected only
+          if (typeof input.ProjectionExpression !== "string" || (input.Select !== undefined && input.Select !== "SPECIFIC_ATTRIBUTES")) return false;
+          const key = input.Key as Record<string, unknown> | undefined;
+          if (typeof key?.PK === "string" && key.PK.startsWith("TEAM#") && key.SK === "META") return within(namedAttributes(input), DIGEST_TEAM_ATTRIBUTES);
+          return typeof key?.PK === "string" && key.PK.startsWith("USER#") && key.SK === "PREFERENCES" && within(namedAttributes(input), DIGEST_LANGUAGE_ATTRIBUTES);
+        }
+        case "PutCommand":
+          return digest(partitionKey(input)) && within(Object.keys(input.Item as object), DIGEST_RECORD_ATTRIBUTES) && within(namedAttributes(input), DIGEST_RECORD_ATTRIBUTES);
+        case "DeleteCommand":
+          return digest(partitionKey(input)) && (input.ReturnValues === undefined || input.ReturnValues === "NONE") && within(namedAttributes(input), DIGEST_RECORD_ATTRIBUTES);
         default:
           return false;
       }

@@ -468,7 +468,7 @@ describe("grantSendEmail", () => {
         : stack.stackName.endsWith("-email")
           ? [expect.stringMatching(/^SecurityNoticesRole/), expect.stringMatching(/^WelcomeRole/), expect.stringMatching(/^PasswordResetRole/)]
           : stack.stackName === `supply-checkout-prod-${EAST}-observability`
-            ? [expect.stringMatching(/^OpsChecksTeamLapseRole/)]
+            ? [expect.stringMatching(/^OpsChecksTeamLapseRole/), expect.stringMatching(/^OpsChecksReturnsDigestRole/)]
             : [];
       expect(senders, stack.stackName).toEqual(expected);
       // No other SES send anywhere: no templated or bulk sends, and raw sends

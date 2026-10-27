@@ -190,7 +190,7 @@ export function namedAttributes(input: Record<string, unknown>): Set<string> {
   // Only a path's top-level name counts (`#items.#line.out` is `items`), as in dynamodb:Attributes
   const words = [...text.replace(/:[A-Za-z0-9_]+/g, " ").replace(/(\.#?[A-Za-z0-9_]+|\[\d+\])+/g, "").matchAll(/#?[A-Za-z_][A-Za-z0-9_]*/g)]
     .map((m) => m[0])
-    .filter((w) => !["SET", "REMOVE", "ADD", "AND", "OR", "NOT", "attribute_exists", "attribute_not_exists", "begins_with", "if_not_exists"].includes(w))
+    .filter((w) => !["SET", "REMOVE", "ADD", "AND", "OR", "NOT", "attribute_exists", "attribute_not_exists", "begins_with", "if_not_exists", "BETWEEN"].includes(w))
     .map((w) => (w.startsWith("#") ? names[w] : w));
   const key = (input.Key ?? {}) as Record<string, unknown>;
   return new Set([...Object.keys(key), ...words].filter((w): w is string => typeof w === "string"));

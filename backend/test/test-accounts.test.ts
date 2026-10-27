@@ -431,6 +431,7 @@ describe("who reads the mark", () => {
       // The background jobs carry it from META into what they read, for their metrics only (supply-checkout-o60.12)
       ["data/billing.ts", /^\.\.\.\(Item\.test === true \? \{ test: true as const \} : \{\}\),$/],
       ["data/team-lapse.ts", /^if \(Item\.test === true\) team\.test = true;$/],
+      ["data/returns-digest.ts", /^if \(Item\.test === true\) team\.test = true;$/],
       ["data/team-purge.ts", /, \.\.\.\(item\.test === true \? \{ test: true as const \} : \{\}\) \};$/],
       ["data/team-purge.ts", /^const mark = meta\.test === true \? \{ test: true as const \} : \{\};$/],
       // The purge counts its test teams' TeamsPurged apart, to send the rest

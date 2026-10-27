@@ -23,6 +23,7 @@
 // name can't pose as an instruction from us.
 
 import { deletionLastDay, PAYMENT_GRACE_DAYS as GRACE_DAYS, READ_ONLY_RETENTION_DAYS as READ_ONLY_DAYS, type ReadOnlyReason, TRIAL_DAYS } from "../data/index.js";
+import type { Language } from "../data/index.js";
 import type { EmailKind } from "./names.js";
 import { withoutHiddenCharacters } from "../text/hidden-characters.js";
 
@@ -57,6 +58,23 @@ export type EmailInput =
       readonly purgeAfter: string;
     }
   | { readonly kind: "teamReopened"; readonly teamName: string }
+  /**
+   * The daily returns digest (supply-checkout-phhw): to each owner of a team,
+   * once on a day with at least one project returned in the past day. `total`
+   * is how many were returned; `projects` the ones to list by name (the first
+   * RETURNS_DIGEST_MAX_LISTED, oldest first). `language` is the owner's own
+   * choice in the app, English when they made none. The footer says why
+   * they're getting it.
+   */
+  | {
+      readonly kind: "returnsDigest";
+      readonly teamName: string;
+      readonly language?: Language;
+      /** The end of the window the digest covers (ISO 8601): the 24 hours before it. */
+      readonly windowEnd: string;
+      readonly total: number;
+      readonly projects: readonly { readonly client: string; readonly date?: string; readonly preparedBy?: string }[];
+    }
   /**
    * A team read-only because its trial or subscription ended will be deleted
    * at `deletesAt` (ISO 8601, a deletionTime) unless an owner subscribes (the
@@ -248,6 +266,8 @@ interface Content {
   readonly note?: string;
   /** Why the recipient is getting it, when that isn't their account or an invitation (FOOTER). */
   readonly footer?: string;
+  /** The message's language (English unless it says so): the page's `lang` and the fallback link line. */
+  readonly lang?: Language;
 }
 
 /** Why someone is getting the app's email, at the foot of every message unless it says otherwise. */
@@ -258,12 +278,17 @@ const INK = "#1f2933";
 const MUTED = "#52606d";
 const ACCENT = "#1d5fbf";
 
+const COPY_LINK: Record<Language, string> = {
+  en: "If the button doesn't work, copy this link into your browser:",
+  es: "Si el botón no funciona, copia este enlace en tu navegador:",
+};
+
 function html(c: Content): string {
-  const p = (text: string) => `<p style="margin:0 0 16px 0;font-family:${FONT};font-size:16px;line-height:24px;color:${INK};">${escapeHtml(text)}</p>`;
+  const p = (text: string) => `<p style="margin:0 0 16px 0;font-family:${FONT};font-size:16px;line-height:24px;color:${INK};">${escapeHtml(text).replaceAll("\n", "<br>")}</p>`;
   const url = escapeHtml(c.button.url);
   return [
     "<!DOCTYPE html>",
-    '<html lang="en" xmlns="http://www.w3.org/1999/xhtml">',
+    `<html lang="${c.lang ?? "en"}" xmlns="http://www.w3.org/1999/xhtml">`,
     "<head>",
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
@@ -285,7 +310,7 @@ function html(c: Content): string {
     `<tr><td align="center" bgcolor="${ACCENT}" style="border-radius:6px;background-color:${ACCENT};">`,
     `<a href="${url}" target="_blank" style="display:inline-block;padding:12px 24px;font-family:${FONT};font-size:16px;font-weight:bold;line-height:20px;color:#ffffff;text-decoration:none;border-radius:6px;">${escapeHtml(c.button.label)}</a>`,
     "</td></tr></table>",
-    `<p style="margin:0 0 16px 0;font-family:${FONT};font-size:13px;line-height:20px;color:${MUTED};">If the button doesn't work, copy this link into your browser:<br><a href="${url}" target="_blank" style="color:${ACCENT};word-break:break-all;">${url}</a></p>`,
+    `<p style="margin:0 0 16px 0;font-family:${FONT};font-size:13px;line-height:20px;color:${MUTED};">${COPY_LINK[c.lang ?? "en"]}<br><a href="${url}" target="_blank" style="color:${ACCENT};word-break:break-all;">${url}</a></p>`,
     ...(c.note ? [`<p style="margin:0 0 16px 0;font-family:${FONT};font-size:13px;line-height:20px;color:${MUTED};">${escapeHtml(c.note)}</p>`] : []),
     "</td></tr>",
     `<tr><td style="padding:16px 32px 24px 32px;border-top:1px solid #e4e7eb;font-family:${FONT};font-size:12px;line-height:18px;color:${MUTED};">${escapeHtml(c.footer ?? FOOTER)}</td></tr>`,
@@ -316,6 +341,7 @@ function content(input: EmailInput, options: RenderOptions): Content {
   if (input.kind === "passwordSet" || input.kind === "twoStepOn" || input.kind === "emailChanged" || input.kind === "passwordReset") return securityContent(input, appUrl, options.supportAddress ?? "");
   if (input.kind === "welcome") return welcomeContent(input, appUrl);
   if (input.kind === "passwordResetProvider") return resetProviderContent(input, appUrl);
+  if (input.kind === "returnsDigest") return digestContent(input, appUrl);
   const team = teamLabel(input.teamName);
   switch (input.kind) {
     case "invite": {
@@ -552,6 +578,65 @@ function welcomeContent(input: WelcomeEmail, appUrl: string): Content {
       questions,
     ],
     button: { label: "Create your team", url },
+  };
+}
+
+/** A date for people in the message's language: "October 3, 2026", or "3 de octubre de 2026", in UTC. */
+function formatDay(value: string, lang: Language): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new Error("Invalid date");
+  return new Intl.DateTimeFormat(lang === "es" ? "es-US" : "en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" }).format(date);
+}
+
+/** A project's own date for people, or undefined when it isn't a date (a project can be stored with one that doesn't exist). */
+function safeDay(value: string, lang: Language): string | undefined {
+  try {
+    return formatDay(value, lang);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The daily returns digest: labeled as a daily digest in its subject and body,
+ * naming the team, the projects returned in the past day (client, project
+ * date, who prepared it) and why the recipient is getting it. Names are
+ * defanged like any user-supplied text (teamLabel), and the only link is the
+ * app. Transactional: nothing to track, and no unsubscribe link (an owner
+ * setting for it is a follow-up).
+ */
+function digestContent(input: Extract<EmailInput, { kind: "returnsDigest" }>, appUrl: string): Content {
+  const lang: Language = input.language === "es" ? "es" : "en";
+  const es = lang === "es";
+  const team = teamLabel(input.teamName);
+  const total = Math.max(0, Math.floor(input.total));
+  if (total < 1) throw new Error("A digest has at least one project");
+  const day = formatDay(new Date(Date.parse(input.windowEnd) - 1).toISOString(), lang);
+  const count = es ? `${total} ${total === 1 ? "proyecto devuelto" : "proyectos devueltos"}` : `${total} ${total === 1 ? "project" : "projects"} returned`;
+  const lines = input.projects.map((project) => {
+    const client = teamLabel(project.client || (es ? "Proyecto sin nombre" : "Untitled project"));
+    const when = project.date ? safeDay(project.date, lang) : undefined;
+    const by = greetingName(project.preparedBy);
+    const details = [...(when ? [es ? `fecha ${when}` : `dated ${when}`] : []), ...(by ? [es ? `preparado por ${by}` : `prepared by ${by}`] : [])];
+    return `\u2022 ${client}${details.length ? ` (${details.join(", ")})` : ""}`;
+  });
+  const more = total - input.projects.length;
+  return {
+    lang,
+    subject: es ? `Resumen diario de Supply Checkout: ${count} en ${team}` : `Supply Checkout daily digest: ${count} for ${team}`,
+    preheader: es ? `Resumen diario de lo que se devolvió en ${team} durante el último día.` : `A daily digest of what was returned in ${team} over the past day.`,
+    heading: es ? `Resumen diario: ${count}` : `Daily digest: ${count}`,
+    paragraphs: [
+      es
+        ? `Este es el resumen diario de ${team}. Estos proyectos se devolvieron en las últimas 24 horas (hasta el ${day}):`
+        : `This is the daily digest for ${team}. These projects were returned in the past day (through ${day}):`,
+      lines.join("\n"),
+      ...(more > 0 ? [es ? `y ${more} más.` : `and ${more} more.`] : []),
+    ],
+    button: { label: es ? "Abrir Supply Checkout" : "Open Supply Checkout", url: appLink(appUrl, "/") },
+    footer: es
+      ? `Recibes este resumen diario porque eres propietario de ${team}. Solo se envía los días en que se devuelve al menos un proyecto. Se envió desde una dirección que no recibe respuestas.`
+      : `You get this daily digest because you're an owner of ${team}. It's only sent on days when at least one project is returned. It was sent from an address that doesn't take replies.`,
   };
 }
 
