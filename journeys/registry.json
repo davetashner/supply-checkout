@@ -453,6 +453,7 @@
     { "name": "Seat syncs stuck", "journeys": ["J7"], "infra": "seat-syncs-stuck" },
     { "name": "Seat counts drifting", "journeys": ["J7"], "coveredBy": "Needs attention" },
     { "name": "Seat reconciliation not running", "journeys": ["J7"], "infra": "seat-reconcile-not-running" },
+    { "name": "Returns digest not running", "journeys": ["J7"], "infra": "returns-digest-not-running" },
     { "name": "Lapsed-team job failing", "journeys": ["J7", "J8", "J10"], "coveredBy": "Needs attention" },
     { "name": "Lapsed-team job out of time or not running", "journeys": ["J7", "J8", "J10"], "infra": "lapse-job-out-of-time" },
     { "name": "Lapsed-team closures held", "journeys": ["J10"], "coveredBy": "Needs attention" },

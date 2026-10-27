@@ -375,6 +375,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Billing portal broken | J7, J8 | P1 | As below |
 | Billing events late | J7, J8 | P2 | The billing events queue's `ApproximateAgeOfOldestMessage` above 5 minutes |
 | Seat syncs stuck, Seat reconciliation not running | J7 | P2 | As below (`supply-checkout-l50`). Seat syncs stuck watches the seat syncs dead-letter queue. Seat reconciliation not running reads the nightly seat reconciliation's gauge, and is in the primary region only, where it runs. Seat counts drifting alerts through Needs attention. |
+| Returns digest not running | J7 | P2 | As below (`supply-checkout-phhw`). Reads the daily returns digest's `ReturnsDigestTeams` gauge, sent every run (0 on a quiet day), and is in the primary region only, where it runs. A digest email that fails to send alerts through Needs attention (`ReturnsDigestFailures`). |
 | Lapsed-team job out of time or not running | J7, J8, J10 | P2 | As below (`supply-checkout-qdx`). Reads the hourly lapsed-team job's gauge, missing data breaching, in the primary region only, where it runs. Lapsed-team job failing alerts through Needs attention. |
 | Lapsed-team closures high | J10 | P2 | As below (`supply-checkout-qdx`). The hourly lapsed-team job's closures, in the primary region only. Lapsed-team closures held and Lapsed team held by Checkout alert through Needs attention. |
 | Closed-team subscription set aside | J7, J11 | P2 | As below (`supply-checkout-8jc.36`). Reads the closed-team purge's gauge, in the primary region only. |
