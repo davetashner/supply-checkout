@@ -2,7 +2,15 @@
   "releases": [
     {
       "version": "upcoming",
-      "notes": [],
+      "notes": [
+        {
+          "title": "Hear back when a reported issue is fixed",
+          "text": "If you tick that we may contact you when you use Report an issue, we'll email you once the fix is live, with the release it's in. It follows your language setting.",
+          "prs": [
+            831
+          ]
+        }
+      ],
       "skip": {
         "829": "Behind the scenes: the owner's tool for marking reported issues resolved"
       }
