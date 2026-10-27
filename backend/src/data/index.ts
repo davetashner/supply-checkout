@@ -79,6 +79,7 @@ export * from "./security-notices.js";
 export * from "./two-step.js";
 export * from "./password-reset-time.js";
 export * from "./welcome.js";
+export { claimFixedNotice, type FixedOutcome, type FixedReport, isReportTeamMember, listFixedReports, readFixedTeam, recordFixedRefused, releaseFixedNotice, REPORT_FIXED_MAX_AGE_DAYS } from "./feedback-fixed.js";
 export { claimDigest, DIGEST_RECORD_DAYS, type DigestTeam, listReturnedProjects, ownerLanguage, readDigestTeam, releaseDigest, type ReturnedProject } from "./returns-digest.js";
 export * from "./preferences.js";
 export * from "./photos.js";

@@ -308,6 +308,28 @@ export const FEEDBACK_READ_ATTRIBUTES = [...FEEDBACK_ATTRIBUTES, "statusAt", "di
  */
 export const FEEDBACK_STATUS_ATTRIBUTES = [PK, SK, GSI1PK, "type", "status", "beadId", "statusAt", "dismissReason"] as const;
 
+/**
+ * The "your report is fixed" email (supply-checkout-7id1,
+ * email/report-fixed-handler.ts, data/feedback-fixed.ts). Its own role, never
+ * the ops role: it may
+ *
+ * - Query GSI1's `FEEDBACK#STATUS#resolved` partition (and only that one),
+ *   naming only REPORT_FIXED_READ_ATTRIBUTES (dynamodb:Attributes, with a
+ *   projection required): the keys, the ids, the report's `message` (quoted
+ *   back to its sender), `contactOk`, `release`, `resolvedAt` and its own
+ *   `notifiedAt` mark. Never `expected`, `context` or `role`; the sender's
+ *   email is not stored anywhere in a report.
+ * - UpdateItem in `FEEDBACK#` partitions naming only REPORT_FIXED_MARK_ATTRIBUTES:
+ *   its once-only `notifiedAt` mark and `notifyOutcome`, on the conditions
+ *   that the report is resolved and its sender ticked contact OK.
+ * - GetItem in `TEAM#` partitions naming only REPORT_FIXED_TEAM_ATTRIBUTES:
+ *   the team item's closure and purge marks, and a MEMBER item's keys (the
+ *   sender must still be on the team).
+ */
+export const REPORT_FIXED_READ_ATTRIBUTES = [PK, SK, GSI1PK, "type", "status", "reportId", "teamId", "userId", "message", "contactOk", "release", "resolvedAt", "notifiedAt"] as const;
+export const REPORT_FIXED_MARK_ATTRIBUTES = [PK, SK, "type", "status", "contactOk", "notifiedAt", "notifyOutcome"] as const;
+export const REPORT_FIXED_TEAM_ATTRIBUTES = [PK, SK, "closedAt", "purging"] as const;
+
 /** The only attributes a request may name in an `INVITELIMIT#` partition: the keys, the count, its item type and its expiry. */
 export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;
 

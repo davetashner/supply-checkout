@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { Aws, Duration, Stack, Validations } from "aws-cdk-lib";
-import { Rule } from "aws-cdk-lib/aws-events";
+import { Rule, Schedule } from "aws-cdk-lib/aws-events";
 import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
 import { PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Key } from "aws-cdk-lib/aws-kms";
@@ -12,8 +12,8 @@ import { LambdaSubscription } from "aws-cdk-lib/aws-sns-subscriptions";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { GSI2, PASSWORD_RESET_HINT_PARTITIONS, PASSWORD_RESET_LIMIT_ATTRIBUTES, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
-import { EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, emailResourceNames, PASSWORD_RESET_ENV, WELCOME_ENV } from "../../../backend/src/email/names.js";
+import { DIGEST_LANGUAGE_ATTRIBUTES, FEEDBACK_PREFIX, FEEDBACK_STATUS_PREFIX, GSI1, GSI2, PASSWORD_RESET_HINT_PARTITIONS, REPORT_FIXED_MARK_ATTRIBUTES, REPORT_FIXED_READ_ATTRIBUTES, REPORT_FIXED_TEAM_ATTRIBUTES, PASSWORD_RESET_LIMIT_ATTRIBUTES, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
+import { EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, emailResourceNames, PASSWORD_RESET_ENV, REPORT_FIXED_ENV, REPORT_FIXED_EVERY_MINUTES, WELCOME_ENV } from "../../../backend/src/email/names.js";
 import { SECURITY_NOTICE_EVENTS, SECURITY_NOTICES_ENV } from "../../../backend/src/identity/names.js";
 import { TEST_MAIL_DOMAIN_ENV } from "../../../backend/src/data/test-accounts.js";
 import type { DeploymentConfig } from "../config.js";
@@ -124,6 +124,8 @@ export class EmailStack extends SupplyCheckoutStack {
   readonly securityNoticeEvents: Rule;
   readonly welcome: NodejsFunction;
   readonly welcomeDeadLetterQueue: Queue;
+  /** The "your report is fixed" email, on a schedule (supply-checkout-7id1). */
+  readonly reportFixed: NodejsFunction;
   /** Password resets asked for in the app: Cognito's code, or a "sign in with Google" hint for a Google or Apple account's address (supply-checkout-6uw.26). */
   readonly passwordReset: NodejsFunction;
 
@@ -240,6 +242,129 @@ export class EmailStack extends SupplyCheckoutStack {
     [this.securityNotices, this.securityNoticeEvents] = this.addSecurityNotices(config, table, tableArn, tableKeyArn);
     [this.welcome, this.welcomeDeadLetterQueue] = this.addWelcome(config, table, tableArn, tableKeyArn);
     this.passwordReset = this.addPasswordReset(config, table, tableArn, tableKeyArn);
+    this.reportFixed = this.addReportFixed(config, table, tableArn, tableKeyArn);
+  }
+
+  /**
+   * The "your report is fixed" email function (supply-checkout-7id1,
+   * backend/src/email/report-fixed-handler.ts), run every REPORT_FIXED_EVERY_MINUTES.
+   * Its own role, not the ops role. It may: Query GSI1's
+   * `FEEDBACK#STATUS#resolved` partition only, naming only
+   * REPORT_FIXED_READ_ATTRIBUTES (a report's text, sender's ID and release; never
+   * an email, which no report holds); UpdateItem in `FEEDBACK#` partitions naming
+   * only REPORT_FIXED_MARK_ATTRIBUTES (its once-only mark); GetItem in `TEAM#`
+   * partitions naming only REPORT_FIXED_TEAM_ATTRIBUTES (closure, purge, and a
+   * member's keys) and in `USER#` partitions naming only the language; ListUsers
+   * and AdminGetUser on the app pool (the sender's current verified address,
+   * looked up when it sends); and send the app's email (noreply@ only). No
+   * Put, Delete or Scan, and no alarm of its own: a failure counts in
+   * ReportFixedEmailFailures, which rides on Needs attention.
+   */
+  private addReportFixed(config: DeploymentConfig, table: string, tableArn: string, tableKeyArn: string): NodejsFunction {
+    const identity = identityOutputParameters(config.envName);
+    const userPoolId = StringParameter.valueForStringParameter(this, identity.userPoolId);
+    const userPoolArn = StringParameter.valueForStringParameter(this, identity.userPoolArn);
+    const logGroup = new LogGroup(this, "ReportFixedLogs", { retention: LOG_RETENTION });
+    const role = new Role(this, "ReportFixedRole", {
+      assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
+      description: "Execution role for the report fixed email function",
+    });
+    role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
+    const fn = new NodejsFunction(this, "ReportFixedFunction", {
+      functionName: emailResourceNames(config.envName).reportFixedFunction,
+      role,
+      logGroup,
+      entry: `${BACKEND}src/email/report-fixed.ts`,
+      projectRoot: BACKEND,
+      depsLockFilePath: `${BACKEND}package-lock.json`,
+      runtime: Runtime.NODEJS_24_X,
+      architecture: Architecture.ARM_64,
+      memorySize: 256,
+      timeout: Duration.minutes(2),
+      description: "Emails the sender of a resolved report, if they ticked contact OK, that it is fixed and in which release (supply-checkout-7id1)",
+      environment: {
+        NODE_OPTIONS: "--enable-source-maps",
+        TABLE_NAME: table,
+        [REPORT_FIXED_ENV.userPoolId]: userPoolId,
+        [TEST_MAIL_DOMAIN_ENV]: hostNames(config).testMail,
+      },
+      // The next run is soon, and every send is marked once: no retry of a scheduled run
+      retryAttempts: 0,
+      bundling,
+    });
+    new Rule(this, "ReportFixedSchedule", {
+      description: `Runs the report fixed email function every ${REPORT_FIXED_EVERY_MINUTES} minutes`,
+      schedule: Schedule.rate(Duration.minutes(REPORT_FIXED_EVERY_MINUTES)),
+      targets: [new LambdaFunction(fn, { retryAttempts: 0 })],
+    });
+    // noreply@ only, through the configuration set (lib/email.ts)
+    grantSendEmail(fn, config);
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "FindAppUsers",
+        actions: ["cognito-idp:ListUsers", "cognito-idp:AdminGetUser"],
+        resources: [userPoolArn],
+      }),
+    );
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ResolvedReportsIndexOnly",
+        // The one status partition, projected, with only the attributes the email needs
+        actions: ["dynamodb:Query"],
+        resources: [`${tableArn}/index/${GSI1}`],
+        conditions: {
+          "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`${FEEDBACK_STATUS_PREFIX}resolved`], "dynamodb:Attributes": [...REPORT_FIXED_READ_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "MarkReportTold",
+        // Its once-only mark on a report, returning nothing
+        actions: ["dynamodb:UpdateItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${FEEDBACK_PREFIX}*`] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...REPORT_FIXED_MARK_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadTeamStanding",
+        actions: ["dynamodb:GetItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...REPORT_FIXED_TEAM_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadSenderLanguage",
+        // The sender's chosen language and nothing else of their USER# partition, projected
+        actions: ["dynamodb:GetItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...DIGEST_LANGUAGE_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "TableKeyThroughDynamoDb",
+        actions: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"],
+        resources: [tableKeyArn],
+        conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
+      }),
+    );
+    return fn;
   }
 
   /** The password reset function (see the class comment). */

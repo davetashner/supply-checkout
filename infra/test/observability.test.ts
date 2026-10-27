@@ -1079,6 +1079,7 @@ describe("alarms added with the email code routes, the live update budget, team 
       BusinessMetric.LapseClosuresHeld,
       BusinessMetric.LapseCheckoutOverdue,
       BusinessMetric.ReturnsDigestFailures,
+      BusinessMetric.ReportFixedEmailFailures,
     ].sort());
     // The trial cap's, once a day, from the receipts function itself; the security events through Security attention
     expect(NEEDS_ATTENTION_ONCE_A_DAY).toEqual([BusinessMetric.ReceiptTrialCapReached]);

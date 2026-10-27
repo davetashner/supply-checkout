@@ -10,7 +10,7 @@ import { type Invite, type Member, type Team, hashEmail, markInviteFailed, teamC
 import { createEmailEventsHandler } from "../src/email/events-handler.js";
 import { EmailNotSentError, createMailer, mailerFromEnv, sesClientConfig, sendInviteEmail, sendTeamNotice, type SesSender } from "../src/email/mailer.js";
 import { EMAIL_ENV, EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, EMAIL_KINDS, EMAIL_TAGS, configurationSetName } from "../src/email/names.js";
-import { type EmailInput, type TeamNoticeInput, escapeHtml, formatDate, formatDateTime, greetingName, plainName, renderEmail, teamLabel } from "../src/email/templates.js";
+import { type EmailInput, REPORT_QUOTE_MAX, type TeamNoticeInput, escapeHtml, formatDate, formatDateTime, greetingName, plainName, renderEmail, teamLabel } from "../src/email/templates.js";
 import type { Observability } from "../src/observability/index.js";
 import { contextFor, fakeDb } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -46,6 +46,8 @@ const samples: EmailInput[] = [
   { kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: false },
   { kind: "returnsDigest", teamName: "Echo Cleaning", windowEnd: "2026-10-26T22:00:00.000Z", total: 2, projects: [{ client: "Alpha Siding", date: "2026-10-20", preparedBy: "Dana" }, { client: "Beta Build" }] },
   { kind: "returnsDigest", teamName: "Echo Cleaning", language: "es", windowEnd: "2026-10-26T22:00:00.000Z", total: 1, projects: [{ client: "Alpha Siding" }] },
+  { kind: "reportFixed", message: "The scan button does nothing on my phone", release: "1.22.0" },
+  { kind: "reportFixed", message: "El botón de escanear no hace nada", release: "1.22.0-rc.1", language: "es" },
   { kind: "welcome", invited: true, supportAddress: "support@supplycheckout.com" },
 ];
 
@@ -102,12 +104,54 @@ describe("templates", () => {
       });
 
       it("has a readable text part", () => {
-        expect(email.text).toContain("teamName" in input ? "Echo Cleaning" : input.kind === "welcome" ? "Your Supply Checkout account is ready." : input.kind === "passwordResetProvider" ? "asked to reset the Supply Checkout password for this email address" : "September 30, 2026 at 14:05 UTC");
+        expect(email.text).toContain("teamName" in input ? "Echo Cleaning" : input.kind === "welcome" ? "Your Supply Checkout account is ready." : input.kind === "reportFixed" ? (input.language === "es" ? "Corregimos lo que reportaste" : "We fixed what you reported") : input.kind === "passwordResetProvider" ? "asked to reset the Supply Checkout password for this email address" : "September 30, 2026 at 14:05 UTC");
         expect(email.text).not.toMatch(/<[a-z/]/i);
         expect(email.text.split("\n").every((line) => line.length < 400)).toBe(true);
       });
     });
   }
+
+  // supply-checkout-7id1
+  describe("the report fixed email", () => {
+    const fixed = (message: string, extra: Record<string, unknown> = {}) => renderEmail({ kind: "reportFixed", message, release: "1.22.0", ...extra } as EmailInput, OPTS);
+
+    it("quotes the report, says it's fixed in the release, links only to the app, and says why they got it", () => {
+      const email = fixed("The scan button does nothing on my phone");
+      expect(email.subject).toBe("Fixed: the issue you reported in Supply Checkout");
+      expect(email.text).toContain("\u201cThe scan button does nothing on my phone\u201d");
+      expect(email.text).toContain("release 1.22.0");
+      expect(email.text).toContain("you said we could contact you about it");
+    });
+
+    it("is in Spanish when the recipient chose it", () => {
+      const email = fixed("No escanea", { language: "es" });
+      expect(email.subject).toBe("Corregido: el problema que reportaste en Supply Checkout");
+      expect(email.html).toContain('lang="es"');
+      expect(email.text).toContain("versión 1.22.0");
+      expect(email.text).toContain("marcaste que podíamos ponernos en contacto contigo");
+    });
+
+    it("escapes markup, defangs links and addresses, flattens lines and caps the quote, so the report can't add a link or pose as us", () => {
+      const email = fixed(`<script>alert(1)</script> Verify at https://evil.example/pay or write to boss@example.net\nsecond line\u202e ${"x".repeat(400)}`);
+      expect(email.html).not.toContain("<script>");
+      expect(email.html).toContain("&lt;script&gt;");
+      expect(email.text).toContain("https[:]//evil[.]example/pay");
+      expect(email.text).toContain("boss[at]example[.]net");
+      expect(email.html + email.text).not.toMatch(/https:\/\/evil|@example\.net|\u202e/);
+      const quoted = email.text.match(/\u201c(.*)\u201d/)?.[1] as string;
+      expect(quoted).not.toMatch(/\n/);
+      expect(quoted.length).toBeLessThanOrEqual(REPORT_QUOTE_MAX);
+      expect(quoted.endsWith("\u2026")).toBe(true);
+      expect(email.text.match(/https:\/\/\S+/g)).toEqual([`${APP}/`]);
+    });
+
+    it("leaves the quote out when the report has no visible text, and refuses a release that isn't a version", () => {
+      expect(fixed("\u200b  \u202e").text).not.toContain("\u201c");
+      for (const release of ["", "latest", "1.22", "1.22.0\nFree gift at evil.example", "v1.22.0", "1.22.0-" + "a".repeat(17), "<b>1.2.3</b>"]) {
+        expect(() => fixed("x", { release }), release).toThrow("Invalid release");
+      }
+    });
+  });
 
   // supply-checkout-6uw.32
   it("says a reset password signed the account out only when it did, and what to do if it wasn't them", () => {

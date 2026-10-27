@@ -23,7 +23,7 @@
 // name can't pose as an instruction from us.
 
 import { deletionLastDay, PAYMENT_GRACE_DAYS as GRACE_DAYS, READ_ONLY_RETENTION_DAYS as READ_ONLY_DAYS, type ReadOnlyReason, TRIAL_DAYS } from "../data/index.js";
-import type { Language } from "../data/index.js";
+import { FEEDBACK_RELEASE, type Language } from "../data/index.js";
 import type { EmailKind } from "./names.js";
 import { withoutHiddenCharacters } from "../text/hidden-characters.js";
 
@@ -76,6 +76,15 @@ export type EmailInput =
       readonly projects: readonly { readonly client: string; readonly date?: string; readonly preparedBy?: string }[];
     }
   /**
+   * A report the recipient sent with Report an issue is fixed
+   * (supply-checkout-7id1): to the report's own sender, at their verified
+   * address, only if they ticked contact OK, once. `message` is their own
+   * report text (quoted back; one line, capped and defanged), `release` the
+   * version it went out in (`1.22.0`; the message won't render with anything
+   * else). `language` is the recipient's own choice in the app, English if none.
+   */
+  | { readonly kind: "reportFixed"; readonly message: string; readonly release: string; readonly language?: Language }
+  /**
    * A team read-only because its trial or subscription ended will be deleted
    * at `deletesAt` (ISO 8601, a deletionTime) unless an owner subscribes (the
    * lapsed-team job, supply-checkout-qdx): after the date it states
@@ -124,11 +133,14 @@ export type SecurityNotice = Extract<EmailInput, { kind: "passwordSet" | "twoSte
 /** The welcome email (welcomeContent). */
 export type WelcomeEmail = Extract<EmailInput, { kind: "welcome" }>;
 
+/** The "your report is fixed" email (reportFixedContent), to a report's sender. */
+export type ReportFixedEmail = Extract<EmailInput, { kind: "reportFixed" }>;
+
 /** The hint for a password reset asked for a Google or Apple account's address (resetProviderContent). */
 export type ResetProviderEmail = Extract<EmailInput, { kind: "passwordResetProvider" }>;
 
 /** A notice about a team, to its owners: every kind but an invite, the security notices, the welcome email and the password reset hint. */
-export type TeamNoticeInput = Exclude<EmailInput, { kind: "invite" } | SecurityNotice | WelcomeEmail | ResetProviderEmail>;
+export type TeamNoticeInput = Exclude<EmailInput, { kind: "invite" } | SecurityNotice | WelcomeEmail | ResetProviderEmail | ReportFixedEmail>;
 
 export interface RenderedEmail {
   readonly kind: EmailKind;
@@ -342,6 +354,7 @@ function content(input: EmailInput, options: RenderOptions): Content {
   if (input.kind === "welcome") return welcomeContent(input, appUrl);
   if (input.kind === "passwordResetProvider") return resetProviderContent(input, appUrl);
   if (input.kind === "returnsDigest") return digestContent(input, appUrl);
+  if (input.kind === "reportFixed") return reportFixedContent(input, appUrl);
   const team = teamLabel(input.teamName);
   switch (input.kind) {
     case "invite": {
@@ -637,6 +650,43 @@ function digestContent(input: Extract<EmailInput, { kind: "returnsDigest" }>, ap
     footer: es
       ? `Recibes este resumen diario porque eres propietario de ${team}. Solo se envía los días en que se devuelve al menos un proyecto. Se envió desde una dirección que no recibe respuestas.`
       : `You get this daily digest because you're an owner of ${team}. It's only sent on days when at least one project is returned. It was sent from an address that doesn't take replies.`,
+  };
+}
+
+/** The longest part of someone's report a "fixed" email quotes back, in characters. */
+export const REPORT_QUOTE_MAX = 300;
+
+/**
+ * The email that tells a report's sender it's fixed: their own words quoted
+ * (one line, at most REPORT_QUOTE_MAX characters, hidden characters removed
+ * and anything link-like defanged, as teamLabel does, so the report text can't
+ * add a link or pose as our words), the release it went out in, and the app.
+ * The release must be a well-formed version (FEEDBACK_RELEASE) or it won't
+ * render. Why they got it is in the footer.
+ */
+function reportFixedContent(input: ReportFixedEmail, appUrl: string): Content {
+  if (!FEEDBACK_RELEASE.test(input.release)) throw new Error("Invalid release");
+  const es = input.language === "es";
+  const lang: Language = es ? "es" : "en";
+  // Defanged before it's cut to length, so the cap holds for what the reader sees
+  const quote = withoutHiddenCharacters(input.message.slice(0, 4 * REPORT_QUOTE_MAX)).trim()
+    ? plainName(plainName(input.message, 4 * REPORT_QUOTE_MAX).replace(LINKISH, (token) => token.replaceAll(".", "[.]").replaceAll(":", "[:]").replaceAll("@", "[at]")), REPORT_QUOTE_MAX)
+    : undefined;
+  return {
+    lang,
+    subject: es ? "Corregido: el problema que reportaste en Supply Checkout" : "Fixed: the issue you reported in Supply Checkout",
+    preheader: es ? `Corregimos lo que reportaste. Está en la versión ${input.release}.` : `We fixed what you reported. It's in release ${input.release}.`,
+    heading: es ? "Corregimos lo que reportaste" : "We fixed what you reported",
+    paragraphs: [
+      es ? "Gracias por avisarnos. Corregimos el problema que reportaste con Reportar un problema:" : "Thanks for telling us. We've fixed the issue you reported with Report an issue:",
+      ...(quote ? [`\u201c${quote}\u201d`] : []),
+      es ? `La corrección está en la versión ${input.release} de Supply Checkout y ya está disponible. Si recargas la app, la tendrás.` : `The fix is in Supply Checkout release ${input.release}, and it's live now. Reload the app if you have it open.`,
+      es ? "Si sigue sin funcionar como esperas, vuelve a usar Reportar un problema en la app y cuéntanos." : "If it still doesn't work the way you expect, use Report an issue in the app again and tell us.",
+    ],
+    button: { label: es ? "Abrir Supply Checkout" : "Open Supply Checkout", url: appLink(appUrl, "/") },
+    footer: es
+      ? "Recibes este correo porque, al reportar el problema, marcaste que podíamos ponernos en contacto contigo. Se envió desde una dirección que no recibe respuestas."
+      : "You're getting this email because, when you reported the issue, you said we could contact you about it. It was sent from an address that doesn't take replies.",
   };
 }
 

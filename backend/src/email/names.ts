@@ -32,6 +32,8 @@ export const emailResourceNames = (envName: string) => ({
   welcomeFunction: `supply-checkout-${envName}-welcome-email`,
   /** Welcome requests (a user's sub and how they signed up) the function failed on after Lambda's retries, to replay ("Welcome emails dropped"). */
   welcomeDeadLetterQueue: `supply-checkout-${envName}-welcome-email-dlq`,
+  /** The "your report is fixed" email function (supply-checkout-7id1), run on a schedule. */
+  reportFixedFunction: `supply-checkout-${envName}-report-fixed-email`,
   /**
    * The password reset function (supply-checkout-6uw.26). A fixed name: the
    * API's password reset function, in the api stack, invokes it by name.
@@ -45,6 +47,18 @@ export const emailResourceNames = (envName: string) => ({
    */
   securityNoticesFunction: `supply-checkout-${envName}-security-notices`,
 });
+
+/** The "your report is fixed" email function's environment, besides what grantSendEmail sets (supply-checkout-7id1). */
+export const REPORT_FIXED_ENV = {
+  /** The app pool it looks the reporter up in. */
+  userPoolId: "USER_POOL_ID",
+} as const;
+
+/** How often the "your report is fixed" email function looks for resolved reports to tell their senders about. */
+export const REPORT_FIXED_EVERY_MINUTES = 30;
+
+/** The most reports one run tells, so a backlog can't run past the function's timeout; the next run carries on. */
+export const REPORT_FIXED_MAX_PER_RUN = 50;
 
 /** How a new account was made: an email code (Cognito's own sign-up), or a first Google or Apple sign-in. */
 export const WELCOME_VIA = ["email", "Google", "SignInWithApple"] as const;
@@ -112,7 +126,7 @@ export const EMAIL_ENV = {
 export const EMAIL_TAGS = { kind: "kind", teamId: "teamId", inviteId: "inviteId" } as const;
 
 /** The kinds of message the app sends (templates.ts). */
-export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "deletionWarning", "passwordSet", "twoStepOn", "emailChanged", "passwordReset", "welcome", "passwordResetProvider", "returnsDigest"] as const;
+export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "deletionWarning", "passwordSet", "twoStepOn", "emailChanged", "passwordReset", "welcome", "passwordResetProvider", "returnsDigest", "reportFixed"] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
 
 /**
