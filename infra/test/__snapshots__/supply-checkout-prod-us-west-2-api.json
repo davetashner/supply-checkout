@@ -2227,6 +2227,47 @@
                   "Sid": "WriteFeedbackReport"
                 },
                 {
+                  "Action": "dynamodb:Query",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "FEEDBACK#${aws:PrincipalTag/teamId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "type",
+                        "userId",
+                        "reportId",
+                        "shortId",
+                        "createdAt",
+                        "category",
+                        "message",
+                        "status",
+                        "resolvedAt",
+                        "release"
+                      ]
+                    },
+                    "StringEquals": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "ReadOwnFeedbackReports"
+                },
+                {
                   "Action": [
                     "kms:Decrypt",
                     "kms:DescribeKey",
@@ -6746,6 +6787,56 @@
         }
       }
     },
+    "HttpApiGETteamsteamIdfeedbackmineAccountIntegrationPermissionE871F256": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/feedback/mine"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETteamsteamIdfeedbackmine99314F2D": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "GET /teams/{teamId}/feedback/mine",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegration84D4E72C": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -7397,6 +7488,10 @@
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
           },
+          "GET /teams/{teamId}/feedback/mine": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
+          },
           "POST /teams/{teamId}/billing/checkout": {
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
@@ -7445,6 +7540,8 @@
         "HttpApiGETme466879BE",
         "HttpApiGETteamsteamIdbillinginvoicesBillingIntegrationPermission1BA23EFA",
         "HttpApiGETteamsteamIdbillinginvoicesF169B9A2",
+        "HttpApiGETteamsteamIdfeedbackmineAccountIntegrationPermissionE871F256",
+        "HttpApiGETteamsteamIdfeedbackmine99314F2D",
         "HttpApiGETteamsteamIdinvitesAccountIntegrationPermissionB8124B59",
         "HttpApiGETteamsteamIdinvitesBB2E6828",
         "HttpApiGETteamsteamIdmembersAccountIntegrationPermission8330B349",

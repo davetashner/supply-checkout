@@ -183,6 +183,8 @@ const MEMBER_CASES: Record<string, Omit<Case, "minRole">> = {
   "GET /teams/{teamId}/photos": { method: "GET", path: "/teams/team-a/photos" },
   // Any member, a viewer too (supply-checkout-bmsh.1)
   "POST /teams/{teamId}/feedback": { method: "POST", path: "/teams/team-a/feedback", body: { category: "bug", message: "The scan button does nothing" }, headers: { "idempotency-key": "matrix-report-0001" } },
+  // Any member, a viewer too: their own reports (supply-checkout-loxj)
+  "GET /teams/{teamId}/feedback/mine": { method: "GET", path: "/teams/team-a/feedback/mine" },
 };
 const MEMBER_MIN_ROLE: Record<string, TeamRole> = {
   "GET /teams/{teamId}/members": "owner",
@@ -198,6 +200,7 @@ const MEMBER_MIN_ROLE: Record<string, TeamRole> = {
   "GET /teams/{teamId}/photos": "viewer",
   // A viewer may report; the report isn't team data
   "POST /teams/{teamId}/feedback": "viewer",
+  "GET /teams/{teamId}/feedback/mine": "viewer",
 };
 
 const TEAM_ACCOUNT_ROUTES = ACCOUNT_ROUTES.filter((r) => r.path.startsWith("/teams/{teamId}"));

@@ -4,6 +4,13 @@
       "version": "upcoming",
       "notes": [
         {
+          "title": "See what happened to your reports",
+          "text": "A new Your reports button, beside Report an issue, lists the issues you sent in this team and where each one stands: received, being looked at, fixed in a release, or not planned.",
+          "prs": [
+            832
+          ]
+        },
+        {
           "title": "Hear back about issues you report",
           "text": "If you say we may contact you in Report an issue, we'll email you when we get it, when we look into it and when it's fixed, with its release. It follows your language setting.",
           "prs": [

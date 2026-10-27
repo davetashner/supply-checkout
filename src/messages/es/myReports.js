@@ -1,0 +1,20 @@
+// Spanish catalog (supply-checkout-oopu): pending the owner's review.
+export default {
+  "myReports.title": "Sus reportes",
+  "myReports.hint": "Los problemas que envió con Reportar un problema en este equipo, y qué pasó con cada uno. Solo usted los ve aquí.",
+  "myReports.loading": "Cargando sus reportes…",
+  "myReports.close": "Cerrar",
+  "myReports.none": "Todavía no ha reportado nada en este equipo. Use Reportar un problema para contarnos un problema o una idea.",
+  "myReports.more": "Se muestran sus reportes más recientes.",
+  "myReports.failed": "No se pudieron cargar sus reportes. Revise su conexión e intente de nuevo.",
+  "myReports.notInTeam": "Ya no está en este equipo, así que no se pueden mostrar sus reportes. Recargue la página e intente de nuevo.",
+  "myReports.retry": "Intentar de nuevo",
+  "myReports.kindBug": "Problema",
+  "myReports.kindIdea": "Idea",
+  "myReports.kindQuestion": "Pregunta",
+  "myReports.received": "Recibido",
+  "myReports.looking": "En revisión",
+  "myReports.fixedIn": "Corregido en {release}",
+  "myReports.fixed": "Corregido",
+  "myReports.notPlanned": "No planeado",
+};

@@ -194,7 +194,8 @@ export interface AccountRoute {
     | "deletePhoto"
     | "setName"
     | "listPhotos"
-    | "sendFeedback";
+    | "sendFeedback"
+    | "listMyFeedback";
   /**
    * API Gateway's throttle for this route across all callers (requests a
    * second, and burst), below the stage's. /me assumes a role per team, so it
@@ -266,6 +267,9 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   // "Report an issue" (supply-checkout-bmsh.1): any member, a viewer included. Stored privately,
   // never readable through a data route; at most FEEDBACK_PER_USER_PER_DAY a user a day, and a body of 4 KB
   { method: "POST", path: "/teams/{teamId}/feedback", action: "sendFeedback", throttle: { rate: 2, burst: 5 } },
+  // "Your reports" (supply-checkout-loxj): any member's own reports in the team, and their status.
+  // Reads the team's reports partition filtered to the caller's user ID, so it's the dearer read
+  { method: "GET", path: "/teams/{teamId}/feedback/mine", action: "listMyFeedback", throttle: { rate: 5, burst: 10 } },
 ];
 
 export interface BillingRoute {
@@ -401,7 +405,9 @@ export const RECEIPT_SESSION_TAGS = { teamId: TEAM_SESSION_TAG, userId: "userId"
  * them); and for `inviteLimit`, only updating the day's invite counter in
  * `INVITELIMIT#<inviteLimit>` (the hashed address an owner is inviting).
  * With `teamId` it may also PutItem (nothing else) into `FEEDBACK#<teamId>`,
- * naming only FEEDBACK_ATTRIBUTES: a member's report (data/feedback.ts).
+ * naming only FEEDBACK_ATTRIBUTES: a member's report (data/feedback.ts). It
+ * may also Query that partition, naming only FEEDBACK_OWN_ATTRIBUTES, to read
+ * back the caller's own reports (the handler filters on the token's user).
  * Every session carries all five; one that doesn't need a tag sets it to
  * ACCOUNT_TAG_UNUSED, which no key can match.
  */

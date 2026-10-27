@@ -301,6 +301,16 @@ export const FEEDBACK_ATTRIBUTES = [
 export const FEEDBACK_READ_ATTRIBUTES = [...FEEDBACK_ATTRIBUTES, "statusAt", "dismissReason", "resolvedAt", "release"] as const;
 
 /**
+ * What the account function may read of the caller's own reports (Query of
+ * the path's team's `FEEDBACK#<tagged team>` partition, supply-checkout-loxj):
+ * the keys, the fields the "Your reports" list shows and `userId`, which the
+ * query's filter names so only the caller's own reports come back. Never the
+ * contact choice, the expected text, a dismissal's internal reason or a bead
+ * (the handler drops `userId` and the keys before answering).
+ */
+export const FEEDBACK_OWN_ATTRIBUTES = [PK, SK, "type", "userId", "reportId", "shortId", "createdAt", "category", "message", "status", "resolvedAt", "release"] as const;
+
+/**
  * The only attributes the ops function may name when it triages or dismisses
  * a report (UpdateItem in `FEEDBACK#<tagged team>`): the keys and type its
  * condition names, the status and its index partition, and the triage fields.

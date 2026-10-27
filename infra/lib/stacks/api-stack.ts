@@ -52,6 +52,7 @@ import {
   CUSTOMER_LINK_TEAM_ATTRIBUTES,
   DATA_ROLE_DENIED_ATTRIBUTES,
   FEEDBACK_ATTRIBUTES,
+  FEEDBACK_OWN_ATTRIBUTES,
   FEEDBACK_PREFIX,
   FEEDBACK_READ_ATTRIBUTES,
   FEEDBACK_STATUS_ATTRIBUTES,
@@ -462,7 +463,8 @@ export class ApiStack extends SupplyCheckoutStack {
             // session can't read, list, change or delete a report (the item is the owner's to
             // triage), only the report's own attributes (no email), and nothing returned. IAM
             // can't limit the sort key; the partition holds nothing else. The handler sets the
-            // team tag only after the caller's membership check, from the path
+            // team tag is the path's; the handler's membership check (authorizeTeam) is what stops
+            // a non-member, the tag only limits the session to that team's partition
             new PolicyStatement({
               sid: "WriteFeedbackReport",
               effect: Effect.ALLOW,
@@ -474,6 +476,25 @@ export class ApiStack extends SupplyCheckoutStack {
                   "dynamodb:Attributes": [...FEEDBACK_ATTRIBUTES],
                 },
                 StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            // "Your reports" (supply-checkout-loxj): Query only (no Scan, no GetItem, no index), in
+            // the path's team's reports partition, naming only the list's attributes (no contact
+            // choice, bead or dismissal reason) with a projection required. The partition holds
+            // every member's reports and IAM can't filter on `userId`, so the handler's query
+            // filters on the token's user. The handler's membership check (authorizeTeam) is what stops
+            // a cross-team read; the tag only limits the session to the path's team
+            new PolicyStatement({
+              sid: "ReadOwnFeedbackReports",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:Query"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`${FEEDBACK_PREFIX}${tag(ACCOUNT_SESSION_TAGS.teamId)}`],
+                  "dynamodb:Attributes": [...FEEDBACK_OWN_ATTRIBUTES],
+                },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
             tableKeyStatement(),
