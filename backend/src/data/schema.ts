@@ -318,6 +318,34 @@ export const FEEDBACK_OWN_ATTRIBUTES = [PK, SK, "type", "userId", "reportId", "s
  */
 export const FEEDBACK_STATUS_ATTRIBUTES = [PK, SK, GSI1PK, "type", "status", "beadId", "statusAt", "dismissReason"] as const;
 
+/**
+ * The emails to a report's sender (supply-checkout-7id1, supply-checkout-c8vj.1: received, being looked at, fixed;
+ * email/report-fixed-handler.ts, data/feedback-fixed.ts). Its own role, never
+ * the ops role: it may
+ *
+ * - Query GSI1's `FEEDBACK#STATUS#new`, `#triaged` and `#resolved` partitions (and no other),
+ *   naming only REPORT_FIXED_READ_ATTRIBUTES (dynamodb:Attributes, with a
+ *   projection required): the keys, the ids, the report's `message` (quoted
+ *   back to its sender), `contactOk`, `release`, the times and its own
+ *   per-stage marks. Never `expected`, `context` or `role`; the sender's
+ *   email is not stored anywhere in a report.
+ * - UpdateItem in `FEEDBACK#` partitions naming only REPORT_FIXED_MARK_ATTRIBUTES:
+ *   its once-only `notified<Stage>At` mark and `notified<Stage>Outcome` for
+ *   each stage, on the conditions that the report is in that stage's status and its sender ticked contact OK.
+ *   Accepted residual: `status` and `contactOk` are in that list because the
+ *   claim's condition reads them, and IAM cannot tell a condition's attribute
+ *   from one a SET writes. So a compromised role could set a report's `status`
+ *   or `contactOk` (and the marks), but not its `message`, `userId`, `release`
+ *   or GSI1 keys: it cannot change what is quoted, who is told or where the
+ *   report is indexed.
+ * - GetItem in `TEAM#` partitions naming only REPORT_FIXED_TEAM_ATTRIBUTES:
+ *   the team item's closure and purge marks, and a MEMBER item's keys (the
+ *   sender must still be on the team).
+ */
+export const REPORT_FIXED_READ_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "type", "status", "reportId", "teamId", "userId", "message", "contactOk", "release", "createdAt", "statusAt", "resolvedAt", "notifiedReceivedAt", "notifiedTriagedAt", "notifiedResolvedAt"] as const;
+export const REPORT_FIXED_MARK_ATTRIBUTES = [PK, SK, "type", "status", "contactOk", "notifiedReceivedAt", "notifiedReceivedOutcome", "notifiedTriagedAt", "notifiedTriagedOutcome", "notifiedResolvedAt", "notifiedResolvedOutcome"] as const;
+export const REPORT_FIXED_TEAM_ATTRIBUTES = [PK, SK, "closedAt", "purging"] as const;
+
 /** The only attributes a request may name in an `INVITELIMIT#` partition: the keys, the count, its item type and its expiry. */
 export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;
 

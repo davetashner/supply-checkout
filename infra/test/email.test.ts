@@ -401,6 +401,84 @@ describe("email stack", () => {
       expect(JSON.stringify(all)).not.toMatch(/dynamodb:(GetItem|PutItem|DeleteItem|Query|Scan|BatchWriteItem|BatchGetItem|ConditionCheckItem)|cognito-idp:Admin(?!GetUser)|"cognito-idp:\*"|lambda:/);
     });
   });
+
+  // supply-checkout-7id1
+  describe("report fixed email", () => {
+    const fixedFn = (t: Template) => resources(t, "AWS::Lambda::Function").find(([, r]) => r.Properties.FunctionName === "supply-checkout-prod-report-fixed-email") as [string, Resource];
+
+    it("runs every 30 minutes on Node.js 24 with the app pool, the table and the mailer's settings, never retrying", () => {
+      const t = email();
+      const [fnId, fn] = fixedFn(t);
+      expect(fn.Properties).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 120 });
+      const vars = (fn.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+      expect(vars).toMatchObject({ TABLE_NAME: "supply-checkout-prod-app", TEST_MAIL_DOMAIN: "e2e.supplycheckout.com", [EMAIL_ENV.fromAddress]: "noreply@supplycheckout.com", [EMAIL_ENV.appUrl]: "https://app.supplycheckout.com" });
+      expect(JSON.stringify(vars.USER_POOL_ID)).toMatch(/SsmParameterValuesupplycheckoutprodidentityuserpoolid/);
+      t.hasResourceProperties("AWS::Lambda::EventInvokeConfig", { FunctionName: { Ref: fnId }, MaximumRetryAttempts: 0 });
+      t.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(30 minutes)", Targets: [Match.objectLike({ Arn: { "Fn::GetAtt": [fnId, "Arn"] }, RetryPolicy: { MaximumRetryAttempts: 0 } })] });
+    });
+
+    it("gives the function its own narrow role: the new, triaged and resolved status partitions (not dismissed), its marks, team standing, language, the app pool and the app's email, nothing else", () => {
+      const all = statements(email(), "ReportFixedRole");
+      const byAction = (prefix: string) => all.filter((s) => JSON.stringify(s.Action).includes(prefix));
+      expect(byAction("cognito-idp:")).toEqual([
+        expect.objectContaining({ Sid: "FindAppUsers", Action: ["cognito-idp:AdminGetUser", "cognito-idp:ListUsers"], Resource: expect.objectContaining({ Ref: expect.stringMatching(/userpoolarn/i) }) }),
+      ]);
+      const table = { "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] };
+      expect(byAction("dynamodb:")).toEqual([
+        {
+          Sid: "ReportStatusIndexOnly",
+          Effect: "Allow",
+          Action: "dynamodb:Query",
+          Resource: { "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/index/GSI1"]] },
+          Condition: {
+            "ForAllValues:StringEquals": {
+              "dynamodb:LeadingKeys": ["FEEDBACK#STATUS#new", "FEEDBACK#STATUS#triaged", "FEEDBACK#STATUS#resolved"],
+              "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "type", "status", "reportId", "teamId", "userId", "message", "contactOk", "release", "createdAt", "statusAt", "resolvedAt", "notifiedReceivedAt", "notifiedTriagedAt", "notifiedResolvedAt"],
+            },
+            StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          },
+        },
+        {
+          Sid: "MarkReportTold",
+          Effect: "Allow",
+          Action: "dynamodb:UpdateItem",
+          Resource: table,
+          Condition: {
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["FEEDBACK#*"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "type", "status", "contactOk", "notifiedReceivedAt", "notifiedReceivedOutcome", "notifiedTriagedAt", "notifiedTriagedOutcome", "notifiedResolvedAt", "notifiedResolvedOutcome"] },
+            StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+          },
+        },
+        {
+          Sid: "ReadTeamStanding",
+          Effect: "Allow",
+          Action: "dynamodb:GetItem",
+          Resource: table,
+          Condition: {
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "closedAt", "purging"] },
+            StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          },
+        },
+        {
+          Sid: "ReadSenderLanguage",
+          Effect: "Allow",
+          Action: "dynamodb:GetItem",
+          Resource: table,
+          Condition: {
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "language"] },
+            StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          },
+        },
+      ]);
+      expect(byAction("ses:")).toEqual([expect.objectContaining({ Sid: "SendAppEmail", Action: "ses:SendEmail", Condition: { StringEquals: { "ses:FromAddress": "noreply@supplycheckout.com" } } })]);
+      for (const s of all) if (!JSON.stringify(s.Action).includes("xray:")) expect(JSON.stringify(s.Resource)).not.toBe('"*"');
+      expect(all.find((s) => s.Sid === "TableKeyThroughDynamoDb")?.Condition).toMatchObject({ StringEquals: { "kms:ViaService": expect.anything() } });
+      // Nothing else: no Put, Delete or Scan, no other Cognito action, no Lambda, and never the ops role's broad report read
+      expect(JSON.stringify(all)).not.toMatch(/dynamodb:(PutItem|DeleteItem|Scan|BatchWriteItem|BatchGetItem|ConditionCheckItem)|cognito-idp:Admin(?!GetUser)|"cognito-idp:\*"|lambda:|"expected"|"context"/);
+    });
+  });
 });
 
 describe("grantSendEmail", () => {
@@ -454,7 +532,7 @@ describe("grantSendEmail", () => {
     });
   });
 
-  it("is given only to the account function, which sends invites, the billing worker, which emails owners about billing, the security notices, welcome email and password reset functions, and the lapsed-team job", () => {
+  it("is given only to the account function, which sends invites, the billing worker, which emails owners about billing, the security notices, welcome email, password reset and report fixed functions, and the lapsed-team job", () => {
     const { app, stacks } = build();
     void app;
     for (const stack of stacks.all) {
@@ -466,7 +544,7 @@ describe("grantSendEmail", () => {
       const expected = stack.stackName.endsWith("-api")
         ? [expect.stringMatching(/^AccountFunctionRole/), expect.stringMatching(/^BillingWorkerFunctionRole/)]
         : stack.stackName.endsWith("-email")
-          ? [expect.stringMatching(/^SecurityNoticesRole/), expect.stringMatching(/^WelcomeRole/), expect.stringMatching(/^PasswordResetRole/)]
+          ? [expect.stringMatching(/^SecurityNoticesRole/), expect.stringMatching(/^WelcomeRole/), expect.stringMatching(/^PasswordResetRole/), expect.stringMatching(/^ReportFixedRole/)]
           : stack.stackName === `supply-checkout-prod-${EAST}-observability`
             ? [expect.stringMatching(/^OpsChecksTeamLapseRole/), expect.stringMatching(/^OpsChecksReturnsDigestRole/)]
             : [];

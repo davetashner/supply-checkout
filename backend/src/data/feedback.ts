@@ -58,6 +58,9 @@ export const FEEDBACK_BROWSERS = ["chrome", "safari", "firefox", "edge", "samsun
 export const FEEDBACK_STATUSES = ["new", "triaged", "dismissed", "resolved"] as const;
 export type FeedbackStatus = (typeof FEEDBACK_STATUSES)[number];
 
+/** A release as `resolve --release` takes it and the "fixed" email shows it: `1.22.0`, with an optional `-rc.1` style suffix. Short, one line. */
+export const FEEDBACK_RELEASE = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[0-9A-Za-z.]{1,16})?$/;
+
 /** Reports one user may send per UTC day, from all their teams together. */
 export const FEEDBACK_PER_USER_PER_DAY = 5;
 /** The longest report text, "what happened", in characters. */

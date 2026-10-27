@@ -72,6 +72,10 @@ export const BusinessMetric = {
   ReturnsDigests: "ReturnsDigests",
   /** Daily returns digest emails not sent (SES refused one, an owner has no address, or a read, claim or send failed); the reason in metadata: "Returns digest failing". */
   ReturnsDigestFailures: "ReturnsDigestFailures",
+  /** "Your report is fixed" emails sent to the senders of resolved reports who ticked contact OK (supply-checkout-7id1); `teamId` in metadata. */
+  ReportFixedEmails: "ReportFixedEmails",
+  /** "Your report is fixed" emails not sent (SES refused one, a lookup, claim or send failed, or the release isn't well formed); the reason in metadata: through Needs attention. */
+  ReportFixedEmailFailures: "ReportFixedEmailFailures",
   /** Gauge, every returns digest run that can list the day's returns: the teams with a return in the window, 0 on a quiet day. None for 2 days means it isn't running ("Returns digest not running"). */
   ReturnsDigestTeams: "ReturnsDigestTeams",
   /** Our API failing to create a Stripe Checkout session (J7). */
@@ -273,6 +277,7 @@ export const TEST_SKIPPED_METRICS: ReadonlySet<BusinessMetricName> = new Set<Bus
   BusinessMetric.ClosedTeamSubscriptionsEnded,
   BusinessMetric.LapseNotices,
   BusinessMetric.ReturnsDigests,
+  BusinessMetric.ReportFixedEmails,
   BusinessMetric.BillingEventsApplied,
   BusinessMetric.BillingNotices,
   BusinessMetric.SeatQuantityUpdates,
@@ -315,6 +320,8 @@ export const NEEDS_ATTENTION_METRICS: ReadonlySet<BusinessMetricName> = new Set<
   BusinessMetric.LapseCheckoutOverdue,
   // The daily returns digest (supply-checkout-phhw)
   BusinessMetric.ReturnsDigestFailures,
+  // The "your report is fixed" email (supply-checkout-7id1)
+  BusinessMetric.ReportFixedEmailFailures,
 ]);
 
 /**

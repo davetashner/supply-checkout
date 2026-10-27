@@ -9,6 +9,13 @@
           "prs": [
             832
           ]
+        },
+        {
+          "title": "Hear back about issues you report",
+          "text": "If you say we may contact you in Report an issue, we'll email you when we get it, when we look into it and when it's fixed, with its release. It follows your language setting.",
+          "prs": [
+            831
+          ]
         }
       ],
       "skip": {

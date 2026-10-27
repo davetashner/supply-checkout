@@ -26,7 +26,7 @@
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { ConflictError, InvalidInputError, NotFoundError } from "./errors.js";
-import { FEEDBACK_STATUSES, type FeedbackReport, type FeedbackStatus } from "./feedback.js";
+import { FEEDBACK_RELEASE, FEEDBACK_STATUSES, type FeedbackReport, type FeedbackStatus } from "./feedback.js";
 import { feedbackStatusPartition, keys } from "./keys.js";
 import { type Page, queryPage } from "./query.js";
 import { FEEDBACK_READ_ATTRIBUTES, GSI1, GSI1PK, GSI1SK, PK, SK } from "./schema.js";
@@ -164,12 +164,9 @@ export async function recordFeedbackBead(db: Db, teamId: string, reportId: strin
   return (await changeFeedbackStatus(db, teamId, reportId, { status: "triaged", beadId: bead, reason: "" }, at)).report;
 }
 
-/** A release as `resolve --release` takes it: `1.22.0`, with an optional `-rc.1` style suffix. Short, one line. */
-const RELEASE = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[0-9A-Za-z.]{1,16})?$/;
-
 /** The release, checked: InvalidInputError unless it looks like `x.y.z`. */
 export function feedbackRelease(value: unknown): string {
-  if (typeof value !== "string" || !RELEASE.test(value)) throw new InvalidInputError("Invalid release: use x.y.z, as in 1.22.0");
+  if (typeof value !== "string" || !FEEDBACK_RELEASE.test(value)) throw new InvalidInputError("Invalid release: use x.y.z, as in 1.22.0");
   return value;
 }
 

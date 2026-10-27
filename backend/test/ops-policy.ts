@@ -31,6 +31,9 @@ import {
   OPS_TEAMS_PARTITION,
   RECEIPT_USAGE_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
+  REPORT_FIXED_MARK_ATTRIBUTES,
+  REPORT_FIXED_READ_ATTRIBUTES,
+  REPORT_FIXED_TEAM_ATTRIBUTES,
   RETURNED_PREFIX,
   STUCK_IMPORT_ATTRIBUTES,
   TEST_MARK_ATTRIBUTES,
@@ -218,6 +221,43 @@ export function digestPolicy(denied: { command: string; input: Input }[] = []) {
           return digest(partitionKey(input)) && within(Object.keys(input.Item as object), DIGEST_RECORD_ATTRIBUTES) && within(namedAttributes(input), DIGEST_RECORD_ATTRIBUTES);
         case "DeleteCommand":
           return digest(partitionKey(input)) && (input.ReturnValues === undefined || input.ReturnValues === "NONE") && within(namedAttributes(input), DIGEST_RECORD_ATTRIBUTES);
+        default:
+          return false;
+      }
+    })();
+    if (!ok) denied.push({ command, input });
+    return ok;
+  };
+}
+
+/**
+ * The calls the "your report is fixed" function's role allows (infra/lib/stacks/email-stack.ts,
+ * supply-checkout-7id1): Query on GSI1's `FEEDBACK#STATUS#new`, `#triaged` and `#resolved` partitions naming only
+ * REPORT_FIXED_READ_ATTRIBUTES (Select SPECIFIC_ATTRIBUTES); UpdateItem in `FEEDBACK#`
+ * partitions naming only REPORT_FIXED_MARK_ATTRIBUTES, returning nothing; GetItem in `TEAM#`
+ * partitions naming only REPORT_FIXED_TEAM_ATTRIBUTES and on a user's `PREFERENCES` item
+ * naming only DIGEST_LANGUAGE_ATTRIBUTES (both projected). Nothing else.
+ */
+export function reportFixedPolicy(denied: { command: string; input: Input }[] = []) {
+  const within = (names: Iterable<string>, allowed: readonly string[]) => [...names].every((a) => allowed.includes(a));
+  return (command: string, input: Input): boolean => {
+    const ok = (() => {
+      switch (command) {
+        case "QueryCommand":
+          return (
+            input.IndexName === GSI1 &&
+            input.Select === "SPECIFIC_ATTRIBUTES" &&
+            ["new", "triaged", "resolved"].map((status) => `${FEEDBACK_STATUS_PREFIX}${status}`).includes(String((input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"])) &&
+            within(namedAttributes(input), REPORT_FIXED_READ_ATTRIBUTES)
+          );
+        case "GetCommand": {
+          if (typeof input.ProjectionExpression !== "string" || (input.Select !== undefined && input.Select !== "SPECIFIC_ATTRIBUTES")) return false;
+          const key = input.Key as Record<string, unknown> | undefined;
+          if (typeof key?.PK === "string" && key.PK.startsWith("TEAM#")) return within(namedAttributes(input), REPORT_FIXED_TEAM_ATTRIBUTES);
+          return typeof key?.PK === "string" && key.PK.startsWith("USER#") && key.SK === "PREFERENCES" && within(namedAttributes(input), DIGEST_LANGUAGE_ATTRIBUTES);
+        }
+        case "UpdateCommand":
+          return typeof partitionKey(input) === "string" && (partitionKey(input) as string).startsWith(FEEDBACK_PREFIX) && (input.ReturnValues === undefined || input.ReturnValues === "NONE") && within(namedAttributes(input), REPORT_FIXED_MARK_ATTRIBUTES);
         default:
           return false;
       }
