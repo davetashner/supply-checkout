@@ -174,6 +174,7 @@ export const opsResourceNames = (envName: string) => ({
   operatorGroupWatchFunction: `supply-checkout-${envName}-operator-group-watch`,
   seatReconcileFunction: `supply-checkout-${envName}-seat-reconcile`,
   teamLapseFunction: `supply-checkout-${envName}-team-lapse`,
+  returnsDigestFunction: `supply-checkout-${envName}-returns-digest`,
 });
 
 /** Environment variables the checks read. */
@@ -187,3 +188,28 @@ export const OPS_ENV = {
   /** The seat sync queue's URL (the seat reconciliation). */
   seatQueueUrl: "SEAT_QUEUE_URL",
 } as const;
+
+/**
+ * The daily returns digest (supply-checkout-phhw, returns-digest-handler.ts):
+ * it runs every day at RETURNS_DIGEST_HOUR_UTC:RETURNS_DIGEST_MINUTE_UTC,
+ * 22:05 UTC, which is 6:05 pm US Eastern in summer and 5:05 pm in winter. The
+ * past day it reports is the 24 hours ending at the most recent
+ * RETURNS_DIGEST_HOUR_UTC o'clock (the "slot"), so a run that is late or tried
+ * again reports the same window, consecutive windows meet exactly (nothing is
+ * missed or counted twice), and the five minutes before the run let the
+ * index catch up with the last returns of the window.
+ */
+export const RETURNS_DIGEST_HOUR_UTC = 22;
+export const RETURNS_DIGEST_MINUTE_UTC = 5;
+
+/** The length of the window one digest covers. */
+export const RETURNS_DIGEST_WINDOW_MS = 24 * 3_600_000;
+
+/** The most projects a digest lists by name; the rest are counted ("and 12 more"). */
+export const RETURNS_DIGEST_MAX_LISTED = 25;
+
+/** No ReturnsDigestTeams sample for this many days alarms ("Returns digest not running"): two daily runs missed. */
+export const RETURNS_DIGEST_SILENT_ALARM_DAYS = 2;
+
+/** How long one digest run may start new teams for; the function's timeout is a minute more. A run that stops resumes on its retry: the claims skip owners already sent. */
+export const RETURNS_DIGEST_BUDGET_MS = 8 * 60_000;

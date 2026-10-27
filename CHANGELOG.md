@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.21.0](https://github.com/davetashner/supply-checkout/compare/v1.20.0...v1.21.0) (2026-10-27)
+
+
+### Features
+
+* email team owners a daily digest of returned projects ([#827](https://github.com/davetashner/supply-checkout/issues/827)) ([9db5146](https://github.com/davetashner/supply-checkout/commit/9db514670718ac96c1d77b2682e191cbc8d76460))
+
+
+### Bug Fixes
+
+* let owners enter a pack's cost in the item editor ([#825](https://github.com/davetashner/supply-checkout/issues/825)) ([d4385a3](https://github.com/davetashner/supply-checkout/commit/d4385a39530ed26b52ccd630942421fa1609ccc4))
+* show owners a teammate's email, not Someone, when they have no name ([#824](https://github.com/davetashner/supply-checkout/issues/824)) ([0ccb315](https://github.com/davetashner/supply-checkout/commit/0ccb3158639e84f7bfcdcdaa39d37ab72172a05c))
+
 ## [1.20.0](https://github.com/davetashner/supply-checkout/compare/v1.19.0...v1.20.0) (2026-10-17)
 
 

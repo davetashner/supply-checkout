@@ -36,6 +36,8 @@ export class MemoryTable {
   readonly requests: { readonly command: string; readonly input: Record<string, unknown> }[] = [];
   /** Items per page of a query without a Limit (undefined: one page), standing in for DynamoDB's 1 MB pages. */
   pageItems?: number;
+  /** Refuses a GetCommand it returns true for (by its key), as a throttled DynamoDB would. */
+  failingGets?: (key: Item) => boolean;
   /** Runs after each GetCommand, before its result returns: a concurrent writer. */
   afterGet?: (item: Item | undefined) => void;
   /** Keys the next BatchGetCommand leaves unprocessed (from its start), as DynamoDB may under load. */
@@ -200,6 +202,7 @@ export class MemoryTable {
       case "GetCommand": {
         const key = input.Key as Item;
         record([String(key.PK)]);
+        if (this.failingGets?.(key)) throw Object.assign(new Error("Throttled"), { name: "ProvisionedThroughputExceededException" });
         const item = this.items.get(MemoryTable.id(key));
         this.afterGet?.(item);
         return { Item: item && structuredClone(item) };
@@ -443,8 +446,11 @@ export class MemoryTable {
     const sk = values[":sk"] as string | undefined;
     // `<sort key> < :before`
     const before = /SK < :before\b/.test(String(input.KeyConditionExpression)) ? (values[":before"] as string) : undefined;
+    // `<sort key> BETWEEN :from AND :to`, both ends included
+    const between = /BETWEEN :from AND :to\b/.test(String(input.KeyConditionExpression)) ? ([values[":from"], values[":to"]] as [string, string]) : undefined;
     let rows = [...this.items.values()]
       .filter((i) => i[pkAttr] === pk && (prefix === undefined || String(i[skAttr]).startsWith(prefix)) && (sk === undefined || i[skAttr] === sk))
+      .filter((i) => between === undefined || (String(i[skAttr]) >= between[0] && String(i[skAttr]) <= between[1]))
       .filter((i) => before === undefined || String(i[skAttr]) < before)
       .sort((a, b) => (String(a[skAttr]) < String(b[skAttr]) ? -1 : String(a[skAttr]) > String(b[skAttr]) ? 1 : 0));
     if (input.ScanIndexForward === false) rows.reverse();

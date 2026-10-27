@@ -20,6 +20,8 @@ export default {
   "product.price": "Precio c/u ($)",
   "product.valueEach": "Valor c/u ($)",
   "product.costEach": "Costo c/u ($)",
+  "product.costPack": "Costo por paquete ($)",
+  "product.costEachIs": "= {cost} c/u",
   "product.costPlaceholder": "Déjelo en blanco si no se sabe",
   "product.pack": "Viene en paquetes de (opcional)",
   "product.packPlaceholder": "Déjelo en blanco si se compra de uno en uno",

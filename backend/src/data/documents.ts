@@ -489,7 +489,7 @@ function deepMerge(target: Record<string, unknown>, patch: Record<string, unknow
 /** The item a document is stored as. A project's is `PROJECT#` (project-items.ts). Date order comes from GSI1. */
 function toItem(collection: Collection, teamId: string, docId: string, data: DocumentData, version: number): Record<string, unknown> {
   if (collection === "products") return { ...data, ...keys.product(teamId, docId), type: "product", key: docId, version };
-  return { ...data, ...projectAttributes(teamId, docId, data.date), id: docId, version };
+  return { ...data, ...projectAttributes(teamId, docId, data.date, data), id: docId, version };
 }
 
 /** A new project's item as stored, with its keys and date index: for the quick take, which makes the General Use project (commands.ts). */

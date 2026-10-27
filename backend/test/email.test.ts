@@ -44,6 +44,8 @@ const samples: EmailInput[] = [
   { kind: "deletionWarning", teamName: "Echo Cleaning", deletesAt: "2026-11-02T12:00:00.000Z" },
   { kind: "passwordResetProvider", signInWith: "SignInWithApple", supportAddress: "support@supplycheckout.com" },
   { kind: "passwordReset", at: "2026-09-30T14:05:09.000Z", signedOut: false },
+  { kind: "returnsDigest", teamName: "Echo Cleaning", windowEnd: "2026-10-26T22:00:00.000Z", total: 2, projects: [{ client: "Alpha Siding", date: "2026-10-20", preparedBy: "Dana" }, { client: "Beta Build" }] },
+  { kind: "returnsDigest", teamName: "Echo Cleaning", language: "es", windowEnd: "2026-10-26T22:00:00.000Z", total: 1, projects: [{ client: "Alpha Siding" }] },
   { kind: "welcome", invited: true, supportAddress: "support@supplycheckout.com" },
 ];
 

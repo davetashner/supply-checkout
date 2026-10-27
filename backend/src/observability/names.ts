@@ -68,6 +68,12 @@ export const BusinessMetric = {
   EmailBounces: "EmailBounces",
   /** Recipients who marked a message as spam, any message kind. */
   EmailComplaints: "EmailComplaints",
+  /** Daily returns digest emails sent to a team's owners, one per owner (supply-checkout-phhw); `teamId` in metadata. */
+  ReturnsDigests: "ReturnsDigests",
+  /** Daily returns digest emails not sent (SES refused one, an owner has no address, or a read, claim or send failed); the reason in metadata: "Returns digest failing". */
+  ReturnsDigestFailures: "ReturnsDigestFailures",
+  /** Gauge, every returns digest run that can list the day's returns: the teams with a return in the window, 0 on a quiet day. None for 2 days means it isn't running ("Returns digest not running"). */
+  ReturnsDigestTeams: "ReturnsDigestTeams",
   /** Our API failing to create a Stripe Checkout session (J7). */
   CheckoutSessionErrors: "CheckoutSessionErrors",
   /** Our API failing to open the Stripe Customer Portal for an owner (J7, J8). */
@@ -266,6 +272,7 @@ export const TEST_SKIPPED_METRICS: ReadonlySet<BusinessMetricName> = new Set<Bus
   BusinessMetric.StripeCustomersDeleted,
   BusinessMetric.ClosedTeamSubscriptionsEnded,
   BusinessMetric.LapseNotices,
+  BusinessMetric.ReturnsDigests,
   BusinessMetric.BillingEventsApplied,
   BusinessMetric.BillingNotices,
   BusinessMetric.SeatQuantityUpdates,
@@ -306,6 +313,8 @@ export const NEEDS_ATTENTION_METRICS: ReadonlySet<BusinessMetricName> = new Set<
   BusinessMetric.LapseFailures,
   BusinessMetric.LapseClosuresHeld,
   BusinessMetric.LapseCheckoutOverdue,
+  // The daily returns digest (supply-checkout-phhw)
+  BusinessMetric.ReturnsDigestFailures,
 ]);
 
 /**

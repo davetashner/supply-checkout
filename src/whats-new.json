@@ -1,6 +1,19 @@
 {
   "releases": [
     {
+      "version": "1.21.0",
+      "date": "2026-10-27",
+      "notes": [
+        {
+          "title": "A daily digest of returns, by email",
+          "text": "Team owners now get one email each evening listing the projects returned that day. It only comes on days when something was returned, and it follows your language setting.",
+          "prs": [
+            827
+          ]
+        }
+      ]
+    },
+    {
       "version": "1.20.0",
       "date": "2026-10-17",
       "notes": [

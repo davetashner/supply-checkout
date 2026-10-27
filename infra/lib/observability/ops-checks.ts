@@ -15,6 +15,13 @@ import {
   COMMITTING_IMPORTS_PARTITION,
   GSI1,
   GSI3,
+  DIGEST_LANGUAGE_ATTRIBUTES,
+  DIGEST_OWNER_ATTRIBUTES,
+  DIGEST_PREFIX,
+  DIGEST_RECORD_ATTRIBUTES,
+  DIGEST_RETURN_ATTRIBUTES,
+  DIGEST_TEAM_ATTRIBUTES,
+  GSI2,
   LAPSE_CLOSE_ATTRIBUTES,
   LAPSE_LIST_ATTRIBUTES,
   LAPSE_OWNER_ATTRIBUTES,
@@ -23,6 +30,7 @@ import {
   LAPSE_RECORD_ATTRIBUTES,
   OPS_OWNERS_PREFIX,
   OPS_TEAMS_PARTITION,
+  RETURNED_PREFIX,
   SEAT_RECONCILE_ATTRIBUTES,
   STRIPE_DELETION_ATTRIBUTES,
   STRIPE_DELETIONS_PARTITION,
@@ -40,6 +48,10 @@ import {
   opsResourceNames,
   PURGE_BUDGET_MS,
   PURGE_EVERY_HOURS,
+  RETURNS_DIGEST_BUDGET_MS,
+  RETURNS_DIGEST_HOUR_UTC,
+  RETURNS_DIGEST_MINUTE_UTC,
+  RETURNS_DIGEST_SILENT_ALARM_DAYS,
   SEAT_RECONCILE_HOUR_UTC,
   SEAT_RECONCILE_SILENT_ALARM_DAYS,
 } from "../../../backend/src/ops/names.js";
@@ -152,6 +164,23 @@ export interface OpsChecksProps {
  *   It has no async retries, and one run at a time holds its lease (a
  *   `LAPSE#RUN` record), so a timeout or duplicate never doubles its closures.
  *
+ * - `returnsDigest` (supply-checkout-phhw): once a day at
+ *   RETURNS_DIGEST_HOUR_UTC:RETURNS_DIGEST_MINUTE_UTC it emails each owner of a
+ *   team that had a project returned in the past day a daily digest of them
+ *   (backend/src/ops/returns-digest-handler.ts). Its role may: Query GSI2's
+ *   RETURNED# partitions naming only DIGEST_RETURN_ATTRIBUTES (the keys, the
+ *   status and close time, client, date and preparer's name: never lines or
+ *   prices) and GSI3's OPS#OWNERS#* partitions naming only
+ *   DIGEST_OWNER_ATTRIBUTES (an owner's address); GetItem on TEAM# partitions
+ *   naming only DIGEST_TEAM_ATTRIBUTES (the name and billing fields) and on
+ *   USER# partitions naming only DIGEST_LANGUAGE_ATTRIBUTES (the owner's
+ *   language); PutItem and DeleteItem in `DIGEST#` partitions (its once-only
+ *   claims) naming only DIGEST_RECORD_ATTRIBUTES; and send the app's email
+ *   (grantSendEmail). Every read is projected. A failed send fails the run and
+ *   Lambda tries it twice more (the claims leave out owners already sent), so
+ *   it has async retries unlike the lapsed-team job. `returnsDigestNotRunning`
+ *   alarms when its ReturnsDigestTeams gauge, sent every run, stops arriving.
+ *
  * The checks run every CHECK_EVERY_MINUTES from an EventBridge rule, each with its own
  * log group and a role that writes only to it. A failed run shows in the
  * Lambda errors alarm. The gauge alarms on the scheduled checks treat missing
@@ -165,6 +194,9 @@ export class OpsChecks extends Construct {
   /** "Seat reconciliation not running": no SeatReconcileTeams sample for SEAT_RECONCILE_SILENT_ALARM_DAYS (J7). */
   readonly seatReconcileNotRunning: Alarm;
   readonly teamLapse: NodejsFunction;
+  readonly returnsDigest: NodejsFunction;
+  /** "Returns digest not running": no ReturnsDigestTeams sample for RETURNS_DIGEST_SILENT_ALARM_DAYS days (J4). */
+  readonly returnsDigestNotRunning: Alarm;
 
   constructor(scope: Construct, id: string, props: OpsChecksProps) {
     super(scope, id);
@@ -530,6 +562,117 @@ export class OpsChecks extends Construct {
       id: "AwsSolutions-IAM5[Resource::*]",
       reason: "The lapsed-team job reads and closes whichever teams the operators' index lists as lapsing: the TEAM#*, OPS#OWNERS#* and LAPSE#* partition wildcards are in dynamodb:LeadingKeys, with dynamodb:Attributes limiting each to the billing fields, the closure, owners' emails and its own records. LeadingKeys can't limit the sort key, so GetItem and UpdateItem could reach any item in a team's partition, but only those attributes (the code names only the META item, and the closure is conditioned on attribute_exists(PK) and the version)",
     });
+
+    // The daily returns digest (supply-checkout-phhw): one email per owner of each team that had a project returned in the past day
+    this.returnsDigest = this.check(
+      "ReturnsDigest",
+      "returns-digest",
+      {
+        functionName: names.returnsDigestFunction,
+        description: "Emails each team's owners a daily digest of the projects returned in the past day",
+        environment: { [OPS_ENV.tableName]: props.tableName },
+      },
+      { schedule: Schedule.cron({ minute: String(RETURNS_DIGEST_MINUTE_UTC), hour: String(RETURNS_DIGEST_HOUR_UTC) }), timeout: Duration.millis(RETURNS_DIGEST_BUDGET_MS + 60_000) },
+    );
+    // A failed send fails the run, and Lambda tries it twice more: the once-only claims (DIGEST# records) leave out owners already sent
+    this.returnsDigest.configureAsyncInvoke({ retryAttempts: 2 });
+    this.returnsDigest.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReturnedProjectsIndexOnly",
+        // The day's returns across teams, by the returns index's own partitions: keys, status, close time, client, date and preparer
+        actions: ["dynamodb:Query"],
+        resources: [`${tableArn}/index/${GSI2}`],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${RETURNED_PREFIX}*`] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...DIGEST_RETURN_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    this.returnsDigest.addToRolePolicy(
+      new PolicyStatement({
+        sid: "OwnerEmailsIndexOnly",
+        actions: ["dynamodb:Query"],
+        resources: [`${tableArn}/index/${GSI3}`],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${OPS_OWNERS_PREFIX}*`] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...DIGEST_OWNER_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    this.returnsDigest.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadTeamBilling",
+        actions: ["dynamodb:GetItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...DIGEST_TEAM_ATTRIBUTES] },
+          // Projected, never the whole item: required, not IfExists, so a GetItem without a projection is denied (supply-checkout-3sv.22)
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    this.returnsDigest.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadOwnerLanguage",
+        // An owner's chosen language and nothing else of their USER# partition (addresses, hints, limits), projected
+        actions: ["dynamodb:GetItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...DIGEST_LANGUAGE_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    this.returnsDigest.addToRolePolicy(
+      new PolicyStatement({
+        sid: "DigestRecords",
+        // Its once-only claims, in DIGEST# partitions only, returning nothing; deleted when a send fails, so the retry sends it
+        actions: ["dynamodb:PutItem", "dynamodb:DeleteItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${DIGEST_PREFIX}*`] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...DIGEST_RECORD_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+    this.returnsDigest.addToRolePolicy(
+      new PolicyStatement({
+        sid: "TableKeyThroughDynamoDb",
+        // As the lapsed-team job's: Decrypt only through DynamoDB
+        actions: ["kms:Decrypt", "kms:DescribeKey"],
+        resources: [tableKey],
+        conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
+      }),
+    );
+    grantSendEmail(this.returnsDigest, props.config);
+    Validations.of(this.returnsDigest.role as Role).acknowledge({
+      id: "AwsSolutions-IAM5[Resource::*]",
+      reason:
+        "The digest emails whichever teams the returns index lists for the day: the RETURNED#*, OPS#OWNERS#*, TEAM#*, USER#* and DIGEST#* partition wildcards are in dynamodb:LeadingKeys, with dynamodb:Attributes limiting each (returned projects: keys, status, close time, client, date and preparer's name; owners: address; teams: name and billing fields; users: language; its own claims), and every read projected (dynamodb:Select SPECIFIC_ATTRIBUTES). LeadingKeys can't limit the sort key, so a GetItem could reach any item in a TEAM# or USER# partition, but only those attributes (the code names only the META and PREFERENCES items)",
+    });
+
+    // The run sends its gauge every day, quiet or not. Two days without one means the schedule is off or every run fails before
+    // it can list the returns: missing data breaches, and no owner would hear of a return.
+    this.returnsDigestNotRunning = new Alarm(this, "ReturnsDigestNotRunning", {
+      alarmName: `supply-checkout-${props.envName}-p2-returns-digest-not-running`,
+      alarmDescription: [
+        `P2 Returns digest not running (J4, ${Stack.of(this).region}).`,
+        `No ReturnsDigestTeams sample from the daily returns digest for ${RETURNS_DIGEST_SILENT_ALARM_DAYS} days: its schedule is disabled or deleted, or every run fails before it lists the day's returns. Owners aren't getting their daily digest.`,
+        "Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+      ].join(" "),
+      metric: business(BusinessMetric.ReturnsDigestTeams, Stack.of(this).region, Duration.days(1), "SampleCount"),
+      threshold: 1,
+      comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: RETURNS_DIGEST_SILENT_ALARM_DAYS,
+      datapointsToAlarm: RETURNS_DIGEST_SILENT_ALARM_DAYS,
+      treatMissingData: TreatMissingData.BREACHING,
+    });
+    props.topics.notify(this.returnsDigestNotRunning, "P2");
   }
 
   /** A function from backend/src/ops/<name>.ts, run on the schedule (every CHECK_EVERY_MINUTES unless `every` says). */
