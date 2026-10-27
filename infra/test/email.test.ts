@@ -417,7 +417,7 @@ describe("email stack", () => {
       t.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(30 minutes)", Targets: [Match.objectLike({ Arn: { "Fn::GetAtt": [fnId, "Arn"] }, RetryPolicy: { MaximumRetryAttempts: 0 } })] });
     });
 
-    it("gives the function its own narrow role: the resolved status partition, its mark, team standing, language, the app pool and the app's email, nothing else", () => {
+    it("gives the function its own narrow role: the new, triaged and resolved status partitions (not dismissed), its marks, team standing, language, the app pool and the app's email, nothing else", () => {
       const all = statements(email(), "ReportFixedRole");
       const byAction = (prefix: string) => all.filter((s) => JSON.stringify(s.Action).includes(prefix));
       expect(byAction("cognito-idp:")).toEqual([
@@ -426,14 +426,14 @@ describe("email stack", () => {
       const table = { "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] };
       expect(byAction("dynamodb:")).toEqual([
         {
-          Sid: "ResolvedReportsIndexOnly",
+          Sid: "ReportStatusIndexOnly",
           Effect: "Allow",
           Action: "dynamodb:Query",
           Resource: { "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/index/GSI1"]] },
           Condition: {
             "ForAllValues:StringEquals": {
-              "dynamodb:LeadingKeys": ["FEEDBACK#STATUS#resolved"],
-              "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "type", "status", "reportId", "teamId", "userId", "message", "contactOk", "release", "resolvedAt", "notifiedAt"],
+              "dynamodb:LeadingKeys": ["FEEDBACK#STATUS#new", "FEEDBACK#STATUS#triaged", "FEEDBACK#STATUS#resolved"],
+              "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "type", "status", "reportId", "teamId", "userId", "message", "contactOk", "release", "createdAt", "statusAt", "resolvedAt", "notifiedReceivedAt", "notifiedTriagedAt", "notifiedResolvedAt"],
             },
             StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
           },
@@ -445,7 +445,7 @@ describe("email stack", () => {
           Resource: table,
           Condition: {
             "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["FEEDBACK#*"] },
-            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "type", "status", "contactOk", "notifiedAt", "notifyOutcome"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "type", "status", "contactOk", "notifiedReceivedAt", "notifiedReceivedOutcome", "notifiedTriagedAt", "notifiedTriagedOutcome", "notifiedResolvedAt", "notifiedResolvedOutcome"] },
             StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
           },
         },

@@ -1,7 +1,13 @@
-// The "your report is fixed" email (supply-checkout-7id1): when the owner
-// resolves a report (`npm run feedback -- resolve`, supply-checkout-lxbs) and
-// its sender ticked contact OK, the sender is emailed once that it's fixed and
-// in which release.
+// The emails to a report's sender (supply-checkout-7id1, supply-checkout-c8vj.1):
+// for a report whose sender ticked contact OK, one email at each of three
+// stages, each at most once per report: received (the report is `new`: we got
+// it, and will write again), being looked at (`triaged`: never the bead ID, the
+// dismiss reason or any internal text), and fixed (`resolved`, by `npm run
+// feedback -- resolve`, supply-checkout-lxbs: with the release). A dismissed
+// report gets none. A report is mailed at the stage it is in when a run reaches
+// it: one that went from new to resolved within an interval gets only the fixed
+// email, never the earlier two. The POST route sends nothing, so the API
+// function's IAM is unchanged; the received email follows within an interval.
 //
 // A scheduled function (every REPORT_FIXED_EVERY_MINUTES) rather than the
 // owner's CLI: the CLI runs on a laptop with the owner's own credentials, which
@@ -9,8 +15,8 @@
 // failed send by itself. Its own narrow role (schema.ts, REPORT_FIXED_*): it
 // is not the ops role, which returns messages and user IDs broadly.
 //
-// Each run lists the resolved reports not yet marked (listFixedReports: contact
-// OK, resolved within REPORT_FIXED_MAX_AGE_DAYS, the oldest first, at most
+// Each run lists the reports not yet marked for their stage (listFixedReports:
+// contact OK, the stage began within REPORT_FIXED_MAX_AGE_DAYS, at most
 // REPORT_FIXED_MAX_PER_RUN). For each, at send time:
 //
 // - the team must still be there and not be purging (a closed team is left for
@@ -28,7 +34,7 @@
 //   (an address it won't send to) keeps the mark (outcome `refused`) and is
 //   counted, since trying again won't change SES's mind.
 //
-// A release that isn't a well-formed version is not sent (the template refuses
+// A fixed report whose release isn't a well-formed version is not sent (the template refuses
 // it too). The email shows the report's own text, capped and defanged, and only
 // a link to the app; it goes only to that report's sender.
 //
@@ -76,15 +82,15 @@ export function createReportFixedHandler(deps: ReportFixedDeps) {
     let failed = 0;
     let retry = false;
 
-    const fail = (report: Pick<FixedReport, "teamId" | "reportId">, reason: string, code: string) => {
+    const fail = (report: Pick<FixedReport, "teamId" | "reportId" | "stage">, reason: string, code: string) => {
       failed++;
-      obs.count(BusinessMetric.ReportFixedEmailFailures, 1, { teamId: report.teamId, reason });
-      obs.logger.warn("Report fixed email not sent", { teamId: report.teamId, reportId: report.reportId, reason, code });
+      obs.count(BusinessMetric.ReportFixedEmailFailures, 1, { teamId: report.teamId, reason, stage: report.stage });
+      obs.logger.warn("Report email not sent", { teamId: report.teamId, reportId: report.reportId, stage: report.stage, reason, code });
     };
     /** Marks a report nobody can be told about, so later runs don't look it up again. */
     const skip = async (report: FixedReport, reason: string) => {
       skipped++;
-      obs.logger.info("Report fixed email skipped", { teamId: report.teamId, reportId: report.reportId, reason });
+      obs.logger.info("Report email skipped", { teamId: report.teamId, reportId: report.reportId, stage: report.stage, reason });
       await claimFixedNotice(db, report, "skipped", now);
     };
 
@@ -94,7 +100,7 @@ export function createReportFixedHandler(deps: ReportFixedDeps) {
       if (team.closed) {
         // It may reopen: not marked, a later run looks again (until the report is too old)
         skipped++;
-        obs.logger.info("Report fixed email skipped", { teamId: report.teamId, reportId: report.reportId, reason: "team_closed" });
+        obs.logger.info("Report email skipped", { teamId: report.teamId, reportId: report.reportId, stage: report.stage, reason: "team_closed" });
         return;
       }
       if (!(await isReportTeamMember(db, report.teamId, report.userId))) return skip(report, "not_member");
@@ -117,7 +123,7 @@ export function createReportFixedHandler(deps: ReportFixedDeps) {
       if (!to) {
         // Not marked: they may verify an address before the report is too old
         skipped++;
-        obs.logger.info("Report fixed email skipped", { teamId: report.teamId, reportId: report.reportId, reason: "no_address" });
+        obs.logger.info("Report email skipped", { teamId: report.teamId, reportId: report.reportId, stage: report.stage, reason: "no_address" });
         return;
       }
 
@@ -126,12 +132,12 @@ export function createReportFixedHandler(deps: ReportFixedDeps) {
         language = await ownerLanguage(db, report.userId);
       } catch (error) {
         // Their language is a nicety: send in English rather than not at all
-        obs.logger.warn("Report fixed email language not read", { teamId: report.teamId, code: errorName(error) });
+        obs.logger.warn("Report email language not read", { teamId: report.teamId, code: errorName(error) });
       }
 
       if (!(await claimFixedNotice(db, report, "sent", now))) return; // told by another run, or no longer resolved
       try {
-        await deps.mailer.send(to, { kind: "reportFixed", message: report.message, release: report.release, ...(language ? { language } : {}) }, { teamId: report.teamId });
+        await deps.mailer.send(to, { kind: "reportUpdate", stage: report.stage, message: report.message, ...(report.stage === "resolved" ? { release: report.release } : {}), ...(language ? { language } : {}) }, { teamId: report.teamId });
       } catch (error) {
         const refused = error instanceof EmailNotSentError && PERMANENT.has(error.code);
         fail(report, refused ? "refused" : "send_failed", errorName(error));
@@ -143,17 +149,17 @@ export function createReportFixedHandler(deps: ReportFixedDeps) {
             await releaseFixedNotice(db, report, now);
           }
         } catch (mark) {
-          obs.logger.error("Report fixed email mark not updated", { teamId: report.teamId, reportId: report.reportId, code: errorName(mark) });
+          obs.logger.error("Report email mark not updated", { teamId: report.teamId, reportId: report.reportId, stage: report.stage, code: errorName(mark) });
         }
         return;
       }
       sent++;
-      obs.count(BusinessMetric.ReportFixedEmails, 1, { teamId: report.teamId, ...testMark(isTestAccount(account, deps.testMailDomain)) });
-      obs.logger.info("Report fixed email sent", { teamId: report.teamId, reportId: report.reportId });
+      obs.count(BusinessMetric.ReportFixedEmails, 1, { teamId: report.teamId, stage: report.stage, ...testMark(isTestAccount(account, deps.testMailDomain)) });
+      obs.logger.info("Report email sent", { teamId: report.teamId, reportId: report.reportId, stage: report.stage });
     }
 
     const { reports, invalid } = await listFixedReports(db, now, REPORT_FIXED_MAX_PER_RUN);
-    if (invalid > 0) obs.logger.warn("Report fixed email: resolved reports skipped as malformed", { invalid });
+    if (invalid > 0) obs.logger.warn("Report emails: reports skipped as malformed", { invalid });
     for (const report of reports) {
       try {
         await tell(report);
@@ -163,9 +169,9 @@ export function createReportFixedHandler(deps: ReportFixedDeps) {
       }
     }
     const result = { candidates: reports.length, sent, skipped, failed };
-    obs.logger.info("Report fixed emails", result);
+    obs.logger.info("Report emails", result);
     // Fail the run so it shows as an error; the marks leave out whoever was already told, and the next run carries on
-    if (retry) throw new Error("Report fixed emails: some sends failed and will be tried again");
+    if (retry) throw new Error("Report emails: some sends failed and will be tried again");
     return result;
   };
 }

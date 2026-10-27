@@ -1,19 +1,23 @@
-// What the "your report is fixed" email (supply-checkout-7id1,
-// email/report-fixed-handler.ts) reads and writes. Like the returns digest
+// What the emails to a report's sender (supply-checkout-7id1 and
+// supply-checkout-c8vj.1: received, being looked at, fixed;
+// email/report-fixed-handler.ts) read and write. Like the returns digest
 // (returns-digest.ts) it acts without a TeamContext: a server process with no
 // caller, taking team IDs only from the table's own index and the keys of the
 // items it reads. Its role's policy allows only the REPORT_FIXED_* attribute
 // lists in schema.ts, and every call here names only those.
 //
-// - listFixedReports: the `FEEDBACK#STATUS#resolved` partition of GSI1, only
-//   reports whose sender ticked contact OK, that no run has marked
-//   (`notifiedAt`), resolved within REPORT_FIXED_MAX_AGE_DAYS. Each is
-//   re-checked against its own keys and shape; an item that fails is left out.
+// - listFixedReports: GSI1's `FEEDBACK#STATUS#new`, `#triaged` and `#resolved`
+//   partitions, only reports whose sender ticked contact OK, that no run has
+//   marked for that stage (`notified<Stage>At`), and whose stage began (created,
+//   triaged, resolved) within REPORT_FIXED_MAX_AGE_DAYS. Each is re-checked
+//   against its own keys and shape; an item that fails is left out. A report
+//   is listed only at its current stage, so one that moved on between runs is
+//   sent only the latest stage's email. A dismissed report is never listed.
 // - readFixedTeam / isReportTeamMember: the team's closure and purge marks,
 //   and whether the sender is still on the team.
 // - claimFixedNotice / releaseFixedNotice / recordFixedRefused: the once-only
-//   mark on the report itself. Claimed before sending by a conditional write
-//   (still resolved, contact OK, no mark yet), so a retried or overlapping run
+//   mark of one stage on the report itself. Claimed before sending by a
+//   conditional write (still in that stage's status, contact OK, no mark yet), so a retried or overlapping run
 //   never sends twice; a send that fails gives it back.
 //
 // The sender's email is never read here or stored: the handler looks it up in
@@ -25,22 +29,33 @@ import { FEEDBACK_RELEASE } from "./feedback.js";
 import { feedbackStatusPartition, id, keys } from "./keys.js";
 import { GSI1, GSI1PK, REPORT_FIXED_READ_ATTRIBUTES, REPORT_FIXED_TEAM_ATTRIBUTES } from "./schema.js";
 
-/** A report resolved longer ago than this is not told it's fixed (a stale "it's fixed" email is odd, and a report nobody can reach is not re-read for ever). */
+/** The stages of a report's mail, in order: when the stage began is the attribute `since`, and the report is in `status` while it lasts. */
+export const FIXED_STAGES = {
+  received: { status: "new", since: "createdAt", mark: "notifiedReceivedAt", outcome: "notifiedReceivedOutcome" },
+  triaged: { status: "triaged", since: "statusAt", mark: "notifiedTriagedAt", outcome: "notifiedTriagedOutcome" },
+  resolved: { status: "resolved", since: "resolvedAt", mark: "notifiedResolvedAt", outcome: "notifiedResolvedOutcome" },
+} as const;
+export type FixedStage = keyof typeof FIXED_STAGES;
+
+/** A report that is too old for a stage's email (REPORT_FIXED_MAX_AGE_DAYS since the stage began) is not told: a stale "it's fixed" is odd, and the partitions read stay bounded by it. */
 export const REPORT_FIXED_MAX_AGE_DAYS = 14;
 
 /** What the mark records: told (`sent`), SES refused the address (`refused`), or no one to tell (`skipped`). */
 export type FixedOutcome = "sent" | "refused" | "skipped";
 
-/** A resolved report to tell its sender about. */
+/** A report to tell its sender about, at the stage it is in now. */
 export interface FixedReport {
+  readonly stage: FixedStage;
   readonly teamId: string;
   readonly reportId: string;
   /** The sender's Cognito sub. */
   readonly userId: string;
   readonly message: string;
+  /** The release the fix is in: set (and well formed) for `resolved`, empty otherwise. */
   readonly release: string;
-  readonly resolvedAt: string;
 }
+
+type Ref = Pick<FixedReport, "stage" | "teamId" | "reportId">;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -51,10 +66,11 @@ function projection(names: readonly string[]) {
   return { ProjectionExpression: names.map((_, i) => `#p${i}`).join(", "), ExpressionAttributeNames: Object.fromEntries(names.map((name, i) => [`#p${i}`, name])) };
 }
 
-/** The report an index item describes, or undefined if it isn't one a mail may be sent for (shape, ids, release, keys that disagree). */
-function fixedReport(item: Record<string, unknown>, cutoff: string): FixedReport | undefined {
-  const { PK, SK, teamId, reportId, userId, message, release, resolvedAt } = item;
-  if (item.type !== "feedback" || item.status !== "resolved" || item.contactOk !== true || item.notifiedAt !== undefined) return undefined;
+/** The report an index item describes at `stage`, or undefined if a mail may not be sent for it (shape, ids, release, times, keys that disagree). */
+function fixedReport(item: Record<string, unknown>, stage: FixedStage, cutoff: string): FixedReport | undefined {
+  const { PK, SK, teamId, reportId, userId, message, release } = item;
+  const def = FIXED_STAGES[stage];
+  if (item.type !== "feedback" || item.status !== def.status || item.contactOk !== true || item[def.mark] !== undefined) return undefined;
   if (typeof PK !== "string" || typeof SK !== "string" || typeof teamId !== "string" || typeof reportId !== "string" || typeof userId !== "string") return undefined;
   try {
     id(teamId, "team ID");
@@ -64,15 +80,17 @@ function fixedReport(item: Record<string, unknown>, cutoff: string): FixedReport
   }
   // The keys name this very report, and the sender is a Cognito sub
   if (PK !== `FEEDBACK#${teamId}` || SK !== `REPORT#${reportId}` || !UUID.test(userId)) return undefined;
-  if (typeof resolvedAt !== "string" || !ISO.test(resolvedAt) || resolvedAt < cutoff) return undefined;
-  if (typeof release !== "string" || !FEEDBACK_RELEASE.test(release)) return undefined;
-  return { teamId, reportId, userId, message: typeof message === "string" ? message : "", release, resolvedAt };
+  const since = item[def.since];
+  if (typeof since !== "string" || !ISO.test(since) || since < cutoff) return undefined;
+  if (stage === "resolved" && (typeof release !== "string" || !FEEDBACK_RELEASE.test(release))) return undefined;
+  return { stage, teamId, reportId, userId, message: typeof message === "string" ? message : "", release: stage === "resolved" ? (release as string) : "" };
 }
 
 /**
- * Up to `limit` resolved reports not yet told, oldest first, resolved no more than
- * REPORT_FIXED_MAX_AGE_DAYS before `now`. An item whose shape, keys or release
- * is not right is left out and counted in `invalid` (the handler logs the count).
+ * Up to `limit` reports to tell, across the stages (received first, then
+ * triaged, then resolved; oldest first within one). An item whose shape, keys,
+ * times or release is not right is left out and counted in `invalid` (the
+ * handler logs the count).
  */
 export async function listFixedReports(db: Db, now: Date, limit: number): Promise<{ readonly reports: FixedReport[]; readonly invalid: number }> {
   const cutoff = new Date(now.getTime() - REPORT_FIXED_MAX_AGE_DAYS * 86_400_000).toISOString();
@@ -80,28 +98,32 @@ export async function listFixedReports(db: Db, now: Date, limit: number): Promis
   const n = (attribute: (typeof REPORT_FIXED_READ_ATTRIBUTES)[number]) => `#p${REPORT_FIXED_READ_ATTRIBUTES.indexOf(attribute)}`;
   const reports: FixedReport[] = [];
   let invalid = 0;
-  let ExclusiveStartKey: Record<string, unknown> | undefined;
-  do {
-    const page = await connection(db).doc.send(
-      new QueryCommand({
-        TableName: db.tableName,
-        IndexName: GSI1,
-        KeyConditionExpression: `${GSI1PK} = :pk`,
-        // Cheaply, in the index: only reports whose sender asked to hear, that no run has marked, resolved lately
-        FilterExpression: `${n("contactOk")} = :yes AND attribute_not_exists(${n("notifiedAt")}) AND ${n("resolvedAt")} >= :cutoff`,
-        Select: "SPECIFIC_ATTRIBUTES",
-        ...p,
-        ExpressionAttributeValues: { ":pk": feedbackStatusPartition("resolved"), ":yes": true, ":cutoff": cutoff },
-        ExclusiveStartKey,
-      }),
-    );
-    for (const item of page.Items ?? []) {
-      const report = fixedReport(item, cutoff);
-      if (report) reports.push(report);
-      else invalid++;
-    }
-    ExclusiveStartKey = page.LastEvaluatedKey;
-  } while (ExclusiveStartKey && reports.length < limit);
+  for (const stage of Object.keys(FIXED_STAGES) as FixedStage[]) {
+    const def = FIXED_STAGES[stage];
+    let ExclusiveStartKey: Record<string, unknown> | undefined;
+    do {
+      const page = await connection(db).doc.send(
+        new QueryCommand({
+          TableName: db.tableName,
+          IndexName: GSI1,
+          KeyConditionExpression: `${GSI1PK} = :pk`,
+          // Cheaply, in the index: only reports whose sender asked to hear, that no run has marked for this stage, whose stage began lately
+          FilterExpression: `${n("contactOk")} = :yes AND attribute_not_exists(${n(def.mark)}) AND ${n(def.since)} >= :cutoff`,
+          Select: "SPECIFIC_ATTRIBUTES",
+          ...p,
+          ExpressionAttributeValues: { ":pk": feedbackStatusPartition(def.status), ":yes": true, ":cutoff": cutoff },
+          ExclusiveStartKey,
+        }),
+      );
+      for (const item of page.Items ?? []) {
+        const report = fixedReport(item, stage, cutoff);
+        if (report) reports.push(report);
+        else invalid++;
+      }
+      ExclusiveStartKey = page.LastEvaluatedKey;
+    } while (ExclusiveStartKey && reports.length < limit);
+    if (reports.length >= limit) break;
+  }
   return { reports: reports.slice(0, limit), invalid };
 }
 
@@ -118,28 +140,26 @@ export async function isReportTeamMember(db: Db, teamId: string, userId: string)
   return Item !== undefined;
 }
 
-const markNames = { "#pk": "PK", "#type": "type", "#status": "status", "#contact": "contactOk", "#at": "notifiedAt", "#outcome": "notifyOutcome" };
-
-/** The names of an update on the mark alone (DynamoDB refuses a name no expression uses). */
-const ownMarkNames = { "#pk": "PK", "#type": "type", "#at": "notifiedAt", "#outcome": "notifyOutcome" };
+/** The stage's own attribute names in an update, with placeholders (DynamoDB refuses a name no expression uses). */
+const stageNames = (stage: FixedStage) => ({ "#pk": "PK", "#type": "type", "#at": FIXED_STAGES[stage].mark, "#outcome": FIXED_STAGES[stage].outcome });
 
 /**
- * Marks the report told (or, for `skipped`, as one nobody can be told about)
- * as of `now`, if it is still a resolved report whose sender ticked contact OK
- * and has no mark: true the first time, false after. Claimed before sending, so a
- * retried or overlapping run never sends twice; a send that fails gives it
- * back (releaseFixedNotice).
+ * Marks the stage's email told (or, for `skipped`, as one nobody can be told)
+ * as of `now`, if the report is still in that stage's status, its sender ticked
+ * contact OK and the stage has no mark: true the first time, false after.
+ * Claimed before sending, so a retried or overlapping run never sends twice; a
+ * send that fails gives it back (releaseFixedNotice).
  */
-export async function claimFixedNotice(db: Db, report: Pick<FixedReport, "teamId" | "reportId">, outcome: "sent" | "skipped", now: Date): Promise<boolean> {
+export async function claimFixedNotice(db: Db, report: Ref, outcome: "sent" | "skipped", now: Date): Promise<boolean> {
   try {
     await connection(db).doc.send(
       new UpdateCommand({
         TableName: db.tableName,
         Key: keys.feedback(report.teamId, report.reportId),
         UpdateExpression: "SET #at = :at, #outcome = :outcome",
-        ConditionExpression: "attribute_exists(#pk) AND #type = :feedback AND #status = :resolved AND #contact = :yes AND attribute_not_exists(#at)",
-        ExpressionAttributeNames: markNames,
-        ExpressionAttributeValues: { ":at": now.toISOString(), ":outcome": outcome, ":feedback": "feedback", ":resolved": "resolved", ":yes": true },
+        ConditionExpression: "attribute_exists(#pk) AND #type = :feedback AND #status = :status AND #contact = :yes AND attribute_not_exists(#at)",
+        ExpressionAttributeNames: { ...stageNames(report.stage), "#status": "status", "#contact": "contactOk" },
+        ExpressionAttributeValues: { ":at": now.toISOString(), ":outcome": outcome, ":feedback": "feedback", ":status": FIXED_STAGES[report.stage].status, ":yes": true },
         ReturnValues: "NONE",
       }),
     );
@@ -151,7 +171,7 @@ export async function claimFixedNotice(db: Db, report: Pick<FixedReport, "teamId
 }
 
 /** Gives a claim made at `claimedAt` back after a send that didn't go, so the next run sends it. Only while the mark is still that claim. */
-export async function releaseFixedNotice(db: Db, report: Pick<FixedReport, "teamId" | "reportId">, claimedAt: Date): Promise<boolean> {
+export async function releaseFixedNotice(db: Db, report: Ref, claimedAt: Date): Promise<boolean> {
   try {
     await connection(db).doc.send(
       new UpdateCommand({
@@ -159,7 +179,7 @@ export async function releaseFixedNotice(db: Db, report: Pick<FixedReport, "team
         Key: keys.feedback(report.teamId, report.reportId),
         UpdateExpression: "REMOVE #at, #outcome",
         ConditionExpression: "attribute_exists(#pk) AND #type = :feedback AND #at = :at AND #outcome = :sent",
-        ExpressionAttributeNames: ownMarkNames,
+        ExpressionAttributeNames: stageNames(report.stage),
         ExpressionAttributeValues: { ":at": claimedAt.toISOString(), ":feedback": "feedback", ":sent": "sent" },
         ReturnValues: "NONE",
       }),
@@ -172,7 +192,7 @@ export async function releaseFixedNotice(db: Db, report: Pick<FixedReport, "team
 }
 
 /** Records that SES refused the address a claimed report was to be sent to (the claim stays: trying again won't change SES's mind). */
-export async function recordFixedRefused(db: Db, report: Pick<FixedReport, "teamId" | "reportId">, claimedAt: Date): Promise<boolean> {
+export async function recordFixedRefused(db: Db, report: Ref, claimedAt: Date): Promise<boolean> {
   try {
     await connection(db).doc.send(
       new UpdateCommand({
@@ -180,7 +200,7 @@ export async function recordFixedRefused(db: Db, report: Pick<FixedReport, "team
         Key: keys.feedback(report.teamId, report.reportId),
         UpdateExpression: "SET #outcome = :refused",
         ConditionExpression: "attribute_exists(#pk) AND #type = :feedback AND #at = :at AND #outcome = :sent",
-        ExpressionAttributeNames: ownMarkNames,
+        ExpressionAttributeNames: stageNames(report.stage),
         ExpressionAttributeValues: { ":refused": "refused", ":at": claimedAt.toISOString(), ":feedback": "feedback", ":sent": "sent" },
         ReturnValues: "NONE",
       }),

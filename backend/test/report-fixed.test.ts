@@ -108,10 +108,10 @@ describe("telling the sender", () => {
   it("emails the sender once, at the pool's current verified address, with their own text and the release, and marks the report", async () => {
     report("report-0001");
     expect(await run()).toEqual({ candidates: 1, sent: 1, skipped: 0, failed: 0 });
-    expect(mails.sent).toEqual([{ to: ADDRESS, input: { kind: "reportFixed", message: MESSAGE, release: "1.22.0" }, tags: { teamId: TEAM } }]);
-    expect(mark("report-0001")).toMatchObject({ notifiedAt: new Date(NOW).toISOString(), notifyOutcome: "sent", status: "resolved" });
+    expect(mails.sent).toEqual([{ to: ADDRESS, input: { kind: "reportUpdate", stage: "resolved", message: MESSAGE, release: "1.22.0" }, tags: { teamId: TEAM } }]);
+    expect(mark("report-0001")).toMatchObject({ notifiedResolvedAt: new Date(NOW).toISOString(), notifiedResolvedOutcome: "sent", status: "resolved" });
     expect(counted(BusinessMetric.ReportFixedEmails)).toBe(1);
-    expect(counts.find(([m]) => m === BusinessMetric.ReportFixedEmails)?.[2]).toEqual({ teamId: TEAM });
+    expect(counts.find(([m]) => m === BusinessMetric.ReportFixedEmails)?.[2]).toEqual({ teamId: TEAM, stage: "resolved" });
     expect(denied).toEqual([]);
     expectNothingPersonal();
     // A second run, and a third later, send nothing more
@@ -128,7 +128,7 @@ describe("telling the sender", () => {
     report("report-0001");
     await run();
     expect(mails.sent[0]?.to).toBe(ADDRESS);
-    expect(mails.sent[0]?.input).toMatchObject({ kind: "reportFixed", language: "es" });
+    expect(mails.sent[0]?.input).toMatchObject({ kind: "reportUpdate", language: "es" });
     expect(denied).toEqual([]);
   });
 
@@ -138,7 +138,7 @@ describe("telling the sender", () => {
     const handler = createReportFixedHandler({ db: table.guarded((command, input) => !(command === "GetCommand" && String((input.Key as { PK: string }).PK).startsWith("USER#")) && base(command, input)), obs: obs(), mailer: mails.mailer, findAccount, now: () => NOW });
     expect(await handler()).toMatchObject({ sent: 1 });
     expect(mails.sent[0]?.input).not.toHaveProperty("language");
-    expect(logs.some(([level, message]) => level === "warn" && message === "Report fixed email language not read")).toBe(true);
+    expect(logs.some(([level, message]) => level === "warn" && message === "Report email language not read")).toBe(true);
   });
 
   it("tells each sender of several reports, oldest first, and a sender of two reports twice (one email per report)", async () => {
@@ -162,7 +162,123 @@ describe("telling the sender", () => {
     accounts.set(SENDER, account({ email: "tester@example.org" }));
     report("report-0001");
     await run(NOW, { testMailDomain: "example.org" });
-    expect(counts.find(([m]) => m === BusinessMetric.ReportFixedEmails)?.[2]).toEqual({ teamId: TEAM, test: true });
+    expect(counts.find(([m]) => m === BusinessMetric.ReportFixedEmails)?.[2]).toEqual({ teamId: TEAM, stage: "resolved", test: true });
+  });
+});
+
+describe("the stages", () => {
+  const staged = (reportId: string, stage: "new" | "triaged" | "resolved", fields: Record<string, unknown> = {}, options: Parameters<typeof report>[2] = {}) =>
+    report(reportId, { status: stage, GSI1PK: `FEEDBACK#STATUS#${stage}`, ...(stage === "resolved" ? {} : { release: undefined, resolvedAt: undefined }), ...fields }, options);
+  const stageMail = () => mails.sent.map((m) => (m.input as { stage: string }).stage);
+
+  it("tells a new report we got it, quoting it, with no release, and marks only that stage", async () => {
+    staged("report-0001", "new");
+    expect(await run()).toMatchObject({ candidates: 1, sent: 1 });
+    expect(mails.sent).toEqual([{ to: ADDRESS, input: { kind: "reportUpdate", stage: "received", message: MESSAGE }, tags: { teamId: TEAM } }]);
+    expect(mark("report-0001")).toMatchObject({ notifiedReceivedAt: new Date(NOW).toISOString(), notifiedReceivedOutcome: "sent" });
+    expect(mark("report-0001")).not.toHaveProperty("notifiedTriagedAt");
+    expect(counts.find(([m]) => m === BusinessMetric.ReportFixedEmails)?.[2]).toEqual({ teamId: TEAM, stage: "received" });
+    expect(await run()).toMatchObject({ candidates: 0 });
+    expect(mails.sent).toHaveLength(1);
+    expectNothingPersonal();
+  });
+
+  it("then tells it it's being looked at, with nothing internal, and then that it's fixed: one email per stage, each once", async () => {
+    staged("report-0001", "new", { beadId: "" });
+    await run();
+    // The owner triages it: the bead ID and a reason the owner wrote are on the report, and in no email
+    table.put({ ...mark("report-0001"), status: "triaged", GSI1PK: "FEEDBACK#STATUS#triaged", beadId: "supply-checkout-secret.1", dismissReason: "INTERNAL NOTE", statusAt: "2026-10-27T11:00:00.000Z" });
+    await run(NOW + 60_000);
+    await run(NOW + 120_000);
+    table.put({ ...mark("report-0001"), status: "resolved", GSI1PK: "FEEDBACK#STATUS#resolved", resolvedAt: RESOLVED, release: "1.22.0" });
+    await run(NOW + 180_000);
+    await run(NOW + 240_000);
+    expect(stageMail()).toEqual(["received", "triaged", "resolved"]);
+    expect(JSON.stringify(mails.sent)).not.toMatch(/secret|INTERNAL/);
+    expect(mails.sent[1]?.input).toEqual({ kind: "reportUpdate", stage: "triaged", message: MESSAGE });
+    expect(mark("report-0001")).toMatchObject({ notifiedReceivedOutcome: "sent", notifiedTriagedOutcome: "sent", notifiedResolvedOutcome: "sent" });
+    expectNothingPersonal();
+  });
+
+  it("sends only the latest stage to a report that moved on between runs", async () => {
+    staged("report-0001", "resolved");
+    await run();
+    expect(stageMail()).toEqual(["resolved"]);
+    expect(mark("report-0001")).not.toHaveProperty("notifiedReceivedAt");
+    expect(mark("report-0001")).not.toHaveProperty("notifiedTriagedAt");
+  });
+
+  it("tells each stage's reports in one run, received first", async () => {
+    staged("report-0003", "resolved");
+    staged("report-0002", "triaged");
+    staged("report-0001", "new");
+    await run();
+    expect(stageMail()).toEqual(["received", "triaged", "resolved"]);
+  });
+
+  it("stops at the run's limit, with the earlier stage first", async () => {
+    for (let i = 0; i < REPORT_FIXED_MAX_PER_RUN; i++) staged(`new-${String(i).padStart(4, "0")}`, "new");
+    staged("report-late", "resolved");
+    expect(await run()).toMatchObject({ candidates: REPORT_FIXED_MAX_PER_RUN, sent: REPORT_FIXED_MAX_PER_RUN });
+    expect(stageMail().every((stage) => stage === "received")).toBe(true);
+    expect(await run()).toMatchObject({ candidates: 1 });
+    expect(stageMail().at(-1)).toBe("resolved");
+  });
+
+  it("tells nobody about a dismissed report, or a new or triaged one whose sender did not tick contact OK", async () => {
+    report("report-0001", { status: "dismissed", GSI1PK: "FEEDBACK#STATUS#dismissed", beadId: "" });
+    staged("report-0002", "new", { contactOk: false });
+    staged("report-0003", "triaged", { contactOk: false });
+    expect(await run()).toMatchObject({ candidates: 0 });
+    expect(lookups).toEqual([]);
+    expect(mails.sent).toEqual([]);
+  });
+
+  it("leaves a stage that began too long ago, and takes the age from that stage's own time", async () => {
+    staged("report-0001", "new", { createdAt: "2026-10-12T11:59:59.999Z" });
+    staged("report-0002", "triaged", { statusAt: "2026-10-12T11:59:59.999Z" });
+    staged("report-0003", "new", { createdAt: "2026-10-13T12:00:00.000Z" });
+    // Created long ago but triaged lately: told it's being looked at
+    staged("report-0004", "triaged", { createdAt: "2026-09-01T00:00:00.000Z", statusAt: RESOLVED });
+    await run();
+    expect(mails.sent.map((m) => (m.input as { stage: string }).stage).sort()).toEqual(["received", "triaged"]);
+  });
+
+  it("does not mail a stage twice when a mark of another stage is there, and does when only that stage is marked", async () => {
+    staged("report-0001", "triaged", { notifiedReceivedAt: "2026-10-26T00:00:00.000Z", notifiedReceivedOutcome: "sent" });
+    staged("report-0002", "triaged", { notifiedTriagedAt: "2026-10-26T00:00:00.000Z", notifiedTriagedOutcome: "sent" });
+    await run();
+    expect(mails.sent).toHaveLength(1);
+    expect(mark("report-0001")).toMatchObject({ notifiedTriagedOutcome: "sent" });
+  });
+
+  it("counts a failure with its stage, and a stage's skip marks only that stage", async () => {
+    staged("report-0001", "new", {}, { member: false });
+    await run();
+    expect(mark("report-0001")).toMatchObject({ notifiedReceivedOutcome: "skipped" });
+    expect(mark("report-0001")).not.toHaveProperty("notifiedTriagedOutcome");
+    staged("report-0002", "triaged");
+    mails.state.fail = "InvalidRecipient";
+    await run();
+    expect(counts.find(([m]) => m === BusinessMetric.ReportFixedEmailFailures)?.[2]).toEqual({ teamId: TEAM, reason: "refused", stage: "triaged" });
+    expect(mark("report-0002")).toMatchObject({ notifiedTriagedOutcome: "refused" });
+  });
+
+  it("sends nothing for a stage whose report moved on between listing and claiming", async () => {
+    staged("report-0001", "new");
+    const base = reportFixedPolicy(denied);
+    const handler = createReportFixedHandler({
+      db: table.guarded((command, input) => {
+        if (command === "GetCommand" && String((input.Key as { PK: string }).PK).startsWith("USER#")) table.put({ ...mark("report-0001"), status: "dismissed", GSI1PK: "FEEDBACK#STATUS#dismissed" });
+        return base(command, input);
+      }),
+      obs: obs(),
+      mailer: mails.mailer,
+      findAccount,
+      now: () => NOW,
+    });
+    expect(await handler()).toMatchObject({ sent: 0 });
+    expect(mails.sent).toEqual([]);
   });
 });
 
@@ -173,12 +289,12 @@ describe("who is not told", () => {
     expect(await run()).toMatchObject({ candidates: 0 });
     expect(mails.sent).toEqual([]);
     expect(lookups).toEqual([]);
-    expect(mark("report-0001")).not.toHaveProperty("notifiedAt");
+    expect(mark("report-0001")).not.toHaveProperty("notifiedResolvedAt");
   });
 
-  it("nothing that isn't resolved, was told already, was resolved long ago, or has a release that isn't a version", async () => {
-    report("report-0001", { status: "triaged", GSI1PK: "FEEDBACK#STATUS#triaged" });
-    report("report-0002", { notifiedAt: "2026-10-26T00:00:00.000Z", notifyOutcome: "sent" });
+  it("nothing dismissed, was told already, was resolved long ago, or has a release that isn't a version", async () => {
+    report("report-0001", { status: "dismissed", GSI1PK: "FEEDBACK#STATUS#dismissed" });
+    report("report-0002", { notifiedResolvedAt: "2026-10-26T00:00:00.000Z", notifiedResolvedOutcome: "sent" });
     report("report-0003", { resolvedAt: "2026-10-12T11:59:59.999Z" });
     report("report-0004", { release: "1.22.0\nWin a prize at evil.example" });
     expect(await run()).toMatchObject({ candidates: 0, sent: 0 });
@@ -210,7 +326,7 @@ describe("who is not told", () => {
   it("nobody who has left the team, and marks the report so it is not looked up again", async () => {
     report("report-0001", {}, { member: false });
     expect(await run()).toEqual({ candidates: 1, sent: 0, skipped: 1, failed: 0 });
-    expect(mark("report-0001")).toMatchObject({ notifyOutcome: "skipped" });
+    expect(mark("report-0001")).toMatchObject({ notifiedResolvedOutcome: "skipped" });
     expect(lookups).toEqual([]);
     expect(await run()).toMatchObject({ candidates: 0 });
     expect(mails.sent).toEqual([]);
@@ -222,21 +338,21 @@ describe("who is not told", () => {
     report("report-0002", { teamId: "team-p" }, { team: { purging: "2026-10-27T00:00:00.000Z" } });
     report("report-0003", { teamId: "team-c" }, { team: { closedAt: "2026-10-26T00:00:00.000Z" } });
     expect(await run()).toMatchObject({ candidates: 3, sent: 0, skipped: 3 });
-    expect(mark("report-0001")).toMatchObject({ notifyOutcome: "skipped" });
-    expect(mark("report-0002", "team-p")).toMatchObject({ notifyOutcome: "skipped" });
-    expect(mark("report-0003", "team-c")).not.toHaveProperty("notifiedAt");
+    expect(mark("report-0001")).toMatchObject({ notifiedResolvedOutcome: "skipped" });
+    expect(mark("report-0002", "team-p")).toMatchObject({ notifiedResolvedOutcome: "skipped" });
+    expect(mark("report-0003", "team-c")).not.toHaveProperty("notifiedResolvedAt");
     expect(lookups).toEqual([]);
     // Reopened: the next run tells them
     table.put({ PK: "TEAM#team-c", SK: "META", type: "team", teamId: "team-c", name: "Echo", status: "active" });
     expect(await run()).toMatchObject({ candidates: 1, sent: 1 });
-    expect(mark("report-0003", "team-c")).toMatchObject({ notifyOutcome: "sent" });
+    expect(mark("report-0003", "team-c")).toMatchObject({ notifiedResolvedOutcome: "sent" });
   });
 
   it("nobody whose account is gone (marked)", async () => {
     accounts.delete(SENDER);
     report("report-0001");
     expect(await run()).toMatchObject({ sent: 0, skipped: 1 });
-    expect(mark("report-0001")).toMatchObject({ notifyOutcome: "skipped" });
+    expect(mark("report-0001")).toMatchObject({ notifiedResolvedOutcome: "skipped" });
     expect(mails.sent).toEqual([]);
     expectNothingPersonal();
   });
@@ -246,7 +362,7 @@ describe("who is not told", () => {
       accounts.set(SENDER, bad);
       report("report-0001");
       expect(await run()).toMatchObject({ sent: 0, skipped: 1, failed: 0 });
-      expect(mark("report-0001")).not.toHaveProperty("notifiedAt");
+      expect(mark("report-0001")).not.toHaveProperty("notifiedResolvedAt");
     }
     expect(mails.sent).toEqual([]);
     accounts.set(SENDER, account());
@@ -288,8 +404,8 @@ describe("failures", () => {
     mails.state.fail = "Throttling";
     await expect(run()).rejects.toThrow("some sends failed");
     expect(failures()).toEqual(["send_failed"]);
-    expect(mark("report-0001")).not.toHaveProperty("notifiedAt");
-    expect(mark("report-0001")).not.toHaveProperty("notifyOutcome");
+    expect(mark("report-0001")).not.toHaveProperty("notifiedResolvedAt");
+    expect(mark("report-0001")).not.toHaveProperty("notifiedResolvedOutcome");
     mails.state.fail = undefined;
     expect(await run()).toMatchObject({ sent: 1 });
     expect(mails.sent).toHaveLength(1);
@@ -301,7 +417,7 @@ describe("failures", () => {
     mails.state.fail = "InvalidRecipient";
     expect(await run()).toMatchObject({ sent: 0, failed: 1 });
     expect(failures()).toEqual(["refused"]);
-    expect(mark("report-0001")).toMatchObject({ notifyOutcome: "refused" });
+    expect(mark("report-0001")).toMatchObject({ notifiedResolvedOutcome: "refused" });
     mails.state.fail = undefined;
     expect(await run()).toMatchObject({ candidates: 0 });
     expect(mails.sent).toEqual([]);
@@ -313,7 +429,7 @@ describe("failures", () => {
     accounts.set(SENDER, new Error("ListUsers failed: 400 ThrottlingException"));
     await expect(run()).rejects.toThrow("some sends failed");
     expect(failures()).toEqual(["lookup_failed"]);
-    expect(mark("report-0001")).not.toHaveProperty("notifiedAt");
+    expect(mark("report-0001")).not.toHaveProperty("notifiedResolvedAt");
     accounts.set(SENDER, account());
     expect(await run()).toMatchObject({ sent: 1 });
   });
@@ -348,12 +464,12 @@ describe("failures", () => {
       now: () => NOW,
     });
     await expect(handler()).rejects.toThrow("some sends failed");
-    expect(logs.some(([level, message]) => level === "error" && message === "Report fixed email mark not updated")).toBe(true);
+    expect(logs.some(([level, message]) => level === "error" && message === "Report email mark not updated")).toBe(true);
   });
 });
 
 describe("the report fixed email's data calls", () => {
-  const ref = { teamId: TEAM, reportId: "report-0001" };
+  const ref = { stage: "resolved" as const, teamId: TEAM, reportId: "report-0001" };
   const at = new Date(NOW);
   const open = () => table.guarded(() => true);
 

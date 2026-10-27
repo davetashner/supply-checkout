@@ -246,13 +246,13 @@ export class EmailStack extends SupplyCheckoutStack {
   }
 
   /**
-   * The "your report is fixed" email function (supply-checkout-7id1,
+   * The report emails function (supply-checkout-7id1, supply-checkout-c8vj.1: received, being looked at, fixed;
    * backend/src/email/report-fixed-handler.ts), run every REPORT_FIXED_EVERY_MINUTES.
    * Its own role, not the ops role. It may: Query GSI1's
-   * `FEEDBACK#STATUS#resolved` partition only, naming only
-   * REPORT_FIXED_READ_ATTRIBUTES (a report's text, sender's ID and release; never
+   * `FEEDBACK#STATUS#new`, `#triaged` and `#resolved` partitions only, naming only
+   * REPORT_FIXED_READ_ATTRIBUTES (a report's text, sender's ID, release and times; never
    * an email, which no report holds); UpdateItem in `FEEDBACK#` partitions naming
-   * only REPORT_FIXED_MARK_ATTRIBUTES (its once-only mark); GetItem in `TEAM#`
+   * only REPORT_FIXED_MARK_ATTRIBUTES (its once-only marks); GetItem in `TEAM#`
    * partitions naming only REPORT_FIXED_TEAM_ATTRIBUTES (closure, purge, and a
    * member's keys) and in `USER#` partitions naming only the language; ListUsers
    * and AdminGetUser on the app pool (the sender's current verified address,
@@ -281,7 +281,7 @@ export class EmailStack extends SupplyCheckoutStack {
       architecture: Architecture.ARM_64,
       memorySize: 256,
       timeout: Duration.minutes(2),
-      description: "Emails the sender of a resolved report, if they ticked contact OK, that it is fixed and in which release (supply-checkout-7id1)",
+      description: "Emails the sender of a report, if they ticked contact OK, that it was received, is being looked at, and is fixed (supply-checkout-7id1, c8vj.1)",
       environment: {
         NODE_OPTIONS: "--enable-source-maps",
         TABLE_NAME: table,
@@ -308,12 +308,12 @@ export class EmailStack extends SupplyCheckoutStack {
     );
     fn.addToRolePolicy(
       new PolicyStatement({
-        sid: "ResolvedReportsIndexOnly",
-        // The one status partition, projected, with only the attributes the email needs
+        sid: "ReportStatusIndexOnly",
+        // The new, triaged and resolved status partitions (never dismissed), projected, with only the attributes the emails need
         actions: ["dynamodb:Query"],
         resources: [`${tableArn}/index/${GSI1}`],
         conditions: {
-          "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`${FEEDBACK_STATUS_PREFIX}resolved`], "dynamodb:Attributes": [...REPORT_FIXED_READ_ATTRIBUTES] },
+          "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["new", "triaged", "resolved"].map((status) => `${FEEDBACK_STATUS_PREFIX}${status}`), "dynamodb:Attributes": [...REPORT_FIXED_READ_ATTRIBUTES] },
           StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
         },
       }),

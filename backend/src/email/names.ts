@@ -126,7 +126,7 @@ export const EMAIL_ENV = {
 export const EMAIL_TAGS = { kind: "kind", teamId: "teamId", inviteId: "inviteId" } as const;
 
 /** The kinds of message the app sends (templates.ts). */
-export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "deletionWarning", "passwordSet", "twoStepOn", "emailChanged", "passwordReset", "welcome", "passwordResetProvider", "returnsDigest", "reportFixed"] as const;
+export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "deletionWarning", "passwordSet", "twoStepOn", "emailChanged", "passwordReset", "welcome", "passwordResetProvider", "returnsDigest", "reportUpdate"] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
 
 /**

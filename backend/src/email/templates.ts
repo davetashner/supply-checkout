@@ -76,14 +76,17 @@ export type EmailInput =
       readonly projects: readonly { readonly client: string; readonly date?: string; readonly preparedBy?: string }[];
     }
   /**
-   * A report the recipient sent with Report an issue is fixed
-   * (supply-checkout-7id1): to the report's own sender, at their verified
-   * address, only if they ticked contact OK, once. `message` is their own
-   * report text (quoted back; one line, capped and defanged), `release` the
-   * version it went out in (`1.22.0`; the message won't render with anything
-   * else). `language` is the recipient's own choice in the app, English if none.
+   * A report the recipient sent with Report an issue, at one of three stages
+   * (supply-checkout-7id1, supply-checkout-c8vj.1): `received` (we got it),
+   * `triaged` (we're looking at it) and `resolved` (it's fixed, in `release`).
+   * To the report's own sender, at their verified address, only if they ticked
+   * contact OK, once per stage. `message` is their own report text (quoted
+   * back; one line, capped and defanged); nothing internal (a bead ID, a
+   * dismiss reason) is ever an input. `release` (`1.22.0`) is required for
+   * `resolved`, which won't render with anything else. `language` is the
+   * recipient's own choice in the app, English if none.
    */
-  | { readonly kind: "reportFixed"; readonly message: string; readonly release: string; readonly language?: Language }
+  | { readonly kind: "reportUpdate"; readonly stage: "received" | "triaged" | "resolved"; readonly message: string; readonly release?: string; readonly language?: Language }
   /**
    * A team read-only because its trial or subscription ended will be deleted
    * at `deletesAt` (ISO 8601, a deletionTime) unless an owner subscribes (the
@@ -133,14 +136,14 @@ export type SecurityNotice = Extract<EmailInput, { kind: "passwordSet" | "twoSte
 /** The welcome email (welcomeContent). */
 export type WelcomeEmail = Extract<EmailInput, { kind: "welcome" }>;
 
-/** The "your report is fixed" email (reportFixedContent), to a report's sender. */
-export type ReportFixedEmail = Extract<EmailInput, { kind: "reportFixed" }>;
+/** The emails to a report's sender (reportUpdateContent). */
+export type ReportUpdateEmail = Extract<EmailInput, { kind: "reportUpdate" }>;
 
 /** The hint for a password reset asked for a Google or Apple account's address (resetProviderContent). */
 export type ResetProviderEmail = Extract<EmailInput, { kind: "passwordResetProvider" }>;
 
 /** A notice about a team, to its owners: every kind but an invite, the security notices, the welcome email and the password reset hint. */
-export type TeamNoticeInput = Exclude<EmailInput, { kind: "invite" } | SecurityNotice | WelcomeEmail | ResetProviderEmail | ReportFixedEmail>;
+export type TeamNoticeInput = Exclude<EmailInput, { kind: "invite" } | SecurityNotice | WelcomeEmail | ResetProviderEmail | ReportUpdateEmail>;
 
 export interface RenderedEmail {
   readonly kind: EmailKind;
@@ -354,7 +357,7 @@ function content(input: EmailInput, options: RenderOptions): Content {
   if (input.kind === "welcome") return welcomeContent(input, appUrl);
   if (input.kind === "passwordResetProvider") return resetProviderContent(input, appUrl);
   if (input.kind === "returnsDigest") return digestContent(input, appUrl);
-  if (input.kind === "reportFixed") return reportFixedContent(input, appUrl);
+  if (input.kind === "reportUpdate") return reportUpdateContent(input, appUrl);
   const team = teamLabel(input.teamName);
   switch (input.kind) {
     case "invite": {
@@ -657,36 +660,74 @@ function digestContent(input: Extract<EmailInput, { kind: "returnsDigest" }>, ap
 export const REPORT_QUOTE_MAX = 300;
 
 /**
- * The email that tells a report's sender it's fixed: their own words quoted
- * (one line, at most REPORT_QUOTE_MAX characters, hidden characters removed
- * and anything link-like defanged, as teamLabel does, so the report text can't
- * add a link or pose as our words), the release it went out in, and the app.
- * The release must be a well-formed version (FEEDBACK_RELEASE) or it won't
- * render. Why they got it is in the footer.
+ * The emails to a report's sender: we got it, we're looking at it, it's fixed.
+ * Their own words quoted (one line, at most REPORT_QUOTE_MAX characters,
+ * hidden characters removed and anything link-like defanged, as teamLabel
+ * does, so the report text can't add a link or pose as our words), and only a
+ * link to the app. The fixed email names the release, which must be a
+ * well-formed version (FEEDBACK_RELEASE) or it won't render, and says the
+ * app's What's New has the details (the app has no page per release). Why they
+ * got it is in the footer.
  */
-function reportFixedContent(input: ReportFixedEmail, appUrl: string): Content {
-  if (!FEEDBACK_RELEASE.test(input.release)) throw new Error("Invalid release");
+function reportUpdateContent(input: ReportUpdateEmail, appUrl: string): Content {
+  const { stage } = input;
+  if (stage !== "received" && stage !== "triaged" && stage !== "resolved") throw new Error("Invalid stage");
+  if (stage === "resolved" && !(typeof input.release === "string" && FEEDBACK_RELEASE.test(input.release))) throw new Error("Invalid release");
   const es = input.language === "es";
   const lang: Language = es ? "es" : "en";
   // Defanged before it's cut to length, so the cap holds for what the reader sees
   const quote = withoutHiddenCharacters(input.message.slice(0, 4 * REPORT_QUOTE_MAX)).trim()
     ? plainName(plainName(input.message, 4 * REPORT_QUOTE_MAX).replace(LINKISH, (token) => token.replaceAll(".", "[.]").replaceAll(":", "[:]").replaceAll("@", "[at]")), REPORT_QUOTE_MAX)
     : undefined;
+  const quoted = quote ? [`\u201c${quote}\u201d`] : [];
+  const button = { label: es ? "Abrir Supply Checkout" : "Open Supply Checkout", url: appLink(appUrl, "/") };
+  const footer = es
+    ? "Recibes este correo porque, al reportar el problema, marcaste que podíamos ponernos en contacto contigo. Se envió desde una dirección que no recibe respuestas."
+    : "You're getting this email because, when you reported the issue, you said we could contact you about it. It was sent from an address that doesn't take replies.";
+  if (stage === "received") {
+    return {
+      lang,
+      subject: es ? "Recibimos tu reporte en Supply Checkout" : "We got your report in Supply Checkout",
+      preheader: es ? "Gracias por avisarnos. Te escribiremos de nuevo cuando esté corregido." : "Thanks for telling us. We'll email you again when it's fixed.",
+      heading: es ? "Recibimos tu reporte" : "We got your report",
+      paragraphs: [
+        es ? "Gracias por avisarnos. Esto es lo que nos contaste con Reportar un problema:" : "Thanks for telling us. Here's what you sent with Report an issue:",
+        ...quoted,
+        es ? "Lo revisaremos. Cuando esté corregido, te escribiremos de nuevo a esta dirección." : "We'll take a look. When it's fixed, we'll email you again at this address.",
+      ],
+      button,
+      footer,
+    };
+  }
+  if (stage === "triaged") {
+    return {
+      lang,
+      subject: es ? "Estamos revisando tu reporte en Supply Checkout" : "We're looking into your report in Supply Checkout",
+      preheader: es ? "Tu reporte ya está en nuestra lista de trabajo." : "Your report is on our list to work on.",
+      heading: es ? "Estamos revisando tu reporte" : "We're looking into your report",
+      paragraphs: [
+        es ? "Revisamos lo que nos contaste con Reportar un problema y ya está en nuestra lista de trabajo:" : "We've read what you sent with Report an issue, and it's now on our list to work on:",
+        ...quoted,
+        es ? "Cuando esté corregido, te escribiremos de nuevo a esta dirección." : "When it's fixed, we'll email you again at this address.",
+      ],
+      button,
+      footer,
+    };
+  }
+  const release = input.release as string;
   return {
     lang,
     subject: es ? "Corregido: el problema que reportaste en Supply Checkout" : "Fixed: the issue you reported in Supply Checkout",
-    preheader: es ? `Corregimos lo que reportaste. Está en la versión ${input.release}.` : `We fixed what you reported. It's in release ${input.release}.`,
+    preheader: es ? `Corregimos lo que reportaste. Está en la versión ${release}.` : `We fixed what you reported. It's in release ${release}.`,
     heading: es ? "Corregimos lo que reportaste" : "We fixed what you reported",
     paragraphs: [
       es ? "Gracias por avisarnos. Corregimos el problema que reportaste con Reportar un problema:" : "Thanks for telling us. We've fixed the issue you reported with Report an issue:",
-      ...(quote ? [`\u201c${quote}\u201d`] : []),
-      es ? `La corrección está en la versión ${input.release} de Supply Checkout y ya está disponible. Si recargas la app, la tendrás.` : `The fix is in Supply Checkout release ${input.release}, and it's live now. Reload the app if you have it open.`,
-      es ? "Si sigue sin funcionar como esperas, vuelve a usar Reportar un problema en la app y cuéntanos." : "If it still doesn't work the way you expect, use Report an issue in the app again and tell us.",
+      ...quoted,
+      es ? `La corrección está en la versión ${release} de Supply Checkout y ya está disponible. Si recargas la app, la tendrás.` : `The fix is in Supply Checkout release ${release}, and it's live now. Reload the app if you have it open.`,
+      es ? "Los detalles están en Novedades, dentro de la app. Si sigue sin funcionar como esperas, vuelve a usar Reportar un problema y cuéntanos." : "The details are in What's New, in the app. If it still doesn't work the way you expect, use Report an issue again and tell us.",
     ],
-    button: { label: es ? "Abrir Supply Checkout" : "Open Supply Checkout", url: appLink(appUrl, "/") },
-    footer: es
-      ? "Recibes este correo porque, al reportar el problema, marcaste que podíamos ponernos en contacto contigo. Se envió desde una dirección que no recibe respuestas."
-      : "You're getting this email because, when you reported the issue, you said we could contact you about it. It was sent from an address that doesn't take replies.",
+    button,
+    footer,
   };
 }
 

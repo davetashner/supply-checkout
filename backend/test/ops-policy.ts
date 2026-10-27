@@ -232,7 +232,7 @@ export function digestPolicy(denied: { command: string; input: Input }[] = []) {
 
 /**
  * The calls the "your report is fixed" function's role allows (infra/lib/stacks/email-stack.ts,
- * supply-checkout-7id1): Query on GSI1's `FEEDBACK#STATUS#resolved` partition naming only
+ * supply-checkout-7id1): Query on GSI1's `FEEDBACK#STATUS#new`, `#triaged` and `#resolved` partitions naming only
  * REPORT_FIXED_READ_ATTRIBUTES (Select SPECIFIC_ATTRIBUTES); UpdateItem in `FEEDBACK#`
  * partitions naming only REPORT_FIXED_MARK_ATTRIBUTES, returning nothing; GetItem in `TEAM#`
  * partitions naming only REPORT_FIXED_TEAM_ATTRIBUTES and on a user's `PREFERENCES` item
@@ -247,7 +247,7 @@ export function reportFixedPolicy(denied: { command: string; input: Input }[] = 
           return (
             input.IndexName === GSI1 &&
             input.Select === "SPECIFIC_ATTRIBUTES" &&
-            (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"] === `${FEEDBACK_STATUS_PREFIX}resolved` &&
+            ["new", "triaged", "resolved"].map((status) => `${FEEDBACK_STATUS_PREFIX}${status}`).includes(String((input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"])) &&
             within(namedAttributes(input), REPORT_FIXED_READ_ATTRIBUTES)
           );
         case "GetCommand": {
