@@ -1169,7 +1169,7 @@ describe("operator-access role (ADR 0015)", () => {
       },
     });
     expect([...FEEDBACK_STATUS_ATTRIBUTES]).toEqual(["PK", "SK", "GSI1PK", "type", "status", "beadId", "statusAt", "dismissReason"]);
-    expect([...FEEDBACK_READ_ATTRIBUTES]).toEqual(["PK", "SK", "GSI1PK", "GSI1SK", "type", "reportId", "shortId", "teamId", "userId", "role", "createdAt", "category", "message", "expected", "contactOk", "context", "status", "beadId", "expiresAt", "statusAt", "dismissReason"]);
+    expect([...FEEDBACK_READ_ATTRIBUTES]).toEqual(["PK", "SK", "GSI1PK", "GSI1SK", "type", "reportId", "shortId", "teamId", "userId", "role", "createdAt", "category", "message", "expected", "contactOk", "context", "status", "beadId", "expiresAt", "statusAt", "dismissReason", "resolvedAt", "release"]);
     expect(JSON.stringify(feedbackStatus?.Resource)).not.toMatch(/index|\*/);
     // Test marks (supply-checkout-o60.2): BatchGetItem by key only, the keys and `test` only, projected; read only
     expect(testMarks).toEqual({

@@ -8984,7 +8984,9 @@
                         "beadId",
                         "expiresAt",
                         "statusAt",
-                        "dismissReason"
+                        "dismissReason",
+                        "resolvedAt",
+                        "release"
                       ]
                     },
                     "StringEquals": {
@@ -9034,7 +9036,9 @@
                         "beadId",
                         "expiresAt",
                         "statusAt",
-                        "dismissReason"
+                        "dismissReason",
+                        "resolvedAt",
+                        "release"
                       ]
                     },
                     "StringEquals": {

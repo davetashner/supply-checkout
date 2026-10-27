@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ConflictError, InvalidInputError, NotFoundError } from "../src/data/errors.js";
-import { DISMISS_REASON_MAX, dismissFeedback, getFeedback, listFeedback, recordFeedbackBead } from "../src/data/feedback-owner.js";
+import { DISMISS_REASON_MAX, dismissFeedback, feedbackRelease, getFeedback, listFeedback, recordFeedbackBead, resolveFeedback } from "../src/data/feedback-owner.js";
 import * as barrel from "../src/data/index.js";
 import { fakeDb } from "./helpers.js";
 
@@ -44,7 +44,7 @@ describe("only the operator data module imports the owner's report functions", (
   });
 
   it("is not exported from the data module's entry point, nor from feedback.ts", async () => {
-    const owner = ["listFeedback", "getFeedback", "recordFeedbackBead", "dismissFeedback", "changeFeedbackStatus", "DISMISS_REASON_MAX"];
+    const owner = ["listFeedback", "getFeedback", "recordFeedbackBead", "dismissFeedback", "changeFeedbackStatus", "resolveFeedback", "feedbackRelease", "DISMISS_REASON_MAX"];
     for (const name of owner) expect(barrel).not.toHaveProperty(name);
     const feedback = await import("../src/data/feedback.js");
     for (const name of owner) expect(feedback).not.toHaveProperty(name);
@@ -129,6 +129,47 @@ describe("status preconditions", () => {
     await expect(dismissFeedback(never, TEAM, REPORT, { reason: "x".repeat(DISMISS_REASON_MAX + 1) })).rejects.toBeInstanceOf(InvalidInputError);
     await expect(dismissFeedback(never, TEAM, REPORT, { reason: "line\nbreak" })).rejects.toBeInstanceOf(InvalidInputError);
     await expect(recordFeedbackBead(never, "team/../x", REPORT, "supply-checkout-abc.1")).rejects.toBeInstanceOf(InvalidInputError);
+  });
+});
+
+describe("resolving", () => {
+  const AT = new Date("2026-10-27T12:00:00.000Z");
+
+  it("moves only a triaged report, setting resolvedAt, the release and the index partition, and nothing asked back", async () => {
+    const { db, sent } = applying({ type: "feedback", reportId: REPORT, status: "resolved", release: "1.22.0" });
+    const done = await resolveFeedback(db, TEAM, REPORT, { release: "1.22.0", at: AT });
+    expect(done).toEqual({ report: { type: "feedback", reportId: REPORT, status: "resolved", release: "1.22.0" }, replayed: false });
+    expect(sent[0]).toMatchObject({
+      ConditionExpression: "attribute_exists(#pk) AND #type = :feedback AND #status = :from",
+      ReturnValues: "NONE",
+      ExpressionAttributeValues: { ":from": "triaged", ":status": "resolved", ":at": AT.toISOString(), ":release": "1.22.0", ":partition": "FEEDBACK#STATUS#resolved", ":feedback": "feedback" },
+    });
+    expect(Object.values(sent[0]?.ExpressionAttributeNames as Record<string, string>).sort()).toEqual(["GSI1PK", "PK", "release", "resolvedAt", "status", "statusAt", "type"]);
+    // Defaults to the clock when no time is given
+    await resolveFeedback(db, TEAM, REPORT, { release: "1.22.0" });
+    expect(typeof (sent[2]?.ExpressionAttributeValues as Record<string, unknown>)[":at"]).toBe("string");
+  });
+
+  it("answers an already resolved report as it is (any release), and refuses new and dismissed ones naming the status only", async () => {
+    const resolved = { type: "feedback", reportId: REPORT, status: "resolved", release: "1.20.0", message: "PRIVATE TEXT" };
+    expect(await resolveFeedback(conflicting(resolved).db, TEAM, REPORT, { release: "1.22.0" })).toEqual({ report: resolved, replayed: true });
+    for (const status of ["new", "dismissed"]) {
+      const error = await resolveFeedback(conflicting({ type: "feedback", status, message: "PRIVATE TEXT" }).db, TEAM, REPORT, { release: "1.22.0" }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ConflictError);
+      expect((error as Error).message).toBe(`This report is ${status}, not triaged: only a triaged report (one with a bead) can be resolved`);
+    }
+    await expect(resolveFeedback(conflicting(undefined).db, TEAM, REPORT, { release: "1.22.0" })).rejects.toBeInstanceOf(NotFoundError);
+    const down = Object.assign(new Error("Unavailable"), { name: "ServiceUnavailable" });
+    await expect(resolveFeedback(fakeDb(() => Promise.reject(down)), TEAM, REPORT, { release: "1.22.0" })).rejects.toBe(down);
+  });
+
+  it("validates the release before any call", async () => {
+    const never = fakeDb(() => Promise.reject(new Error("must not be called")));
+    for (const bad of ["", "1.22", "v1.22.0", "1.22.0\nx", "1.22.0-" + "a".repeat(17), "12345.0.0", undefined, 7]) {
+      await expect(resolveFeedback(never, TEAM, REPORT, { release: bad as never })).rejects.toBeInstanceOf(InvalidInputError);
+    }
+    expect(feedbackRelease("1.22.0")).toBe("1.22.0");
+    expect(feedbackRelease("2.0.0-rc.1")).toBe("2.0.0-rc.1");
   });
 });
 

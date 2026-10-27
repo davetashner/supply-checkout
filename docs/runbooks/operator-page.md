@@ -27,7 +27,7 @@ For operators: people in the operator pool's `operators` group ([Operators](../i
    - **Record its bead**: make the bead on your machine with `npm run feedback -- bead <teamId> <reportId> --title "…"` (which scrubs and records it for you) or `bd create`, in your own words, then type its ID (`supply-checkout-…`) here. The report becomes triaged.
    - **Dismiss it**, with a short reason in your own words (3 to 200 characters, one line, no email addresses, not the report's own words). It's kept on the report and in the operator audit; the team never sees it.
 
-A report moves once. If it's already triaged or dismissed (another operator, or the CLI), the page says so and changes nothing: press **Read the report again**.
+A report moves once. If it's already triaged or dismissed (another operator, or the CLI; `resolved` is set only by `npm run feedback -- resolve`, after the fix is deployed), the page says so and changes nothing: press **Read the report again**.
 
 ## When a change isn't saved
 

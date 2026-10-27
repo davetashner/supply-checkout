@@ -14,7 +14,9 @@
 // TeamContext: a report is keyed by team ID plus its full report ID, never by
 // its 8-character short ID (that is display only).
 //
-// A report moves once: `new` to `triaged` (with its bead) or to `dismissed`.
+// A report moves forward: `new` to `triaged` (with its bead) or to `dismissed`,
+// and `triaged` to `resolved` (resolveFeedback, the CLI only: the ops routes
+// can't name its attributes).
 // Both updates carry a status precondition, so dismissing a triaged report
 // can't clear its bead and triaging again can't replace it. A repeat of the
 // same change (the same bead, or dismissing a dismissed report) answers with
@@ -160,6 +162,51 @@ export async function changeFeedbackStatus(
 export async function recordFeedbackBead(db: Db, teamId: string, reportId: string, beadId: string, at = new Date()): Promise<FeedbackReport> {
   const bead = feedbackBeadId(beadId);
   return (await changeFeedbackStatus(db, teamId, reportId, { status: "triaged", beadId: bead, reason: "" }, at)).report;
+}
+
+/** A release as `resolve --release` takes it: `1.22.0`, with an optional `-rc.1` style suffix. Short, one line. */
+const RELEASE = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[0-9A-Za-z.]{1,16})?$/;
+
+/** The release, checked: InvalidInputError unless it looks like `x.y.z`. */
+export function feedbackRelease(value: unknown): string {
+  if (typeof value !== "string" || !RELEASE.test(value)) throw new InvalidInputError("Invalid release: use x.y.z, as in 1.22.0");
+  return value;
+}
+
+/**
+ * Marks a `triaged` report `resolved`: its fix is live in `release`. Sets
+ * `resolvedAt` (the time given, the server's own clock in the CLI's case; also
+ * `statusAt`), `release`, and moves the status index partition, on the
+ * condition that the report is still `triaged`. `replayed` when it was already
+ * resolved (in any release): nothing is changed, so a retry or a second person
+ * is safe and the first resolution stands. NotFoundError for no such report;
+ * ConflictError for `new` or `dismissed` (a report with no bead has no fix to
+ * have shipped), naming the status only.
+ *
+ * Sets no `notified` mark: the reporter email (supply-checkout-7id1) finds
+ * reports to tell in the `FEEDBACK#STATUS#resolved` partition (listFeedback
+ * with status `resolved`) and records its own mark when it has sent one.
+ */
+export async function resolveFeedback(
+  db: Db,
+  teamId: string,
+  reportId: string,
+  options: { readonly release: string; readonly at?: Date },
+): Promise<{ readonly report: FeedbackReport; readonly replayed: boolean }> {
+  const release = feedbackRelease(options.release);
+  const at = (options.at ?? new Date()).toISOString();
+  const applied = await applyAlone(db)({
+    Key: keys.feedback(teamId, reportId),
+    UpdateExpression: "SET #status = :status, #at = :at, #resolvedAt = :at, #release = :release, #gsi1pk = :partition",
+    ConditionExpression: "attribute_exists(#pk) AND #type = :feedback AND #status = :from",
+    ExpressionAttributeNames: { "#pk": PK, "#status": "status", "#type": "type", "#at": "statusAt", "#resolvedAt": "resolvedAt", "#release": "release", "#gsi1pk": GSI1PK },
+    ExpressionAttributeValues: { ":status": "resolved", ":at": at, ":release": release, ":partition": feedbackStatusPartition("resolved"), ":feedback": "feedback", ":from": "triaged" },
+  });
+  const current = await getFeedback(db, teamId, reportId);
+  if (!current) throw new NotFoundError("No such report");
+  if (applied) return { report: current, replayed: false };
+  if (current.status === "resolved") return { report: current, replayed: true };
+  throw new ConflictError(`This report is ${current.status}, not triaged: only a triaged report (one with a bead) can be resolved`);
 }
 
 /** The longest reason a dismissal keeps, in characters. */
