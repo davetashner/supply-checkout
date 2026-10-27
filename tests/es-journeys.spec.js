@@ -46,7 +46,7 @@ test("creates a project, checks an item out and returns part of it, all in Spani
   await scan.press("Enter");
   await expect(modal(page)).toBeVisible();
   await modal(page).getByLabel("Nombre del artículo").fill("Guantes de nitrilo");
-  await modal(page).getByLabel("Precio c/u ($)").fill("12.50");
+  await modal(page).getByLabel("Precio al cliente c/u ($)").fill("12.50");
   await modal(page).locator("#fQty").fill("3");
   await noEnglish(page, "the checkout dialog");
   await modal(page).getByRole("button", { name: "Agregar 3 al proyecto", exact: true }).click();

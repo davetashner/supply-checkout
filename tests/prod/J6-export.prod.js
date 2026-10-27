@@ -18,7 +18,7 @@ test("a finished project downloads as the client's CSV", { tag: ["@J6.1", "@J6.2
   await goToInventory(page);
   await startAddItem(page);
   await fillItem(page, { barcode: item.code, name: item.name, stock: "5" });
-  await modal(page).getByLabel("Price each ($)").fill("8");
+  await modal(page).getByLabel("Price to client, each ($)").fill("8");
   await saveItem(page);
   await expect(inventoryRow(page, item.name).locator("td").nth(2)).toHaveText("$8.00");
   await goToProjects(page);

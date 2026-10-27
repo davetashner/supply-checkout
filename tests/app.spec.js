@@ -20,7 +20,7 @@ test("checks out a new barcode, returns part of it, and finishes the return", { 
   await test.step("J4.2 Scan an item and choose how many", async () => {
     await enterBarcode(page, "012345678905");
     await modal(page).getByLabel("Item name").fill("Nitrile gloves");
-    await modal(page).getByLabel("Price each ($)").fill("12.50");
+    await modal(page).getByLabel("Price to client, each ($)").fill("12.50");
     await modal(page).locator("#fQty").fill("3");
     await addToProject(page, 3);
 
@@ -75,7 +75,7 @@ test("adds an item that has no barcode", { tag: ["@J4.2"] }, async ({ page }) =>
   await page.getByRole("button", { name: "Add item without a barcode" }).click();
   await modal(page).getByRole("button", { name: "+ New item" }).click();
   await modal(page).getByLabel("Item name").fill("Leftover bins");
-  await modal(page).getByLabel("Price each ($)").fill("4");
+  await modal(page).getByLabel("Price to client, each ($)").fill("4");
   await modal(page).locator("#fQty").fill("3");
   await addToProject(page, 3);
 

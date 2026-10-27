@@ -598,7 +598,7 @@ test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
     await page.getByRole("button", { name: "Add item without a barcode" }).click();
     await modal(page).getByRole("button", { name: "+ New item" }).click();
     await modal(page).getByLabel("Item name").fill("Ladder rental");
-    await modal(page).getByLabel("Price each ($)").fill("12.35");
+    await modal(page).getByLabel("Price to client, each ($)").fill("12.35");
     await modal(page).getByLabel("Save to inventory for next time").uncheck();
     await addToProject(page);
     await expect(lineRow(page, "Ladder rental")).toBeVisible();
@@ -1267,7 +1267,7 @@ test.describe("inventory edits", { tag: ["@J2.3"] }, () => {
     const backend = await open(page, new FakeBackend({ docs }));
     await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
-    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("Price to client, each ($)").fill("9");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(inventoryRow(page, "Paper towels").locator("td").nth(2)).toHaveText("$9.00");
     expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body).toEqual({
@@ -1311,7 +1311,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     const backend = await open(page);
     await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
-    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("Price to client, each ($)").fill("9");
     await modal(page).getByLabel("Single items in storage now").fill("7");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(toast(page)).toHaveText("Saved");
@@ -1326,7 +1326,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     backend.on("POST", STOCK, { lost: true });
     await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
-    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("Price to client, each ($)").fill("9");
     await modal(page).getByLabel("Single items in storage now").fill("7");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
@@ -1390,7 +1390,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     backend.on("POST", STOCK, { lost: true });
     await goToInventory(page);
     await inventoryRow(page, "Paper towels").click();
-    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("Price to client, each ($)").fill("9");
     await modal(page).getByLabel("Single items in storage now").fill("");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
@@ -1420,7 +1420,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     await checkedOutMeanwhile(page, backend);
     // The form still shows the 10 it opened with; only the price changes
     await expect(modal(page).getByLabel("Single items in storage now")).toHaveValue("10");
-    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("Price to client, each ($)").fill("9");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(toast(page)).toHaveText("Saved");
     expect(backend.requests("POST", STOCK)).toEqual([]);
@@ -1431,7 +1431,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
   test("a new count over stock that moved while the form was open is refused, saying what it is now", async ({ page }) => {
     const backend = await open(page);
     await checkedOutMeanwhile(page, backend);
-    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("Price to client, each ($)").fill("9");
     await modal(page).getByLabel("Single items in storage now").fill("12");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(toast(page)).toHaveText("The count changed while you were editing: it's now 8, so your count wasn't saved. The latest is showing.");
@@ -1495,7 +1495,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     await expect.poll(() => backend.requests("GET", "/teams/t1/products/SKU1").length).toBe(1);
     await expect(stockCell(page, "Paper towels")).toHaveText("50");
     // This form showed no count, so its blank count isn't a request to stop counting
-    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("Price to client, each ($)").fill("9");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(toast(page)).toHaveText("Saved");
     expect(backend.requests("POST", STOCK)).toEqual([]);

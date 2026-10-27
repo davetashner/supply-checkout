@@ -191,7 +191,7 @@ test.describe("an item's count changed while its form is open", { tag: ["@J4"] }
     await openItem(page);
     await elsewhere(page, (docs) => { docs.get("products/SKU1").stock = 8; });
     await expect(inventoryRow(page, "Paper towels").locator("td").nth(1)).toHaveText("8");
-    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("Price to client, each ($)").fill("9");
     await save(page);
     await expect(page.locator("#toast")).toHaveText("Saved");
     expect(await saved(page)).toMatchObject({ price: 9, stock: 8 });
@@ -201,7 +201,7 @@ test.describe("an item's count changed while its form is open", { tag: ["@J4"] }
     await openItem(page);
     // Saved, but the live update hasn't arrived
     await page.evaluate(() => { delete window.__mock.docs.get("products/SKU1").stock; });
-    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("Price to client, each ($)").fill("9");
     await save(page);
     await expect(page.locator("#toast")).toHaveText("Saved");
     const item = await saved(page);
@@ -212,7 +212,7 @@ test.describe("an item's count changed while its form is open", { tag: ["@J4"] }
   test("a new count over stock that moved is refused, and the rest of the edit saves", async ({ page }) => {
     await openItem(page);
     await elsewhere(page, (docs) => { docs.get("products/SKU1").stock = 8; });
-    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("Price to client, each ($)").fill("9");
     await modal(page).getByLabel(STOCK).fill("12");
     await save(page);
     await expect(page.locator("#toast")).toHaveText("The count changed while you were editing: it's now 8, so your count wasn't saved. The latest is showing.");

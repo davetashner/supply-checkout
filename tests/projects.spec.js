@@ -153,8 +153,8 @@ test("a typed price on a project line or a new item is saved rounded to cents", 
 
   await enterBarcode(page, "NEW3");
   await modal(page).getByLabel("Item name").fill("Sponges");
-  await anyStep(modal(page).getByLabel("Price each ($)"));
-  await modal(page).getByLabel("Price each ($)").fill("1.005");
+  await anyStep(modal(page).getByLabel("Price to client, each ($)"));
+  await modal(page).getByLabel("Price to client, each ($)").fill("1.005");
   await addToProject(page);
   await expect(lineRow(page, "Sponges")).toContainText("$1.01");
   const saved = await page.evaluate(() => [window.__mock.docs.get("products/NEW3").price, window.__mock.docs.get("projects/s1").items.NEW3.price]);
@@ -175,7 +175,7 @@ test("a price over the API's limit on a project line or a new item says so, and 
 
   await enterBarcode(page, "NEW3");
   await modal(page).getByLabel("Item name").fill("Sponges");
-  const price = modal(page).getByLabel("Price each ($)");
+  const price = modal(page).getByLabel("Price to client, each ($)");
   await price.fill("1000000.5");
   expect(await message(price)).toBe("Prices and costs go up to $1,000,000.00.");
   await addToProject(page);
@@ -436,7 +436,7 @@ test("barcodes that are built-in object keys check out and return like any other
   await expect(modal(page)).toContainText("New barcode.");
   await expect(modal(page)).not.toContainText("Already on this project");
   await modal(page).getByLabel("Item name").fill("Widget A");
-  await modal(page).getByLabel("Price each ($)").fill("2");
+  await modal(page).getByLabel("Price to client, each ($)").fill("2");
   await addToProject(page);
   await expect(lineRow(page, "Widget A")).toBeVisible();
 

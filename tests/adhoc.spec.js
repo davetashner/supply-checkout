@@ -76,7 +76,7 @@ test.describe("J14. Take supplies without a job", { tag: ["@J14"] }, () => {
     await page.getByRole("button", { name: "Quick take" }).click();
     await typeCode(page, "NEW-9");
     await modal(page).getByLabel("Item name").fill("Box fan");
-    await modal(page).getByLabel("Price each ($)").fill("20");
+    await modal(page).getByLabel("Price to client, each ($)").fill("20");
     await modal(page).getByRole("button", { name: "Take 1" }).click();
     await expect(toast(page)).toHaveText("Took 1 × Box fan (General Use)");
     expect(await doc(page, "products/NEW-9")).toMatchObject({ name: "Box fan", price: 20 });

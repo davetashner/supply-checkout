@@ -231,7 +231,7 @@ export const LESSONS = {
       },
       // 3. ...its price and how many are in storage
       async (page) => {
-        await modal(page).getByLabel("Price each ($)").fill("6.50");
+        await modal(page).getByLabel("Price to client, each ($)").fill("6.50");
         await modal(page).getByLabel("Single items in storage now").fill("12");
       },
       // 4. Its row in Inventory

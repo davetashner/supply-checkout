@@ -72,7 +72,7 @@ test("a checkout that didn't save keeps what was entered, says so, and saves onc
   await openEcho(page);
   await enterBarcode(page, "NEW1");
   await modal(page).getByLabel("Item name").fill("Wax");
-  await modal(page).getByLabel("Price each ($)").fill("4.25");
+  await modal(page).getByLabel("Price to client, each ($)").fill("4.25");
   await modal(page).getByRole("button", { name: "More" }).click();
   await modal(page).getByRole("button", { name: "More" }).click();
   await failWrites(page, "unavailable");
@@ -84,7 +84,7 @@ test("a checkout that didn't save keeps what was entered, says so, and saves onc
   await expect(again).toHaveAttribute("aria-describedby", "saveFailed");
   await expect(modal(page).getByLabel("Item name")).toHaveValue("Wax");
   await expect(modal(page).getByLabel("Item name")).toBeEnabled();
-  await expect(modal(page).getByLabel("Price each ($)")).toHaveValue("4.25");
+  await expect(modal(page).getByLabel("Price to client, each ($)")).toHaveValue("4.25");
   await expect(modal(page).locator("#fQty")).toHaveValue("3");
   await expect(lineRow(page, "Wax")).toHaveCount(0);
 

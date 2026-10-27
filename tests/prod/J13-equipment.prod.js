@@ -22,7 +22,7 @@ test("crew takes company equipment to a job, sees where it is, and brings it bac
     await goToInventory(page);
     await startAddItem(page);
     await modal(page).getByLabel("Company equipment (reused, not charged)").check();
-    await expect(modal(page).getByLabel("Price each ($)")).toBeHidden();
+    await expect(modal(page).getByLabel("Price to client, each ($)")).toBeHidden();
     await fillItem(page, { barcode: ladder.code, name: ladder.name, stock: "3" });
     await modal(page).getByLabel("Value each ($)").fill("120");
     await saveItem(page);

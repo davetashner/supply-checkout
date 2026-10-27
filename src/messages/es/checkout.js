@@ -15,7 +15,7 @@ export default {
   "checkout.itemName": "Nombre del artículo",
   "checkout.namePlaceholder": "p. ej. Guantes de nitrilo, caja de 100",
   "checkout.namePlaceholderNoCode": "p. ej. Cajas de almacenamiento sobrantes",
-  "checkout.priceLabel": "Precio c/u ($)",
+  "checkout.priceLabel": "Precio al cliente c/u ($)",
   "checkout.saveToInventory": "Guardar en el inventario para la próxima vez",
   "checkout.alreadyProject": "Ya está en este proyecto",
   "checkout.alreadyGeneral": "Ya está en Uso general",

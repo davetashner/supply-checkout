@@ -82,7 +82,7 @@ test("a new owner is guided through the checklist to a team ready to use", { tag
   await list.getByRole("button", { name: "Add an item" }).click();
   await expect(page.locator("#tab-prices")).toHaveAttribute("aria-pressed", "true");
   await modal(page).getByLabel("Item name").fill("Nitrile gloves");
-  await modal(page).getByLabel("Price each ($)").fill("13");
+  await modal(page).getByLabel("Price to client, each ($)").fill("13");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(page.locator("#overlay")).toBeHidden();
   await expect(list).toContainText("1 of 4 done");
