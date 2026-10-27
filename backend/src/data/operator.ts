@@ -1300,7 +1300,7 @@ export async function listOpsFeedback(
 ): Promise<Page<FeedbackReport>> {
   operatorSub(operator);
   const status = options.status ?? "new";
-  if (typeof status !== "string" || !(FEEDBACK_STATUSES as readonly string[]).includes(status)) throw new InvalidInputError("status must be new, triaged or dismissed");
+  if (typeof status !== "string" || !(FEEDBACK_STATUSES as readonly string[]).includes(status)) throw new InvalidInputError("status must be new, triaged, dismissed or resolved");
   const page = await listFeedback(db, { status: status as FeedbackStatus, cursor: options.cursor, limit: options.limit });
   await connection(db).doc.send(
     new PutCommand({

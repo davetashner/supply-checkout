@@ -50,8 +50,12 @@ export const FEEDBACK_SCREENS = ["projects", "project", "prices", "scan", "recei
 /** Browser families. Anything else is stored as `other`. */
 export const FEEDBACK_BROWSERS = ["chrome", "safari", "firefox", "edge", "samsung", "opera", "other"] as const;
 
-/** The statuses a report has: `new` until the owner turns it into a bead (`triaged`, with `beadId`) or dismisses it. */
-export const FEEDBACK_STATUSES = ["new", "triaged", "dismissed"] as const;
+/**
+ * The statuses a report has: `new` until the owner turns it into a bead
+ * (`triaged`, with `beadId`) or dismisses it. A triaged report becomes
+ * `resolved` (with `resolvedAt` and `release`) once its fix is live in prod.
+ */
+export const FEEDBACK_STATUSES = ["new", "triaged", "dismissed", "resolved"] as const;
 export type FeedbackStatus = (typeof FEEDBACK_STATUSES)[number];
 
 /** Reports one user may send per UTC day, from all their teams together. */
@@ -172,6 +176,10 @@ export interface FeedbackReport {
   readonly statusAt?: string;
   /** Set when the owner dismisses it: the owner's own short reason, never the user's text. */
   readonly dismissReason?: string;
+  /** Set when the owner resolves it (server time, ISO): the fix is live. The same instant as `statusAt`. */
+  readonly resolvedAt?: string;
+  /** Set with `resolvedAt`: the release (`1.22.0`) the fix went out in. */
+  readonly release?: string;
   readonly expiresAt: number;
 }
 

@@ -3,11 +3,12 @@
 // reports"). For the owner, with their own AWS credentials: no route or
 // Lambda reaches reports for reading.
 //
-//   npm run feedback -- list    [--status new|triaged|dismissed] [--limit n] [--cursor c] <where>
+//   npm run feedback -- list    [--status new|triaged|dismissed|resolved] [--limit n] [--cursor c] <where>
 //   npm run feedback -- show    [<teamId>] <reportId> [--team <teamId>] <where>
 //   npm run feedback -- bead    [<teamId>] <reportId> --title "<scrubbed>" [--summary "<scrubbed>"] [--type bug|task|feature] [--priority 0-4] <where>
 //   npm run feedback -- record  [<teamId>] <reportId> --bead <beadId> <where>
 //   npm run feedback -- dismiss [<teamId>] <reportId> --reason "<short reason>" <where>
+//   npm run feedback -- resolve [<teamId>] <reportId> --release <x.y.z> <where>
 //
 //   <where> = --table supply-checkout-<env>-app --region <region> --profile <profile> [--expect-account <id>]
 //             (or --endpoint <url> for DynamoDB Local)
@@ -33,7 +34,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { ConflictError, createDb, type Db, type DbOptions, FEEDBACK_STATUSES, type FeedbackReport, type FeedbackStatus } from "../src/data/index.js";
-import { BEAD_ID, DISMISS_REASON_MAX, dismissFeedback, getFeedback, listFeedback, namesReportIds, quotesReport, recordFeedbackBead, scrub } from "../src/data/feedback-owner.js";
+import { BEAD_ID, DISMISS_REASON_MAX, dismissFeedback, feedbackRelease, getFeedback, listFeedback, namesReportIds, quotesReport, recordFeedbackBead, resolveFeedback, scrub } from "../src/data/feedback-owner.js";
 import { findUserBySub, type PoolUser } from "../src/identity/cognito-admin.js";
 import { noticeAddressOf } from "../src/identity/notice-address.js";
 import { publicSafetyFindings } from "../../scripts/public-safety-rules.mjs";
@@ -42,7 +43,7 @@ import { APP_TABLE, appPool, appPoolProblem, callerAccount, type Credentials, ty
 export const USAGE = `Usage: npm run feedback -- <command> [arguments] --table supply-checkout-<env>-app --region <region> --profile <profile>
 
 Commands:
-  list [--status new|triaged|dismissed] [--limit n] [--cursor c]
+  list [--status new|triaged|dismissed|resolved] [--limit n] [--cursor c]
         One line per report, oldest first: short ID, date, category, team ID, role, app build, the first 60 characters.
   show [<teamId>] <reportId> [--team <teamId>]
         The whole report. With "contact OK" ticked, also the user's verified email (looked up in the app pool).
@@ -54,13 +55,17 @@ Commands:
         Marks a new report triaged with a bead you made yourself (or when "bead" made it but couldn't record it).
   dismiss [<teamId>] <reportId> --reason "<short reason, at most ${DISMISS_REASON_MAX} characters>"
         Marks a new report dismissed.
+  resolve [<teamId>] <reportId> --release <x.y.z>
+        Marks a triaged report resolved once its fix is live in prod, recording when and in which release.
+        Refused for a new report (no bead) and a dismissed one. Already resolved: says so and does nothing.
+        Run it after the release is deployed; merging a PR does not resolve a report.
 
 <reportId> is the 32-character ID, or the 8-character short ID when exactly one report has it.
 --expect-account <id> stops before reading unless the profile signs in to that account.
 --endpoint <url> uses DynamoDB Local instead of AWS (then --profile isn't needed and any table name goes;
 the email lookup isn't available).`;
 
-const COMMANDS = ["list", "show", "bead", "record", "dismiss"] as const;
+const COMMANDS = ["list", "show", "bead", "record", "dismiss", "resolve"] as const;
 type Command = (typeof COMMANDS)[number];
 
 const TEAM_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -162,7 +167,7 @@ export function showReport(r: FeedbackReport, email?: { readonly line: string })
   const lines = [
     `Report ${r.reportId} (short ${shortOf(r)})`,
     `Team: ${r.teamId}`,
-    `Status: ${r.status}${r.beadId ? ` (bead ${r.beadId})` : ""}${r.dismissReason ? ` (reason: ${oneLine(r.dismissReason)})` : ""}`,
+    `Status: ${r.status}${r.beadId ? ` (bead ${r.beadId})` : ""}${r.dismissReason ? ` (reason: ${oneLine(r.dismissReason)})` : ""}${r.resolvedAt ? ` (resolved ${r.resolvedAt}${r.release ? ` in ${oneLine(r.release)}` : ""})` : ""}`,
     `Sent: ${r.createdAt}`,
     `Category: ${r.category}`,
     `Role: ${r.role}`,
@@ -285,6 +290,7 @@ function parseOptions(argv: string[]) {
       type: { type: "string" },
       priority: { type: "string" },
       reason: { type: "string" },
+      release: { type: "string" },
       bead: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -348,15 +354,16 @@ export async function main(
     bead: ["team", "title", "summary", "type", "priority"],
     record: ["team", "bead"],
     dismiss: ["team", "reason"],
+    resolve: ["team", "release"],
   };
-  const stray = only(["status", "limit", "cursor", "team", "title", "summary", "type", "priority", "reason", "bead"], OWN[cmd]);
+  const stray = only(["status", "limit", "cursor", "team", "title", "summary", "type", "priority", "reason", "bead", "release"], OWN[cmd]);
   if (stray) return bad(`--${stray} isn't an option of ${cmd}`);
 
   let status: FeedbackStatus = "new";
   let limit: number | undefined;
   if (cmd === "list") {
     if (values.status !== undefined) {
-      if (!(FEEDBACK_STATUSES as readonly string[]).includes(values.status)) return bad("--status must be new, triaged or dismissed");
+      if (!(FEEDBACK_STATUSES as readonly string[]).includes(values.status)) return bad("--status must be new, triaged, dismissed or resolved");
       status = values.status as FeedbackStatus;
     }
     limit = 25;
@@ -406,6 +413,15 @@ export async function main(
     if (Array.from(reason).length > DISMISS_REASON_MAX) return bad(`--reason can be at most ${DISMISS_REASON_MAX} characters`);
     const why = unsafeText(reason);
     if (why) return bad(`Refused: --reason has ${why}. Nothing was read or changed.`);
+  }
+
+  let release = "";
+  if (cmd === "resolve") {
+    try {
+      release = feedbackRelease(values.release ?? "");
+    } catch {
+      return bad("--release is required, as x.y.z (1.22.0)");
+    }
   }
 
   // Where
@@ -524,6 +540,20 @@ export async function main(
     if (cmd === "record") {
       const done = await recordFeedbackBead(db, report.teamId, report.reportId, beadId, (deps.now ?? (() => new Date()))());
       out(`Report ${shortOf(done)} is triaged with bead ${done.beadId}.`);
+      return 0;
+    }
+
+    if (cmd === "resolve") {
+      if (report.status === "resolved") {
+        out(`Report ${shortOf(report)} is already resolved in ${oneLine(report.release ?? "?")} (${report.resolvedAt ?? "?"}). Nothing was done.`);
+        return 0;
+      }
+      if (report.status !== "triaged") {
+        err(`Report ${shortOf(report)} is ${report.status}, not triaged: only a triaged report (one with a bead) can be resolved. Nothing was changed.`);
+        return 1;
+      }
+      const { report: done, replayed } = await resolveFeedback(db, report.teamId, report.reportId, { release, at: (deps.now ?? (() => new Date()))() });
+      out(replayed ? `Report ${shortOf(done)} was already resolved in ${oneLine(done.release ?? "?")}. Nothing was done.` : `Report ${shortOf(done)} is resolved in ${release}.`);
       return 0;
     }
 

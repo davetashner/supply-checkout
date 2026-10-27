@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "upcoming",
+      "notes": [],
+      "skip": {
+        "829": "Behind the scenes: the owner's tool for marking reported issues resolved"
+      }
+    },
+    {
       "version": "1.21.0",
       "date": "2026-10-27",
       "notes": [

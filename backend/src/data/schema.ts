@@ -298,7 +298,7 @@ export const FEEDBACK_ATTRIBUTES = [
  * with a projection required). The report as stored, with its triage fields;
  * no item in those partitions has anything else.
  */
-export const FEEDBACK_READ_ATTRIBUTES = [...FEEDBACK_ATTRIBUTES, "statusAt", "dismissReason"] as const;
+export const FEEDBACK_READ_ATTRIBUTES = [...FEEDBACK_ATTRIBUTES, "statusAt", "dismissReason", "resolvedAt", "release"] as const;
 
 /**
  * The only attributes the ops function may name when it triages or dismisses

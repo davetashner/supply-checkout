@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Db } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { createLocalTable, deleteLocalTable } from "../src/data/local-table.js";
-import { getFeedback, recordFeedbackBead } from "../src/data/feedback-owner.js";
+import { getFeedback, recordFeedbackBead, resolveFeedback } from "../src/data/feedback-owner.js";
 import type { PoolUser } from "../src/identity/cognito-admin.js";
 import { type BeadRequest, type Deps, listLine, main, parseCreated, quotesReport, showReport, unsafeText, USAGE, VERBATIM_RUN } from "../scripts/feedback.js";
 import { endpoint, rawItem, REGION } from "./helpers.js";
@@ -98,6 +98,8 @@ describe("what it prints", () => {
     const done = showReport({ ...report, status: "triaged", beadId: "supply-checkout-x.1", expected: "", dismissReason: "dup\nlicate" } as never);
     expect(done).toContain("Status: triaged (bead supply-checkout-x.1) (reason: dup licate)");
     expect(done).not.toContain("What was expected:");
+    expect(showReport({ ...report, status: "resolved", beadId: "supply-checkout-x.1", resolvedAt: "2026-10-27T12:00:00.000Z", release: "1.22.0" } as never)).toContain("Status: resolved (bead supply-checkout-x.1) (resolved 2026-10-27T12:00:00.000Z in 1.22.0)");
+    expect(showReport({ ...report, status: "resolved", resolvedAt: "2026-10-27T12:00:00.000Z" } as never)).toContain("Status: resolved (resolved 2026-10-27T12:00:00.000Z)");
     expect(showReport({ ...report, context: {} } as never)).toContain("App build: -  Screen: -  Browser: -");
   });
 });
@@ -135,6 +137,9 @@ describe("arguments", () => {
     ["an account ID in the summary", ["bead", FULL, "--title", "t", "--summary", "account 123456789012", ...WHERE], "Refused: --summary has a 12-digit"], // public-safety: allow
     ["record without a bead", ["record", FULL, ...WHERE], "--bead must be"],
     ["dismiss without a reason", ["dismiss", FULL, ...WHERE], "--reason is required"],
+    ["resolve without a release", ["resolve", FULL, ...WHERE], "--release is required"],
+    ["resolve with a bad release", ["resolve", FULL, "--release", "v1", ...WHERE], "--release is required"],
+    ["a release on another command", ["dismiss", FULL, "--reason", "x", "--release", "1.0.0", ...WHERE], "--release isn't an option of dismiss"],
     ["a long reason", ["dismiss", FULL, "--reason", "x".repeat(201), ...WHERE], "at most 200"],
     ["an email in the reason", ["dismiss", FULL, "--reason", "from pat@example.com", ...WHERE], "Refused: --reason has an email address"],
     ["an endpoint that isn't this machine", ["list", "--table", TABLE, "--region", REGION, "--endpoint", "http://dynamodb.example.com"], "--endpoint must be"],
@@ -501,6 +506,54 @@ describe.skipIf(!endpoint)("the commands on DynamoDB Local", () => {
     expect(q.code).toBe(1);
     expect(q.err).toEqual(["Refused: --reason holds the report's own words or IDs. Nothing was changed."]);
     expect((await getFeedback(db, quoting.teamId, quoting.reportId))?.status).toBe("new");
+  });
+
+  it("resolves a triaged report once, and lists and shows it", async () => {
+    const r = await put({ status: "triaged", beadId: "supply-checkout-fix.1" });
+    const ok = await cli(["resolve", r.teamId, r.reportId, "--release", "1.22.0"]);
+    expect(ok.code).toBe(0);
+    expect(ok.out.at(-1)).toBe(`Report ${r.shortId} is resolved in 1.22.0.`);
+    expect(await getFeedback(db, r.teamId, r.reportId)).toMatchObject({ status: "resolved", beadId: "supply-checkout-fix.1", statusAt: "2026-10-10T00:00:00.000Z", resolvedAt: "2026-10-10T00:00:00.000Z", release: "1.22.0" });
+    expect((await cli(["list", "--status", "resolved", "--limit", "100"])).out.join("\n")).toContain(r.shortId);
+    expect((await cli(["list", "--limit", "100"])).out.join("\n")).not.toContain(r.shortId);
+    const shown = await cli(["show", r.teamId, r.reportId]);
+    expect(shown.out).toContain("Status: resolved (bead supply-checkout-fix.1) (resolved 2026-10-10T00:00:00.000Z in 1.22.0)");
+    // Again, even for another release: said, and nothing changes
+    const again = await cli(["resolve", r.reportId, "--release", "1.23.0"]);
+    expect(again.code).toBe(0);
+    expect(again.out.at(-1)).toBe(`Report ${r.shortId} is already resolved in 1.22.0 (2026-10-10T00:00:00.000Z). Nothing was done.`);
+    expect((await getFeedback(db, r.teamId, r.reportId))?.release).toBe("1.22.0");
+  });
+
+  it("refuses to resolve a new or dismissed report and changes nothing", async () => {
+    for (const status of ["new", "dismissed"]) {
+      const r = await put({ status });
+      const refused = await cli(["resolve", r.teamId, r.reportId, "--release", "1.22.0"]);
+      expect(refused.code).toBe(1);
+      expect(refused.err).toEqual([`Report ${r.shortId} is ${status}, not triaged: only a triaged report (one with a bead) can be resolved. Nothing was changed.`]);
+      expect((await getFeedback(db, r.teamId, r.reportId))?.status).toBe(status);
+    }
+  });
+
+  it("says it was already resolved when someone resolves it between the read and the write", async () => {
+    const r = await put({ status: "triaged", beadId: "supply-checkout-fix.2" });
+    const real = connection(db);
+    let pending = true;
+    const racing = dbFromConnection({
+      ...real,
+      doc: {
+        send: async (command: unknown) => {
+          if (pending && command instanceof UpdateCommand) {
+            pending = false;
+            await resolveFeedback(db, r.teamId, r.reportId, { release: "1.21.0" });
+          }
+          return real.doc.send(command as never);
+        },
+      } as unknown as typeof real.doc,
+    });
+    const result = await cli(["resolve", r.teamId, r.reportId, "--release", "1.22.0"], { connect: () => racing });
+    expect(result.code).toBe(0);
+    expect(result.out.at(-1)).toBe(`Report ${r.shortId} was already resolved in 1.21.0. Nothing was done.`);
   });
 
   it("never prints report text in a failure", async () => {
