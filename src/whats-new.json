@@ -1,6 +1,7 @@
 {
   "releases": [
     {
+      "version": "upcoming",
       "notes": [
         {
           "title": "A daily digest of returns, by email",
