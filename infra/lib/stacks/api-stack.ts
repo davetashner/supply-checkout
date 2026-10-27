@@ -52,6 +52,7 @@ import {
   CUSTOMER_LINK_TEAM_ATTRIBUTES,
   DATA_ROLE_DENIED_ATTRIBUTES,
   FEEDBACK_ATTRIBUTES,
+  FEEDBACK_OWN_ATTRIBUTES,
   FEEDBACK_PREFIX,
   FEEDBACK_READ_ATTRIBUTES,
   FEEDBACK_STATUS_ATTRIBUTES,
@@ -474,6 +475,24 @@ export class ApiStack extends SupplyCheckoutStack {
                   "dynamodb:Attributes": [...FEEDBACK_ATTRIBUTES],
                 },
                 StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            // "Your reports" (supply-checkout-loxj): Query only (no Scan, no GetItem, no index), in
+            // the path's team's reports partition, naming only the list's attributes (no contact
+            // choice, bead or dismissal reason) with a projection required. The partition holds
+            // every member's reports and IAM can't filter on `userId`, so the handler's query
+            // filters on the token's user; the team tag is set only after the membership check
+            new PolicyStatement({
+              sid: "ReadOwnFeedbackReports",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:Query"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`${FEEDBACK_PREFIX}${tag(ACCOUNT_SESSION_TAGS.teamId)}`],
+                  "dynamodb:Attributes": [...FEEDBACK_OWN_ATTRIBUTES],
+                },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
             tableKeyStatement(),

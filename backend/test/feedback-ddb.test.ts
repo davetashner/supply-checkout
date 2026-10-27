@@ -19,6 +19,7 @@ import {
   FEEDBACK_PER_USER_PER_DAY,
   FeedbackLimitError,
   feedbackInput,
+  listOwnFeedback,
   feedbackIdFor,
   NotFoundError,
   purgeTeam,
@@ -94,6 +95,26 @@ describe.skipIf(!endpoint)("reports on DynamoDB Local", () => {
     expect(await rawItem(table.db, `USER#${viewerId}`, "LIMIT#FEEDBACK#2026-10-09")).toMatchObject({ count: 1, type: "feedbackSent", expiresAt: Math.floor(now.getTime() / 1000) + 2 * 86_400 });
     // Nothing of it in the team's own partition
     expect((await partition(`TEAM#${teamId}`)).filter((i) => String(i.SK).includes("REPORT")).length).toBe(0);
+  });
+
+  it("lists a person's own reports on a real table: filtered to their user in the team's partition, projected, newest first (supply-checkout-loxj)", async () => {
+    const now = new Date("2026-10-09T12:00:00.000Z");
+    const { teamId, owner, viewer, viewerId } = await team(now);
+    const later = (n: number) => new Date(now.getTime() + n * 1000);
+    const a = await sendFeedback(table.db, viewer, input("First\nsecond line", { expected: "private", contactOk: true }), "ddb-mine-0001", later(1));
+    const b = await sendFeedback(table.db, viewer, input("Second"), "ddb-mine-0002", later(2));
+    await sendFeedback(table.db, owner, input("The owner's"), "ddb-mine-0003", later(3));
+    await dismissFeedback(table.db, teamId, b.reportId, { reason: "internal note" });
+    const other = await team(now);
+    await sendFeedback(table.db, other.viewer, input("Another team's"), "ddb-mine-0004", later(4));
+    const { reports, more } = await listOwnFeedback(table.db, viewer);
+    expect(more).toBe(false);
+    expect(reports).toEqual([
+      { id: b.reportId, shortId: b.shortId, createdAt: later(2).toISOString(), category: "bug", summary: "Second", status: "not_planned" },
+      { id: a.reportId, shortId: a.shortId, createdAt: later(1).toISOString(), category: "bug", summary: "First", status: "received" },
+    ]);
+    expect(JSON.stringify(reports)).not.toContain(viewerId);
+    expect((await listOwnFeedback(table.db, owner)).reports.map((r) => r.summary)).toEqual(["The owner's"]);
   });
 
   it("allows 5 a user a day and no more, and a retry at the limit still answers", async () => {

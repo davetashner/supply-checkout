@@ -93,6 +93,10 @@
 //                                   and the names (displayName) of those who
 //                                   have one (supply-checkout-w5x0). Never an
 //                                   email: that stays owners-only (members).
+//   GET    /teams/{teamId}/feedback/mine  Any member: their own reports in the
+//                                   team and each one's status (supply-checkout-loxj);
+//                                   never another person's, a contact choice,
+//                                   a bead or an internal reason.
 //   POST   /teams/{teamId}/feedback  Any member, a viewer too: sends a report
 //                                   from the Report an issue form
 //                                   (supply-checkout-bmsh.1). Stored in the
@@ -289,6 +293,7 @@ import {
   FeedbackLimitError,
   feedbackInput,
   sendFeedback,
+  listOwnFeedback,
   type PhotoRecord,
   photoIdsOf,
   removePhoto,
@@ -1543,6 +1548,19 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     return json(sent.created ? 201 : 200, { report: { id: sent.reportId, shortId: sent.shortId } });
   }
 
+  /**
+   * GET /teams/{teamId}/feedback/mine: the caller's own reports in the team
+   * and what happened to each, any role. The team is the path's, after the
+   * membership check (someone who left gets the 403); the user is the
+   * token's, never a parameter. Nothing is logged but the count.
+   */
+  async function listMyReports(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const { teamId, ctx } = await teamContext(event, userId);
+    const { reports, more } = await listOwnFeedback(dbFor({ userId, teamId }), ctx);
+    obs.logger.info("Reports listed", { teamId, count: reports.length });
+    return json(200, { reports, more });
+  }
+
   const actions: Record<AccountRoute["action"], (event: DataEvent, userId: string) => Promise<APIGatewayProxyStructuredResultV2>> = {
     me,
     createTeam: newTeam,
@@ -1569,6 +1587,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     setName: setOwnName,
     listPhotos,
     sendFeedback: sendReport,
+    listMyFeedback: listMyReports,
   };
 
   return async (event: DataEvent, context?: Context): Promise<APIGatewayProxyStructuredResultV2> => {

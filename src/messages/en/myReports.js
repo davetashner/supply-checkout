@@ -1,0 +1,20 @@
+// Your reports (src/aws/my-reports.js)
+export default {
+  "myReports.title": "Your reports",
+  "myReports.hint": "The issues you sent with Report an issue in this team, and what happened to each. Only you can see them here.",
+  "myReports.loading": "Loading your reports…",
+  "myReports.close": "Close",
+  "myReports.none": "You haven't reported anything in this team yet. Use Report an issue to tell us about a problem or an idea.",
+  "myReports.more": "Showing your newest reports.",
+  "myReports.failed": "Couldn't load your reports. Check your connection and try again.",
+  "myReports.notInTeam": "You aren't in this team any more, so its reports can't be shown. Reload the page, then try again.",
+  "myReports.retry": "Try again",
+  "myReports.kindBug": "Problem",
+  "myReports.kindIdea": "Idea",
+  "myReports.kindQuestion": "Question",
+  "myReports.received": "Received",
+  "myReports.looking": "Being looked at",
+  "myReports.fixedIn": "Fixed in {release}",
+  "myReports.fixed": "Fixed",
+  "myReports.notPlanned": "Not planned",
+};

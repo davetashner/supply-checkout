@@ -34,6 +34,7 @@ import { openInvoices } from "./invoices.js";
 import { showWhatsNew } from "./whats-new.js";
 import { syncLanguage } from "./language.js";
 import { openReport } from "./report.js";
+import { openMyReports } from "./my-reports.js";
 import { helpLink, wireHelp } from "./help.js";
 import { legalNotice } from "./legal.js";
 import { createPhotos } from "./photos.js";
@@ -538,7 +539,7 @@ export async function start(config) {
     // Invoices: owners of a team with a Stripe customer, closed or not, so a closed team's owners can save them
     // before it's deleted (the server refuses once the deletion is due)
     const invoices = owner && team.billingAccount;
-    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">${msg("account.verifyEmail")}</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">${msg("account.members")}</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">${msg("account.billing")}</button>` : ""}${invoices ? `<button type="button" class="btn ghost" id="invoices">${msg("account.invoices")}</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">${msg("account.importCsv")}</button><button type="button" class="btn ghost" id="teamSettings">${msg("account.teamSettings")}</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">${msg("account.leaveTeam")}</button>`}${identity(who, team, me.user.id)}${helpLink()}<button type="button" class="btn ghost" id="reportIssue">${msg("account.reportIssue")}</button><button type="button" class="btn ghost" id="signOut">${msg("account.signOut")}</button>`
+    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">${msg("account.verifyEmail")}</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">${msg("account.members")}</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">${msg("account.billing")}</button>` : ""}${invoices ? `<button type="button" class="btn ghost" id="invoices">${msg("account.invoices")}</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">${msg("account.importCsv")}</button><button type="button" class="btn ghost" id="teamSettings">${msg("account.teamSettings")}</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">${msg("account.leaveTeam")}</button>`}${identity(who, team, me.user.id)}${helpLink()}<button type="button" class="btn ghost" id="reportIssue">${msg("account.reportIssue")}</button><button type="button" class="btn ghost" id="myReports">${msg("account.myReports")}</button><button type="button" class="btn ghost" id="signOut">${msg("account.signOut")}</button>`
       + (team.closedAt ? `<p class="closed-note" role="status">${msg("account.closedNote", { closed: esc(day(team.closedAt)), deletes: esc(day(team.deletesAt)) })}${owner ? msg("account.closedExport") : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">${msg("account.reopenTeam")}</button>` : ""}` : "")
       + (!team.closedAt && !ended && team.cancelsAt ? `<p class="closed-note" role="status" id="cancelNote">${msg("account.cancelNote", { date: esc(day(team.cancelsAt)) })}${msg(billing ? "account.cancelRenewOwner" : "account.cancelRenew")}</p>` : "")
       + (!team.closedAt && !ended && team.paymentGraceEndsAt ? `<p class="closed-note" role="status" id="graceNote">${msg("account.graceNote", { date: esc(moment(team.paymentGraceEndsAt)) })}${msg(owner ? "account.graceOwner" : "account.grace")}</p>` : "")
@@ -547,6 +548,7 @@ export async function start(config) {
     drawSwitcher(bar.querySelector(".team-pick"), me.teams, team);
     bar.querySelector("#signOut").addEventListener("click", signOut);
     bar.querySelector("#reportIssue").addEventListener("click", (e) => openReport(session.api, { teamId: team.id, role: team.role, opener: e.currentTarget }));
+    bar.querySelector("#myReports").addEventListener("click", (e) => openMyReports(session.api, team, e.currentTarget));
     wireHelp(bar);
     bar.querySelector("#accountOpen").addEventListener("click", () => account(me, who));
     // Verifying here needs nothing else to change: the team is open, and invites only matter
