@@ -153,7 +153,7 @@ describe("telling the sender", () => {
 
   it("tells at most REPORT_FIXED_MAX_PER_RUN a run, and carries on at the next", async () => {
     for (let i = 0; i < REPORT_FIXED_MAX_PER_RUN + 3; i++) report(`report-${String(i).padStart(4, "0")}`, { GSI1SK: `2026-10-20T00:00:00.000Z#${i}` });
-    expect(await run()).toMatchObject({ candidates: REPORT_FIXED_MAX_PER_RUN, sent: REPORT_FIXED_MAX_PER_RUN });
+    expect(await run()).toMatchObject({ candidates: REPORT_FIXED_MAX_PER_RUN + 3, sent: REPORT_FIXED_MAX_PER_RUN });
     expect(await run()).toMatchObject({ candidates: 3, sent: 3 });
     expect(mails.sent).toHaveLength(REPORT_FIXED_MAX_PER_RUN + 3);
   });
@@ -219,10 +219,52 @@ describe("the stages", () => {
   it("stops at the run's limit, with the earlier stage first", async () => {
     for (let i = 0; i < REPORT_FIXED_MAX_PER_RUN; i++) staged(`new-${String(i).padStart(4, "0")}`, "new");
     staged("report-late", "resolved");
-    expect(await run()).toMatchObject({ candidates: REPORT_FIXED_MAX_PER_RUN, sent: REPORT_FIXED_MAX_PER_RUN });
+    expect(await run()).toMatchObject({ candidates: REPORT_FIXED_MAX_PER_RUN + 1, sent: REPORT_FIXED_MAX_PER_RUN });
     expect(stageMail().every((stage) => stage === "received")).toBe(true);
     expect(await run()).toMatchObject({ candidates: 1 });
     expect(stageMail().at(-1)).toBe("resolved");
+  });
+
+  it("is not starved of its limit by reports left for a later run: stuck ones use no places", async () => {
+    // More than a run's limit of reports that can't be sent now, all older than the sendable ones: a closed team, and senders with no verified address
+    for (let i = 0; i < REPORT_FIXED_MAX_PER_RUN + 5; i++) {
+      staged(`closed-${String(i).padStart(4, "0")}`, "new", { teamId: "team-c", GSI1SK: `2026-10-14T00:00:00.000Z#c${i}` }, { team: { closedAt: "2026-10-26T00:00:00.000Z" } });
+    }
+    const unverified = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+    accounts.set(unverified, account({ emailVerified: false }));
+    for (let i = 0; i < REPORT_FIXED_MAX_PER_RUN + 5; i++) {
+      staged(`noaddr-${String(i).padStart(4, "0")}`, "new", { userId: unverified, GSI1SK: `2026-10-15T00:00:00.000Z#n${i}` });
+    }
+    staged("report-newer", "new", { GSI1SK: "2026-10-26T00:00:00.000Z#z", message: "The sendable one" });
+    const result = await run();
+    expect(result.sent).toBe(1);
+    expect(mails.sent.map((m) => (m.input as { message: string }).message)).toEqual(["The sendable one"]);
+    expect(mark("report-newer")).toMatchObject({ notifiedReceivedOutcome: "sent" });
+    // Nothing stuck was marked, so the next run looks at them again
+    expect(mark("closed-0000", "team-c")).not.toHaveProperty("notifiedReceivedAt");
+    expect(mark("noaddr-0000")).not.toHaveProperty("notifiedReceivedAt");
+  });
+
+  it("starts the received read at the age cutoff, so a new report older than that is never read", async () => {
+    staged("report-old", "new", { GSI1SK: "2026-10-12T00:00:00.000Z#old", createdAt: "2026-10-12T00:00:00.000Z" });
+    const keyed: Record<string, unknown>[] = [];
+    const base = reportFixedPolicy(denied);
+    const handler = createReportFixedHandler({
+      db: table.guarded((command, input) => {
+        if (command === "QueryCommand") keyed.push(input);
+        return base(command, input);
+      }),
+      obs: obs(),
+      mailer: mails.mailer,
+      findAccount,
+      now: () => NOW,
+    });
+    await handler();
+    const received = keyed.find((q) => (q.ExpressionAttributeValues as Record<string, unknown>)[":pk"] === "FEEDBACK#STATUS#new") as Record<string, Record<string, unknown>>;
+    expect(received.ExpressionAttributeValues).toMatchObject({ ":from": "2026-10-13T12:00:00.000Z" });
+    expect(received.KeyConditionExpression).toContain("GSI1SK BETWEEN :from AND :to");
+    expect(mails.sent).toEqual([]);
+    expect(denied).toEqual([]);
   });
 
   it("tells nobody about a dismissed report, or a new or triaged one whose sender did not tick contact OK", async () => {
@@ -473,17 +515,16 @@ describe("the report fixed email's data calls", () => {
   const at = new Date(NOW);
   const open = () => table.guarded(() => true);
 
-  it("pages through the status partition until it has enough, and reads an empty answer as none", async () => {
+  it("pages through the whole status partition, and reads an empty answer as none", async () => {
     for (let i = 0; i < 5; i++) report(`report-000${i}`, { GSI1SK: `2026-10-20T00:00:00.000Z#${i}` });
     table.pageItems = 2;
-    expect((await listFixedReports(open(), at, 50)).reports).toHaveLength(5);
-    expect((await listFixedReports(open(), at, 3)).reports).toHaveLength(3);
-    expect((await listFixedReports(fakeDb(async () => ({})), at, 50)).reports).toEqual([]);
+    expect((await listFixedReports(open(), at)).reports).toHaveLength(5);
+    expect((await listFixedReports(fakeDb(async () => ({})), at)).reports).toEqual([]);
   });
 
   it("reads a report with no text as an empty quote", async () => {
     report("report-0001", { message: undefined });
-    expect((await listFixedReports(open(), at, 50)).reports[0]?.message).toBe("");
+    expect((await listFixedReports(open(), at)).reports[0]?.message).toBe("");
     await run();
     expect(mails.sent[0]?.input).toMatchObject({ message: "" });
   });

@@ -433,7 +433,7 @@ describe("email stack", () => {
           Condition: {
             "ForAllValues:StringEquals": {
               "dynamodb:LeadingKeys": ["FEEDBACK#STATUS#new", "FEEDBACK#STATUS#triaged", "FEEDBACK#STATUS#resolved"],
-              "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "type", "status", "reportId", "teamId", "userId", "message", "contactOk", "release", "createdAt", "statusAt", "resolvedAt", "notifiedReceivedAt", "notifiedTriagedAt", "notifiedResolvedAt"],
+              "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "type", "status", "reportId", "teamId", "userId", "message", "contactOk", "release", "createdAt", "statusAt", "resolvedAt", "notifiedReceivedAt", "notifiedTriagedAt", "notifiedResolvedAt"],
             },
             StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
           },

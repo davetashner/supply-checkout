@@ -17,7 +17,7 @@
 //
 // Each run lists the reports not yet marked for their stage (listFixedReports:
 // contact OK, the stage began within REPORT_FIXED_MAX_AGE_DAYS, at most
-// REPORT_FIXED_MAX_PER_RUN). For each, at send time:
+// REPORT_FIXED_MAX_PER_RUN places in a run, used by reports sent, claimed or marked; one left for a later run (closed team, no verified address, failed lookup) uses none, so a pile of stuck reports cannot starve newer ones). For each, at send time:
 //
 // - the team must still be there and not be purging (a closed team is left for
 //   a later run: it may reopen), and the sender must still be on it; if not,
@@ -94,16 +94,17 @@ export function createReportFixedHandler(deps: ReportFixedDeps) {
       await claimFixedNotice(db, report, "skipped", now);
     };
 
-    async function tell(report: FixedReport): Promise<void> {
+    /** Whether the report used up a place in the run: false for one left for a later run (closed team, no verified address, lookup failed), which would otherwise starve newer ones of the cap. */
+    async function tell(report: FixedReport): Promise<boolean> {
       const team = await readFixedTeam(db, report.teamId);
-      if (!team || team.purging) return skip(report, "team_gone");
+      if (!team || team.purging) return skip(report, "team_gone").then(() => true);
       if (team.closed) {
         // It may reopen: not marked, a later run looks again (until the report is too old)
         skipped++;
         obs.logger.info("Report email skipped", { teamId: report.teamId, reportId: report.reportId, stage: report.stage, reason: "team_closed" });
-        return;
+        return false;
       }
-      if (!(await isReportTeamMember(db, report.teamId, report.userId))) return skip(report, "not_member");
+      if (!(await isReportTeamMember(db, report.teamId, report.userId))) return skip(report, "not_member").then(() => true);
 
       let account: Awaited<ReturnType<FindAccount>>;
       try {
@@ -111,9 +112,9 @@ export function createReportFixedHandler(deps: ReportFixedDeps) {
       } catch (error) {
         fail(report, "lookup_failed", errorName(error));
         retry = true;
-        return;
+        return false;
       }
-      if (!account) return skip(report, "user_gone");
+      if (!account) return skip(report, "user_gone").then(() => true);
       let to: string | undefined;
       try {
         to = account.emailVerified && account.email ? normalizeEmail(account.email) : undefined;
@@ -124,7 +125,7 @@ export function createReportFixedHandler(deps: ReportFixedDeps) {
         // Not marked: they may verify an address before the report is too old
         skipped++;
         obs.logger.info("Report email skipped", { teamId: report.teamId, reportId: report.reportId, stage: report.stage, reason: "no_address" });
-        return;
+        return false;
       }
 
       let language: Awaited<ReturnType<typeof ownerLanguage>>;
@@ -135,7 +136,7 @@ export function createReportFixedHandler(deps: ReportFixedDeps) {
         obs.logger.warn("Report email language not read", { teamId: report.teamId, code: errorName(error) });
       }
 
-      if (!(await claimFixedNotice(db, report, "sent", now))) return; // told by another run, or no longer resolved
+      if (!(await claimFixedNotice(db, report, "sent", now))) return true; // told by another run, or no longer in this stage
       try {
         await deps.mailer.send(to, { kind: "reportUpdate", stage: report.stage, message: report.message, ...(report.stage === "resolved" ? { release: report.release } : {}), ...(language ? { language } : {}) }, { teamId: report.teamId });
       } catch (error) {
@@ -151,18 +152,21 @@ export function createReportFixedHandler(deps: ReportFixedDeps) {
         } catch (mark) {
           obs.logger.error("Report email mark not updated", { teamId: report.teamId, reportId: report.reportId, stage: report.stage, code: errorName(mark) });
         }
-        return;
+        return true;
       }
       sent++;
       obs.count(BusinessMetric.ReportFixedEmails, 1, { teamId: report.teamId, stage: report.stage, ...testMark(isTestAccount(account, deps.testMailDomain)) });
       obs.logger.info("Report email sent", { teamId: report.teamId, reportId: report.reportId, stage: report.stage });
+      return true;
     }
 
-    const { reports, invalid } = await listFixedReports(db, now, REPORT_FIXED_MAX_PER_RUN);
+    const { reports, invalid } = await listFixedReports(db, now);
     if (invalid > 0) obs.logger.warn("Report emails: reports skipped as malformed", { invalid });
+    let used = 0;
     for (const report of reports) {
+      if (used >= REPORT_FIXED_MAX_PER_RUN) break;
       try {
-        await tell(report);
+        if (await tell(report)) used++;
       } catch (error) {
         fail(report, "error", errorName(error));
         retry = true;

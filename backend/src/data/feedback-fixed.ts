@@ -27,7 +27,7 @@ import { GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { FEEDBACK_RELEASE } from "./feedback.js";
 import { feedbackStatusPartition, id, keys } from "./keys.js";
-import { GSI1, GSI1PK, REPORT_FIXED_READ_ATTRIBUTES, REPORT_FIXED_TEAM_ATTRIBUTES } from "./schema.js";
+import { GSI1, GSI1PK, GSI1SK, REPORT_FIXED_READ_ATTRIBUTES, REPORT_FIXED_TEAM_ATTRIBUTES } from "./schema.js";
 
 /** The stages of a report's mail, in order: when the stage began is the attribute `since`, and the report is in `status` while it lasts. */
 export const FIXED_STAGES = {
@@ -37,7 +37,7 @@ export const FIXED_STAGES = {
 } as const;
 export type FixedStage = keyof typeof FIXED_STAGES;
 
-/** A report that is too old for a stage's email (REPORT_FIXED_MAX_AGE_DAYS since the stage began) is not told: a stale "it's fixed" is odd, and the partitions read stay bounded by it. */
+/** A report that is too old for a stage's email (REPORT_FIXED_MAX_AGE_DAYS since the stage began) is not told: a stale "it's fixed" is odd. It bounds the `new` read (that partition sorts by createdAt, so the query starts at the cutoff). The `triaged` and `resolved` partitions sort by createdAt, not by when the stage began, so they are read whole, every run: bounded by the 2-year report TTL and the 5-reports-per-user-per-day cap, not by this age. */
 export const REPORT_FIXED_MAX_AGE_DAYS = 14;
 
 /** What the mark records: told (`sent`), SES refused the address (`refused`), or no one to tell (`skipped`). */
@@ -87,12 +87,13 @@ function fixedReport(item: Record<string, unknown>, stage: FixedStage, cutoff: s
 }
 
 /**
- * Up to `limit` reports to tell, across the stages (received first, then
- * triaged, then resolved; oldest first within one). An item whose shape, keys,
+ * The reports to tell, across the stages (received first, then triaged, then
+ * resolved; oldest first within one). The caller applies its per-run limit,
+ * counting only the reports it acts on. An item whose shape, keys,
  * times or release is not right is left out and counted in `invalid` (the
  * handler logs the count).
  */
-export async function listFixedReports(db: Db, now: Date, limit: number): Promise<{ readonly reports: FixedReport[]; readonly invalid: number }> {
+export async function listFixedReports(db: Db, now: Date): Promise<{ readonly reports: FixedReport[]; readonly invalid: number }> {
   const cutoff = new Date(now.getTime() - REPORT_FIXED_MAX_AGE_DAYS * 86_400_000).toISOString();
   const p = projection(REPORT_FIXED_READ_ATTRIBUTES);
   const n = (attribute: (typeof REPORT_FIXED_READ_ATTRIBUTES)[number]) => `#p${REPORT_FIXED_READ_ATTRIBUTES.indexOf(attribute)}`;
@@ -106,12 +107,13 @@ export async function listFixedReports(db: Db, now: Date, limit: number): Promis
         new QueryCommand({
           TableName: db.tableName,
           IndexName: GSI1,
-          KeyConditionExpression: `${GSI1PK} = :pk`,
+          // `new` sorts by createdAt, which is when its stage began: start at the cutoff. The others sort by createdAt, not their own stage time
+          KeyConditionExpression: stage === "received" ? `${GSI1PK} = :pk AND ${GSI1SK} BETWEEN :from AND :to` : `${GSI1PK} = :pk`,
           // Cheaply, in the index: only reports whose sender asked to hear, that no run has marked for this stage, whose stage began lately
           FilterExpression: `${n("contactOk")} = :yes AND attribute_not_exists(${n(def.mark)}) AND ${n(def.since)} >= :cutoff`,
           Select: "SPECIFIC_ATTRIBUTES",
           ...p,
-          ExpressionAttributeValues: { ":pk": feedbackStatusPartition(def.status), ":yes": true, ":cutoff": cutoff },
+          ExpressionAttributeValues: { ":pk": feedbackStatusPartition(def.status), ":yes": true, ":cutoff": cutoff, ...(stage === "received" ? { ":from": cutoff, ":to": `${now.toISOString()}~` } : {}) },
           ExclusiveStartKey,
         }),
       );
@@ -121,10 +123,9 @@ export async function listFixedReports(db: Db, now: Date, limit: number): Promis
         else invalid++;
       }
       ExclusiveStartKey = page.LastEvaluatedKey;
-    } while (ExclusiveStartKey && reports.length < limit);
-    if (reports.length >= limit) break;
+    } while (ExclusiveStartKey);
   }
-  return { reports: reports.slice(0, limit), invalid };
+  return { reports, invalid };
 }
 
 /** A team as the email needs it: whether it's closed (it may be reopened) or purging (it's going). Undefined if the team item is gone. */

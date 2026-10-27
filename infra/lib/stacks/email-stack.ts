@@ -321,7 +321,9 @@ export class EmailStack extends SupplyCheckoutStack {
     fn.addToRolePolicy(
       new PolicyStatement({
         sid: "MarkReportTold",
-        // Its once-only mark on a report, returning nothing
+        // Its once-only marks on a report, returning nothing. Accepted residual: `status` and `contactOk` are in dynamodb:Attributes because
+        // the claim's condition reads them, and IAM can't tell a condition from a SET, so a compromised role could set those two (never message,
+        // userId, release or the GSI1 keys)
         actions: ["dynamodb:UpdateItem"],
         resources: [tableArn],
         conditions: {

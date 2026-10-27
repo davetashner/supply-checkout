@@ -2163,6 +2163,7 @@
                     "PK",
                     "SK",
                     "GSI1PK",
+                    "GSI1SK",
                     "type",
                     "status",
                     "reportId",

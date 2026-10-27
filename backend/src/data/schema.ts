@@ -322,11 +322,17 @@ export const FEEDBACK_STATUS_ATTRIBUTES = [PK, SK, GSI1PK, "type", "status", "be
  * - UpdateItem in `FEEDBACK#` partitions naming only REPORT_FIXED_MARK_ATTRIBUTES:
  *   its once-only `notified<Stage>At` mark and `notified<Stage>Outcome` for
  *   each stage, on the conditions that the report is in that stage's status and its sender ticked contact OK.
+ *   Accepted residual: `status` and `contactOk` are in that list because the
+ *   claim's condition reads them, and IAM cannot tell a condition's attribute
+ *   from one a SET writes. So a compromised role could set a report's `status`
+ *   or `contactOk` (and the marks), but not its `message`, `userId`, `release`
+ *   or GSI1 keys: it cannot change what is quoted, who is told or where the
+ *   report is indexed.
  * - GetItem in `TEAM#` partitions naming only REPORT_FIXED_TEAM_ATTRIBUTES:
  *   the team item's closure and purge marks, and a MEMBER item's keys (the
  *   sender must still be on the team).
  */
-export const REPORT_FIXED_READ_ATTRIBUTES = [PK, SK, GSI1PK, "type", "status", "reportId", "teamId", "userId", "message", "contactOk", "release", "createdAt", "statusAt", "resolvedAt", "notifiedReceivedAt", "notifiedTriagedAt", "notifiedResolvedAt"] as const;
+export const REPORT_FIXED_READ_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "type", "status", "reportId", "teamId", "userId", "message", "contactOk", "release", "createdAt", "statusAt", "resolvedAt", "notifiedReceivedAt", "notifiedTriagedAt", "notifiedResolvedAt"] as const;
 export const REPORT_FIXED_MARK_ATTRIBUTES = [PK, SK, "type", "status", "contactOk", "notifiedReceivedAt", "notifiedReceivedOutcome", "notifiedTriagedAt", "notifiedTriagedOutcome", "notifiedResolvedAt", "notifiedResolvedOutcome"] as const;
 export const REPORT_FIXED_TEAM_ATTRIBUTES = [PK, SK, "closedAt", "purging"] as const;
 

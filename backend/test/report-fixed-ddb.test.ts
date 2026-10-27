@@ -44,14 +44,12 @@ describe.skipIf(!endpoint)("the report fixed email's data (DynamoDB Local)", () 
     const sent = await sendFeedback(table.db, triaged.context, feedbackInput({ category: "bug", message: "Not yet", contactOk: true }), "key-triaged-0001", at("2026-10-20T01:00:00.000Z"));
     await recordFeedbackBead(table.db, triaged.team.teamId, sent.reportId, "supply-checkout-abc.2", at("2026-10-27T09:00:00.000Z"));
 
-    const listed = await listFixedReports(table.db, NOW, 50);
+    const listed = await listFixedReports(table.db, NOW);
     expect(listed.invalid).toBe(0);
     expect(listed.reports.filter((r) => r.stage === "resolved")).toEqual([{ ...yes.report, userId: yes.ownerId, message: "Tell me", release: "1.22.0" }]);
     // The triaged one is listed at its own stage, with no release; the resolved report only as resolved
     expect(listed.reports.filter((r) => r.stage === "triaged")).toEqual([expect.objectContaining({ teamId: triaged.team.teamId, reportId: sent.reportId, message: "Not yet", release: "" })]);
     expect(listed.reports).toHaveLength(2);
-    // The limit
-    expect((await listFixedReports(table.db, NOW, 1)).reports).toHaveLength(1);
   });
 
   it("lists a new report as received and a triaged one as triaged, each with its own mark, and never a dismissed one", async () => {
@@ -64,7 +62,7 @@ describe.skipIf(!endpoint)("the report fixed email's data (DynamoDB Local)", () 
     await send("0004", false);
     await recordFeedbackBead(table.db, made.team.teamId, looked.reportId, "supply-checkout-abc.3", at("2026-10-27T09:00:00.000Z"));
     await dismissFeedback(table.db, made.team.teamId, dismissed.reportId, { reason: "Duplicate" });
-    const mine = (await listFixedReports(table.db, NOW, 50)).reports.filter((r) => r.teamId === made.team.teamId);
+    const mine = (await listFixedReports(table.db, NOW)).reports.filter((r) => r.teamId === made.team.teamId);
     expect(mine.map((r) => [r.stage, r.reportId, r.release]).sort()).toEqual([["received", fresh.reportId, ""], ["triaged", looked.reportId, ""]].sort());
     const received = { stage: "received" as const, teamId: made.team.teamId, reportId: fresh.reportId };
     expect(await claimFixedNotice(table.db, received, "sent", NOW)).toBe(true);
@@ -74,7 +72,7 @@ describe.skipIf(!endpoint)("the report fixed email's data (DynamoDB Local)", () 
     expect(await claimFixedNotice(table.db, { ...received, stage: "triaged" }, "sent", NOW)).toBe(false);
     // The owner triages it later: the received mark stays, and the triaged stage is open
     await recordFeedbackBead(table.db, made.team.teamId, fresh.reportId, "supply-checkout-abc.4", at("2026-10-27T10:00:00.000Z"));
-    const after = (await listFixedReports(table.db, NOW, 50)).reports.filter((r) => r.reportId === fresh.reportId);
+    const after = (await listFixedReports(table.db, NOW)).reports.filter((r) => r.reportId === fresh.reportId);
     expect(after.map((r) => r.stage)).toEqual(["triaged"]);
   });
 
@@ -83,7 +81,7 @@ describe.skipIf(!endpoint)("the report fixed email's data (DynamoDB Local)", () 
     expect(await claimFixedNotice(table.db, report, "sent", NOW)).toBe(true);
     expect(await rawItem(table.db, `FEEDBACK#${report.teamId}`, `REPORT#${report.reportId}`)).toMatchObject({ notifiedResolvedAt: NOW.toISOString(), notifiedResolvedOutcome: "sent", status: "resolved" });
     expect(await claimFixedNotice(table.db, report, "sent", NOW)).toBe(false);
-    expect((await listFixedReports(table.db, NOW, 50)).reports.map((r) => r.reportId)).not.toContain(report.reportId);
+    expect((await listFixedReports(table.db, NOW)).reports.map((r) => r.reportId)).not.toContain(report.reportId);
 
     // Someone else's mark (another time) is not given back or changed
     expect(await releaseFixedNotice(table.db, report, at("2026-10-27T11:00:00.000Z"))).toBe(false);
@@ -102,7 +100,7 @@ describe.skipIf(!endpoint)("the report fixed email's data (DynamoDB Local)", () 
     const raw = await rawItem(table.db, `FEEDBACK#${report.teamId}`, `REPORT#${report.reportId}`);
     expect(raw).not.toHaveProperty("notifiedResolvedAt");
     expect(raw).not.toHaveProperty("notifiedResolvedOutcome");
-    expect((await listFixedReports(table.db, NOW, 50)).reports.map((r) => r.reportId)).toContain(report.reportId);
+    expect((await listFixedReports(table.db, NOW)).reports.map((r) => r.reportId)).toContain(report.reportId);
     expect(await claimFixedNotice(table.db, report, "skipped", NOW)).toBe(true);
     // A skipped mark is not given back as if it were a send
     expect(await releaseFixedNotice(table.db, report, NOW)).toBe(false);
