@@ -37,6 +37,7 @@ import { openReport } from "./report.js";
 import { helpLink, wireHelp } from "./help.js";
 import { legalNotice } from "./legal.js";
 import { createPhotos } from "./photos.js";
+import { showNameNudge } from "./name-nudge.js";
 import { avatarHTML } from "../avatar.js";
 import { PARAMS as CAMPAIGN_PARAMS, STORAGE_KEY as CAMPAIGN_KEY, loadCampaign, readCampaign, saveCampaign } from "../campaign.js";
 
@@ -713,6 +714,8 @@ export async function start(config) {
     let bar = teamBar(me, team, fr, name);
     // Drawn now, as the team opens, so it never moves anything under a finger later
     hideWhatsNew = showWhatsNew(session.api, me.user.preferences, bar);
+    // A user with no name set is asked for one, once (they show as "Someone" to teammates otherwise)
+    showNameNudge(bar, me.user.id, claims, () => account(me, name));
     // /me was just loaded
     meAt = Date.now();
     let viewOnly = viewOnlyFor(team);
@@ -736,6 +739,17 @@ export async function start(config) {
       viewOnly = viewOnlyFor(team);
     })(); };
     const profile = { id: me.user.id, name, isMe: true };
+    // For an owner: each member's name or email (GET /teams/{teamId}/members), asked for once
+    // when a teammate has no name, and again at the next draw if that didn't come. Nothing is logged.
+    let memberNames = null, memberLoad = null;
+    const ownerMembers = async () => {
+      if (memberNames) return memberNames;
+      memberLoad ||= session.api("GET", `/teams/${encodeURIComponent(team.id)}/members`).then(({ members }) => {
+        memberNames = new Map(members.map((m) => [m.userId, m.name || m.email || ""]).filter(([, who]) => who));
+      }, () => {}).finally(() => { memberLoad = null; });
+      await memberLoad;
+      return memberNames || new Map();
+    };
     // A name saved on Account: on the team bar's chip, and as their own profile from now on.
     // Nothing once the session has ended meanwhile (the sign-in screen has taken over)
     renamed = () => {
@@ -770,10 +784,15 @@ export async function start(config) {
         // who has either (supply-checkout-w5x0); "" for no name shows as "Someone". The first draw
         // waits a moment for the list. A teammate whose photo's link is being asked for again is
         // still there, with a blank circle meanwhile, so the photo can take its place.
+        // An owner also sees a nameless teammate by email, which only owners may read (the
+        // members route the Members screen uses; supply-checkout-i37r). Never shown to anyone else.
         profiles: async (ids) => {
           if (photos) await photos.ready();
-          const known = (id) => id === me.user.id || (photos && (photos.has(id) || !!photos.name(id)));
-          return Object.fromEntries([].concat(ids).filter(known).map((id) => [id, id === me.user.id ? { ...profile, avatarUrl: photoOf(id) } : { id, name: photos.name(id), avatarUrl: photoOf(id), isMe: false }]));
+          const list = [].concat(ids);
+          const nameless = (id) => id !== me.user.id && !(photos && photos.name(id));
+          const byEmail = team.role === "owner" && list.some(nameless) ? await ownerMembers() : new Map();
+          const known = (id) => id === me.user.id || (photos && (photos.has(id) || !!photos.name(id))) || byEmail.has(id);
+          return Object.fromEntries(list.filter(known).map((id) => [id, id === me.user.id ? { ...profile, avatarUrl: photoOf(id) } : { id, name: (photos && photos.name(id)) || byEmail.get(id) || "", avatarUrl: photoOf(id), isMe: false }]));
         },
       },
       downloads: { save: download },

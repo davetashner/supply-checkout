@@ -5,7 +5,7 @@
 // checks, the bucket, who may see whose photo) is tested in backend/.
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, modalViolations } from "./helpers.js";
-import { FakeBackend, USER, PHOTO, PHOTO_HOST, openAws, connected, jpegSize } from "./fake-aws.js";
+import { FakeBackend, TEAM, USER, PHOTO, PHOTO_HOST, openAws, connected, jpegSize } from "./fake-aws.js";
 
 // The modal's entrance animation fades it in; axe must see its final colors
 test.use({ reducedMotion: "reduce" });
@@ -278,11 +278,12 @@ test.describe("everyone's photos", () => {
       docs: { ...project("p1", "u-sam", "Sam's job"), ...project("p2", "u-ana", "Ana's job") },
     }));
     expect(backend.requests("GET", PHOTOS)).toHaveLength(1);
-    // Sam's photo and name (supply-checkout-w5x0); Ana has no photo and no name it can show
+    // Sam's photo and name (supply-checkout-w5x0); Ana has no photo and no name, so this owner sees her email
+    // (supply-checkout-i37r), with her initial
     await loaded(card(page, "Sam's job").locator(".who img.avatar"));
     await expect(card(page, "Sam's job").locator(".who")).toHaveText("Sam Ortiz");
-    await expect(card(page, "Ana's job").locator(".who .avatar")).toHaveCount(0);
-    await expect(card(page, "Ana's job").locator(".who")).toHaveText("Someone");
+    await expect(card(page, "Ana's job").locator(".who")).toContainText("ana@example.com");
+    await expect(card(page, "Ana's job").locator(".who span.avatar")).toHaveText("A");
     await expect(chip(page).locator("span.avatar")).toHaveText("PL");
 
     await page.locator(".teambar").getByRole("button", { name: "Members" }).click();
@@ -382,7 +383,7 @@ test.describe("everyone's photos", () => {
   });
 
   test("the projects don't wait long for a slow list, and the photos come in when it answers", async ({ page }) => {
-    const backend = new FakeBackend({ user: ME_USER, members: { t1: [ME, SAM] }, photos: { [USER.id]: PHOTO, "u-sam": PHOTO }, docs: project("p1", "u-sam", "Sam's job") });
+    const backend = new FakeBackend({ teams: [{ ...TEAM, role: "viewer" }], user: ME_USER, members: { t1: [ME, SAM] }, photos: { [USER.id]: PHOTO, "u-sam": PHOTO }, docs: project("p1", "u-sam", "Sam's job") });
     const release = backend.hold("GET", PHOTOS);
     await open(page, backend);
     await expect(card(page, "Sam's job")).toBeVisible();
