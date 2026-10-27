@@ -321,7 +321,7 @@ export async function listOwnFeedback(db: Db, ctx: TeamContext): Promise<{ reado
     const page = await connection(db).doc.send(
       new QueryCommand({
         TableName: db.tableName,
-        KeyConditionExpression: "#pk = :pk AND begins_with(#sk, :prefix)",
+        KeyConditionExpression: "#PK = :pk AND begins_with(#SK, :prefix)",
         FilterExpression: "#userId = :user AND #type = :type",
         ProjectionExpression: FEEDBACK_OWN_ATTRIBUTES.map((a) => `#${a}`).join(", "),
         Select: "SPECIFIC_ATTRIBUTES",
