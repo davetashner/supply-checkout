@@ -4,7 +4,7 @@ import { afterAll, beforeAll } from "vitest";
 import { authorizeTeam, createDb, type Db, type Role, type TeamContext } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { createLocalTable, deleteLocalTable } from "../src/data/local-table.js";
-import { FEEDBACK_ATTRIBUTES, FEEDBACK_PREFIX } from "../src/data/schema.js";
+import { FEEDBACK_ATTRIBUTES, FEEDBACK_OWN_ATTRIBUTES, FEEDBACK_PREFIX } from "../src/data/schema.js";
 import type { EmailCodes, TotpSetup } from "../src/api/cognito-user.js";
 import { EmailNotSentError, type Mailer, type MessageTags } from "../src/email/mailer.js";
 import type { EmailInput } from "../src/email/templates.js";
@@ -112,6 +112,7 @@ export function accountPartitions(scope: { userId: string; teamId?: string; invi
  */
 export function accountFeedbackPolicy(denied: { command: string; input: Record<string, unknown> }[] = []) {
   const ALLOWED = new Set<string>(FEEDBACK_ATTRIBUTES);
+  const OWN = new Set<string>(FEEDBACK_OWN_ATTRIBUTES);
   const names = (input: Record<string, unknown>) => [...namedAttributes(input), ...Object.keys((input.Item ?? {}) as object)];
   const feedback = (key: unknown) => typeof (key as { PK?: unknown } | undefined)?.PK === "string" && ((key as { PK: string }).PK).startsWith(FEEDBACK_PREFIX);
   const strings = (value: unknown): string[] => (typeof value === "string" ? [value] : value && typeof value === "object" ? Object.values(value).flatMap(strings) : []);
@@ -130,8 +131,11 @@ export function accountFeedbackPolicy(denied: { command: string; input: Record<s
         case "UpdateCommand":
         case "DeleteCommand":
           return !feedback(input.Key);
-        case "QueryCommand":
-          return !strings(input.ExpressionAttributeValues).some((v) => v.startsWith(FEEDBACK_PREFIX));
+        case "QueryCommand": {
+          // Only the own-reports read (ReadOwnFeedbackReports): a projection naming FEEDBACK_OWN_ATTRIBUTES at most
+          if (!strings(input.ExpressionAttributeValues).some((v) => v.startsWith(FEEDBACK_PREFIX))) return true;
+          return input.Select === "SPECIFIC_ATTRIBUTES" && !input.IndexName && [...namedAttributes(input)].every((n) => OWN.has(n));
+        }
         default:
           return true;
       }

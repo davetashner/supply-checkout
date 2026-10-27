@@ -1608,6 +1608,55 @@ paths:
         "429":
           description: "`quota_exceeded` with `reason: \"feedback_limit\"`: the caller's 5 reports for the UTC day are used up. Or API Gateway's throttle for this route (2 a second across all callers)."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /teams/{teamId}/feedback/mine:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    get:
+      tags: [account]
+      operationId: listMyFeedback
+      summary: The caller's own reports in this team and what happened to each. Any member, a viewer included.
+      description: |
+        "Your reports". The team is the path's, and the caller must be a member
+        of it (anyone else, including someone who has left, is the same 403
+        `not_member`). Only reports the caller sent in this team come back: the
+        user is the token's, never a parameter (the route takes none), and a
+        teammate's report is never returned, whatever the role. Newest first,
+        at most 50; `more` is true when there are others, or when the team has
+        more reports than the route reads (the newest of those read are shown).
+
+        `status` is what a person is told: `received` (not yet looked at),
+        `looking` (being looked at), `fixed` (with the `release` it went out in,
+        when recorded) or `not_planned`. A dismissal's reason is internal and is
+        never returned, nor are the bead, the contact choice or the user.
+        `summary` is the first line of what they wrote, cut at 140 characters.
+      responses:
+        "200":
+          description: The caller's reports.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reports, more]
+                properties:
+                  more: { type: boolean }
+                  reports:
+                    type: array
+                    maxItems: 50
+                    items:
+                      type: object
+                      required: [id, shortId, createdAt, category, summary, status]
+                      properties:
+                        id: { type: string }
+                        shortId: { type: string, description: The first 8 characters of `id`, the reference the person was shown when they sent it. }
+                        createdAt: { type: string, format: date-time }
+                        category: { type: string, enum: [bug, idea, question] }
+                        summary: { type: string, maxLength: 140 }
+                        status: { type: string, enum: [received, looking, fixed, not_planned] }
+                        release: { type: string, description: "With `fixed`, when recorded: the release the fix went out in, e.g. `1.21.0`." }
+                        resolvedAt: { type: string, format: date-time, description: "With `fixed`, when recorded." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429":
+          description: "Too many requests: API Gateway's throttle for this route (5 a second across all callers)."
   /teams/{teamId}/members:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     get:

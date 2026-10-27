@@ -31,12 +31,12 @@
 // the request's Idempotency-Key, and the put is conditional on its absence.
 
 import { createHash } from "node:crypto";
-import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { withoutHiddenCharacters } from "../text/hidden-characters.js";
 import { type Db, connection } from "./client.js";
 import { ConflictError, ForbiddenError, InvalidInputError, LimitReachedError, TeamDeletingError } from "./errors.js";
-import { feedbackStatusPartition, id, keys } from "./keys.js";
-import { FEEDBACK_RETENTION_DAYS, TTL_ATTRIBUTE } from "./schema.js";
+import { feedbackPartition, feedbackStatusPartition, id, keys } from "./keys.js";
+import { FEEDBACK_OWN_ATTRIBUTES, FEEDBACK_RETENTION_DAYS, TTL_ATTRIBUTE } from "./schema.js";
 import { type TeamContext, writable } from "./team-context.js";
 
 export { FEEDBACK_RETENTION_DAYS } from "./schema.js";
@@ -269,4 +269,92 @@ export async function sendFeedback(
     throw error;
   }
   return { reportId, shortId, created: true };
+}
+
+/** What a person sees of a report's status. `dismissed` is `not_planned`, with no reason. */
+export type OwnFeedbackStatus = "received" | "looking" | "fixed" | "not_planned";
+
+/** One of the caller's own reports, as "Your reports" shows it. No user, contact choice, bead or dismissal reason. */
+export interface OwnFeedback {
+  readonly id: string;
+  readonly shortId: string;
+  readonly createdAt: string;
+  readonly category: FeedbackCategory;
+  /** The first line of what they wrote, cut to FEEDBACK_SUMMARY_MAX characters. */
+  readonly summary: string;
+  readonly status: OwnFeedbackStatus;
+  /** With `fixed`: the release the fix went out in, when it's recorded. */
+  readonly release?: string;
+  readonly resolvedAt?: string;
+}
+
+/** The most reports one answer carries (the newest). */
+export const FEEDBACK_MINE_MAX = 50;
+/** The longest summary, in characters. */
+export const FEEDBACK_SUMMARY_MAX = 140;
+/** Items read per page of the team's reports partition, and the most pages read: 2000 reports at most. */
+const MINE_PAGE_ITEMS = 100;
+const MINE_PAGE_LIMIT = 20;
+
+const OWN_STATUS: Record<string, OwnFeedbackStatus> = { new: "received", triaged: "looking", resolved: "fixed", dismissed: "not_planned" };
+
+/**
+ * The caller's own reports in the team, newest first, at most FEEDBACK_MINE_MAX
+ * (`more` when there are others). Any role may read them, a closed team's
+ * members too; membership is checked by the caller (`ctx` is from
+ * authorizeTeam, so someone who left the team never gets here).
+ *
+ * Reports sit in one partition per team under a random sort key, so the
+ * only way to find a person's own is to read the team's partition and filter
+ * on `userId` (the caller's own, `ctx.userId` from the verified token, never
+ * a value from the request). The read is capped at MINE_PAGE_LIMIT pages of
+ * MINE_PAGE_ITEMS and asks only for the projected attributes; at the cap
+ * (`more` is true) the newest of those read are shown. Reports expire after
+ * two years and a person sends at most FEEDBACK_PER_USER_PER_DAY a day.
+ */
+export async function listOwnFeedback(db: Db, ctx: TeamContext): Promise<{ readonly reports: OwnFeedback[]; readonly more: boolean }> {
+  if (ctx.role === "system") throw new ForbiddenError("Only a member can read their reports");
+  const found: Record<string, unknown>[] = [];
+  let ExclusiveStartKey: Record<string, unknown> | undefined;
+  let pages = 0;
+  do {
+    const page = await connection(db).doc.send(
+      new QueryCommand({
+        TableName: db.tableName,
+        KeyConditionExpression: "#PK = :pk AND begins_with(#SK, :prefix)",
+        FilterExpression: "#userId = :user AND #type = :type",
+        ProjectionExpression: FEEDBACK_OWN_ATTRIBUTES.map((a) => `#${a}`).join(", "),
+        Select: "SPECIFIC_ATTRIBUTES",
+        ExpressionAttributeNames: Object.fromEntries(FEEDBACK_OWN_ATTRIBUTES.map((a) => [`#${a}`, a])),
+        ExpressionAttributeValues: { ":pk": feedbackPartition(ctx.teamId), ":prefix": "REPORT#", ":user": ctx.userId, ":type": "feedback" },
+        ConsistentRead: true,
+        Limit: MINE_PAGE_ITEMS,
+        ExclusiveStartKey,
+      }),
+    );
+    found.push(...(page.Items as Record<string, unknown>[]));
+    ExclusiveStartKey = page.LastEvaluatedKey;
+    pages += 1;
+  } while (ExclusiveStartKey && pages < MINE_PAGE_LIMIT);
+  const newest = found
+    // Belt and braces: the filter did this, and a bug in it must not show another person's report
+    .filter((item) => item.userId === ctx.userId)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  return { reports: newest.slice(0, FEEDBACK_MINE_MAX).map(ownFeedback), more: newest.length > FEEDBACK_MINE_MAX || ExclusiveStartKey !== undefined };
+}
+
+function ownFeedback(item: Record<string, unknown>): OwnFeedback {
+  const status = OWN_STATUS[String(item.status)] ?? "received";
+  const firstLine = String(item.message).split("\n", 1)[0] as string;
+  const chars = Array.from(firstLine);
+  return {
+    id: String(item.reportId),
+    shortId: String(item.shortId),
+    createdAt: String(item.createdAt),
+    category: item.category as FeedbackCategory,
+    summary: chars.length > FEEDBACK_SUMMARY_MAX ? `${chars.slice(0, FEEDBACK_SUMMARY_MAX - 1).join("")}…` : firstLine,
+    status,
+    ...(status === "fixed" && typeof item.release === "string" && item.release ? { release: item.release } : {}),
+    ...(status === "fixed" && typeof item.resolvedAt === "string" && item.resolvedAt ? { resolvedAt: item.resolvedAt } : {}),
+  };
 }

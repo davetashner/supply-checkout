@@ -10,9 +10,9 @@ import type { AccountScope, DbForAccount } from "../src/api/account-db.js";
 import { createAccountHandler } from "../src/api/account-handler.js";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey } from "../src/api/routes.js";
-import { FEEDBACK_ATTRIBUTES, FEEDBACK_RETENTION_DAYS } from "../src/data/schema.js";
+import { FEEDBACK_ATTRIBUTES, FEEDBACK_OWN_ATTRIBUTES, FEEDBACK_RETENTION_DAYS } from "../src/data/schema.js";
 import { dismissFeedback } from "../src/data/feedback-owner.js";
-import { authorizeTeam, FEEDBACK_BODY_BYTES, FEEDBACK_PER_USER_PER_DAY, feedbackInput, sendFeedback } from "../src/data/index.js";
+import { authorizeTeam, listOwnFeedback, FEEDBACK_BODY_BYTES, FEEDBACK_PER_USER_PER_DAY, feedbackInput, sendFeedback } from "../src/data/index.js";
 import { BusinessMetric } from "../src/observability/names.js";
 import type { Observability } from "../src/observability/index.js";
 import { accountFeedbackPolicy, accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
@@ -418,5 +418,170 @@ describe("storage errors", () => {
 
   it("refuses a body with a field of its own that isn't a report's, even without the handler's own check", () => {
     expect(() => feedbackInput({ category: "bug", message: "x", teamId: "t" })).toThrow("Unexpected field");
+  });
+});
+
+// "Your reports" (supply-checkout-loxj): GET /teams/{teamId}/feedback/mine
+describe("GET /teams/{teamId}/feedback/mine", () => {
+  async function mine(user: string, teamId = "team-a", rawQuery = "") {
+    const route = ACCOUNT_ROUTES.find((r) => r.method === "GET" && r.path === "/teams/{teamId}/feedback/mine");
+    const base = event(user, `/teams/${teamId}/feedback/mine`);
+    const response = await handler({
+      ...base,
+      routeKey: routeKey(route as { method: string; path: string }),
+      rawQueryString: rawQuery,
+      requestContext: { ...base.requestContext, http: { ...base.requestContext.http, method: "GET" } },
+    } as DataEvent);
+    return { status: response.statusCode, body: response.body ? JSON.parse(response.body) : undefined };
+  }
+  const setStatus = (id: string, fields: Record<string, unknown>, teamId = "team-a") => {
+    const item = table.get(`FEEDBACK#${teamId}`, `REPORT#${id}`) as Record<string, unknown>;
+    table.put({ ...item, ...fields });
+  };
+
+  it("returns only the caller's own reports, newest first, for every role, never a teammate's or another team's", async () => {
+    const own: Record<string, string> = {};
+    for (const user of [OWNER, CREW, VIEWER]) {
+      now += 1000;
+      own[user] = (await send(user, { category: "idea", message: `from ${user}\nsecond line` })).body.report.id;
+    }
+    now += 1000;
+    const later = (await send(VIEWER, { category: "question", message: "a later one" })).body.report.id;
+    // The same person's report in another team, and another team's owner
+    await send(CREW, { category: "bug", message: "crew in team b" }, { teamId: "team-b" });
+    await send(OUTSIDER, { category: "bug", message: "outsider in team b" }, { teamId: "team-b" });
+
+    const viewer = await mine(VIEWER);
+    expect(viewer.status).toBe(200);
+    expect(viewer.body).toEqual({
+      more: false,
+      reports: [
+        { id: later, shortId: later.slice(0, 8), createdAt: new Date(now).toISOString(), category: "question", summary: "a later one", status: "received" },
+        { id: own[VIEWER], shortId: (own[VIEWER] as string).slice(0, 8), createdAt: expect.any(String), category: "idea", summary: `from ${VIEWER}`, status: "received" },
+      ],
+    });
+    expect((await mine(OWNER)).body.reports.map((r: { id: string }) => r.id)).toEqual([own[OWNER]]);
+    expect((await mine(CREW)).body.reports.map((r: { summary: string }) => r.summary)).toEqual([`from ${CREW}`]);
+    expect((await mine(CREW, "team-b")).body.reports.map((r: { summary: string }) => r.summary)).toEqual(["crew in team b"]);
+    expect((await mine(OUTSIDER, "team-b")).body.reports.map((r: { summary: string }) => r.summary)).toEqual(["outsider in team b"]);
+    expect(denied).toEqual([]);
+  });
+
+  it("says the same for someone with no reports: an empty list", async () => {
+    expect((await mine(OWNER)).body).toEqual({ reports: [], more: false });
+  });
+
+  it("maps each status to what a person is told, and never shows a bead, a dismissal reason, the contact choice or the user", async () => {
+    const ids: string[] = [];
+    for (const status of ["new", "triaged", "resolved", "resolved-bare", "dismissed"]) {
+      now += 1000;
+      ids.push((await send(CREW, { category: "bug", message: `report ${status}`, expected: "private expected text", contactOk: true, context: { screen: "scan" } })).body.report.id);
+    }
+    setStatus(ids[1] as string, { status: "triaged", beadId: "supply-checkout-xyz", statusAt: "2026-10-10T00:00:00.000Z" });
+    setStatus(ids[2] as string, { status: "resolved", beadId: "supply-checkout-xyz", resolvedAt: "2026-10-12T00:00:00.000Z", release: "1.21.0" });
+    setStatus(ids[3] as string, { status: "resolved" });
+    setStatus(ids[4] as string, { status: "dismissed", dismissReason: "INTERNAL-REASON duplicate of bead abc" });
+    const { body } = await mine(CREW);
+    const by = Object.fromEntries(body.reports.map((r: { summary: string }) => [r.summary, r]));
+    expect(by["report new"]).toMatchObject({ status: "received" });
+    expect(by["report triaged"]).toMatchObject({ status: "looking" });
+    expect(by["report resolved"]).toMatchObject({ status: "fixed", release: "1.21.0", resolvedAt: "2026-10-12T00:00:00.000Z" });
+    expect(by["report resolved-bare"]).toEqual(expect.objectContaining({ status: "fixed" }));
+    expect("release" in by["report resolved-bare"]).toBe(false);
+    expect(by["report dismissed"]).toMatchObject({ status: "not_planned" });
+    expect(body.reports).toHaveLength(5);
+    const text = JSON.stringify(body);
+    for (const secret of ["INTERNAL-REASON", "supply-checkout-xyz", "contactOk", "userId", "private expected text", CREW, "beadId", "role", "GSI1", "PK"]) expect(text).not.toContain(secret);
+    expect(Object.keys(by["report new"]).sort()).toEqual(["category", "createdAt", "id", "shortId", "status", "summary"]);
+  });
+
+  it("shows a status it doesn't know as received", async () => {
+    const sent = await send(CREW, valid);
+    setStatus(sent.body.report.id, { status: "from-a-newer-server" });
+    expect((await mine(CREW)).body.reports[0]).toMatchObject({ status: "received" });
+  });
+
+  it("shows the first line only, cut at 140 characters", async () => {
+    await send(CREW, { category: "bug", message: `${"é".repeat(200)}\nsecond line` });
+    const [report] = (await mine(CREW)).body.reports;
+    expect(Array.from(report.summary)).toHaveLength(140);
+    expect(report.summary.endsWith("…")).toBe(true);
+    expect(report.summary).not.toContain("second");
+  });
+
+  it("refuses a caller outside the team and a path that isn't an ID, the same whatever they ask", async () => {
+    await send(OWNER, valid);
+    expect(await mine(OUTSIDER)).toEqual(refused(403, "permission_denied", "not_member"));
+    expect(await mine(OWNER, "no-such-team")).toEqual(refused(403, "permission_denied", "not_member"));
+    expect((await mine(OWNER, "bad%20id")).status).toBe(400);
+  });
+
+  it("gives nothing to someone who has left the team, though their old reports are still stored", async () => {
+    await send(VIEWER, valid);
+    expect((await mine(VIEWER)).body.reports).toHaveLength(1);
+    table.delete("TEAM#team-a", `MEMBER#${VIEWER}`);
+    table.delete(`USER#${VIEWER}`, "TEAM#team-a");
+    expect(await mine(VIEWER)).toEqual(refused(403, "permission_denied", "not_member"));
+    expect(reports()).toHaveLength(1);
+  });
+
+  it("reads closed teams too, ignores query parameters (the user is the token's), and logs no report text", async () => {
+    await send(CREW, valid);
+    table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), status: "closed", closedAt: "2026-10-09T00:00:00.000Z" });
+    expect((await mine(CREW, "team-a", `userId=${OWNER}&limit=1000`)).body.reports).toHaveLength(1);
+    expect((await mine(OWNER, "team-a", `userId=${CREW}`)).body.reports).toHaveLength(0);
+    expect(JSON.stringify(logs)).not.toContain("ZEBRA");
+    expect(logs.some((l) => l[1] === "Reports listed")).toBe(true);
+  });
+
+  it("queries the team's reports partition in the caller's session, naming only the list's attributes, and not through an index", async () => {
+    await send(CREW, valid);
+    table.requests.length = 0;
+    await mine(CREW);
+    const queries = table.requests.filter((r) => r.input.ExpressionAttributeValues && JSON.stringify(r.input.ExpressionAttributeValues).includes("FEEDBACK#"));
+    expect(queries).toHaveLength(1);
+    const input = (queries[0] as { input: Record<string, unknown> }).input;
+    expect(input.IndexName).toBeUndefined();
+    expect(input.Select).toBe("SPECIFIC_ATTRIBUTES");
+    expect(input.ExpressionAttributeValues).toMatchObject({ ":pk": "FEEDBACK#team-a", ":user": CREW });
+    expect(input.FilterExpression).toContain("#userId = :user");
+    const named = Object.values(input.ExpressionAttributeNames as Record<string, string>);
+    expect(named.every((n) => (FEEDBACK_OWN_ATTRIBUTES as readonly string[]).includes(n))).toBe(true);
+    expect(scopes.every((s) => s.userId === CREW && s.teamId === "team-a")).toBe(true);
+  });
+
+  it("returns the newest 50 and says there are more; reads at most 20 pages of the partition", async () => {
+    for (let i = 0; i < 53; i++) {
+      table.put({ PK: "FEEDBACK#team-a", SK: `REPORT#r${String(i).padStart(3, "0")}`, type: "feedback", reportId: `r${String(i).padStart(3, "0")}`, shortId: `r${i}`, userId: CREW, createdAt: new Date(NOW + i * 1000).toISOString(), category: "bug", message: `m${i}`, status: "new" });
+    }
+    const { body } = await mine(CREW);
+    expect(body.reports).toHaveLength(50);
+    expect(body.more).toBe(true);
+    expect(body.reports[0].summary).toBe("m52");
+    expect(body.reports[49].summary).toBe("m3");
+    // Someone else's items in the same partition are never read into the answer
+    table.put({ PK: "FEEDBACK#team-a", SK: "REPORT#zzz", type: "feedback", reportId: "zzz", shortId: "zzz", userId: OWNER, createdAt: new Date(NOW + 99_000).toISOString(), category: "bug", message: "owner's", status: "new" });
+    expect((await mine(CREW)).body.reports.map((r: { summary: string }) => r.summary)).not.toContain("owner's");
+    // Past 2000 items the read stops at 20 pages: `more` is true even for few of the caller's own
+    const fresh = new MemoryTable();
+    for (let i = 0; i < 2100; i++) fresh.put({ PK: "FEEDBACK#team-c", SK: `REPORT#c${i}`, type: "feedback", reportId: `c${i}`, shortId: "c", userId: OWNER, createdAt: "2026-10-01T00:00:00.000Z", category: "bug", message: "x", status: "new" });
+    fresh.put({ PK: "FEEDBACK#team-c", SK: "REPORT#d", type: "feedback", reportId: "d", shortId: "d", userId: CREW, createdAt: "2026-10-01T00:00:00.000Z", category: "bug", message: "mine", status: "new" });
+    const ctx = { teamId: "team-c", userId: CREW, role: "viewer" } as never;
+    const capped = await listOwnFeedback(fresh.db(), ctx);
+    expect(capped.more).toBe(true);
+    expect(fresh.calls.filter((c) => c.command === "QueryCommand")).toHaveLength(20);
+  });
+
+  it("never returns a report with no userId, or one whose userId differs from the caller's only in case", async () => {
+    const base = { PK: "FEEDBACK#team-a", type: "feedback", shortId: "x", createdAt: new Date(NOW).toISOString(), category: "bug", status: "new" };
+    table.put({ ...base, SK: "REPORT#nouser", reportId: "nouser", message: "no user" });
+    table.put({ ...base, SK: "REPORT#upper", reportId: "upper", message: "upper case", userId: CREW.toUpperCase() });
+    table.put({ ...base, SK: "REPORT#mine", reportId: "mine", message: "mine", userId: CREW });
+    expect((await mine(CREW)).body.reports.map((r: { summary: string }) => r.summary)).toEqual(["mine"]);
+    expect((await mine(OWNER)).body.reports).toEqual([]);
+  });
+
+  it("refuses a system context", async () => {
+    await expect(listOwnFeedback(table.db("team-a"), { teamId: "team-a", userId: "system", role: "system" } as never)).rejects.toThrow("Only a member");
   });
 });

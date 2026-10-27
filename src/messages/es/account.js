@@ -47,6 +47,7 @@ export default {
   "account.failedBody": "Supply Checkout no respondió. Revise su conexión e intente de nuevo.",
   "account.tryAgain": "Intentar de nuevo",
   "account.reportIssue": "Reportar un problema",
+  "account.myReports": "Sus reportes",
 
   "account.invitedAs": "<strong>{team}</strong> le invitó como {role}. Abra el enlace de su correo de invitación para unirse.",
   "account.nameTeamTitle": "Ponga nombre a su equipo",

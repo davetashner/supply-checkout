@@ -17,6 +17,7 @@ import {
   MEMBER_ROW_ATTRIBUTES,
   MEMBER_SEAT_ATTRIBUTES,
   FEEDBACK_ATTRIBUTES,
+  FEEDBACK_OWN_ATTRIBUTES,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
   RECEIPT_RATE_ATTRIBUTES,
   RECEIPT_TRIAL_CAP_ATTRIBUTES,
@@ -162,6 +163,7 @@ describe("HTTP API routes", () => {
       "POST /teams/{teamId}/invites/{inviteId}/resend": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /teams/{teamId}/close": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /teams/{teamId}/feedback": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "GET /teams/{teamId}/feedback/mine": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /teams/{teamId}/reopen": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "DELETE /me": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /me/email/code": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
@@ -456,7 +458,7 @@ describe("account-access role (LeadingKeys)", () => {
 
   it("reaches only the tagged user, team and invitee partitions, with item, transaction and query actions and no scan, a member's only to update or delete, and an invited address's counter only to update", () => {
     const [policy] = role().Policies;
-    const [items, member, limit, report, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [items, member, limit, report, ownReports, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
     expect(rest).toEqual([]);
     expect(items).toMatchObject({
       Sid: "CallerItemsOnly",
@@ -524,6 +526,21 @@ describe("account-access role (LeadingKeys)", () => {
     expect(JSON.stringify(report?.Resource)).toContain(":table/supply-checkout-prod-app");
     expect(JSON.stringify(report?.Resource)).not.toContain("index");
     expect(JSON.stringify(report?.Resource)).not.toContain("*");
+    // "Your reports" (supply-checkout-loxj): Query only (no Scan, GetItem or index), in the tagged team's reports
+    // partition, a projection required, naming only the list's attributes: no contact choice, bead or dismissal reason
+    expect(ownReports).toEqual({
+      Sid: "ReadOwnFeedbackReports",
+      Effect: "Allow",
+      Action: "dynamodb:Query",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["FEEDBACK#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...FEEDBACK_OWN_ATTRIBUTES] },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    for (const secret of ["contactOk", "beadId", "dismissReason", "expected", "context", "role", "teamId", "email", "GSI1PK", "GSI1SK"]) expect(FEEDBACK_OWN_ATTRIBUTES).not.toContain(secret);
+    expect(JSON.stringify(ownReports?.Resource)).not.toContain("index");
+    expect(JSON.stringify(ownReports?.Resource)).not.toContain("*");
     expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
   });
 
@@ -536,6 +553,7 @@ describe("account-access role (LeadingKeys)", () => {
     );
     expect(grants).toEqual([
       [expect.stringMatching(/^AccountAccessRole/), "WriteFeedbackReport"],
+      [expect.stringMatching(/^AccountAccessRole/), "ReadOwnFeedbackReports"],
       [expect.stringMatching(/^OperatorAccessRole/), "FeedbackListReadOnly"],
       [expect.stringMatching(/^OperatorAccessRole/), "FeedbackReportReadOnly"],
       [expect.stringMatching(/^OperatorAccessRole/), "FeedbackStatusOnly"],
