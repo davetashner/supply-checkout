@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.22.0](https://github.com/davetashner/supply-checkout/compare/v1.21.0...v1.22.0) (2026-10-27)
+
+
+### Features
+
+* email people about issues they reported, from received to fixed ([#831](https://github.com/davetashner/supply-checkout/issues/831)) ([2783254](https://github.com/davetashner/supply-checkout/commit/27832543158f51250ccd3c4d10ab2bcb8ce0344f))
+* mark user reports resolved with npm run feedback -- resolve ([#829](https://github.com/davetashner/supply-checkout/issues/829)) ([1ce0816](https://github.com/davetashner/supply-checkout/commit/1ce0816363a4fcda73e06016b9e601d0fc897bea))
+* show people the status of issues they reported ([#832](https://github.com/davetashner/supply-checkout/issues/832)) ([a3192d5](https://github.com/davetashner/supply-checkout/commit/a3192d5f85d904a5ca3f6415f3d07bc4493252cc))
+
 ## [1.21.0](https://github.com/davetashner/supply-checkout/compare/v1.20.0...v1.21.0) (2026-10-27)
 
 
