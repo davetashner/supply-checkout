@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { CDK_JSON_CONTEXT, testApp } from "./cdk-app.js";
 
-const cdkJson = JSON.parse(readFileSync(new URL("../cdk.json", import.meta.url), "utf8")) as { context: Record<string, unknown> };
+const cdkJson = JSON.parse(readFileSync(new URL("../cdk.json", import.meta.url), "utf8")) as { context: Record<string, unknown>; versionReporting?: boolean };
 // Feature flags are the namespaced keys (`@aws-cdk/...`); the rest is our own config
 const flags = (context: Record<string, unknown>) =>
   Object.fromEntries(Object.entries(context).filter(([key]) => key.startsWith("@aws-cdk")));
@@ -15,6 +15,13 @@ describe("the test App", () => {
     const applied = Object.fromEntries(flagKeys.map((key) => [key, app.node.tryGetContext(key)]));
     expect(applied).toEqual(flags(cdkJson.context));
     expect(flags(CDK_JSON_CONTEXT)).toEqual(flags(cdkJson.context));
+  });
+
+  // The deploy's apply jobs synthesize again and must reach the plan's hash (supply-checkout-zyqw).
+  // CDKMetadata's Analytics value is gzipped, so its bytes change with the runner's Node version,
+  // which a runner image rollout between the synth job and an apply job can change
+  it("turns off version reporting under `cdk synth`, so the deploy hash doesn't depend on Node", () => {
+    expect(cdkJson.versionReporting).toBe(false);
   });
 
   it("has the rest of cdk.json's context too", () => {

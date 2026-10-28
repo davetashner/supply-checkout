@@ -1,5 +1,6 @@
 {
   "app": "npx tsx bin/app.ts",
+  "versionReporting": false,
   "watch": {
     "include": [
       "bin/**",
