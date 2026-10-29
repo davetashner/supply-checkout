@@ -3203,9 +3203,9 @@ components:
   schemas:
     ExpectedStock:
       type: [integer, "null"]
-      minimum: 0
-      maximum: 1000000
-      description: Optional. The stock the person saw when they started, or `null` for an item that wasn't counted. The command is refused (409 `stock_changed`) when the stock is something else now.
+      minimum: -9007199254740991
+      maximum: 9007199254740991
+      description: Optional. The stock the person saw when they started, which can be below 0 (a checkout takes the full quantity even past the count), or `null` for an item that wasn't counted. The command is refused (409 `stock_changed`) when the stock is something else now.
     AuditRecord:
       description: |
         What an operator action changed, before and after, by action:

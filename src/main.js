@@ -1119,7 +1119,7 @@ function productModal(key) {
       <div class="field"><label for="fBrand">${msg("product.brand")}</label><input type="text" id="fBrand" maxlength="${MAX_BRAND}" autocomplete="off" value="${esc(p ? brandOf(p) : "")}" placeholder="${msg("product.brandPlaceholder")}"></div>
       <div class="field"><label for="fCost" id="fCostLabel">${msg(equip ? "product.valueEach" : "product.costEach")}</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="${msg("product.costPlaceholder")}"><p class="hint" id="fCostEach" aria-live="polite" hidden></p></div>
       <div class="field" id="fPriceField" ${equip ? "hidden" : ""}><label for="fPrice">${msg("product.price")}</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && !equip ? round2(p.price) : ""}" placeholder="0.00"></div>
-      <div class="field"><label for="fStock">${msg("product.stock")}</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="${msg("product.stockPlaceholder")}"><p class="hint" id="fPacks" aria-live="polite" hidden></p></div>
+      <div class="field"><label for="fStock">${msg("product.stock")}</label><input type="number" id="fStock" step="1" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="${msg("product.stockPlaceholder")}"><p class="hint" id="fPacks" aria-live="polite" hidden></p></div>
       <div class="field"><label for="fPack">${msg("product.pack")}</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="${msg("product.packPlaceholder")}" aria-describedby="fPackHint"><p class="hint" id="fPackHint">${msg("product.packHint")}</p></div>
       <div class="field"><label for="fReorder">${msg("product.reorder")}</label><input type="number" id="fReorder" min="0" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${reorderLevel(p) ?? ""}" placeholder="${msg("product.reorderPlaceholder")}" aria-describedby="fReorderHint"><p class="hint" id="fReorderHint">${msg("product.reorderHint")}</p></div>
       <div class="field"><label for="fReorderQty">${msg("product.reorderQty")}</label><input type="number" id="fReorderQty" min="1" max="${MAX_COUNT}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.reorderQty) ? p.reorderQty : ""}" placeholder="${msg("product.reorderQtyPlaceholder")}"></div>
@@ -1166,6 +1166,11 @@ function productModal(key) {
       packs.hidden = !(n > 0 && size > 1);
       packs.textContent = packs.hidden ? "" : packsText(n, size);
     };
+    // A checkout takes the full quantity even past the count, so stock can be below 0 (docs/api/commands.md).
+    // That count, as it opened, saves with the item's other fields; a count typed in is 0 or more.
+    const opened = hasStock(p) ? String(p.stock) : "";
+    const checkStock = () => stock.setCustomValidity(stock.value.trim() !== opened && Number(stock.value) < 0 ? msg("product.stockBelowZero") : "");
+    stock.addEventListener("input", checkStock);
     stock.addEventListener("input", paintPacks); pack.addEventListener("input", paintPacks); paintPacks(); paintCost();
     const rm = m.querySelector("#remove"), form = m.querySelector("#f");
     rm && armButton(rm, msg("product.tapToDelete"), () => busy(form, () => closing(write(() => db.doc("products/" + key).delete(), msg("product.deleted")))));
@@ -1200,7 +1205,7 @@ function productModal(key) {
       // (a checkout, someone else's count), and the count it opened with would undo that. A
       // changed one is checked against the count it opened with (`expected`, null: not counted).
       // `counted`: the form showed a count when it opened, so a blank one means stop counting.
-      const change = m.querySelector("#fStock").value.trim() === (hasStock(p) ? String(p.stock) : "") ? { reason: "count", keep: true }
+      const change = m.querySelector("#fStock").value.trim() === opened ? { reason: "count", keep: true }
         : { reason: "count", count: body.stock, counted: !!hasStock(p), expected: hasStock(p) ? p.stock : null };
       saving(form, () => closing(write(() => saveItem(db, action, docKey, body, change), msg("checkout.saved"))));
     });
