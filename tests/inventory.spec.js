@@ -569,6 +569,54 @@ test("sorts the inventory by length, width or height, inches and centimeters tog
   expect(await rowNames(page)).toEqual(["Shoe box", "Tote", "Crate", "Rags"]);
 });
 
+// A barcode that's already on an item (supply-checkout-ezfz): the Add item form says so before
+// anything is saved, and offers the existing item instead of a second one
+const withBrandItem = { ...usedState, seed: { ...usedState.seed, "products/legacy-1": { code: "Zz-9", name: "Foam tape", brand: "Scotch", price: 4, stock: 3 } } };
+const dupNote = (page) => modal(page).getByRole("alert");
+
+test("a barcode that's the key of an item shows its name and brand, and Save makes no second item", { tag: ["@J2.1"] }, async ({ page }) => {
+  await openInventory(page, withBrandItem);
+  await startAddItem(page);
+  await fillItem(page, { barcode: "sku1", name: "Another towel" });
+  await expect(dupNote(page)).toContainText("Already in inventory: Paper towels, 6 roll");
+  await saveItem(page);
+  await expect(modal(page).getByRole("heading", { name: "Add item" })).toBeVisible();
+  await expect(dupNote(page)).toBeVisible();
+  expect(await page.evaluate(() => [...window.__mock.docs.keys()].filter(k => k.startsWith("products/")).sort())).toEqual(["products/SKU1", "products/legacy-1", "products/nb-bins"]);
+  expect(await page.evaluate(() => window.__mock.docs.get("products/SKU1").name)).toBe("Paper towels, 6 roll");
+});
+
+test("a barcode carried in an item's code field shows its brand, and Open opens that item", { tag: ["@J2.1"] }, async ({ page }) => {
+  await openInventory(page, withBrandItem);
+  await startAddItem(page);
+  await fillItem(page, { barcode: " zZ-9 " });
+  await expect(dupNote(page)).toContainText("Foam tape · Scotch");
+  await dupNote(page).getByRole("button", { name: "Open that item" }).click();
+  await expect(modal(page).getByRole("heading", { name: "Edit item" })).toBeVisible();
+  await expect(modal(page).getByLabel("Item name", { exact: true })).toHaveValue("Foam tape");
+});
+
+test("a barcode on no item saves a new item, and the warning goes when the barcode is changed", async ({ page }) => {
+  await openInventory(page, withBrandItem);
+  await startAddItem(page);
+  await fillItem(page, { barcode: "SKU1" });
+  await expect(dupNote(page)).toBeVisible();
+  await fillItem(page, { barcode: "SKU2", name: "Sponges" });
+  await expect(dupNote(page)).toBeHidden();
+  await saveItem(page);
+  await expect(inventoryRow(page, "Sponges")).toContainText("Barcode SKU2");
+});
+
+test("cancelling the warned form saves nothing", async ({ page }) => {
+  await openInventory(page, withBrandItem);
+  await startAddItem(page);
+  await fillItem(page, { barcode: "SKU1", name: "Another towel" });
+  await expect(dupNote(page)).toBeVisible();
+  await modal(page).getByRole("button", { name: "Cancel" }).click();
+  await expect(modal(page)).toBeEmpty();
+  await expect(inventoryRow(page, "Another towel")).toHaveCount(0);
+});
+
 test("scrolling the wheel over a focused number field scrolls the modal and keeps the value", async ({ page, isMobile }) => {
   test.skip(isMobile, "Phones and tablets have no mouse wheel, and Playwright can't send one in mobile WebKit");
   await page.setViewportSize({ width: 1000, height: 300 });

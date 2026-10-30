@@ -288,6 +288,15 @@ test("an item's barcode can be scanned when adding it to inventory", { tag: ["@J
   await expect(modal(page).getByPlaceholder("Type, scan, or leave blank")).toHaveValue("5550001");
 });
 
+test("scanning a barcode that's already on an item warns before anything is saved", { tag: ["@J2.2"] }, async ({ page }) => {
+  await page.addInitScript(installScanner, { detector: "SKU1" });
+  await openApp(page, usedState);
+  await goToInventory(page);
+  await startAddItem(page);
+  await modal(page).locator("#fScan").setInputFiles(png);
+  await expect(modal(page).getByRole("alert")).toContainText("Already in inventory: Paper towels, 6 roll");
+});
+
 test("a scanned item can be checked out on a new project", { tag: ["@J4.2"] }, async ({ page }) => {
   await page.addInitScript(installScanner, { detector: "7770001" });
   await openApp(page);

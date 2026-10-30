@@ -359,7 +359,7 @@ describe("GET /me", () => {
     const created = (await create(PAT, "Bravo Co", "pat-team-1")).body.team;
     const { status, body } = await call("GET", "/me", { user: PAT });
     expect(status).toBe(200);
-    expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null, language: null }, photoUrl: null });
+    expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null, language: null, newFeatures: {} }, photoUrl: null });
     expect(body.teams).toEqual([
       created,
       { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, reopenBy: null, comp: null, subscriptionEnded: false, readOnlyReason: null, readOnlyDeletesAt: null, readOnlyLastDay: null, paymentGraceEndsAt: null, billingAccount: false, cancelsAt: null, members: 2, memberCap: MEMBERS_PER_TRIAL_TEAM, checklist: null },
@@ -394,7 +394,7 @@ describe("GET /me", () => {
   it("shows a new user no teams and no invites", async () => {
     expect(await call("GET", "/me", { user: MALLORY })).toEqual({
       status: 200,
-      body: { user: { id: MALLORY, email: "mallory@example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null, language: null }, photoUrl: null }, teams: [], invites: [] },
+      body: { user: { id: MALLORY, email: "mallory@example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null, language: null, newFeatures: {} }, photoUrl: null }, teams: [], invites: [] },
     });
   });
 
@@ -541,7 +541,7 @@ describe("verifying the caller's email address", () => {
       verifiedAt: new Date(now).toISOString(),
     });
     const me = (await call("GET", "/me", { user: UNVERIFIED })).body;
-    expect(me.user).toEqual({ id: UNVERIFIED, email: "pat@example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null, language: null }, photoUrl: null });
+    expect(me.user).toEqual({ id: UNVERIFIED, email: "pat@example.com", emailVerified: true, mfa: "off", preferences: { whatsNew: true, whatsNewLastShown: null, language: null, newFeatures: {} }, photoUrl: null });
     expect(me.invites).toHaveLength(1);
     // Neither the code nor the token is logged
     expect(JSON.stringify(logs)).not.toMatch(/123456|654321|token-|pat@/);
@@ -1184,28 +1184,28 @@ describe("PATCH /me/preferences", () => {
   const patch = (body: unknown, user = PAT) => call("PATCH", "/me/preferences", { user, body });
 
   it("turns the What's New banner off and on again, and GET /me follows on any device", async () => {
-    expect(await patch({ whatsNew: false })).toEqual({ status: 200, body: { preferences: { whatsNew: false, whatsNewLastShown: null, language: null } } });
-    expect((await call("GET", "/me", { user: PAT })).body.user.preferences).toEqual({ whatsNew: false, whatsNewLastShown: null, language: null });
+    expect(await patch({ whatsNew: false })).toEqual({ status: 200, body: { preferences: { whatsNew: false, whatsNewLastShown: null, language: null, newFeatures: {} } } });
+    expect((await call("GET", "/me", { user: PAT })).body.user.preferences).toEqual({ whatsNew: false, whatsNewLastShown: null, language: null, newFeatures: {} });
     expect(table.get(`USER#${PAT}`, "PREFERENCES")).toMatchObject({ type: "preferences", whatsNew: false, updatedAt: new Date(now).toISOString() });
-    expect(await patch({ whatsNew: true })).toEqual({ status: 200, body: { preferences: { whatsNew: true, whatsNewLastShown: null, language: null } } });
+    expect(await patch({ whatsNew: true })).toEqual({ status: 200, body: { preferences: { whatsNew: true, whatsNewLastShown: null, language: null, newFeatures: {} } } });
     // Someone else's are untouched
-    expect((await call("GET", "/me", { user: OWNER })).body.user.preferences).toEqual({ whatsNew: true, whatsNewLastShown: null, language: null });
+    expect((await call("GET", "/me", { user: OWNER })).body.user.preferences).toEqual({ whatsNew: true, whatsNewLastShown: null, language: null, newFeatures: {} });
   });
 
   it("records the local day the banner was last shown, keeping the setting", async () => {
     await patch({ whatsNew: false });
-    expect((await patch({ whatsNewLastShown: today() })).body).toEqual({ preferences: { whatsNew: false, whatsNewLastShown: today(), language: null } });
+    expect((await patch({ whatsNewLastShown: today() })).body).toEqual({ preferences: { whatsNew: false, whatsNewLastShown: today(), language: null, newFeatures: {} } });
     // Local dates run a day either side of UTC's, and a little more for a clock that's off
     for (const days of [-2, -1, 1, 2]) expect((await patch({ whatsNewLastShown: dayFromToday(days) })).body.preferences.whatsNewLastShown).toBe(dayFromToday(days));
-    expect((await patch({ whatsNew: true, whatsNewLastShown: today() })).body).toEqual({ preferences: { whatsNew: true, whatsNewLastShown: today(), language: null } });
+    expect((await patch({ whatsNew: true, whatsNewLastShown: today() })).body).toEqual({ preferences: { whatsNew: true, whatsNewLastShown: today(), language: null, newFeatures: {} } });
   });
 
   it("keeps the language the caller chose, on any device, and changes it", async () => {
-    expect((await patch({ language: "es" })).body).toEqual({ preferences: { whatsNew: true, whatsNewLastShown: null, language: "es" } });
+    expect((await patch({ language: "es", newFeatures: {} })).body).toEqual({ preferences: { whatsNew: true, whatsNewLastShown: null, language: "es", newFeatures: {} } });
     expect((await call("GET", "/me", { user: PAT })).body.user.preferences.language).toBe("es");
-    expect(table.get(`USER#${PAT}`, "PREFERENCES")).toMatchObject({ language: "es" });
+    expect(table.get(`USER#${PAT}`, "PREFERENCES")).toMatchObject({ language: "es", newFeatures: {} });
     // The other settings keep their values, and the language keeps its own
-    expect((await patch({ whatsNew: false })).body.preferences).toEqual({ whatsNew: false, whatsNewLastShown: null, language: "es" });
+    expect((await patch({ whatsNew: false })).body.preferences).toEqual({ whatsNew: false, whatsNewLastShown: null, language: "es", newFeatures: {} });
     expect((await patch({ language: "en" })).body.preferences.language).toBe("en");
     // Someone else's are untouched
     expect((await call("GET", "/me", { user: OWNER })).body.user.preferences.language).toBeNull();
@@ -1223,6 +1223,69 @@ describe("PATCH /me/preferences", () => {
     expect((await call("GET", "/me", { user: PAT })).body.user.preferences.language).toBeNull();
     table.put({ PK: `USER#${PAT}`, SK: "PREFERENCES", type: "preferences", language: 5 });
     expect((await call("GET", "/me", { user: PAT })).body.user.preferences.language).toBeNull();
+  });
+
+  it("keeps the New callouts' state, replacing it whole, and GET /me follows on any device", async () => {
+    const state = { "photo-link": { days: 2, last: dayFromToday(-1) }, "other-thing": { days: 3, last: today() } };
+    expect((await patch({ newFeatures: state })).body.preferences.newFeatures).toEqual(state);
+    expect((await call("GET", "/me", { user: PAT })).body.user.preferences.newFeatures).toEqual(state);
+    expect(table.get(`USER#${PAT}`, "PREFERENCES")).toMatchObject({ newFeatures: state });
+    // Other settings keep theirs, and the callouts keep theirs
+    expect((await patch({ whatsNew: false })).body.preferences).toMatchObject({ whatsNew: false, newFeatures: state });
+    // The app sends the whole map, so a feature it dropped is gone
+    expect((await patch({ newFeatures: { "photo-link": { days: 3, last: dayFromToday(1) } } })).body.preferences.newFeatures).toEqual({ "photo-link": { days: 3, last: dayFromToday(1) } });
+    expect((await patch({ newFeatures: {} })).body.preferences.newFeatures).toEqual({});
+    // Someone else's are untouched
+    expect((await call("GET", "/me", { user: OWNER })).body.user.preferences.newFeatures).toEqual({});
+  });
+
+  it("refuses New callout state that isn't known-shaped, and writes nothing", async () => {
+    const ok = { days: 1, last: today() };
+    const many = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`feature-${i}`, ok]));
+    for (const newFeatures of [
+      null,
+      [],
+      "photo-link",
+      5,
+      many,
+      { "Photo-Link": ok },
+      { "photo_link": ok },
+      { "1photo": ok },
+      { "": ok },
+      { [`a${"b".repeat(40)}`]: ok },
+      JSON.parse(`{"__proto__":{"days":1,"last":"${today()}"}}`),
+      { "photo.link": ok },
+      { "photo-link": null },
+      { "photo-link": [] },
+      { "photo-link": 3 },
+      { "photo-link": { days: 4, last: today() } },
+      { "photo-link": { days: -1, last: today() } },
+      { "photo-link": { days: 1.5, last: today() } },
+      { "photo-link": { days: "1", last: today() } },
+      { "photo-link": { last: today() } },
+      { "photo-link": { days: 1 } },
+      { "photo-link": { days: 1, last: null } },
+      { "photo-link": { days: 1, last: 20261008 } },
+      { "photo-link": { days: 1, last: "2026-02-30" } },
+      { "photo-link": { days: 1, last: dayFromToday(3) } },
+      { "photo-link": { ...ok, extra: true } },
+    ]) {
+      expect(await patch({ newFeatures }), JSON.stringify(newFeatures)).toMatchObject({ status: 400, body: { error: { code: "bad_request" } } });
+    }
+    expect(table.get(`USER#${PAT}`, "PREFERENCES")).toBeUndefined();
+  });
+
+  it("reads damaged New callout state as none, keeping the valid entries", async () => {
+    const good = { days: 2, last: "2026-10-08" };
+    table.put({ PK: `USER#${PAT}`, SK: "PREFERENCES", type: "preferences", newFeatures: "no" });
+    expect((await call("GET", "/me", { user: PAT })).body.user.preferences.newFeatures).toEqual({});
+    table.put({ PK: `USER#${PAT}`, SK: "PREFERENCES", type: "preferences", newFeatures: ["x"] });
+    expect((await call("GET", "/me", { user: PAT })).body.user.preferences.newFeatures).toEqual({});
+    table.put({ PK: `USER#${PAT}`, SK: "PREFERENCES", type: "preferences", newFeatures: { good, "Bad-ID": good, nul: null, days: { days: 9, last: "2026-10-08" }, frac: { days: 1.5, last: "2026-10-08" }, nolast: { days: 1, last: "soon" }, notstring: { days: 1, last: 5 }, nodays: { last: "2026-10-08" } } });
+    expect((await call("GET", "/me", { user: PAT })).body.user.preferences.newFeatures).toEqual({ good });
+    // Past the cap, the rest are dropped
+    table.put({ PK: `USER#${PAT}`, SK: "PREFERENCES", type: "preferences", newFeatures: Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`f${i}`, good])) });
+    expect(Object.keys((await call("GET", "/me", { user: PAT })).body.user.preferences.newFeatures)).toHaveLength(20);
   });
 
   it("writes only in the caller's own partition, with a session tagged with nothing else", async () => {
@@ -1257,7 +1320,7 @@ describe("PATCH /me/preferences", () => {
 
   it("reads a damaged record as the defaults", async () => {
     table.put({ PK: `USER#${PAT}`, SK: "PREFERENCES", type: "preferences", whatsNew: "no", whatsNewLastShown: "yesterday" });
-    expect((await call("GET", "/me", { user: PAT })).body.user.preferences).toEqual({ whatsNew: true, whatsNewLastShown: null, language: null });
+    expect((await call("GET", "/me", { user: PAT })).body.user.preferences).toEqual({ whatsNew: true, whatsNewLastShown: null, language: null, newFeatures: {} });
   });
 
   it("refuses an account being deleted (its token may still work), and writes nothing", async () => {
@@ -1281,7 +1344,7 @@ describe("PATCH /me/preferences", () => {
     };
     const me = await call("GET", "/me", { user: PAT });
     expect(me.status).toBe(200);
-    expect(me.body.user.preferences).toEqual({ whatsNew: true, whatsNewLastShown: null, language: null });
+    expect(me.body.user.preferences).toEqual({ whatsNew: true, whatsNewLastShown: null, language: null, newFeatures: {} });
     expect(logs).toContainEqual(["Preferences not read", { code: "ProvisionedThroughputExceededException" }]);
     expect(JSON.stringify(logs)).not.toMatch(/pat@/i);
   });
