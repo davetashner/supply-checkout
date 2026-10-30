@@ -1099,6 +1099,14 @@ function packsText(n, size) {
 
 const SUPPLY_HINT = () => msg("product.supplyHint");
 const EQUIPMENT_HINT = () => msg("product.equipmentHint");
+// The item a barcode is already on, for the Add item form: keyed by it or carrying it in its code
+// field, ignoring case as inventory search does. Case-insensitive on the key as well, since two
+// keys that differ only in case are two items, and we don't make a second one (supply-checkout-ezfz).
+function itemWithCode(code) {
+  const c = String(code).trim().toLowerCase(); if (!c) return null;
+  const k = keyOf(code).toLowerCase();
+  return Object.keys(products).find(x => x.toLowerCase() === k || String(products[x].code || "").toLowerCase() === c) || null;
+}
 function productModal(key) {
   const p = key ? products[key] : null;
   // One count per form: every attempt at saving the same count is the same stock command.
@@ -1115,6 +1123,7 @@ function productModal(key) {
         ${p ? `<div class="code" style="margin:0">${esc(codeText(p.code))}</div>`
             : `<div class="manual"><input type="text" id="fCode" inputmode="numeric" autocomplete="off" placeholder="${msg("product.barcodePlaceholder")}"><label class="btn" for="fScan">${msg("product.scan")}</label></div><input class="vh" type="file" id="fScan" accept="image/*" capture="environment" data-barcode>`}
       </div>
+      ${p ? "" : `<div class="field" id="fDup" role="alert" hidden><p class="hint warn" id="fDupText"></p><div class="dup-actions"><button type="button" class="btn" id="fDupOpen">${msg("product.dupOpen")}</button></div></div>`}
       <div class="field"><label for="fName">${msg("product.name")}</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "data-autofocus" : ""}></div>
       <div class="field"><label for="fBrand">${msg("product.brand")}</label><input type="text" id="fBrand" maxlength="${MAX_BRAND}" autocomplete="off" value="${esc(p ? brandOf(p) : "")}" placeholder="${msg("product.brandPlaceholder")}"></div>
       <div class="field"><label for="fCost" id="fCostLabel">${msg(equip ? "product.valueEach" : "product.costEach")}</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="${msg("product.costPlaceholder")}"><p class="hint" id="fCostEach" aria-live="polite" hidden></p></div>
@@ -1159,7 +1168,22 @@ function productModal(key) {
       m.querySelector("#fKindHint").textContent = eq ? EQUIPMENT_HINT() : SUPPLY_HINT();
     }));
     const scan = m.querySelector("#fScan");
-    scan && scan.addEventListener("change", async () => { const c = await scanFromInput(scan); if (c) m.querySelector("#fCode").value = c; });
+    // A barcode that's already on an item: say so, with its name and brand, before anything is saved,
+    // and offer to open it. Saving is refused while it stands, so there's never a second item with it.
+    const codeIn = m.querySelector("#fCode"), dup = m.querySelector("#fDup");
+    let dupKey = null;
+    const checkDup = () => {
+      if (p) return null;
+      dupKey = itemWithCode(codeIn.value);
+      dup.hidden = !dupKey;
+      if (dupKey) m.querySelector("#fDupText").textContent = msg("product.dupFound", { name: nameWithBrand(products[dupKey]) });
+      return dupKey;
+    };
+    if (!p) {
+      codeIn.addEventListener("input", checkDup);
+      m.querySelector("#fDupOpen").addEventListener("click", () => { const k = dupKey; closeModal(); productModal(k); });
+    }
+    scan && scan.addEventListener("change", async () => { const c = await scanFromInput(scan); if (c) { codeIn.value = c; checkDup(); } });
     const stock = m.querySelector("#fStock"), pack = m.querySelector("#fPack"), packs = m.querySelector("#fPacks");
     const paintPacks = () => {
       const n = int(stock.value), size = packInput(pack.value);
@@ -1180,6 +1204,7 @@ function productModal(key) {
       // API refuses them (supply-checkout-1dg.12). A name stored with one is cleaned when next saved.
       const name = visibleText(m.querySelector("#fName").value).trim(), price = Math.max(0, round2(m.querySelector("#fPrice").value));
       if (!name) return;
+      if (checkDup()) { m.querySelector("#fDupOpen").focus(); return; }
       const docKey = p ? key : (code ? keyOf(code) : newItemKey);
       // set replaces the whole item, so start from what's there: fields this form doesn't
       // manage survive an edit (ADR 0014). A blank optional field removes it.
@@ -1207,7 +1232,10 @@ function productModal(key) {
       // `counted`: the form showed a count when it opened, so a blank one means stop counting.
       const change = m.querySelector("#fStock").value.trim() === opened ? { reason: "count", keep: true }
         : { reason: "count", count: body.stock, counted: !!hasStock(p), expected: hasStock(p) ? p.stock : null };
-      saving(form, () => closing(write(() => saveItem(db, action, docKey, body, change), msg("checkout.saved"))));
+      // Someone else added an item under this barcode first (the PUT says a new item is at version 0, and
+      // is refused, 409): say that, not the general "changed just now", and don't send it again
+      const add = () => saveItem(db, action, docKey, body, change).catch(e => { throw !p && code && e && e.code === "aborted" ? { code: "refused", message: msg("product.dupJustAdded") } : e; });
+      saving(form, () => closing(write(add, msg("checkout.saved"))));
     });
   });
 }

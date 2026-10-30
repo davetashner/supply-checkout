@@ -2,7 +2,15 @@
   "releases": [
     {
       "version": "upcoming",
-      "notes": [],
+      "notes": [
+        {
+          "title": "Spot a barcode that's already in inventory",
+          "text": "Adding an item with a barcode you already have now says which item has it and offers to open that one, so its stock and history stay together instead of in a second item.",
+          "prs": [
+            844
+          ]
+        }
+      ],
       "skip": {
         "842": "Behind the scenes: the New callout mechanism, with no feature using it yet"
       }
