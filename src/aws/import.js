@@ -16,7 +16,7 @@ import TEMPLATE from "./import-template.csv?raw";
 const MAX_BYTES = 300_000;
 // Rows shown in the preview; the summary counts all of them
 const SHOWN = 100;
-const CHANGE = { code: "importer.changeCode", name: "importer.changeName", brand: "importer.changeBrand", kind: "importer.changeKind", price: "importer.changePrice", cost: "importer.changeCost", packSize: "importer.changePackSize", reorderAt: "importer.changeReorderAt", reorderQty: "importer.changeReorderQty", length: "importer.changeLength", width: "importer.changeWidth", height: "importer.changeHeight", dimUnit: "importer.changeDimUnit", stock: "importer.changeStock" };
+const CHANGE = { code: "importer.changeCode", name: "importer.changeName", brand: "importer.changeBrand", kind: "importer.changeKind", price: "importer.changePrice", cost: "importer.changeCost", packSize: "importer.changePackSize", packCost: "importer.changePackCost", reorderAt: "importer.changeReorderAt", reorderQty: "importer.changeReorderQty", length: "importer.changeLength", width: "importer.changeWidth", height: "importer.changeHeight", dimUnit: "importer.changeDimUnit", stock: "importer.changeStock" };
 
 function actionText(r) {
   if (r.action === "create") return msg("importer.actionNew");
@@ -58,6 +58,7 @@ const GUIDE = [
   ["cost", "importer.guideCost"],
   ["stock", "importer.guideStock"],
   ["pack_size", "importer.guidePackSize"],
+  ["pack_cost", "importer.guidePackCost"],
   ["reorder_at", "importer.guideReorderAt"],
   ["reorder_qty", "importer.guideReorderQty"],
   ["length, width, height", "importer.guideSize"],

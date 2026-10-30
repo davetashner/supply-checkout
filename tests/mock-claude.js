@@ -241,7 +241,7 @@ export function installMockClaude(opts) {
     const stock = (p) => (typeof p.stock === "number" ? p.stock : null);
     const adjust = (a, req, fn) => operate(a, ["stock", key, req], [path], () => fn(docs.get(path)));
     if (change.reason === "receipt") {
-      for (const l of change.lines) await adjust(l.action, [l.quantity, l.unitCost], (p) => { p.stock = (stock(p) || 0) + l.quantity; endAck(p, l.quantity); });
+      for (const l of change.lines) await adjust(l.action, [l.quantity, l.unitCost, l.lineTotal], (p) => { p.stock = (stock(p) || 0) + l.quantity; endAck(p, l.quantity); });
       return;
     }
     const now = stock(docs.get(path));

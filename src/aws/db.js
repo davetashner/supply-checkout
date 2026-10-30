@@ -455,7 +455,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     const count = change.count === undefined ? (change.counted && typeof stored === "number" ? { reason: "uncount" } : null)
       : { reason: "count", count: change.count };
     const changes = change.reason === "receipt"
-      ? change.lines.map((l) => [l.action, { reason: "receipt", quantity: l.quantity, unitCost: l.unitCost }])
+      ? change.lines.map((l) => [l.action, { reason: "receipt", quantity: l.quantity, unitCost: l.unitCost, ...(l.lineTotal === undefined ? {} : { lineTotal: l.lineTotal }) }])
       : count ? [[action, { ...count, expectedStock: change.expected }]] : [];
     for (const [a, b] of changes) await adjustStock(key, b, a);
   }

@@ -395,6 +395,17 @@ describe("stock adjust", () => {
     expect(movements()).toEqual([expect.objectContaining({ reason: "receipt", delta: 24, unitCost: 0.42, tracked: true })]);
   });
 
+  it("records a receipt line's total as printed, within the rounding of the unit cost", async () => {
+    // 3 packs of 4 at $6.99: 12 eaches at $1.75 (6.99 ÷ 4, rounded), and $20.97 as printed, not 12 × 1.75 = $21
+    const res = await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "receipt", quantity: 12, unitCost: 1.75, lineTotal: 20.97 });
+    expect(res.body.result).toMatchObject({ reason: "receipt", quantity: 12, unitCost: 1.75, lineTotal: 20.97 });
+    expect(movements()).toEqual([expect.objectContaining({ reason: "receipt", quantity: 12, unitCost: 1.75, lineTotal: 20.97 })]);
+    // A total further off than half a cent an each isn't the same line
+    expect((await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "receipt", quantity: 12, unitCost: 1.75, lineTotal: 20.93 })).status).toBe(400);
+    expect((await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "receipt", quantity: 12, unitCost: 1.75, lineTotal: 21.07 })).status).toBe(400);
+    expect(movements()).toHaveLength(1);
+  });
+
   it("sets a counted level and records the difference", async () => {
     const res = await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "count", count: 4 });
     expect(res.body.result).toMatchObject({ reason: "count", count: 4, stockDelta: -6 });
@@ -672,6 +683,10 @@ describe("validation and roles", () => {
     ["an unknown reason", { operationId: op(), reason: "lost", quantity: 1 }],
     ["a receipt without a unit cost", { operationId: op(), reason: "receipt", quantity: 1 }],
     ["a receipt with a count", { operationId: op(), reason: "receipt", quantity: 1, unitCost: 1, count: 3 }],
+    ["a receipt line total with three decimals", { operationId: op(), reason: "receipt", quantity: 4, unitCost: 1.75, lineTotal: 6.995 }],
+    ["a receipt line total as text", { operationId: op(), reason: "receipt", quantity: 4, unitCost: 1.75, lineTotal: "6.99" }],
+    ["a count with a line total", { operationId: op(), reason: "count", count: 1, lineTotal: 1 }],
+    ["an uncount with a line total", { operationId: op(), reason: "uncount", lineTotal: 1 }],
     ["a receipt cost with three decimals", { operationId: op(), reason: "receipt", quantity: 1, unitCost: 0.425 }],
     ["a negative count", { operationId: op(), reason: "count", count: -1 }],
     ["a count with a quantity", { operationId: op(), reason: "count", count: 1, quantity: 1 }],

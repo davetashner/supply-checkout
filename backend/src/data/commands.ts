@@ -117,6 +117,8 @@ export interface CommandResult {
   readonly snapshot?: LineSnapshot;
   /** Receipt: what was paid per each. */
   readonly unitCost?: number;
+  /** Receipt: what the receipt line came to, as printed (packs × pack price), when the app sent it. */
+  readonly lineTotal?: number;
   /** Lost: the amount charged to the client for it, if any. */
   readonly charge?: number;
   readonly userId: string;
@@ -148,6 +150,8 @@ export interface Movement {
   readonly returned?: number;
   readonly lost?: number;
   readonly unitCost?: number;
+  /** Receipt: what the receipt line came to, as printed (CommandResult.lineTotal). */
+  readonly lineTotal?: number;
   /** Lost: the amount charged to the client for it, if any. */
   readonly charge?: number;
   readonly operationId: string;
@@ -193,6 +197,12 @@ export interface StockAdjustInput {
   readonly reason: unknown;
   readonly quantity?: unknown;
   readonly unitCost?: unknown;
+  /**
+   * For a receipt, optional: what the line came to as printed (packs × the pack's price), which
+   * `quantity × unitCost` misses by up to half a cent an each, since `unitCost` is rounded to
+   * cents (ADR 0014). It's recorded as it is, for the books.
+   */
+  readonly lineTotal?: unknown;
   readonly count?: unknown;
   /**
    * For a count or uncount: the stock the person saw when they started (an
@@ -1316,6 +1326,8 @@ export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, n
  * - `receipt`: `quantity` eaches bought at `unitCost` each (after any pack
  *   conversion, ADR 0014) are added to stock. A product that didn't track
  *   stock starts at `quantity`. The product's own price and cost don't change.
+ *   An optional `lineTotal` (the line as printed) is recorded on the movement;
+ *   it must be within the rounding of `unitCost` of `quantity × unitCost`.
  * - `count`: someone counted `count` in storage; stock is set to it, and the
  *   movement records the difference.
  * - `uncount`: the item is no longer counted. Its `stock` is removed, and the
@@ -1328,15 +1340,16 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
   writable(db, ctx);
   const opId = operationId(input.operationId);
   const key = productKey(input.productKey);
-  let parsed: { reason: "receipt"; qty: number; unitCost: number } | { reason: "count"; counted: number } | { reason: "uncount" };
+  let parsed: { reason: "receipt"; qty: number; unitCost: number; lineTotal?: number } | { reason: "count"; counted: number } | { reason: "uncount" };
   if (input.reason === "receipt") {
     if (input.count !== undefined || input.expectedStock !== undefined) throw new InvalidInputError("A receipt takes quantity and unitCost, not count or expectedStock");
-    parsed = { reason: "receipt", qty: checkQuantity(input.quantity), unitCost: money(input.unitCost, "unitCost") };
+    const qty = checkQuantity(input.quantity), unitCost = money(input.unitCost, "unitCost");
+    parsed = { reason: "receipt", qty, unitCost, ...(input.lineTotal === undefined ? {} : { lineTotal: lineTotal(input.lineTotal, qty, unitCost) }) };
   } else if (input.reason === "count") {
-    if (input.quantity !== undefined || input.unitCost !== undefined) throw new InvalidInputError("A count takes count only");
+    if (input.quantity !== undefined || input.unitCost !== undefined || input.lineTotal !== undefined) throw new InvalidInputError("A count takes count only");
     parsed = { reason: "count", counted: checkCount(input.count) };
   } else if (input.reason === "uncount") {
-    if (input.quantity !== undefined || input.unitCost !== undefined || input.count !== undefined) throw new InvalidInputError("Stopping the count takes no quantity, unitCost or count");
+    if (input.quantity !== undefined || input.unitCost !== undefined || input.lineTotal !== undefined || input.count !== undefined) throw new InvalidInputError("Stopping the count takes no quantity, unitCost, lineTotal or count");
     parsed = { reason: "uncount" };
   } else {
     throw new InvalidInputError('reason must be "receipt", "count" or "uncount"');
@@ -1355,11 +1368,11 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
     // A stock that isn't a number (written before stock was checked) can't be added to or counted from
     if (product.stock !== undefined && typeof product.stock !== "number") throw new InvalidInputError("This item's stock isn't a number");
     if (parsed.reason === "receipt") {
-      const { qty, unitCost } = parsed;
+      const { qty, unitCost } = parsed, total = parsed.lineTotal === undefined ? {} : { lineTotal: parsed.lineTotal };
       // A restock above the reorder level ends the low-stock marks (acknowledgment, order) (reorder.ts)
       const ack = marksOnRaise(product, qty);
       return {
-        result: { ...base, reason: "receipt", quantity: qty, stockDelta: qty, unitCost },
+        result: { ...base, reason: "receipt", quantity: qty, stockDelta: qty, unitCost, ...total },
         writes: [
           {
             Update: {
@@ -1371,7 +1384,7 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
               ExpressionAttributeValues: { ":qty": qty, ":one": 1, ...ack?.values },
             },
           },
-          movementPut(db, ctx, { productKey: key, reason: "receipt", delta: qty, tracked: true, quantity: qty, unitCost, operationId: opId, userId: ctx.userId, at }),
+          movementPut(db, ctx, { productKey: key, reason: "receipt", delta: qty, tracked: true, quantity: qty, unitCost, ...total, operationId: opId, userId: ctx.userId, at }),
         ],
       };
     }
@@ -1435,6 +1448,17 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
       ],
     };
   });
+}
+
+/**
+ * A receipt's `lineTotal`: money, within the rounding of `unitCost` of `quantity × unitCost`.
+ * `unitCost` is the line's price per each rounded to cents, at most half a cent off, so the line
+ * as printed is at most half a cent an each off `quantity × unitCost`.
+ */
+function lineTotal(value: unknown, qty: number, unitCost: number): number {
+  const total = money(value, "lineTotal");
+  if (Math.abs(total - qty * unitCost) > qty * 0.005 + 1e-9) throw new InvalidInputError("lineTotal must be quantity × unitCost, give or take the rounding of unitCost");
+  return total;
 }
 
 /** An expectedStock that's a number, in a count's range. */

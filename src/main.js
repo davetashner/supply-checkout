@@ -2,7 +2,7 @@ import "./theme.js";
 import { msg, applyStatic, locale, monthName } from "./i18n.js";
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, markLost, saveItem, addLines, quickTake, moveLine } from "./moves.js";
-import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY, MAX_DIMENSION, DIM_FIELDS, dimUnit, hasSize, inchesOf, sizeText, MAX_BRAND, brandOf, nameWithBrand, brandHTML, visibleText } from "./format.js";
+import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, hasPackCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY, MAX_DIMENSION, DIM_FIELDS, dimUnit, hasSize, inchesOf, sizeText, MAX_BRAND, brandOf, nameWithBrand, brandHTML, visibleText } from "./format.js";
 import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts, lostRows, lineLabel, isAdhoc, projectTitle, leftOut } from "./project-math.js";
 import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
@@ -1083,11 +1083,14 @@ function liveProject(d) {
 }
 
 // An item's storage value in whole cents (ADR 0014): its count times its cost each, or
-// its price each where the cost isn't known
+// its price each where the cost isn't known. With a pack's cost as entered, it's the count's
+// share of the pack's cost, rounded once, so rounding the cost of one doesn't add up.
 const MAX_PACK = 10000;
 // The largest count the API takes (MAX_QUANTITY in backend/src/data/money.ts)
 const MAX_COUNT = 1000000;
-const storageCents = p => hasStock(p) ? Math.round(p.stock * round2(unitValue(p)) * 100) : 0;
+const storageCents = p => !hasStock(p) ? 0
+  : hasPackCost(p) ? Math.round(Number((p.stock * p.packCost * 100 / p.packSize).toPrecision(12)))
+    : Math.round(p.stock * round2(unitValue(p)) * 100);
 const packInput = v => Math.min(MAX_PACK, Math.max(1, int(v)));
 // A count of single items as full packs and loose ones, for the line under the count
 function packsText(n, size) {
@@ -1137,18 +1140,27 @@ function productModal(key) {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     // Equipment has no client price, and its cost is its value
     const kindOf = () => m.querySelector("input[name=fKind]:checked").value;
-    // With a pack size the cost field takes what a pack cost, and the item is saved at the cost of one
-    // (ADR 0014). A cost the person hasn't touched is saved as it was, so opening and saving changes nothing.
+    // With a pack size the cost field takes what a pack cost, kept exactly as `packCost`, and the cost
+    // of one is worked out from it, rounded to cents (ADR 0014). A cost the person hasn't touched is
+    // saved as it was, so opening and saving changes nothing. An item saved before pack costs were
+    // kept shows its cost of one times the pack, and says so. A new pack size asks for the new pack's
+    // cost, since the one stored was for another pack; with no pack, the cost of one stays.
     const costIn = m.querySelector("#fCost"), costEach = m.querySelector("#fCostEach"), packIn = m.querySelector("#fPack");
     let costTouched = false;
     const packNow = () => kindOf() === "equipment" ? 1 : packSizeOf({ packSize: packInput(packIn.value) });
+    const opened = isEquipment(p) ? 1 : packSizeOf(p), exact = hasPackCost(p);
+    const newPack = () => !costTouched && !!p && hasCost(p) && packNow() > 1 && packNow() !== opened;
     const paintCost = () => {
       const size = packNow(), eq = kindOf() === "equipment";
       m.querySelector("#fCostLabel").textContent = msg(eq ? "product.valueEach" : size > 1 ? "product.costPack" : "product.costEach");
-      if (!costTouched) costIn.value = p && hasCost(p) ? round2(round2(p.cost) * size) : "";
-      const each = costIn.value.trim() === "" ? null : Math.max(0, round2(round2(costIn.value) / size));
-      costEach.hidden = size === 1 || each === null;
-      costEach.textContent = costEach.hidden ? "" : msg("product.costEachIs", { cost: money(each) });
+      if (!costTouched) costIn.value = !p || !hasCost(p) || newPack() ? "" : size === 1 ? round2(p.cost) : exact ? round2(p.packCost) : round2(round2(p.cost) * size);
+      costIn.setCustomValidity(newPack() ? msg("product.packCostNeeded", { count: size }) : "");
+      const typed = costIn.value.trim() === "" ? null : Math.max(0, round2(costIn.value));
+      costEach.hidden = size === 1 || typed === null;
+      // Whole cents that don't divide by the pack size give a rounded cost of one
+      costEach.textContent = costEach.hidden ? ""
+        : !costTouched && !exact ? msg("product.costFromEach", { cost: money(round2(p.cost)) })
+          : msg(Math.round(typed * 100) % size === 0 ? "product.costEachIs" : "product.costEachRounded", { cost: money(round2(typed / size)) });
     };
     costIn.addEventListener("input", () => { costTouched = true; paintCost(); });
     packIn.addEventListener("input", paintCost);
@@ -1184,9 +1196,18 @@ function productModal(key) {
       if (kindOf() === "equipment") { body.kind = "equipment"; delete body.price; }
       const opt = (id, field, val) => { const v = m.querySelector(id).value.trim(); if (v === "") delete body[field]; else body[field] = val(v); };
       opt("#fStock", "stock", int);
-      // An untouched cost is the stored cost of one, rounded to cents as before; a typed one is a pack's (or one's)
-      if (costTouched) opt("#fCost", "cost", v => Math.max(0, round2(round2(v) / packNow())));
-      else if (p && hasCost(p)) body.cost = Math.max(0, round2(p.cost));
+      // A typed cost is a pack's, kept as entered, or one's. An untouched one is saved as it was: the
+      // pack's cost, or the stored cost of one, rounded to cents as before.
+      const size = packNow(), typed = costIn.value.trim();
+      delete body.packCost;
+      if (costTouched) {
+        if (typed === "") delete body.cost;
+        else if (size > 1) { body.packCost = Math.max(0, round2(typed)); body.cost = round2(body.packCost / size); }
+        else body.cost = Math.max(0, round2(typed));
+      } else if (p && hasCost(p)) {
+        if (exact && size === opened) { body.packCost = round2(p.packCost); body.cost = round2(body.packCost / size); }
+        else body.cost = Math.max(0, round2(p.cost));
+      }
       opt("#fPack", "packSize", packInput);
       opt("#fBrand", "brand", visibleText);
       // Each side: blank, or below the smallest the API takes, removes it. With no side the unit goes too.
@@ -1582,9 +1603,11 @@ function rerenderLine(l) {
 }
 
 // What a general-inventory line adds to storage: its quantity in eaches (packs converted) at
-// the receipt's cost each. The line is the action, so saving the same line again (a retry after
-// a failure) is the same stock command.
-const stockIn = l => ({ action: l, quantity: eaches(l), unitCost: unitCost(l) });
+// the receipt's cost each, and what the line came to as printed (packs × the pack's price), which
+// the cost each, rounded to cents, can miss (ADR 0014). The line is the action, so saving the same
+// line again (a retry after a failure) is the same stock command.
+const lineTotal = l => round2(int(l.qty) * Math.max(0, round2(l.price)));
+const stockIn = l => ({ action: l, quantity: eaches(l), unitCost: unitCost(l), ...(lineTotal(l) <= MAX_MONEY ? { lineTotal: lineTotal(l) } : {}) });
 
 async function saveReceipt() {
   const d = draft;
@@ -1630,6 +1653,12 @@ async function saveReceipt() {
     if (!ex && !add && !d.savePrices) continue;
     const l0 = ls[0], code = (ex && ex.code) || (ls.find(l => l.code) || {}).code || "";
     const body = { ...(ex || {}), code, name: effName(l0), price: effPrice(l0), cost: unitCost(l0), updatedAt: new Date().toISOString() };
+    // An item sold in packs keeps what a pack cost, as the receipt printed it (ADR 0014): the line's
+    // price, or the price each times the pack where the store sold singles
+    delete body.packCost;
+    const size = isEquipment(ex) ? 1 : packSizeOf(ex), price0 = Math.max(0, round2(l0.price));
+    const packCost = l0.perEach ? round2(price0 * size) : price0;
+    if (size > 1 && packCost <= MAX_MONEY) { body.packCost = packCost; body.cost = round2(packCost / size); }
     // Company equipment has no client price: a receipt sets only its value, its cost (ADR 0017)
     if (isEquipment(ex)) delete body.price;
     if (add) body.stock = (hasStock(ex) ? ex.stock : 0) + add;

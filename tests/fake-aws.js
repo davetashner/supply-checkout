@@ -432,6 +432,13 @@ export class FakeBackend {
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
     const badCost = coll === "projects" && Object.values(data.items || {}).some((l) => l && typeof l === "object" && "cost" in l && !cents(l.cost));
     if (badCost) return err(400, "bad_request");
+    // A product's pack cost, as entered, goes with a pack of more than one and the cost of one worked
+    // out from it (checkPackFields in backend/src/data/pack.ts)
+    const round2 = (n) => Math.round(Number((n * 100).toPrecision(12))) / 100;
+    if (coll === "products" && data.packCost === null) delete data.packCost;
+    const badPack = coll === "products" && Object.hasOwn(data, "packCost")
+      && !(cents(data.packCost) && Number.isInteger(data.packSize) && data.packSize > 1 && data.packSize <= 10000 && data.cost === round2(data.packCost / data.packSize));
+    if (badPack) return err(400, "bad_request");
     // An equipment line a write adds has nothing out: equipment goes out only through the commands
     // (checkKinds in backend/src/data/documents.ts, supply-checkout-1dg.18)
     const whole = (n) => Number.isInteger(n) && n >= 0;
@@ -891,21 +898,23 @@ export class FakeBackend {
     const member = this.teams.find((t) => t.id === team);
     if (!member) return err(403, "permission_denied", "not_member");
     if (member.role === "viewer") return err(403, "permission_denied", "view_only");
-    const { operationId, reason, quantity, unitCost, count, expectedStock, ...rest } = body;
+    const { operationId, reason, quantity, unitCost, lineTotal, count, expectedStock, ...rest } = body;
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
     const whole = (n, min) => Number.isInteger(n) && n >= min && n <= 1e6;
     const valid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) && !Object.keys(rest).length
       && (expectedStock === undefined || expectedStock === null || (reason !== "receipt" && whole(expectedStock, 0)))
       && (reason === "receipt" ? whole(quantity, 1) && cents(unitCost) && count === undefined && expectedStock === undefined
-        : reason === "count" ? whole(count, 0) && quantity === undefined && unitCost === undefined
-          : reason === "uncount" && count === undefined && quantity === undefined && unitCost === undefined);
+          // A line total as printed is within half a cent an each of quantity × unitCost (lineTotal in backend/src/data/commands.ts)
+          && (lineTotal === undefined || (cents(lineTotal) && Math.abs(lineTotal - quantity * unitCost) <= quantity * 0.005 + 1e-9))
+        : reason === "count" ? whole(count, 0) && quantity === undefined && unitCost === undefined && lineTotal === undefined
+          : reason === "uncount" && count === undefined && quantity === undefined && unitCost === undefined && lineTotal === undefined);
     if (!valid) return err(400, "bad_request");
     const productKey = `${team}/products/${key}`;
     const answer = (result, replayed) => {
       const d = this.docs.get(productKey);
       return [200, { operationId, replayed, result, product: d ? { id: key, version: d.version, data: d.data } : null }];
     };
-    const request = JSON.stringify([key, reason, quantity, unitCost, count, expectedStock]);
+    const request = JSON.stringify([key, reason, quantity, unitCost, lineTotal, count, expectedStock]);
     const prior = this.operations.get(`${team}/${operationId}`);
     if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
     const product = this.docs.get(productKey);
@@ -920,7 +929,7 @@ export class FakeBackend {
     if (reason === "uncount") { delete product.data.stock; dropMarks(product.data); }
     else { product.data.stock = before + delta; endAck(product.data, reason === "count" ? 1 : delta); }
     if (tracked || reason !== "uncount") product.version++;
-    const result = { operationId, command: "stockAdjust", reason, productKey: key, ...(reason === "receipt" ? { quantity, unitCost } : reason === "count" ? { count } : {}), stockDelta: delta, userId: this.user.id, at: new Date().toISOString() };
+    const result = { operationId, command: "stockAdjust", reason, productKey: key, ...(reason === "receipt" ? { quantity, unitCost, ...(lineTotal === undefined ? {} : { lineTotal }) } : reason === "count" ? { count } : {}), stockDelta: delta, userId: this.user.id, at: new Date().toISOString() };
     this.operations.set(`${team}/${operationId}`, { request, result });
     return answer(result, false);
   }

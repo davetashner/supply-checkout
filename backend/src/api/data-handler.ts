@@ -180,7 +180,7 @@ const MOVE_FIELDS = ["operationId", "productKey", "toProjectId"];
 const RETURN_FIELDS = ["operationId", "productKey", "quantity"];
 const LOST_FIELDS = ["operationId", "productKey", "quantity", "charge"];
 const LINES_FIELDS = ["operationId", "lines"];
-const STOCK_FIELDS = ["operationId", "reason", "quantity", "unitCost", "count", "expectedStock"];
+const STOCK_FIELDS = ["operationId", "reason", "quantity", "unitCost", "lineTotal", "count", "expectedStock"];
 
 /** A team's metric metadata: its ID, and `test: true` for a test team (customer-activity metrics skip it: observability's skippedForTest). */
 const teamMetadata = (ctx: TeamContext) => ({ teamId: ctx.teamId, ...testMark(ctx.test) });

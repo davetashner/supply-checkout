@@ -1,5 +1,5 @@
 // Spanish catalog (supply-checkout-oopu): reviewed by the owner, 2026-10-15.
-// Los nombres de las columnas del archivo (name, price, brand, barcode, kind, cost, stock, pack_size, reorder_at, reorder_qty) se quedan en inglés: así los lee el servidor.
+// Los nombres de las columnas del archivo (name, price, brand, barcode, kind, cost, stock, pack_size, pack_cost, reorder_at, reorder_qty) se quedan en inglés: así los lee el servidor.
 export default {
   "importer.changeCode": "código de barras",
   "importer.changeName": "nombre",
@@ -8,6 +8,7 @@ export default {
   "importer.changePrice": "precio",
   "importer.changeCost": "costo",
   "importer.changePackSize": "tamaño del paquete",
+  "importer.changePackCost": "costo del paquete",
   "importer.changeReorderAt": "nivel de reorden",
   "importer.changeReorderQty": "pedido habitual",
   "importer.changeLength": "largo",
@@ -49,13 +50,14 @@ export default {
   "importer.guideCost": "Lo que usted pagó por unidad, antes de impuestos. No se muestra en los proyectos de clientes. Para herramientas, lo que vale una.",
   "importer.guideStock": "Cuántas unidades tiene, como número entero (no cajas).",
   "importer.guidePackSize": "Cuántas unidades vienen en una caja o paquete que usted compra. En blanco significa 1.",
+  "importer.guidePackCost": "Lo que usted pagó por una caja o paquete, antes de impuestos, guardado tal como lo escribe. Necesita un pack_size de 2 o más; el costo por unidad se calcula a partir de él, redondeado al centavo.",
   "importer.guideReorderAt": "Opcional. Marca el artículo como por agotarse cuando el almacén baja a esta cantidad de unidades. Una celda en blanco conserva el nivel; bórrelo en el editor del artículo.",
   "importer.guideReorderQty": "Opcional. Cuántas unidades suele pedir. En blanco conserva el valor del artículo.",
   "importer.guideSize": "Opcional. El tamaño de una unidad, mayor que 0 y hasta 1,000, con a lo sumo dos decimales. Una celda en blanco conserva el tamaño del artículo; bórrelo en el editor del artículo.",
   "importer.guideSizeUnit": "Opcional. in (pulgadas) o cm (centímetros). En blanco conserva la unidad del artículo, o usa pulgadas si no tiene ninguna. Una unidad en un artículo sin tamaño se ignora.",
 
   "importer.title": "Importar inventario",
-  "importer.intro": "Elija un archivo CSV cuya primera fila nombre sus columnas: <strong>name</strong> y <strong>price</strong>, y si las tiene, brand, barcode, kind, cost, stock, pack_size, reorder_at, reorder_qty, length, width, height y size_unit. Los artículos que ya están en el inventario se identifican por código de barras, o por nombre, y se actualizan. Importar un archivo otra vez no agrega nada dos veces.",
+  "importer.intro": "Elija un archivo CSV cuya primera fila nombre sus columnas: <strong>name</strong> y <strong>price</strong>, y si las tiene, brand, barcode, kind, cost, stock, pack_size, pack_cost, reorder_at, reorder_qty, length, width, height y size_unit. Los artículos que ya están en el inventario se identifican por código de barras, o por nombre, y se actualizan. Importar un archivo otra vez no agrega nada dos veces.",
   "importer.template": "Descargar una plantilla",
   "importer.guideSummary": "Qué va en cada columna",
   "importer.guideNote": "Una \"unidad\" es la porción más pequeña que se lleva a un trabajo: una botella, un rollo, una caja de bolsas. Las dos filas de ejemplo de la plantilla son inventadas; reemplácelas con sus artículos.",

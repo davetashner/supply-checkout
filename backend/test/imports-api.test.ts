@@ -324,6 +324,52 @@ describe("importing again", () => {
     expect(movements().map((m) => [m.productKey, m.delta, m.count])).toEqual([["0123", -15, 25], ["nb-old", 4, 4]]);
   });
 
+  it("keeps a pack's cost as entered, works out the cost of one from it, and drops it when the pack or cost changes without one", async () => {
+    seedProduct("0123", { code: "0123", name: "Gloves", price: 10, cost: 1.75, packSize: 4, packCost: 6.99, stock: 8 }, 2);
+    seedProduct("0456", { code: "0456", name: "Bags", price: 1, cost: 0.5, packSize: 45, packCost: 22.5 }, 2);
+    seedProduct("0789", { code: "0789", name: "Rags", price: 1, cost: 0.25, packSize: 12, packCost: 3 }, 2);
+    const csv = [
+      "name,barcode,price,cost,pack_size,case cost",
+      // A new item: $6.99 a pack of 4 is $1.75 each, rounded, and the pack's cost stays $6.99
+      "Batteries,555,3,,4,6.99",
+      // The same pack cost and pack again: nothing changes
+      "Gloves,0123,10,,4,6.99",
+      // A new pack size without a pack cost: the old one was for packs of 45
+      "Bags,0456,1,,50,",
+      // The same pack size and cost each, no pack cost: the item's stays
+      "Rags,0789,1,0.25,12,",
+    ].join("\n");
+    const res = await post({ importId: randomUUID(), csv });
+    expect(res.body.summary).toEqual({ rows: 4, created: 1, updated: 1, unchanged: 2 });
+    expect(product(keyOfBarcode("555"))).toMatchObject({ name: "Batteries", cost: 1.75, packSize: 4, packCost: 6.99 });
+    expect(product("0123")).toMatchObject({ version: 2, cost: 1.75, packSize: 4, packCost: 6.99 });
+    expect(product("0456")).toMatchObject({ version: 3, cost: 0.5, packSize: 50 });
+    expect(product("0456")?.packCost).toBeUndefined();
+    expect(product("0789")).toMatchObject({ version: 2, packCost: 3 });
+    // A new cost each without a pack cost drops it too
+    await post({ importId: randomUUID(), csv: "name,barcode,price,cost\nGloves,0123,10,2" });
+    expect(product("0123")).toMatchObject({ cost: 2, packSize: 4 });
+    expect(product("0123")?.packCost).toBeUndefined();
+  });
+
+  it("refuses a pack cost without a pack, on equipment, or with a cost each that doesn't go with it", async () => {
+    const csv = [
+      "name,kind,price,cost,pack_size,pack_cost",
+      "No pack,,1,,,6.99",
+      "Packs of one,,1,,1,6.99",
+      "Ladder,equipment,,50,4,200",
+      "Wrong each,,1,1.74,4,6.99",
+      "Right each,,1,1.75,4,6.99",
+    ].join("\n");
+    const res = await post({ csv, dryRun: true });
+    expect(res.body.errors).toEqual([
+      { line: 2, column: "pack_cost", message: "pack_cost needs a pack_size of 2 or more in the same row" },
+      { line: 3, column: "pack_cost", message: "pack_cost needs a pack_size of 2 or more in the same row" },
+      { line: 4, column: "pack_cost", message: "Company equipment has no pack cost; put what one is worth in cost" },
+      { line: 5, column: "cost", message: "cost must be pack_cost ÷ pack_size, rounded to cents (1.75), or blank" },
+    ]);
+  });
+
   it("imports a brand, keeps an item's brand on a blank cell, and leaves items without one unchanged (supply-checkout-005.9)", async () => {
     seedProduct("0123", { code: "0123", name: "Gloves", brand: "Ansell", price: 10 }, 3);
     seedProduct("nb-rags", { code: "", name: "Rags", price: 1 }, 2);
