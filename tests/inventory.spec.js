@@ -616,3 +616,71 @@ test("cancelling the warned form saves nothing", async ({ page }) => {
   await expect(modal(page)).toBeEmpty();
   await expect(inventoryRow(page, "Another towel")).toHaveCount(0);
 });
+
+test("scrolling the wheel over a focused number field scrolls the modal and keeps the value", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Phones and tablets have no mouse wheel, and Playwright can't send one in mobile WebKit");
+  await page.setViewportSize({ width: 1000, height: 300 });
+  await openInventory(page);
+  await startAddItem(page);
+  const price = modal(page).locator("#fPrice");
+  await price.fill("4.50");
+  await price.focus();
+  // Chromium scrolls a focused field into view and WebKit doesn't, so bring it into view here
+  await price.evaluate(el => el.scrollIntoView({ block: "center" }));
+  const box = await price.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const top = () => modal(page).evaluate(el => el.scrollTop);
+  const before = await top();
+  await page.mouse.wheel(0, 120);
+  await expect.poll(top).toBeGreaterThan(before);
+  await expect(price).toHaveValue("4.50");
+  await expect(price).toBeFocused();
+  // a line-based wheel (Firefox) scrolls too
+  const lines = await price.evaluate(el => { const m = el.closest(".modal"), t = m.scrollTop; el.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 1, deltaMode: 1 })); return m.scrollTop - t; });
+  expect(lines).toBeGreaterThan(0);
+  const pages = await price.evaluate(el => { const m = el.closest(".modal"), t = m.scrollTop; el.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 0.2, deltaMode: 2 })); return m.scrollTop - t; });
+  expect(pages).toBeGreaterThan(0);
+  await expect(price).toHaveValue("4.50");
+  // typing and the arrow keys still change it
+  await page.keyboard.press("ArrowUp");
+  await expect(price).toHaveValue("4.51");
+});
+
+test("a wheel over a focused number field outside a modal scrolls the page; other fields are left alone", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Phones and tablets have no mouse wheel, and Playwright can't send one in mobile WebKit");
+  await page.setViewportSize({ width: 1000, height: 300 });
+  await openInventory(page);
+  await page.evaluate(() => {
+    document.body.insertAdjacentHTML("beforeend", '<div style="height:3000px"></div><input id="wn" type="number" value="5"><input id="wt" type="text" value="x">');
+    document.querySelector("#wn").scrollIntoView();
+    document.scrollingElement.scrollTop = 0;
+  });
+  const wn = page.locator("#wn");
+  await wn.focus();
+  // Chromium scrolls a focused field into view and WebKit doesn't, so bring it into view here
+  await wn.evaluate(el => el.scrollIntoView({ block: "center" }));
+  const y = () => page.evaluate(() => document.scrollingElement.scrollTop);
+  const start = await y();
+  const box = await wn.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, -100);
+  await expect.poll(y).toBeLessThan(start);
+  await expect(wn).toHaveValue("5");
+  // a number field that isn't focused, and a text field, are not intercepted
+  const blocked = await page.evaluate(() => {
+    const ev = el => { const e = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 10 }); el.dispatchEvent(e); return e.defaultPrevented; };
+    document.querySelector("#wn").blur();
+    const a = ev(document.querySelector("#wn"));
+    document.querySelector("#wt").focus();
+    return [a, ev(document.querySelector("#wt"))];
+  });
+  expect(blocked).toEqual([false, false]);
+  // once the field loses focus its wheel handler is gone: refocusing re-attaches it
+  const after = await page.evaluate(() => {
+    const n = document.querySelector("#wn");
+    const ev = () => { const e = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 10 }); n.dispatchEvent(e); return e.defaultPrevented; };
+    n.focus(); const focused = ev(); n.blur(); const blurred = ev();
+    return [focused, blurred];
+  });
+  expect(after).toEqual([true, false]);
+});

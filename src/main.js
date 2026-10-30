@@ -94,6 +94,33 @@ const moneyLimit = () => msg("app.moneyLimit", { max: money(MAX_MONEY) });
 const checkMoney = e => { if (e.target.matches("[data-money]")) e.target.setCustomValidity(Number(e.target.value) > MAX_MONEY ? moneyLimit() : ""); };
 $("#modal").addEventListener("input", checkMoney);
 $("#rBody").addEventListener("input", checkMoney);
+// A wheel or trackpad scroll over the focused number field would step its value (the browser's
+// default for type=number), so a price or count changes unnoticed. One delegated focusin listener
+// covers every number field, including ones added later: it cancels the step and scrolls the
+// nearest scrollable ancestor (the modal, else the page) by hand, so the field keeps its focus
+// and caret and the scroll still happens. Not passive: a passive listener can't cancel it.
+const scrollerOf = el => {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const o = getComputedStyle(p).overflowY;
+    if ((o === "auto" || o === "scroll") && p.scrollHeight > p.clientHeight) return p;
+  }
+  return document.scrollingElement;
+};
+// The wheel handler is non-passive, so it is attached only to the number field that has focus
+// (and removed when focus leaves): a document-level one would make every scroll in the app wait
+// on the main thread.
+const stopWheelStep = e => {
+  e.preventDefault();
+  const sc = scrollerOf(e.target);
+  const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? sc.clientHeight : 1; // lines (Firefox) or pages, not pixels
+  sc.scrollBy(e.deltaX * k, e.deltaY * k);
+};
+document.addEventListener("focusin", e => {
+  const t = e.target;
+  if (!t.matches("input[type=number]")) return;
+  t.addEventListener("wheel", stopWheelStep, { passive: false });
+  t.addEventListener("focusout", () => t.removeEventListener("wheel", stopWheelStep), { once: true });
+});
 const onSubmit = (form, fn) => form.addEventListener("submit", e => { e.preventDefault(); if (!form.hasAttribute("aria-busy")) fn(); });
 // Closes the modal once the write saved, and resolves to whether it did
 const closing = async saved => { const ok = await saved; if (ok) closeModal(); return ok; };
