@@ -1123,7 +1123,7 @@ function productModal(key) {
         ${p ? `<div class="code" style="margin:0">${esc(codeText(p.code))}</div>`
             : `<div class="manual"><input type="text" id="fCode" inputmode="numeric" autocomplete="off" placeholder="${msg("product.barcodePlaceholder")}"><label class="btn" for="fScan">${msg("product.scan")}</label></div><input class="vh" type="file" id="fScan" accept="image/*" capture="environment" data-barcode>`}
       </div>
-      ${p ? "" : `<div class="field" id="fDup" role="alert" hidden><p class="hint warn" id="fDupText"></p><div class="modal-actions" style="margin:0"><button type="button" class="btn" id="fDupOpen">${msg("product.dupOpen")}</button></div></div>`}
+      ${p ? "" : `<div class="field" id="fDup" role="alert" hidden><p class="hint warn" id="fDupText"></p><div class="dup-actions"><button type="button" class="btn" id="fDupOpen">${msg("product.dupOpen")}</button></div></div>`}
       <div class="field"><label for="fName">${msg("product.name")}</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "data-autofocus" : ""}></div>
       <div class="field"><label for="fBrand">${msg("product.brand")}</label><input type="text" id="fBrand" maxlength="${MAX_BRAND}" autocomplete="off" value="${esc(p ? brandOf(p) : "")}" placeholder="${msg("product.brandPlaceholder")}"></div>
       <div class="field"><label for="fCost" id="fCostLabel">${msg(equip ? "product.valueEach" : "product.costEach")}</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="${msg("product.costPlaceholder")}"><p class="hint" id="fCostEach" aria-live="polite" hidden></p></div>

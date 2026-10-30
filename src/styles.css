@@ -356,6 +356,8 @@ fieldset.finish legend{font-weight:600;padding:0 4px}
 .summary{background:var(--sunk);border-radius:10px;padding:10px 14px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:14px}
 .summary b{font-family:var(--mono);font-weight:500}
 .modal-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+/* The Add item form's duplicate barcode warning (supply-checkout-ezfz): not .modal-actions, which saving() finds first */
+.dup-actions{display:flex;justify-content:flex-end}
 .modal-actions .spacer{flex:1}
 .invoices{list-style:none;margin:0;padding:0}
 .invoice{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--line)}
