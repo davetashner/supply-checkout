@@ -895,7 +895,7 @@ export class FakeBackend {
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
     const whole = (n, min) => Number.isInteger(n) && n >= min && n <= 1e6;
     const valid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) && !Object.keys(rest).length
-      && (expectedStock === undefined || expectedStock === null || (reason !== "receipt" && whole(expectedStock, 0)))
+      && (expectedStock === undefined || expectedStock === null || (reason !== "receipt" && Number.isSafeInteger(expectedStock)))
       && (reason === "receipt" ? whole(quantity, 1) && cents(unitCost) && count === undefined && expectedStock === undefined
         : reason === "count" ? whole(count, 0) && quantity === undefined && unitCost === undefined
           : reason === "uncount" && count === undefined && quantity === undefined && unitCost === undefined);

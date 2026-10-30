@@ -41,6 +41,7 @@ export default {
   "product.reorderQtyPlaceholder": "How many you usually buy",
   "product.stock": "Single items in storage now",
   "product.stockPlaceholder": "Leave blank if not counted",
+  "product.stockBelowZero": "A count can't be below 0.",
   "product.priceChanges": "Price changes apply to new checkouts. Projects keep the price they were checked out at; change it on a project by tapping the row. So does a change between supply and equipment.",
   "product.delete": "Delete",
   "product.cancel": "Cancel",

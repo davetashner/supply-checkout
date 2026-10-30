@@ -298,8 +298,8 @@ counted changes nothing, and records a movement with `delta: 0` and
 same operation ID changes nothing more.
 
 A count or uncount can send `expectedStock`: the stock the person saw when they
-started (the inventory form sends the count it opened with), or `null` for an
-item that wasn't counted then. If the stock is something else now (a checkout
+started (the inventory form sends the count it opened with, which can be below
+0), or `null` for an item that wasn't counted then. If the stock is something else now (a checkout
 or someone else's count got in while the form was open), the command is
 refused with `409 aborted`, reason `stock_changed`, and the message says what
 it is now: "The count changed while you were editing: it's now 8". It isn't

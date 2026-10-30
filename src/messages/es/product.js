@@ -41,6 +41,7 @@ export default {
   "product.reorderQtyPlaceholder": "Cuántos suele comprar",
   "product.stock": "Unidades en el almacén ahora",
   "product.stockPlaceholder": "Déjelo en blanco si no se ha contado",
+  "product.stockBelowZero": "Un conteo no puede ser menor que 0.",
   "product.priceChanges": "Los cambios de precio se aplican a los retiros nuevos. Los proyectos conservan el precio al que se retiró; para cambiarlo en un proyecto, toque la fila. Lo mismo ocurre con un cambio entre insumo y herramienta.",
   "product.delete": "Eliminar",
   "product.cancel": "Cancelar",
