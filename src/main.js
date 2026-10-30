@@ -94,6 +94,25 @@ const moneyLimit = () => msg("app.moneyLimit", { max: money(MAX_MONEY) });
 const checkMoney = e => { if (e.target.matches("[data-money]")) e.target.setCustomValidity(Number(e.target.value) > MAX_MONEY ? moneyLimit() : ""); };
 $("#modal").addEventListener("input", checkMoney);
 $("#rBody").addEventListener("input", checkMoney);
+// A wheel or trackpad scroll over the focused number field would step its value (the browser's
+// default for type=number), so a price or count changes unnoticed. One listener on the document
+// covers every number field, including ones added later: it cancels the step and scrolls the
+// nearest scrollable ancestor (the modal, else the page) by hand, so the field keeps its focus
+// and caret and the scroll still happens. Not passive: a passive listener can't cancel it.
+const scrollerOf = el => {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const o = getComputedStyle(p).overflowY;
+    if ((o === "auto" || o === "scroll") && p.scrollHeight > p.clientHeight) return p;
+  }
+  return document.scrollingElement;
+};
+document.addEventListener("wheel", e => {
+  const t = e.target;
+  if (t !== document.activeElement || !t.matches("input[type=number]")) return;
+  e.preventDefault();
+  const k = e.deltaMode === 1 ? 16 : 1; // a line-based wheel (Firefox) reports lines, not pixels
+  scrollerOf(t).scrollBy(e.deltaX * k, e.deltaY * k);
+}, { passive: false });
 const onSubmit = (form, fn) => form.addEventListener("submit", e => { e.preventDefault(); if (!form.hasAttribute("aria-busy")) fn(); });
 // Closes the modal once the write saved, and resolves to whether it did
 const closing = async saved => { const ok = await saved; if (ok) closeModal(); return ok; };

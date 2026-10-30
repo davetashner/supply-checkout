@@ -568,3 +568,55 @@ test("sorts the inventory by length, width or height, inches and centimeters tog
   await sort.selectOption("height");
   expect(await rowNames(page)).toEqual(["Shoe box", "Tote", "Crate", "Rags"]);
 });
+
+test("scrolling the wheel over a focused number field scrolls the modal and keeps the value", async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 300 });
+  await openInventory(page);
+  await startAddItem(page);
+  const price = modal(page).locator("#fPrice");
+  await price.fill("4.50");
+  await price.focus();
+  const box = await price.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const top = () => modal(page).evaluate(el => el.scrollTop);
+  const before = await top();
+  await page.mouse.wheel(0, 120);
+  await expect.poll(top).toBeGreaterThan(before);
+  await expect(price).toHaveValue("4.50");
+  await expect(price).toBeFocused();
+  // a line-based wheel (Firefox) scrolls too
+  const lines = await price.evaluate(el => { const m = el.closest(".modal"), t = m.scrollTop; el.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 1, deltaMode: 1 })); return m.scrollTop - t; });
+  expect(lines).toBeGreaterThan(0);
+  await expect(price).toHaveValue("4.50");
+  // typing and the arrow keys still change it
+  await page.keyboard.press("ArrowUp");
+  await expect(price).toHaveValue("4.51");
+});
+
+test("a wheel over a focused number field outside a modal scrolls the page; other fields are left alone", async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 300 });
+  await openInventory(page);
+  await page.evaluate(() => {
+    document.body.insertAdjacentHTML("beforeend", '<div style="height:3000px"></div><input id="wn" type="number" value="5"><input id="wt" type="text" value="x">');
+    document.querySelector("#wn").scrollIntoView();
+    document.scrollingElement.scrollTop = 0;
+  });
+  const wn = page.locator("#wn");
+  await wn.focus();
+  const y = () => page.evaluate(() => document.scrollingElement.scrollTop);
+  const start = await y();
+  const box = await wn.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, -100); // focusing scrolled the field into view, at the bottom
+  await expect.poll(y).toBeLessThan(start);
+  await expect(wn).toHaveValue("5");
+  // a number field that isn't focused, and a text field, are not intercepted
+  const blocked = await page.evaluate(() => {
+    const ev = el => { const e = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 10 }); el.dispatchEvent(e); return e.defaultPrevented; };
+    document.querySelector("#wn").blur();
+    const a = ev(document.querySelector("#wn"));
+    document.querySelector("#wt").focus();
+    return [a, ev(document.querySelector("#wt"))];
+  });
+  expect(blocked).toEqual([false, false]);
+});
