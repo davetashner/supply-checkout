@@ -24,6 +24,9 @@ export const isEquipment = p => !!p && p.kind === "equipment";
 export const hasCost = p => typeof p.cost === "number" && Number.isFinite(p.cost);
 // What one each in storage is worth: its cost where known, its price otherwise
 export const unitValue = p => hasCost(p) ? p.cost : Number(p.price) || 0;
+// A pack's cost as entered (ADR 0014): what the business paid for a pack of `packSize` (more than
+// one), kept exactly; `cost`, the cost of one, is worked out from it and rounded to cents
+export const hasPackCost = p => !!p && typeof p.packCost === "number" && Number.isFinite(p.packCost) && Number.isInteger(p.packSize) && p.packSize > 1;
 export const newKey = () => "nb-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 export const uid = () => Math.random().toString(36).slice(2, 9);
 // The largest price or cost the API takes, in dollars (ADR 0014; MAX_MONEY in backend/src/data/money.ts)

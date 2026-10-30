@@ -154,6 +154,19 @@ describe("documents (the app's db contract)", () => {
     expect(body.data).toEqual({ code: "0123", name: "Gloves" });
   });
 
+  it("keeps a pack's cost as entered, with the cost of one worked out from it", async () => {
+    const packed = { ...product, packSize: 4, packCost: 6.99, cost: 1.75 };
+    expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: packed } })).body.data).toEqual(packed);
+    expect(table.get("TEAM#team-a", "PRODUCT#0123")).toMatchObject({ packSize: 4, packCost: 6.99, cost: 1.75 });
+    // A cost of one that doesn't go with the pack's, or a pack cost with no pack, is refused
+    expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: { ...packed, cost: 1.74 } } })).status).toBe(400);
+    expect((await call("PATCH", "/teams/team-a/products/0123", { body: { data: { packSize: 6 } } })).status).toBe(400);
+    expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: { ...product, packCost: 6.99, cost: 6.99 } } })).status).toBe(400);
+    // A new pack size comes with a new pack cost, or none
+    expect((await call("PATCH", "/teams/team-a/products/0123", { body: { data: { packSize: 6, packCost: 9.99, cost: 1.67 } } })).body.data).toMatchObject({ packSize: 6, packCost: 9.99, cost: 1.67 });
+    expect((await call("PATCH", "/teams/team-a/products/0123", { body: { data: { packSize: 6, packCost: null, cost: 1.67 } } })).body.data).not.toHaveProperty("packCost");
+  });
+
   describe("a product's stock, which only the stock commands change", () => {
     const stored = () => table.get("TEAM#team-a", "PRODUCT#0123");
     beforeEach(async () => {

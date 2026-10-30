@@ -29,6 +29,7 @@ import { hiddenCharacterProblem, withoutHiddenCharacters } from "../text/hidden-
 import { AdhocOpenError, ConflictError, EquipmentOutError, InvalidInputError, NotFoundError, TooLargeError, isCancelledAsTooLarge, isItemTooLarge } from "./errors.js";
 import { BOUGHT_SUFFIX, adhocNumber, barcode, dateFormat, id as checkId, isAdhocId, keys, prefixes, productKey, teamPartition } from "./keys.js";
 import { money, storedMoney } from "./money.js";
+import { checkPackFields } from "./pack.js";
 import type { Movement } from "./commands.js";
 import { type ProjectFilter, projectAttributes, projectItemsByDatePage, projectItemsPage, readProjectItem } from "./project-items.js";
 import { type Page, queryPage } from "./query.js";
@@ -226,6 +227,8 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
     checkReorderFields(data, before?.data);
     // The optional size, three sides in inches or centimeters (dimensions.ts)
     checkDimensionFields(data);
+    // The pack size, and the pack's cost as entered, which the cost of one is worked out from (pack.ts)
+    checkPackFields(data, before?.data);
   }
   if (collection === "projects") {
     if ("date" in data && typeof data.date !== "string") throw new InvalidInputError("Invalid date");

@@ -4,6 +4,8 @@
 - Date: 2026-09-26
 - Amended by: [ADR 0017](0017-company-equipment-and-ad-hoc-checkout.md) (accepted 2026-10-01), which adds company equipment: it has no client price and isn't "used" when it doesn't come back, so sections 1 and 2 hold for supplies only. It also makes one exception to section 2's "no markup": a team-wide markup on equipment bought on a receipt for a client
 
+- Amended on 2026-10-30: [a pack's cost is kept as entered](#amendment-2026-10-30-a-packs-cost-is-kept-as-entered). Section 3's "round once, at the unit price" now applies to the cost of one, worked out from the pack's cost
+
 ## Context
 
 The data model has one money field and one unit, and no written rules for either:
@@ -78,6 +80,19 @@ No data is rewritten. Existing documents load as they are:
 - **Writes that replace a whole product must carry the new fields.** The inventory edit form writes the product with `set` and a fresh body, so it must include `cost` and `packSize` or an edit would wipe them. The receipt save already spreads the existing product.
 - **Existing money values** with more than two decimals (possible if one was typed before rounding existed) are rounded when read for display and when next saved. The server accepts them on read and rejects them only on write.
 - Importing artifact data into a team (`supply-checkout-ig9`) copies documents as they are, with the same defaults.
+
+## Amendment (2026-10-30): a pack's cost is kept as entered
+
+**Why.** Rounding at the unit price (section 3) lost the price a team actually paid for a pack. A pack of 4 at $6.99 was stored as a cost of $1.75 each, and the item form showed it as $7.00 a pack the next time it opened. The pack's price is what has tax and accounting weight, so the owner asked to keep it exactly and round only the cost of one.
+
+**What changes.**
+
+- **Products get an optional `packCost`**: what a pack of `packSize` (2 or more) cost, before tax, exactly as entered or printed on the receipt. `cost` stays the cost of one, rounded to cents, and is worked out from it: `cost = round(packCost ÷ packSize)`, halves up. The server keeps the three in step (`backend/src/data/pack.ts`): a `packCost` without a `packSize` of 2 or more, or with a `cost` that isn't packCost ÷ packSize, is refused. Project lines, markups and checkouts keep using the rounded `cost`, as before.
+- **The item form** takes a pack's cost when the item comes in packs and saves it as `packCost`, with the cost of one worked out from it. The hint under the field says when the cost of one is rounded. Changing an item's pack size asks for the new pack's cost rather than carrying the old one over: it was for another pack. With no pack, the cost of one stays. Items saved before this show their cost of one times the pack, and say so, until someone types the pack's cost.
+- **Receipts** set `packCost` to the line's price as printed (or the price each times the pack, where the store sold singles), and send the line's total as printed, `lineTotal`, on the receipt's stock command. The movement records it next to `unitCost`, so the stock history adds up to the receipt, not to `quantity × unitCost`.
+- **Storage value** uses the pack's cost where it's known: `stock × packCost ÷ packSize`, rounded to cents once per item, so the rounding of the cost of one doesn't add up across a large stock.
+- **The CSV import** takes an optional `pack_cost` column (or `case_cost`, `cost_per_pack`), which needs a `pack_size` of 2 or more in the same row; a `cost` in that row must be the cost of one worked out from it. A row that changes an item's cost or pack size without a pack cost drops the item's `packCost`.
+- **Every stored money value still has at most two decimals.** `packCost` is money like `cost`; only the cost of one is derived.
 
 ## Alternatives considered
 

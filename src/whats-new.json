@@ -4,6 +4,13 @@
       "version": "upcoming",
       "notes": [
         {
+          "title": "Pack costs stay exactly as you enter them",
+          "text": "Enter what a case or pack cost and it's kept to the cent, for your books. The cost of one is worked out from it, and receipts and imports keep the pack's price too.",
+          "prs": [
+            841
+          ]
+        },
+        {
           "title": "Spot a barcode that's already in inventory",
           "text": "Adding an item with a barcode you already have now says which item has it and offers to open that one, so its stock and history stay together instead of in a second item.",
           "prs": [

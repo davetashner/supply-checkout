@@ -625,7 +625,19 @@ test("a case on a receipt goes into storage as eaches, at the case price divided
   await saveBtn(page).click();
   await expect(toast(page)).toHaveText("36 added to storage");
   const products = await docs(page, "products/");
-  expect(products["products/GL"]).toMatchObject({ price: 2, cost: 1.25, packSize: 12, stock: 41 });
+  // The item keeps the case's price as printed, and the cost of one worked out from it
+  expect(products["products/GL"]).toMatchObject({ price: 2, packCost: 15, cost: 1.25, packSize: 12, stock: 41 });
+});
+
+test("a case whose price doesn't divide evenly keeps its exact price, and the cost each is rounded", { tag: ["@J5.3"] }, async ({ page }) => {
+  await seedDraft(page, {
+    lines: [draftLine({ name: "Gloves", match: "GL", qty: 3, price: 6.99, dest: "stock", usePrice: "" })],
+  }, { seed: { ...usedState.seed, "products/GL": { ...gloves, packSize: 4 } } });
+  await expect(line(page, 0).locator("[data-note]")).toHaveText("12 each, cost $1.75 each");
+  await saveBtn(page).click();
+  await expect(toast(page)).toHaveText("12 added to storage");
+  // $6.99 a case, not $7.00: the cost each is 6.99 ÷ 4, rounded
+  expect((await docs(page, "products/"))["products/GL"]).toMatchObject({ packCost: 6.99, cost: 1.75, packSize: 4, stock: 17 });
 });
 
 test("a pack item priced per each isn't converted", { tag: ["@J5.2"] }, async ({ page }) => {
@@ -645,7 +657,8 @@ test("a pack item priced per each isn't converted", { tag: ["@J5.2"] }, async ({
   await expect(page.getByRole("heading", { name: "Singles Co" })).toBeVisible();
   const [project] = Object.values(await docs(page, "projects/")).filter((s) => s.client === "Singles Co");
   expect(project.items.GL).toMatchObject({ code: "GL", price: 1.5, cost: 1.5, out: 3, returned: 0 });
-  expect((await docs(page, "products/"))["products/GL"]).toMatchObject({ price: 1.5, cost: 1.5, stock: 5 });
+  // Bought singly, a case of 12 would have cost 12 × $1.50
+  expect((await docs(page, "products/"))["products/GL"]).toMatchObject({ price: 1.5, cost: 1.5, packCost: 18, stock: 5 });
 });
 
 test("cases added to an existing project line add eaches and keep the line's price and cost", { tag: ["@J5.3"] }, async ({ page }) => {

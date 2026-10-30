@@ -1617,13 +1617,13 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     // The item keeps its stock; each line adds its eaches at its price each
     expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data).not.toHaveProperty("stock");
     expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([
-      { operationId: expect.any(String), reason: "receipt", quantity: 2, unitCost: 7.99 },
-      { operationId: expect.any(String), reason: "receipt", quantity: 3, unitCost: 8.25 },
+      { operationId: expect.any(String), reason: "receipt", quantity: 2, unitCost: 7.99, lineTotal: 15.98 },
+      { operationId: expect.any(String), reason: "receipt", quantity: 3, unitCost: 8.25, lineTotal: 24.75 },
     ]);
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(15);
     const put = backend.requests("PUT", /^\/teams\/t1\/products\/nb-/)[0], key = put.path.split("/").pop();
     expect(put.body.data).not.toHaveProperty("stock");
-    expect(backend.requests("POST", `/teams/t1/products/${key}/stock`).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "receipt", quantity: 4, unitCost: 4.5 }]);
+    expect(backend.requests("POST", `/teams/t1/products/${key}/stock`).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "receipt", quantity: 4, unitCost: 4.5, lineTotal: 18 }]);
     expect(backend.doc("t1", "products", key).data.stock).toBe(4);
     expect(backend.requests("PATCH", /^\/teams\/t1\//)).toEqual([]);
   });
@@ -1638,8 +1638,8 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(toast(page)).toHaveText("12 added to storage");
     // The client price is kept (it was above the cost), and the cost is the receipt's
-    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data).toMatchObject({ price: 8.5, cost: 7.5, packSize: 6 });
-    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "receipt", quantity: 12, unitCost: 7.5 }]);
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data).toMatchObject({ price: 8.5, cost: 7.5, packCost: 45, packSize: 6 });
+    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "receipt", quantity: 12, unitCost: 7.5, lineTotal: 90 }]);
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(22);
   });
 
@@ -1668,6 +1668,20 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     expect(again2.operationId).not.toBe(lost.operationId);
     expect(backend.operations.size).toBe(2);
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(15);
+  });
+
+  test("a case on a receipt keeps its price as printed: the item's pack cost, and the line total on the stock command", { tag: ["@J5.3"] }, async ({ page }) => {
+    const docs = seeded();
+    docs["t1/products/SKU1"] = { ...docs["t1/products/SKU1"], packSize: 4 };
+    const backend = new FakeBackend({ docs });
+    await openDraft(page, backend, [draftLine({ id: "l1", name: "Paper towels", qty: 3, price: 6.99, match: "SKU1" })]);
+    await connected(page);
+    await continueReview(page);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(toast(page)).toHaveText("12 added to storage");
+    // 3 cases of 4 at $6.99: 12 at $1.75 each (rounded), and $20.97 as printed, not 12 × $1.75 = $21
+    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "receipt", quantity: 12, unitCost: 1.75, lineTotal: 20.97 }]);
+    expect(backend.doc("t1", "products", "SKU1").data).toMatchObject({ packSize: 4, packCost: 6.99, cost: 1.75, stock: 22 });
   });
 
   // A receipt's lines for a client on a project that exists: the addLines command (src/moves.js)

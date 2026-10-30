@@ -284,7 +284,10 @@ paths:
         - `reason: "receipt"`: `quantity` eaches bought at `unitCost` each
           (after any pack conversion, ADR 0014) are added to stock. An item
           that didn't track stock starts at `quantity`. The item's `price`
-          and `cost` don't change; update the document for that.
+          and `cost` don't change; update the document for that. An optional
+          `lineTotal`, the line as printed (packs × the pack's price), is
+          recorded on the movement; it must be within half a cent an each of
+          `quantity × unitCost`, since `unitCost` is rounded to cents.
         - `reason: "count"`: someone counted `count` in storage. Stock is set
           to it, and the movement records the difference.
         - `reason: "uncount"`: the item is no longer counted. Its `stock` is
@@ -3191,6 +3194,7 @@ components:
                   reason: { const: receipt }
                   quantity: { $ref: "#/components/schemas/Quantity" }
                   unitCost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: What was paid per each, before tax. }
+                  lineTotal: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "Optional: what the receipt line came to as printed (packs × the pack's price), within half a cent an each of `quantity × unitCost`. Recorded as it is, for the books." }
               - type: object
                 additionalProperties: false
                 required: [operationId, reason, count]
@@ -3514,6 +3518,7 @@ components:
         lineCreated: { type: boolean, description: "Checkout and quick take; for a move, whether the client project had no line for the item." }
         snapshot: { $ref: "#/components/schemas/LineSnapshot" }
         unitCost: { type: number, description: Receipt only. }
+        lineTotal: { type: number, description: "Receipt only, when sent: the line as printed." }
         charge: { type: number, description: "Lost only: what the client is charged for it, if anything." }
         userId: { type: string }
         at: { type: string, format: date-time }
@@ -3534,6 +3539,7 @@ components:
         returned: { type: integer, description: "Move only: the line's `returned` that moved." }
         lost: { type: integer, description: "Move only: the line's `lost` that moved." }
         unitCost: { type: number }
+        lineTotal: { type: number, description: "Receipt only, when the app sent it: what the receipt line came to as printed, which `quantity × unitCost` can miss by the rounding of `unitCost`." }
         charge: { type: number, description: "Lost only: what the client is charged for it, if anything." }
         operationId: { type: string, format: uuid }
         userId: { type: string }
@@ -3547,9 +3553,10 @@ components:
         brand: { type: string, maxLength: 100, description: Absent when the row's brand cell is blank or there's no brand column, which keeps the item's brand. }
         barcode: { type: string, maxLength: 256 }
         price: { $ref: "#/components/schemas/Money" }
-        cost: { $ref: "#/components/schemas/Money" }
+        cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "From a `cost` column, or worked out from `packCost`: packCost ÷ packSize, rounded to cents." }
         stock: { type: integer, minimum: 0, maximum: 1000000 }
         packSize: { type: integer, minimum: 1, maximum: 10000 }
+        packCost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "From a `pack_cost` column (or case cost, cost per pack): what a pack of the row's `pack_size`, 2 or more, cost, kept as entered. A row that changes an item's cost or pack size without one drops the item's." }
         reorderAt: { type: integer, minimum: 0, maximum: 1000000, description: "From a `reorder_at` column (supply-checkout-005.13). Absent: the item's level is kept." }
         reorderQty: { type: integer, minimum: 1, maximum: 1000000, description: "From a `reorder_qty` column. Absent: the item's usual order is kept." }
         length: { type: number, exclusiveMinimum: 0, maximum: 1000, description: "From a `length` column. Absent: the item's is kept." }
@@ -3558,7 +3565,7 @@ components:
         dimUnit: { type: string, enum: [in, cm], description: "From a `size_unit` column. Absent: the item's unit is kept (inches for a new size)." }
         key: { type: string, description: The product key the row writes. }
         action: { type: string, enum: [create, update, unchanged] }
-        changes: { type: array, items: { type: string, enum: [code, name, brand, kind, price, cost, packSize, reorderAt, reorderQty, length, width, height, dimUnit, stock] } }
+        changes: { type: array, items: { type: string, enum: [code, name, brand, kind, price, cost, packSize, packCost, reorderAt, reorderQty, length, width, height, dimUnit, stock] } }
     ImportRowError:
       type: object
       required: [line, message]
@@ -3591,7 +3598,9 @@ components:
         name: { type: string, description: No control or invisible characters where a write changes it (supply-checkout-1dg.12). }
         brand: { type: string, maxLength: 100, description: "Optional (supply-checkout-005.9): who makes the item. Stored trimmed, no control or invisible characters; absent for none. A write with a blank or `null` brand removes it." }
         price: { type: number, minimum: 0, description: The client price each. Absent for company equipment. }
-        cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "What the business paid per each; for company equipment, its value each." }
+        cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "What the business paid per each; for company equipment, its value each. With a `packCost`, it must be packCost ÷ packSize, rounded to cents (ADR 0014)." }
+        packSize: { type: integer, minimum: 1, maximum: 10000, description: "How many eaches come in a pack the business buys. Absent or 1: bought one at a time. A write that changes it must give a whole number from 1 to 10,000." }
+        packCost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "What a pack of `packSize` (2 or more) cost, kept exactly as entered, for the books (ADR 0014). `cost` is worked out from it. `null` removes it. Refused with 400 `bad_request` without a `packSize` of 2 or more, or with a `cost` that isn't packCost ÷ packSize rounded to cents." }
         kind: { type: string, enum: [supply, equipment], description: "A supply (used up and charged; the default when absent) or company equipment (reused, and not charged), ADR 0017." }
         stock: { type: number, description: "The count in storage; absent if not counted. Read-only here: only the stock commands and the CSV import change it, and a write may only repeat the stored value." }
         reorderAt: { type: integer, minimum: 0, maximum: 1000000, description: "The reorder level, in eaches: the item is running low when it's counted and `stock <= reorderAt` (supply-checkout-005.8). Absent: no alert." }

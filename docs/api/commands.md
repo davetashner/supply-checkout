@@ -46,7 +46,7 @@ a project through the adapter's `saveItem`. The demo and the tests' mock runtime
 | Move a General Use line to a client project (line editor, ADR 0017 §5) | Two writes with the move's mark: the counts onto the client project's line, then the General Use line replaced by a hidden "moved" marker (ADR 0017 §6) | `POST /teams/{teamId}/projects/{projectId}/move`. No stock moves |
 | Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `addStock(key, back - before)` | `POST /teams/{teamId}/projects/{projectId}/return`. No `addStock`. |
 | Inventory form, "Single items in storage now" (`productModal`) | A new item is a `PUT` at `expectedVersion: 0`, which the API refuses (409) if the key exists, so a second add of a barcode never overwrites the first; the form also warns, before saving, when the barcode is already on an item (by key or `code`, ignoring case) and offers to open it. Reads the item, then `PUT products/<key>`: with the new `stock` if the person changed the count field, otherwise with the stock read now. A changed count over stock that moved since the form opened is refused, and the item is saved with the stock as it is | `PUT products/<key>` without `stock`, if any other field changed, then, only if the person changed the count field, `POST /teams/{teamId}/products/{key}/stock` with `reason: "count"` and `expectedStock` (the count the form opened with). A count field emptied on a counted item stops counting it: `reason: "uncount"`, with `expectedStock`. A count field left as it opened sends no command. |
-| Receipt save, General inventory lines (`saveReceipt`) | `PUT products/<key>` with `stock` plus the lines' quantities | `PUT products/<key>` without `stock` (price and name updates), if they changed, then one `POST .../products/{key}/stock` with `reason: "receipt"` per line: its quantity in eaches and its receipt price as `unitCost` |
+| Receipt save, General inventory lines (`saveReceipt`) | `PUT products/<key>` with `stock` plus the lines' quantities | `PUT products/<key>` without `stock` (price and name updates), if they changed, then one `POST .../products/{key}/stock` with `reason: "receipt"` per line: its quantity in eaches, its receipt price each as `unitCost`, and the line as printed as `lineTotal` |
 | Receipt save, a client's lines on an existing project (`saveReceipt`) | Reads the project, then `PATCH sheets/<id>` with the lines added to it and a mark for this receipt in `savedReceipts`; an attempt that finds its mark writes nothing | `POST /teams/{teamId}/projects/{projectId}/lines`, up to 40 lines each, no stock moved |
 | Receipt save, company equipment bought for a client (`saveReceipt`, ADR 0017 §2a) | As above, on the line `<key>:bought` with `purchased: true`, at the receipt price, or the typed price with `priceSet: "manual"`, `priceSetBy` and `priceSetAt` (no markup). A new project is set first, then its bought lines are added | The same command, sending the receipt price as `cost` and no `price`, or a typed price with `priceSet: "manual"`; the server adds the markup. A new project is `PUT` first, then its bought lines are added |
 | Item history (new) | none | `GET /teams/{teamId}/products/{key}/movements` (not used by the app yet) |
@@ -80,8 +80,9 @@ holds the version from before the command, so a `PUT` would get `409` and show
 "someone else changed this"; skipping it, the same save sends the command
 again with the same ID and the server replays it. The
 receipt's pack conversion ([ADR 0014](../adr/0014-units-cost-and-rounding.md))
-comes later, in the line's quantity and `unitCost` (`stockIn` in
-`src/main.js`); the item's price and cost updates stay a document write.
+comes later, in the line's quantity, `unitCost` and `lineTotal` (`stockIn` in
+`src/main.js`); the item's price, cost and pack cost (`packCost`, the pack's
+price as printed) updates stay a document write.
 
 ## Requests
 
@@ -281,6 +282,7 @@ percentage, only the prices worked out from it.
 
 ```json
 { "operationId": "…", "reason": "receipt", "quantity": 24, "unitCost": 0.42 }
+{ "operationId": "…", "reason": "receipt", "quantity": 12, "unitCost": 1.75, "lineTotal": 20.97 }
 { "operationId": "…", "reason": "count", "count": 17 }
 { "operationId": "…", "reason": "uncount" }
 { "operationId": "…", "reason": "count", "count": 17, "expectedStock": 20 }
@@ -288,7 +290,10 @@ percentage, only the prices worked out from it.
 
 The item must exist. A receipt adds to stock (an item that wasn't counted
 starts at `quantity`) and records `unitCost`; it doesn't change the item's
-`price` or `cost`. A count sets stock to `count` and records the difference.
+`price` or `cost`. A receipt can also send `lineTotal`, what the line came to
+as printed (3 packs of 4 at $6.99 is $20.97, where 12 × $1.75 is $21.00); it's
+recorded on the movement, and must be within half a cent an each of
+`quantity × unitCost`. A count sets stock to `count` and records the difference.
 An uncount stops counting the item: it takes no other field, removes the
 item's `stock`, and records a movement taking it to 0 (`delta` is minus the
 stock it had, `tracked: true`), with no `count`. Afterwards the item doesn't
@@ -494,7 +499,7 @@ item's movements, newest first, a page at a time (up to 100). Any member can
 read it. Each movement has who (`userId`), when (`at`), why (`reason`:
 `checkout`, `return`, `receipt`, `count`, `uncount` when someone stopped counting it, `import`, `delete` when the item was deleted, `lost` for equipment lost or broken, or `move` for a line moved from the General Use project to a client project; an uncount and a delete take its stock to 0, and lost and move movements don't change it), the `projectId` for checkouts (quick takes included),
 returns, lost equipment and moves (the client project; `fromProjectId` is the General Use project), the `quantity` or `count` (a move's `quantity` is the line's `out`, with its `returned` and `lost`), the change to stock (`delta`), whether the
-item tracked stock (`tracked`), the `unitCost` for receipts, any `charge` for lost equipment, and the
+item tracked stock (`tracked`), the `unitCost` (and `lineTotal`, when sent) for receipts, any `charge` for lost equipment, and the
 `operationId`. Movements are kept as long as the team's data.
 
 ## Reconciling stock

@@ -192,7 +192,7 @@ test("offers a template with a column guide, and the template goes through the p
   await openImport(page, backend);
   const guide = dialog(page).locator("details.import-guide");
   await guide.getByText("What goes in each column").click();
-  for (const column of ["name", "brand", "price", "barcode", "kind", "cost", "stock", "pack_size", "reorder_at", "reorder_qty", "length, width, height", "size_unit"]) await expect(guide.locator("dt", { hasText: new RegExp(`^${column}$`) })).toBeVisible();
+  for (const column of ["name", "brand", "price", "barcode", "kind", "cost", "stock", "pack_size", "pack_cost", "reorder_at", "reorder_qty", "length, width, height", "size_unit"]) await expect(guide.locator("dt", { hasText: new RegExp(`^${column}$`) })).toBeVisible();
   await expect(guide).toContainText("A blank cell keeps the level; clear it in the item editor.");
   await expect(guide).toContainText("A blank cell keeps the item's size; clear it in the item editor.");
   await expect(guide).toContainText("A unit on an item with no size is ignored.");
