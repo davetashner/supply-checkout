@@ -1,6 +1,18 @@
 {
   "releases": [
     {
+      "version": "upcoming",
+      "notes": [
+        {
+          "title": "Spot a barcode that's already in inventory",
+          "text": "Adding an item with a barcode you already have now says which item has it and offers to open that one, so its stock and history stay together instead of in a second item.",
+          "prs": [
+            844
+          ]
+        }
+      ]
+    },
+    {
       "version": "1.22.0",
       "date": "2026-10-27",
       "notes": [
