@@ -1788,3 +1788,19 @@ test.describe("orders", { tag: ["@J15.4"] }, () => {
     expect(backend.doc("t1", "products", "GLV").data).not.toHaveProperty("orderedOn");
   });
 });
+
+// Two people add the same barcode at once (supply-checkout-ezfz): a new item is written at version
+// 0, which the API refuses once the item exists, so the second save never overwrites the first
+test("a second add of a barcode someone just added is refused, with a message that says why", { tag: ["@J2.1"] }, async ({ page }) => {
+  const backend = await open(page);
+  await goToInventory(page);
+  await startAddItem(page);
+  await modal(page).getByPlaceholder("Type, scan, or leave blank").fill("NEW1");
+  await modal(page).getByLabel("Item name", { exact: true }).fill("Mine");
+  // Meanwhile someone else adds it, and this page hasn't heard yet
+  backend.write("t1", "products", "NEW1", { code: "NEW1", name: "Theirs", price: 0 });
+  await modal(page).getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.locator("#toast")).toHaveText("Someone just added an item with this barcode, so yours wasn't saved. Find it in inventory.");
+  expect(backend.requests("PUT", "/teams/t1/products/NEW1").map((r) => r.body.expectedVersion)).toEqual([0]);
+  expect(backend.doc("t1", "products", "NEW1").data.name).toBe("Theirs");
+});
