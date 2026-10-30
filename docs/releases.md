@@ -186,6 +186,11 @@ If a `feat:` pull request is still open when a release goes out, its note is now
 - Skip a `feat:` entry that users won't see, such as a support tool, the marketing site, infrastructure, metrics or a migration, and give a short reason. The reason isn't shown in the app, but reviewers read it.
 - The owner reviews the notes in the feature's pull request and again in the release pull request, before approving it. They're the words customers will read.
 
+
+### Marking a feature "New"
+
+A feature that adds something people will want to spot (a new section of a form, say) can wear a "New" callout for each person's first 3 days of opening the app after it ships (`src/aws/new-feature.js`, `supply-checkout-ihhe`). Add `{ id, shipped, label }` to `NEW_FEATURES` there (`id`: lowercase words and hyphens; `shipped`: the release's date; `label`: an optional message key naming the feature in the legend, with its English and Spanish strings) and draw the section with `callout(id, html)`. Days are counted, not sign-ins, once per local day on any device, and kept in the person's preferences (`newFeatures`). It stops after 3 days, and 30 days after `shipped` whatever the count; turning What's New off in Account turns it off. Drop the entry once the 30 days have passed.
+
 ## Real-device check
 
 Playwright can't open a phone's camera (its tests use a stand-in camera, `tests/camera.js`), so before publishing a release, check scanning on a real iPhone and a real Android phone: your own phones, or a real-device cloud such as BrowserStack Live. A Scan button opens the camera in a scanner (`src/live-scan.js`), which reads each frame with the browser's `BarcodeDetector` where there is one (Chrome and Samsung Internet on Android) and ZXing otherwise (Safari on iPhone and iPad, Firefox), and takes a code once two frames agree. **Take a photo instead** (and a browser without a camera) takes a photo through the file input (`capture="environment"`), decoded the same way.

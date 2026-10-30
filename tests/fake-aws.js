@@ -280,12 +280,19 @@ export class FakeBackend {
     // field, of the right type. Only for a user that has them (an API from before them has no route)
     if (path === "/me/preferences" && method === "PATCH") {
       if (!this.user.preferences) return err(404, "not_found");
-      const { whatsNew, whatsNewLastShown, language, ...rest } = call.body || {};
-      if (Object.keys(rest).length || (whatsNew === undefined && whatsNewLastShown === undefined && language === undefined)) return err(400, "bad_request");
+      const { whatsNew, whatsNewLastShown, language, newFeatures, ...rest } = call.body || {};
+      if (Object.keys(rest).length || (whatsNew === undefined && whatsNewLastShown === undefined && language === undefined && newFeatures === undefined)) return err(400, "bad_request");
+      // The New callouts' state (backend newFeaturesValue): at most 20 lowercase-hyphen IDs, each { days 0-3, last: a date }
+      if (newFeatures !== undefined) {
+        const entries = newFeatures && typeof newFeatures === "object" && !Array.isArray(newFeatures) ? Object.entries(newFeatures) : null;
+        const good = entries && entries.length <= 20 && entries.every(([id, v]) => /^[a-z][a-z0-9-]{0,39}$/.test(id) && v && typeof v === "object"
+          && Object.keys(v).sort().join() === "days,last" && Number.isInteger(v.days) && v.days >= 0 && v.days <= 3 && /^\d{4}-\d{2}-\d{2}$/.test(v.last));
+        if (!good) return err(400, "bad_request");
+      }
       if (language !== undefined && !["en", "es"].includes(language)) return err(400, "bad_request");
       if (whatsNew !== undefined && typeof whatsNew !== "boolean") return err(400, "bad_request");
       if (whatsNewLastShown !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(whatsNewLastShown)) return err(400, "bad_request");
-      const preferences = { ...this.user.preferences, ...(whatsNew === undefined ? {} : { whatsNew }), ...(whatsNewLastShown === undefined ? {} : { whatsNewLastShown }), ...(language === undefined ? {} : { language }) };
+      const preferences = { ...this.user.preferences, ...(whatsNew === undefined ? {} : { whatsNew }), ...(whatsNewLastShown === undefined ? {} : { whatsNewLastShown }), ...(language === undefined ? {} : { language }), ...(newFeatures === undefined ? {} : { newFeatures }) };
       this.user = { ...this.user, preferences };
       return [200, { preferences }];
     }

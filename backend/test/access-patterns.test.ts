@@ -288,13 +288,17 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       db = table.db;
       const userId = newUser();
       const at = new Date("2026-10-08T14:00:00.000Z");
-      expect(await getPreferences(db, userId)).toEqual({ whatsNew: true, whatsNewLastShown: null, language: null });
-      expect(await setPreferences(db, userId, { whatsNew: false }, at)).toEqual({ whatsNew: false, whatsNewLastShown: null, language: null });
-      expect(await setPreferences(db, userId, { whatsNewLastShown: "2026-10-09" }, at)).toEqual({ whatsNew: false, whatsNewLastShown: "2026-10-09", language: null });
-      expect(await getPreferences(db, userId)).toEqual({ whatsNew: false, whatsNewLastShown: "2026-10-09", language: null });
+      expect(await getPreferences(db, userId)).toEqual({ whatsNew: true, whatsNewLastShown: null, language: null, newFeatures: {} });
+      expect(await setPreferences(db, userId, { whatsNew: false }, at)).toEqual({ whatsNew: false, whatsNewLastShown: null, language: null, newFeatures: {} });
+      expect(await setPreferences(db, userId, { whatsNewLastShown: "2026-10-09" }, at)).toEqual({ whatsNew: false, whatsNewLastShown: "2026-10-09", language: null, newFeatures: {} });
+      expect(await getPreferences(db, userId)).toEqual({ whatsNew: false, whatsNewLastShown: "2026-10-09", language: null, newFeatures: {} });
       expect(await rawItem(db, `USER#${userId}`, "PREFERENCES")).toEqual({ PK: `USER#${userId}`, SK: "PREFERENCES", type: "preferences", whatsNew: false, whatsNewLastShown: "2026-10-09", updatedAt: at.toISOString() });
-      expect(await setPreferences(db, userId, { language: "es" }, at)).toEqual({ whatsNew: false, whatsNewLastShown: "2026-10-09", language: "es" });
+      expect(await setPreferences(db, userId, { language: "es", newFeatures: {} }, at)).toEqual({ whatsNew: false, whatsNewLastShown: "2026-10-09", language: "es", newFeatures: {} });
       expect((await rawItem(db, `USER#${userId}`, "PREFERENCES"))?.language).toBe("es");
+      const state = { "photo-link": { days: 2, last: "2026-10-07" } };
+      expect(await setPreferences(db, userId, { newFeatures: state }, at)).toMatchObject({ newFeatures: state });
+      expect((await rawItem(db, `USER#${userId}`, "PREFERENCES"))?.newFeatures).toEqual(state);
+      await expect(setPreferences(db, userId, { newFeatures: { "Bad Id": { days: 1, last: "2026-10-08" } } }, at)).rejects.toThrow(/feature ID/);
       await expect(setPreferences(db, userId, { language: "fr" as never }, at)).rejects.toThrow(/language must be one of/);
       await expect(setPreferences(db, userId, { whatsNewLastShown: "2026-10-20" }, at)).rejects.toThrow(/today's date/);
       // Never for an account being deleted, in the same transaction

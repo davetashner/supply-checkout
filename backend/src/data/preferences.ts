@@ -3,6 +3,9 @@
 //
 //   PK USER#<sub>  SK PREFERENCES  whatsNew           boolean: show the What's New banner (default on)
 //                                  whatsNewLastShown  YYYY-MM-DD: the user's local date it was last shown
+//                                  newFeatures        map of feature ID to { days, last }: the "New" callouts (supply-checkout-ihhe).
+//                                                     days (0 to 3) is how many local days the callout was shown, last the
+//                                                     local date (YYYY-MM-DD) of the latest. Absent until one is shown
 //                                  language           "en" or "es" (LANGUAGES): the language the user chose, absent
 //                                                     until they choose one (the app then uses the device's)
 //                                  updatedAt          ISO time of the last change
@@ -38,7 +41,23 @@ export interface Preferences {
   readonly whatsNewLastShown: string | null;
   /** The language the user chose (the app's and, later, their emails'), or null if they never chose one. */
   readonly language: Language | null;
+  /** The "New" callouts shown so far, by feature ID: empty until one is shown. */
+  readonly newFeatures: NewFeatures;
 }
+
+/** How many local days a feature's "New" callout shows for one person. */
+export const NEW_FEATURE_DAYS = 3;
+/** Most features tracked at once: the app prunes retired ones, so this is far above what it ever sends. */
+export const MAX_NEW_FEATURES = 20;
+/** A feature ID: lowercase words joined by hyphens. No underscores, so no `__proto__` and the like. */
+const FEATURE_ID = /^[a-z][a-z0-9-]{0,39}$/;
+
+/** One feature's callout state: days shown (0 to NEW_FEATURE_DAYS) and the local date of the latest. */
+export interface NewFeatureState {
+  readonly days: number;
+  readonly last: string;
+}
+export type NewFeatures = Readonly<Record<string, NewFeatureState>>;
 
 /** The languages the app has: the same codes as OFFERED in src/i18n.js. */
 export const LANGUAGES = ["en", "es"] as const;
@@ -49,13 +68,14 @@ export interface PreferencesChange {
   whatsNew?: boolean;
   whatsNewLastShown?: string;
   language?: Language;
+  newFeatures?: NewFeatures;
 }
 
 /** What a user who never changed anything gets. */
-export const DEFAULT_PREFERENCES: Preferences = { whatsNew: true, whatsNewLastShown: null, language: null };
+export const DEFAULT_PREFERENCES: Preferences = { whatsNew: true, whatsNewLastShown: null, language: null, newFeatures: {} };
 
 /** The fields PATCH /me/preferences accepts. */
-export const PREFERENCE_FIELDS = ["whatsNew", "whatsNewLastShown", "language"] as const;
+export const PREFERENCE_FIELDS = ["whatsNew", "whatsNewLastShown", "language", "newFeatures"] as const;
 
 /**
  * How far a local date may be from the server's UTC date, in days. Local
@@ -68,14 +88,49 @@ const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const DAY_MS = 86_400_000;
 
 /** A real calendar date (YYYY-MM-DD) within LOCAL_DATE_SLACK_DAYS of `now`'s UTC date, or InvalidInputError. */
-export function localDate(value: unknown, now: Date): string {
-  if (typeof value !== "string" || !DATE.test(value)) throw new InvalidInputError("whatsNewLastShown must be a date (YYYY-MM-DD)");
+export function localDate(value: unknown, now: Date, field = "whatsNewLastShown"): string {
+  if (typeof value !== "string" || !DATE.test(value)) throw new InvalidInputError(`${field} must be a date (YYYY-MM-DD)`);
   const at = Date.parse(`${value}T00:00:00.000Z`);
   // 2026-02-30 parses, as 2026-03-02: only a date that comes back the same is real
-  if (!Number.isFinite(at) || new Date(at).toISOString().slice(0, 10) !== value) throw new InvalidInputError("whatsNewLastShown must be a date (YYYY-MM-DD)");
+  if (!Number.isFinite(at) || new Date(at).toISOString().slice(0, 10) !== value) throw new InvalidInputError(`${field} must be a date (YYYY-MM-DD)`);
   const today = Date.parse(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`);
-  if (Math.abs(at - today) > LOCAL_DATE_SLACK_DAYS * DAY_MS) throw new InvalidInputError("whatsNewLastShown must be today's date");
+  if (Math.abs(at - today) > LOCAL_DATE_SLACK_DAYS * DAY_MS) throw new InvalidInputError(`${field} must be today's date`);
   return value;
+}
+
+/** A real calendar date (YYYY-MM-DD) that isn't past tomorrow's local date (an earlier one is fine), or InvalidInputError. */
+function pastLocalDate(value: unknown, now: Date, field: string): string {
+  if (typeof value !== "string" || !DATE.test(value)) throw new InvalidInputError(`${field} must be a date (YYYY-MM-DD)`);
+  const at = Date.parse(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(at) || new Date(at).toISOString().slice(0, 10) !== value) throw new InvalidInputError(`${field} must be a date (YYYY-MM-DD)`);
+  const today = Date.parse(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`);
+  if (at - today > LOCAL_DATE_SLACK_DAYS * DAY_MS) throw new InvalidInputError(`${field} can't be in the future`);
+  return value;
+}
+
+/**
+ * The "New" callouts' state from a request, checked: a plain object of at most MAX_NEW_FEATURES
+ * entries, each key a feature ID (FEATURE_ID) and each value exactly { days, last } with days a whole
+ * number from 0 to NEW_FEATURE_DAYS and last a real date, not in the future. The IDs aren't a list
+ * kept here (that would need a backend deploy for every feature the app marks): the pattern and the
+ * cap bound what a caller can store, and the whole map is one attribute's value, so no key becomes
+ * an attribute name or part of an expression. Earlier dates are allowed because the app sends the
+ * whole map back, with the features it showed on earlier days unchanged.
+ */
+export function newFeaturesValue(value: unknown, now: Date): NewFeatures {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new InvalidInputError("newFeatures must be an object");
+  const entries = Object.entries(value);
+  if (entries.length > MAX_NEW_FEATURES) throw new InvalidInputError(`newFeatures can have at most ${MAX_NEW_FEATURES} features`);
+  const out: Record<string, NewFeatureState> = {};
+  for (const [feature, state] of entries) {
+    if (!FEATURE_ID.test(feature)) throw new InvalidInputError("newFeatures has a feature ID that isn't lowercase words joined by hyphens");
+    if (typeof state !== "object" || state === null || Array.isArray(state)) throw new InvalidInputError("Each feature in newFeatures must be an object");
+    const { days, last, ...rest } = state as Record<string, unknown>;
+    if (Object.keys(rest).length) throw new InvalidInputError("Each feature in newFeatures has only days and last");
+    if (typeof days !== "number" || !Number.isInteger(days) || days < 0 || days > NEW_FEATURE_DAYS) throw new InvalidInputError(`days must be a whole number from 0 to ${NEW_FEATURE_DAYS}`);
+    out[feature] = { days, last: pastLocalDate(last, now, "last") };
+  }
+  return out;
 }
 
 /** One of LANGUAGES, or InvalidInputError. */
@@ -96,6 +151,7 @@ export function preferencesChange(body: Record<string, unknown>, now: Date): Pre
   }
   if (body.whatsNewLastShown !== undefined) change.whatsNewLastShown = localDate(body.whatsNewLastShown, now);
   if (body.language !== undefined) change.language = languageCode(body.language);
+  if (body.newFeatures !== undefined) change.newFeatures = newFeaturesValue(body.newFeatures, now);
   if (Object.keys(change).length === 0) throw new InvalidInputError("Nothing to change");
   return change;
 }
@@ -111,10 +167,20 @@ function recordKey(userId: string) {
 function fromItem(item: Record<string, unknown> | undefined): Preferences {
   const shown = item?.whatsNewLastShown;
   const language = item?.language;
+  const stored = item?.newFeatures;
+  const newFeatures: Record<string, NewFeatureState> = {};
+  // Anything that isn't a valid entry is dropped, as the rest fall back to their defaults
+  if (typeof stored === "object" && stored !== null && !Array.isArray(stored)) {
+    for (const [feature, state] of Object.entries(stored).slice(0, MAX_NEW_FEATURES)) {
+      const s = state as { days?: unknown; last?: unknown } | null;
+      if (FEATURE_ID.test(feature) && s && typeof s.days === "number" && Number.isInteger(s.days) && s.days >= 0 && s.days <= NEW_FEATURE_DAYS && typeof s.last === "string" && DATE.test(s.last)) newFeatures[feature] = { days: s.days, last: s.last };
+    }
+  }
   return {
     whatsNew: typeof item?.whatsNew === "boolean" ? item.whatsNew : DEFAULT_PREFERENCES.whatsNew,
     whatsNewLastShown: typeof shown === "string" && DATE.test(shown) ? shown : DEFAULT_PREFERENCES.whatsNewLastShown,
     language: typeof language === "string" && (LANGUAGES as readonly string[]).includes(language) ? (language as Language) : DEFAULT_PREFERENCES.language,
+    newFeatures,
   };
 }
 
@@ -124,8 +190,8 @@ export async function getPreferences(db: Db, userId: string): Promise<Preference
     new GetCommand({
       TableName: db.tableName,
       Key: recordKey(userId),
-      ProjectionExpression: "#whatsNew, #shown, #language",
-      ExpressionAttributeNames: { "#whatsNew": "whatsNew", "#shown": "whatsNewLastShown", "#language": "language" },
+      ProjectionExpression: "#whatsNew, #shown, #language, #newFeatures",
+      ExpressionAttributeNames: { "#whatsNew": "whatsNew", "#shown": "whatsNewLastShown", "#language": "language", "#newFeatures": "newFeatures" },
       ConsistentRead: true,
     }),
   );
@@ -152,6 +218,11 @@ export async function setPreferences(db: Db, userId: string, change: Preferences
     names["#language"] = "language";
     values[":language"] = languageCode(change.language);
     sets.push("#language = :language");
+  }
+  if (change.newFeatures !== undefined) {
+    names["#newFeatures"] = "newFeatures";
+    values[":newFeatures"] = newFeaturesValue(change.newFeatures, now);
+    sets.push("#newFeatures = :newFeatures");
   }
   const user = id(userId, "user ID");
   try {

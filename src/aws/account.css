@@ -157,3 +157,7 @@
 .swatches i:first-child{border-radius:6px 0 0 6px}
 .swatches i:last-child{border-radius:0 6px 6px 0}
 .swatches i+i{border-left:0}
+
+/* The "New" callout (src/aws/new-feature.js): a bordered box with a small uppercase legend on its top edge, in the theme's accent colours */
+.new-callout{position:relative;border:2px solid var(--accent);background:var(--accent-soft);border-radius:12px;padding:20px 12px 12px;margin-block:14px 8px}
+.new-callout-tag{position:absolute;top:-10px;left:12px;background:var(--accent-fill);color:var(--accent-ink);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;line-height:1;padding:4px 8px;border-radius:999px}

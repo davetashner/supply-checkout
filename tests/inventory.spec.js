@@ -610,3 +610,119 @@ test("sorts the inventory by length, width or height, inches and centimeters tog
   await sort.selectOption("height");
   expect(await rowNames(page)).toEqual(["Shoe box", "Tote", "Crate", "Rags"]);
 });
+
+// A barcode that's already on an item (supply-checkout-ezfz): the Add item form says so before
+// anything is saved, and offers the existing item instead of a second one
+const withBrandItem = { ...usedState, seed: { ...usedState.seed, "products/legacy-1": { code: "Zz-9", name: "Foam tape", brand: "Scotch", price: 4, stock: 3 } } };
+const dupNote = (page) => modal(page).getByRole("alert");
+
+test("a barcode that's the key of an item shows its name and brand, and Save makes no second item", { tag: ["@J2.1"] }, async ({ page }) => {
+  await openInventory(page, withBrandItem);
+  await startAddItem(page);
+  await fillItem(page, { barcode: "sku1", name: "Another towel" });
+  await expect(dupNote(page)).toContainText("Already in inventory: Paper towels, 6 roll");
+  await saveItem(page);
+  await expect(modal(page).getByRole("heading", { name: "Add item" })).toBeVisible();
+  await expect(dupNote(page)).toBeVisible();
+  expect(await page.evaluate(() => [...window.__mock.docs.keys()].filter(k => k.startsWith("products/")).sort())).toEqual(["products/SKU1", "products/legacy-1", "products/nb-bins"]);
+  expect(await page.evaluate(() => window.__mock.docs.get("products/SKU1").name)).toBe("Paper towels, 6 roll");
+});
+
+test("a barcode carried in an item's code field shows its brand, and Open opens that item", { tag: ["@J2.1"] }, async ({ page }) => {
+  await openInventory(page, withBrandItem);
+  await startAddItem(page);
+  await fillItem(page, { barcode: " zZ-9 " });
+  await expect(dupNote(page)).toContainText("Foam tape · Scotch");
+  await dupNote(page).getByRole("button", { name: "Open that item" }).click();
+  await expect(modal(page).getByRole("heading", { name: "Edit item" })).toBeVisible();
+  await expect(modal(page).getByLabel("Item name", { exact: true })).toHaveValue("Foam tape");
+});
+
+test("a barcode on no item saves a new item, and the warning goes when the barcode is changed", async ({ page }) => {
+  await openInventory(page, withBrandItem);
+  await startAddItem(page);
+  await fillItem(page, { barcode: "SKU1" });
+  await expect(dupNote(page)).toBeVisible();
+  await fillItem(page, { barcode: "SKU2", name: "Sponges" });
+  await expect(dupNote(page)).toBeHidden();
+  await saveItem(page);
+  await expect(inventoryRow(page, "Sponges")).toContainText("Barcode SKU2");
+});
+
+test("cancelling the warned form saves nothing", async ({ page }) => {
+  await openInventory(page, withBrandItem);
+  await startAddItem(page);
+  await fillItem(page, { barcode: "SKU1", name: "Another towel" });
+  await expect(dupNote(page)).toBeVisible();
+  await modal(page).getByRole("button", { name: "Cancel" }).click();
+  await expect(modal(page)).toBeEmpty();
+  await expect(inventoryRow(page, "Another towel")).toHaveCount(0);
+});
+
+test("scrolling the wheel over a focused number field scrolls the modal and keeps the value", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Phones and tablets have no mouse wheel, and Playwright can't send one in mobile WebKit");
+  await page.setViewportSize({ width: 1000, height: 300 });
+  await openInventory(page);
+  await startAddItem(page);
+  const price = modal(page).locator("#fPrice");
+  await price.fill("4.50");
+  await price.focus();
+  // Chromium scrolls a focused field into view and WebKit doesn't, so bring it into view here
+  await price.evaluate(el => el.scrollIntoView({ block: "center" }));
+  const box = await price.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const top = () => modal(page).evaluate(el => el.scrollTop);
+  const before = await top();
+  await page.mouse.wheel(0, 120);
+  await expect.poll(top).toBeGreaterThan(before);
+  await expect(price).toHaveValue("4.50");
+  await expect(price).toBeFocused();
+  // a line-based wheel (Firefox) scrolls too
+  const lines = await price.evaluate(el => { const m = el.closest(".modal"), t = m.scrollTop; el.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 1, deltaMode: 1 })); return m.scrollTop - t; });
+  expect(lines).toBeGreaterThan(0);
+  const pages = await price.evaluate(el => { const m = el.closest(".modal"), t = m.scrollTop; el.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 0.2, deltaMode: 2 })); return m.scrollTop - t; });
+  expect(pages).toBeGreaterThan(0);
+  await expect(price).toHaveValue("4.50");
+  // typing and the arrow keys still change it
+  await page.keyboard.press("ArrowUp");
+  await expect(price).toHaveValue("4.51");
+});
+
+test("a wheel over a focused number field outside a modal scrolls the page; other fields are left alone", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Phones and tablets have no mouse wheel, and Playwright can't send one in mobile WebKit");
+  await page.setViewportSize({ width: 1000, height: 300 });
+  await openInventory(page);
+  await page.evaluate(() => {
+    document.body.insertAdjacentHTML("beforeend", '<div style="height:3000px"></div><input id="wn" type="number" value="5"><input id="wt" type="text" value="x">');
+    document.querySelector("#wn").scrollIntoView();
+    document.scrollingElement.scrollTop = 0;
+  });
+  const wn = page.locator("#wn");
+  await wn.focus();
+  // Chromium scrolls a focused field into view and WebKit doesn't, so bring it into view here
+  await wn.evaluate(el => el.scrollIntoView({ block: "center" }));
+  const y = () => page.evaluate(() => document.scrollingElement.scrollTop);
+  const start = await y();
+  const box = await wn.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, -100);
+  await expect.poll(y).toBeLessThan(start);
+  await expect(wn).toHaveValue("5");
+  // a number field that isn't focused, and a text field, are not intercepted
+  const blocked = await page.evaluate(() => {
+    const ev = el => { const e = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 10 }); el.dispatchEvent(e); return e.defaultPrevented; };
+    document.querySelector("#wn").blur();
+    const a = ev(document.querySelector("#wn"));
+    document.querySelector("#wt").focus();
+    return [a, ev(document.querySelector("#wt"))];
+  });
+  expect(blocked).toEqual([false, false]);
+  // once the field loses focus its wheel handler is gone: refocusing re-attaches it
+  const after = await page.evaluate(() => {
+    const n = document.querySelector("#wn");
+    const ev = () => { const e = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 10 }); n.dispatchEvent(e); return e.defaultPrevented; };
+    n.focus(); const focused = ev(); n.blur(); const blurred = ev();
+    return [focused, blurred];
+  });
+  expect(after).toEqual([true, false]);
+});

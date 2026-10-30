@@ -1350,7 +1350,12 @@ paths:
         days of the server's UTC date (local dates run from a day behind to a
         day ahead). `language` is `en` or `es`, the language the caller
         chose: the app sends it when they pick one, and starts in it on any
-        device (it can't be cleared, only changed). `GET /me` returns the defaults if they can't be read, so
+        device (it can't be cleared, only changed). `newFeatures` is the state
+        of the app's "New" callouts, replaced whole: an object of at most 20
+        feature IDs (lowercase words joined by hyphens, up to 40 characters),
+        each `{ days, last }` with `days` a whole number from 0 to 3 (the local
+        days it was shown) and `last` the local date of the latest, a real
+        date not past tomorrow's. `GET /me` returns the defaults if they can't be read, so
         reading them never fails it.
       requestBody:
         required: true
@@ -1364,6 +1369,7 @@ paths:
                 whatsNew: { type: boolean }
                 whatsNewLastShown: { type: string, format: date }
                 language: { type: string, enum: [en, es] }
+                newFeatures: { $ref: "#/components/schemas/NewFeatures" }
       responses:
         "200":
           description: The caller's preferences after the change.
@@ -3719,11 +3725,24 @@ components:
     Preferences:
       type: object
       description: The caller's own app preferences, the defaults until they change one.
-      required: [whatsNew, whatsNewLastShown, language]
+      required: [whatsNew, whatsNewLastShown, language, newFeatures]
       properties:
         whatsNew: { type: boolean, description: "Show the What's New banner. On by default." }
         whatsNewLastShown: { type: [string, "null"], format: date, description: "The caller's local date (YYYY-MM-DD) the banner was last shown, or null if never." }
         language: { type: [string, "null"], enum: [en, es, null], description: "The language the caller chose, or null if they never chose one (the app then uses the device's)." }
+        newFeatures: { $ref: "#/components/schemas/NewFeatures" }
+    NewFeatures:
+      type: object
+      maxProperties: 20
+      description: "The \"New\" callouts shown so far, by feature ID: empty until one is shown. Each shows for 3 local days."
+      propertyNames: { pattern: "^[a-z][a-z0-9-]{0,39}$" }
+      additionalProperties:
+        type: object
+        additionalProperties: false
+        required: [days, last]
+        properties:
+          days: { type: integer, minimum: 0, maximum: 3, description: How many local days the callout was shown. }
+          last: { type: string, format: date, description: The caller's local date it was last counted. }
     Invite:
       type: object
       description: A pending invite, to show. Accepting it needs the token from the invite email.
