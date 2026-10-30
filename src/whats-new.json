@@ -10,7 +10,10 @@
             844
           ]
         }
-      ]
+      ],
+      "skip": {
+        "842": "Behind the scenes: the New callout mechanism, with no feature using it yet"
+      }
     },
     {
       "version": "1.22.0",
