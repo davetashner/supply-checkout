@@ -207,6 +207,11 @@ test.describe("What's New", () => {
     await expect(banner(page)).toBeVisible();
     await banner(page).locator("summary").click();
     expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+    // Each note's title is on a line of its own, above its text
+    const note = banner(page).locator(".whats-new-list li").first();
+    const title = await note.locator("strong").boundingBox();
+    const text = await note.locator("span").boundingBox();
+    expect(text.y).toBeGreaterThanOrEqual(title.y + title.height);
     await expectAccessible(page);
   });
 
