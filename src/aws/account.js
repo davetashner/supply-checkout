@@ -32,6 +32,7 @@ import { openChangePassword } from "./password.js";
 import { openReset } from "./reset-password.js";
 import { openInvoices } from "./invoices.js";
 import { showWhatsNew } from "./whats-new.js";
+import { startNewFeatures, stopNewFeatures } from "./new-feature.js";
 import { syncLanguage } from "./language.js";
 import { openReport } from "./report.js";
 import { openMyReports } from "./my-reports.js";
@@ -295,7 +296,7 @@ export async function start(config) {
     mfa: me.user.mfa,
     setUp: (moving) => twoStep(me, { moving }),
     changePassword: () => openChangePassword(session, me.user.email, passwordChanged, { required: me.user.mfa === "totp" }),
-  }, { prefs: me.user.preferences, off: () => hideWhatsNew() }, ownPhoto(me, name), ownName(me));
+  }, { prefs: me.user.preferences, off: () => { hideWhatsNew(); stopNewFeatures(); } }, ownPhoto(me, name), ownName(me));
 
   // Who's signed in, with a way out, on the screens before a team is open
   const whoami = (me) => `<p class="whoami">${msg("account.whoami", { email: esc(me.user.email || msg("account.you")) })} <button type="button" class="btn ghost" id="accountSignOut">${msg("account.signOut")}</button> <button type="button" class="btn ghost" id="accountDelete">${msg("account.deleteAccount")}</button></p>`;
@@ -716,6 +717,8 @@ export async function start(config) {
     let bar = teamBar(me, team, fr, name);
     // Drawn now, as the team opens, so it never moves anything under a finger later
     hideWhatsNew = showWhatsNew(session.api, me.user.preferences, bar);
+    // Which features are "New" today, decided now for the same reason (new-feature.js)
+    startNewFeatures(session.api, me.user.preferences);
     // A user with no name set is asked for one, once (they show as "Someone" to teammates otherwise)
     showNameNudge(bar, me.user.id, claims, () => account(me, name));
     // /me was just loaded
