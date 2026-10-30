@@ -569,13 +569,16 @@ test("sorts the inventory by length, width or height, inches and centimeters tog
   expect(await rowNames(page)).toEqual(["Shoe box", "Tote", "Crate", "Rags"]);
 });
 
-test("scrolling the wheel over a focused number field scrolls the modal and keeps the value", async ({ page }) => {
+test("scrolling the wheel over a focused number field scrolls the modal and keeps the value", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Phones and tablets have no mouse wheel, and Playwright can't send one in mobile WebKit");
   await page.setViewportSize({ width: 1000, height: 300 });
   await openInventory(page);
   await startAddItem(page);
   const price = modal(page).locator("#fPrice");
   await price.fill("4.50");
   await price.focus();
+  // Chromium scrolls a focused field into view and WebKit doesn't, so bring it into view here
+  await price.evaluate(el => el.scrollIntoView({ block: "center" }));
   const box = await price.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   const top = () => modal(page).evaluate(el => el.scrollTop);
@@ -595,7 +598,8 @@ test("scrolling the wheel over a focused number field scrolls the modal and keep
   await expect(price).toHaveValue("4.51");
 });
 
-test("a wheel over a focused number field outside a modal scrolls the page; other fields are left alone", async ({ page }) => {
+test("a wheel over a focused number field outside a modal scrolls the page; other fields are left alone", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Phones and tablets have no mouse wheel, and Playwright can't send one in mobile WebKit");
   await page.setViewportSize({ width: 1000, height: 300 });
   await openInventory(page);
   await page.evaluate(() => {
@@ -605,11 +609,13 @@ test("a wheel over a focused number field outside a modal scrolls the page; othe
   });
   const wn = page.locator("#wn");
   await wn.focus();
+  // Chromium scrolls a focused field into view and WebKit doesn't, so bring it into view here
+  await wn.evaluate(el => el.scrollIntoView({ block: "center" }));
   const y = () => page.evaluate(() => document.scrollingElement.scrollTop);
   const start = await y();
   const box = await wn.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, -100); // focusing scrolled the field into view, at the bottom
+  await page.mouse.wheel(0, -100);
   await expect.poll(y).toBeLessThan(start);
   await expect(wn).toHaveValue("5");
   // a number field that isn't focused, and a text field, are not intercepted
