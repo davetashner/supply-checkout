@@ -587,6 +587,8 @@ test("scrolling the wheel over a focused number field scrolls the modal and keep
   // a line-based wheel (Firefox) scrolls too
   const lines = await price.evaluate(el => { const m = el.closest(".modal"), t = m.scrollTop; el.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 1, deltaMode: 1 })); return m.scrollTop - t; });
   expect(lines).toBeGreaterThan(0);
+  const pages = await price.evaluate(el => { const m = el.closest(".modal"), t = m.scrollTop; el.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 0.2, deltaMode: 2 })); return m.scrollTop - t; });
+  expect(pages).toBeGreaterThan(0);
   await expect(price).toHaveValue("4.50");
   // typing and the arrow keys still change it
   await page.keyboard.press("ArrowUp");
@@ -619,4 +621,12 @@ test("a wheel over a focused number field outside a modal scrolls the page; othe
     return [a, ev(document.querySelector("#wt"))];
   });
   expect(blocked).toEqual([false, false]);
+  // once the field loses focus its wheel handler is gone: refocusing re-attaches it
+  const after = await page.evaluate(() => {
+    const n = document.querySelector("#wn");
+    const ev = () => { const e = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 10 }); n.dispatchEvent(e); return e.defaultPrevented; };
+    n.focus(); const focused = ev(); n.blur(); const blurred = ev();
+    return [focused, blurred];
+  });
+  expect(after).toEqual([true, false]);
 });
