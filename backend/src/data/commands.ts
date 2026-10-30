@@ -41,7 +41,7 @@ import { MAX_DOCUMENT_BYTES, projectItem } from "./documents.js";
 import { withoutHiddenCharacters } from "../text/hidden-characters.js";
 import { ConflictError, InvalidInputError, NotFoundError, StockChangedError, TooLargeError, isCancelledAsTooLarge } from "./errors.js";
 import { BOUGHT_SUFFIX, adhocProjectId, barcode, date as checkDate, dateFormat, id as checkId, isCalendarDay, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
-import { count as checkCount, MAX_MONEY, MAX_QUANTITY, money, quantity as checkQuantity, roundCents, storedMoney } from "./money.js";
+import { count as checkCount, MAX_MONEY, money, quantity as checkQuantity, roundCents, storedMoney } from "./money.js";
 import { type Page, queryPage } from "./query.js";
 import { readProjectItem } from "./project-items.js";
 import { MARKS_REMOVED, marksOnCount, marksOnRaise, marksRemoval } from "./reorder.js";
@@ -1461,10 +1461,14 @@ function lineTotal(value: unknown, qty: number, unitCost: number): number {
   return total;
 }
 
-/** An expectedStock that's a number, in a count's range. */
+/**
+ * An expectedStock that's a number: any whole number stock can be, below 0
+ * too, since a checkout takes the full quantity even past the count. It's only
+ * compared with the stored stock, never written.
+ */
 function expectedStock(value: unknown): number {
-  if (!isCount(value) || value > MAX_QUANTITY) throw new InvalidInputError(`expectedStock must be null or a whole number from 0 to ${MAX_QUANTITY}`);
-  return value;
+  if (!Number.isSafeInteger(value)) throw new InvalidInputError("expectedStock must be null or a whole number");
+  return value as number;
 }
 
 /** True for a cursor whose sort key is in this product's history (or one queryPage will reject anyway). */

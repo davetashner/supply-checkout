@@ -26,8 +26,8 @@ const same = (a: unknown, b: unknown) => a === b;
  * block a write that leaves it alone, as for legacy money (documents.ts writtenMoney).
  *
  * - `packSize`, where the write changes it: a whole number from 1 to MAX_PACK_SIZE.
- * - `packCost`: money (or the stored amount, rounded to cents), only with a `packSize` above 1,
- *   and with `cost` equal to costEach(packCost, packSize).
+ * - `packCost`: money (or the stored amount, rounded to cents), only on a supply, only with a
+ *   `packSize` above 1, and with `cost` equal to costEach(packCost, packSize).
  */
 export function checkPackFields(data: Record<string, unknown>, stored?: Record<string, unknown>): void {
   if (Object.hasOwn(data, "packSize") && !same(data.packSize, stored?.packSize)) {
@@ -43,6 +43,8 @@ export function checkPackFields(data: Record<string, unknown>, stored?: Record<s
   }
   const packCost = same(data.packCost, stored?.packCost) ? (storedMoney(data.packCost) ?? money(data.packCost, "packCost")) : money(data.packCost, "packCost");
   data.packCost = packCost;
+  // Company equipment is reused, not bought in packs: its cost is what one is worth (ADR 0017)
+  if (data.kind === "equipment") throw new InvalidInputError("Company equipment has no packCost");
   const size = data.packSize;
   if (typeof size !== "number" || !Number.isInteger(size) || size < 2 || size > MAX_PACK_SIZE) {
     throw new InvalidInputError("packCost needs a packSize of 2 or more");

@@ -437,7 +437,7 @@ export class FakeBackend {
     const round2 = (n) => Math.round(Number((n * 100).toPrecision(12))) / 100;
     if (coll === "products" && data.packCost === null) delete data.packCost;
     const badPack = coll === "products" && Object.hasOwn(data, "packCost")
-      && !(cents(data.packCost) && Number.isInteger(data.packSize) && data.packSize > 1 && data.packSize <= 10000 && data.cost === round2(data.packCost / data.packSize));
+      && !(cents(data.packCost) && data.kind !== "equipment" && Number.isInteger(data.packSize) && data.packSize > 1 && data.packSize <= 10000 && data.cost === round2(data.packCost / data.packSize));
     if (badPack) return err(400, "bad_request");
     // An equipment line a write adds has nothing out: equipment goes out only through the commands
     // (checkKinds in backend/src/data/documents.ts, supply-checkout-1dg.18)
@@ -902,7 +902,7 @@ export class FakeBackend {
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
     const whole = (n, min) => Number.isInteger(n) && n >= min && n <= 1e6;
     const valid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) && !Object.keys(rest).length
-      && (expectedStock === undefined || expectedStock === null || (reason !== "receipt" && whole(expectedStock, 0)))
+      && (expectedStock === undefined || expectedStock === null || (reason !== "receipt" && Number.isSafeInteger(expectedStock)))
       && (reason === "receipt" ? whole(quantity, 1) && cents(unitCost) && count === undefined && expectedStock === undefined
           // A line total as printed is within half a cent an each of quantity × unitCost (lineTotal in backend/src/data/commands.ts)
           && (lineTotal === undefined || (cents(lineTotal) && Math.abs(lineTotal - quantity * unitCost) <= quantity * 0.005 + 1e-9))

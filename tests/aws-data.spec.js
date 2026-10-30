@@ -1307,6 +1307,49 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     expect([...backend.operations.values()][0].result).toMatchObject({ reason: "count", count: 7, stockDelta: -3 });
   });
 
+  // A checkout takes the full quantity even past the count (docs/api/commands.md), so stock can be
+  // below 0. The item can still be edited, and a count is how it's put right.
+  const belowZero = () => {
+    const docs = seeded();
+    docs["t1/products/SKU1"] = { ...docs["t1/products/SKU1"], stock: -2 };
+    return new FakeBackend({ docs });
+  };
+
+  test("an item whose stock went below 0 can still be edited, and its count stays", { tag: ["@J2.3"] }, async ({ page }) => {
+    const backend = await open(page, belowZero());
+    await goToInventory(page);
+    await expect(stockCell(page, "Paper towels")).toHaveText("-2");
+    await inventoryRow(page, "Paper towels").click();
+    await expect(modal(page).getByLabel("Single items in storage now")).toHaveValue("-2");
+    await modal(page).getByLabel("Item name").fill("Paper towels, 8 roll");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(toast(page)).toHaveText("Saved");
+    await expect(stockCell(page, "Paper towels, 8 roll")).toHaveText("-2");
+    expect(backend.requests("POST", STOCK)).toEqual([]);
+    expect(backend.doc("t1", "products", "SKU1").data).toMatchObject({ name: "Paper towels, 8 roll", stock: -2 });
+  });
+
+  test("a count puts right stock that went below 0", { tag: ["@J2.3"] }, async ({ page }) => {
+    const backend = await open(page, belowZero());
+    await editStock(page, "5");
+    await expect(toast(page)).toHaveText("Saved");
+    await expect(stockCell(page, "Paper towels")).toHaveText("5");
+    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "count", count: 5, expectedStock: -2 }]);
+    expect(backend.doc("t1", "products", "SKU1").data).toMatchObject({ stock: 5 });
+  });
+
+  test("a count below 0 isn't sent, whatever the item's stock", { tag: ["@J2.3"] }, async ({ page }) => {
+    const backend = await open(page, belowZero());
+    await editStock(page, "-1");
+    await expect(modal(page).getByRole("heading", { name: "Edit item" })).toBeVisible();
+    expect(await modal(page).getByLabel("Single items in storage now").evaluate((el) => el.validationMessage)).toBe("A count can't be below 0.");
+    // Back to the stock it opened with, it saves again (with no count)
+    await modal(page).getByLabel("Single items in storage now").fill("-2");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(page.locator("#overlay")).toBeHidden();
+    expect(backend.requests("POST", STOCK)).toEqual([]);
+  });
+
   test("an edit with a new count saves the item without stock, then counts", async ({ page }) => {
     const backend = await open(page);
     await goToInventory(page);

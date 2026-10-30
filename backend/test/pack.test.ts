@@ -55,6 +55,8 @@ describe("checkPackFields", () => {
     [{ packCost: 6.99, cost: 6.99 }],
     [{ packSize: 1, packCost: 6.99, cost: 6.99 }],
     [{ packSize: "4", packCost: 6.99, cost: 1.75 }],
+    // ...on a supply: company equipment isn't bought in packs
+    [{ kind: "equipment", packSize: 4, packCost: 6.99, cost: 1.75 }],
     // ...and the cost of one that goes with it
     [{ packSize: 4, packCost: 6.99 }],
     [{ packSize: 4, packCost: 6.99, cost: 1.74 }],

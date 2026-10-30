@@ -437,6 +437,15 @@ describe("stock adjust", () => {
     expect(counts.ConditionalWriteConflicts ?? 0).toBe(0);
   });
 
+  it("counts an item whose stock went below 0, with that stock as expectedStock", async () => {
+    const path = "/teams/team-a/products/0123/stock";
+    // A checkout takes the full quantity even past the count
+    table.put({ ...table.get("TEAM#team-a", "PRODUCT#0123"), stock: -2 });
+    expect((await call("POST", path, { operationId: op(), reason: "count", count: 5, expectedStock: 0 })).body.error).toMatchObject({ reason: "stock_changed", message: "The count changed while you were editing: it's now -2" });
+    expect((await call("POST", path, { operationId: op(), reason: "count", count: 5, expectedStock: -2 })).body.result).toMatchObject({ count: 5, stockDelta: 7 });
+    expect(stock()).toBe(5);
+  });
+
   it("replays a count sent with expectedStock, and treats another expectedStock as another request", async () => {
     const path = "/teams/team-a/products/0123/stock", id = op();
     const first = await call("POST", path, { operationId: id, reason: "count", count: 4, expectedStock: 10 });
@@ -696,10 +705,9 @@ describe("validation and roles", () => {
     ["an uncount with a null count", { operationId: op(), reason: "uncount", count: null }],
     ["a reason in another case", { operationId: op(), reason: "Uncount" }],
     ["a receipt with an expected stock", { operationId: op(), reason: "receipt", quantity: 1, unitCost: 1, expectedStock: 10 }],
-    ["a negative expected stock", { operationId: op(), reason: "count", count: 1, expectedStock: -1 }],
     ["a fractional expected stock", { operationId: op(), reason: "count", count: 1, expectedStock: 9.5 }],
     ["an expected stock as text", { operationId: op(), reason: "count", count: 1, expectedStock: "10" }],
-    ["an expected stock that's too big", { operationId: op(), reason: "uncount", expectedStock: 1_000_001 }],
+    ["an expected stock past a safe integer", { operationId: op(), reason: "uncount", expectedStock: 2 ** 53 }],
   ])("refuses a stock adjustment with %s", async (_, body) => {
     expect((await call("POST", "/teams/team-a/products/0123/stock", body)).body.error.code).toBe("bad_request");
   });
