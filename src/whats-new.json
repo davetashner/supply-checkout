@@ -1,6 +1,18 @@
 {
   "releases": [
     {
+      "version": "upcoming",
+      "notes": [
+        {
+          "title": "Pack costs stay exactly as you enter them",
+          "text": "Enter what a case or pack cost and it's kept to the cent, for your books. The cost of one is worked out from it, and receipts and imports keep the pack's price too.",
+          "prs": [
+            841
+          ]
+        }
+      ]
+    },
+    {
       "version": "1.22.0",
       "date": "2026-10-27",
       "notes": [
