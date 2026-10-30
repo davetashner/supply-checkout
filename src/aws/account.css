@@ -113,7 +113,7 @@
 .whats-new h2{font-size:20px;margin:0}
 .whats-new p{margin:0}
 .whats-new-list{margin:0;padding-left:20px;display:grid;gap:6px;font-size:14px}
-.whats-new-list strong{color:var(--ink);font-weight:600}
+.whats-new-list strong{display:block;color:var(--ink);font-weight:600}
 .whats-new-more summary{cursor:pointer;font-size:14px;font-weight:600;color:var(--accent);padding-block:4px}
 .whats-new-more[hidden]{display:none}
 .whats-new-more .whats-new-list{margin-top:6px}

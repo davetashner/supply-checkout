@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.22.1](https://github.com/davetashner/supply-checkout/compare/v1.22.0...v1.22.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* keep the deploy's plan hash stable across runner Node versions ([#833](https://github.com/davetashner/supply-checkout/issues/833)) ([be6b7f9](https://github.com/davetashner/supply-checkout/commit/be6b7f987dd7ed196e576565183a597fd3e4c781))
+* label the item price "Price to client" and ask for cost first ([#834](https://github.com/davetashner/supply-checkout/issues/834)) ([b8755e1](https://github.com/davetashner/supply-checkout/commit/b8755e109d051f977e2a4d5960d036e0ed212d25))
+
 ## [1.22.0](https://github.com/davetashner/supply-checkout/compare/v1.21.0...v1.22.0) (2026-10-27)
 
 
