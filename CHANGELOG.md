@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.23.0](https://github.com/davetashner/supply-checkout/compare/v1.22.1...v1.23.0) (2026-10-30)
+
+
+### Features
+
+* keep a pack's cost as entered, and round only the cost of one ([#841](https://github.com/davetashner/supply-checkout/issues/841)) ([b7d564c](https://github.com/davetashner/supply-checkout/commit/b7d564c2eb6302fd5b8d6d60f2456d5357cfffc0))
+* mark new features with a "New" callout for a person's first 3 days ([#842](https://github.com/davetashner/supply-checkout/issues/842)) ([ce5bbc4](https://github.com/davetashner/supply-checkout/commit/ce5bbc4b785dec8093a093c76fab1c0124bb4ee6))
+* warn when a new item's barcode is already in inventory ([#844](https://github.com/davetashner/supply-checkout/issues/844)) ([f627419](https://github.com/davetashner/supply-checkout/commit/f6274196f37bcc1978f01b5e1e78b9131ae40744))
+
+
+### Bug Fixes
+
+* keep a number field's value when the page scrolls over it ([#843](https://github.com/davetashner/supply-checkout/issues/843)) ([5bedf33](https://github.com/davetashner/supply-checkout/commit/5bedf338ce0b4d1a5f0e3e8bf46155a95c75671d))
+* let an item whose stock went below 0 be edited and counted ([#837](https://github.com/davetashner/supply-checkout/issues/837)) ([c8bed4a](https://github.com/davetashner/supply-checkout/commit/c8bed4af455b1980ca97c68af583899443367002))
+* put each What's New note's title on its own line ([#838](https://github.com/davetashner/supply-checkout/issues/838)) ([81da5a4](https://github.com/davetashner/supply-checkout/commit/81da5a4911527c67243187d9de45bbefdbcadbca))
+
 ## [1.22.1](https://github.com/davetashner/supply-checkout/compare/v1.22.0...v1.22.1) (2026-10-28)
 
 
