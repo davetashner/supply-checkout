@@ -24,4 +24,5 @@ export default {
   "app.unavailable": "El almacenamiento compartido no está disponible en esta vista. {help}",
   "app.lostConnection": "Se perdió la conexión con el almacenamiento compartido. Recargue la página.",
   "app.backOnline": "Aún no se guardó. La conexión volvió: toque Intentar de nuevo.",
+  "app.unsavedChanges": "Tienes cambios sin guardar. Guárdalos o toca Cancelar para descartarlos.",
 };

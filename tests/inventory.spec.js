@@ -259,7 +259,7 @@ test("a pack's cost is kept as entered, with the cost of one worked out from it"
   await size.fill("4");
   await expect(each).toHaveText("= $1.75 each, rounded to the cent");
   // Equipment has no packs of cost: its value is for one
-  await modal(page).getByLabel("Equipment").check();
+  await modal(page).getByLabel("Company equipment (reused, not charged)").check();
   await expect(modal(page).getByText("Value each ($)")).toBeVisible();
   await expect(each).toBeHidden();
   await modal(page).getByLabel("Supply").check();
@@ -725,4 +725,68 @@ test("a wheel over a focused number field outside a modal scrolls the page; othe
     return [focused, blurred];
   });
   expect(after).toEqual([true, false]);
+});
+
+// supply-checkout-6t37: the item editor lost its edits to a tap outside it, a drag that ended
+// outside it, Escape, the logo or leaving the page, with nothing asked
+test.describe("the item editor keeps unsaved changes", { tag: ["@J2.2"] }, () => {
+  const stockField = (page) => modal(page).getByLabel("Single items in storage now", { exact: true });
+  const nameField = (page) => modal(page).getByLabel("Item name", { exact: true });
+  const tapOutside = (page) => page.locator("#overlay").click({ position: { x: 4, y: 4 } });
+
+  test("a drag from a field that ends outside the editor doesn't close it", async ({ page }) => {
+    await openInventory(page);
+    await openItem(page, "Paper towels, 6 roll");
+    await stockField(page).fill("42");
+    const box = await nameField(page).boundingBox();
+    await page.mouse.move(box.x + box.width - 4, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(4, 4, { steps: 5 });
+    await page.mouse.up();
+    await expect(page.locator("#overlay")).toBeVisible();
+    await expect(stockField(page)).toHaveValue("42");
+  });
+
+  test("a tap outside, Escape or the logo keeps an edited form open, and Cancel discards it", async ({ page }) => {
+    await openInventory(page);
+    await openItem(page, "Paper towels, 6 roll");
+    await nameField(page).fill("");
+    await stockField(page).fill("42");
+    await tapOutside(page);
+    await expect(page.locator("#toast")).toHaveText("You have unsaved changes. Save them, or tap Cancel to discard them.");
+    await page.keyboard.press("Escape");
+    // The backdrop covers the logo on a phone, so the click goes to it directly
+    await page.locator("#home").dispatchEvent("click");
+    await expect(page.locator("#overlay")).toBeVisible();
+    await expect(stockField(page)).toHaveValue("42");
+    await expect(nameField(page)).toHaveValue("");
+    await modal(page).getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(page.locator("#overlay")).toBeHidden();
+    await expect(inventoryRow(page, "Paper towels, 6 roll").locator("td").nth(1)).toHaveText("10");
+  });
+
+  test("a form changed back, or not changed, closes on a tap outside", async ({ page }) => {
+    await openInventory(page);
+    await openItem(page, "Paper towels, 6 roll");
+    await stockField(page).fill("42");
+    await stockField(page).fill("10");
+    await tapOutside(page);
+    await expect(page.locator("#overlay")).toBeHidden();
+    // The Add item form, with its kind choice and barcode photo, unchanged
+    await startAddItem(page);
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#overlay")).toBeHidden();
+    await startAddItem(page);
+    await modal(page).getByLabel("Company equipment (reused, not charged)").check();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#overlay")).toBeVisible();
+  });
+
+  test("leaving the page with an edited form asks first", async ({ page }) => {
+    await openInventory(page);
+    await openItem(page, "Paper towels, 6 roll");
+    expect(await page.evaluate(() => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; })).toBe(false);
+    await stockField(page).fill("42");
+    expect(await page.evaluate(() => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; })).toBe(true);
+  });
 });

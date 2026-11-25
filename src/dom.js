@@ -15,13 +15,33 @@ export function openModal(html, mount) {
   // data-autofocus, not autofocus: WebKit focuses an inserted autofocus field again at the
   // next frame, even after focus has moved on, so a quick tap into the next field typed into it
   const f = m.querySelector("[data-autofocus]") || m.querySelector("input,button"); f && f.focus();
+  opened = guardedState();
 }
-export function closeModal() { $("#overlay").hidden = true; $("#modal").innerHTML = ""; }
+export function closeModal() { $("#overlay").hidden = true; $("#modal").innerHTML = ""; opened = null; }
+// A form marked data-guard (the item editor) keeps what's typed in it: tapping outside it, Escape
+// or the logo doesn't close it while it has changes, only Cancel or Save does, and leaving the
+// page asks first (supply-checkout-6t37). Its fields as the form opened, to compare with.
+let opened = null;
+function guardedState() {
+  const form = $("#modal form[data-guard]");
+  return form && JSON.stringify([...form.elements].map(e => e.type === "radio" || e.type === "checkbox" ? e.checked : e.type === "file" ? "" : e.value));
+}
+export const unsaved = () => opened !== null && guardedState() !== opened;
 // Not while the modal's form is saving (saving() in src/main.js): closing it would lose what
-// was entered if the save then failed. Says whether the modal is closed now.
-export const dismiss = () => { if ($("#modal [aria-busy]")) return false; closeModal(); return true; };
-$("#overlay").addEventListener("click", e => { if (e.target.id === "overlay") dismiss(); });
+// was entered if the save then failed. Nor while a guarded form has changes. Says whether the
+// modal is closed now.
+export const dismiss = () => {
+  if ($("#modal [aria-busy]")) return false;
+  if (unsaved()) { toast(msg("app.unsavedChanges")); return false; }
+  closeModal(); return true;
+};
+// Only a tap that starts on the backdrop closes the modal: a drag that starts in the form (selecting
+// a field's text, a quick swipe on a trackpad) and ends outside it clicks the backdrop too.
+let downOnOverlay = false;
+$("#overlay").addEventListener("pointerdown", e => { downOnOverlay = e.target.id === "overlay"; });
+$("#overlay").addEventListener("click", e => { if (e.target.id === "overlay" && downOnOverlay) dismiss(); downOnOverlay = false; });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#overlay").hidden) dismiss(); });
+window.addEventListener("beforeunload", e => { if (unsaved()) e.preventDefault(); });
 
 // Two-tap confirm, since the viewer can't show confirm() dialogs. arm() is one tap, for a
 // delegated handler; armButton wires it to a button. The second tap disarms the button as it
