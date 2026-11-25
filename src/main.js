@@ -1144,7 +1144,7 @@ function productModal(key) {
   const action = {}, newItemKey = newKey(), equip = isEquipment(p);
   openModal(`
     <h2>${msg(p ? "product.editTitle" : "product.addTitle")}</h2>
-    <form id="f" style="display:grid;gap:14px">
+    <form id="f" data-guard style="display:grid;gap:14px">
       <fieldset class="field kinds"><legend>${msg("product.kindLegend")}</legend>
         <label class="check"><input type="radio" name="fKind" value="supply" ${equip ? "" : "checked"}> ${msg("product.kindSupply")}</label>
         <label class="check"><input type="radio" name="fKind" value="equipment" ${equip ? "checked" : ""}> ${msg("product.kindEquipment")}</label>

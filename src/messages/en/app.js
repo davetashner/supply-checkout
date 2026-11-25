@@ -24,4 +24,5 @@ export default {
   "app.unavailable": "Shared storage isn't available in this view. {help}",
   "app.lostConnection": "Lost connection to shared storage. Reload the page.",
   "app.backOnline": "Not saved yet. You're back online: tap Try again.",
+  "app.unsavedChanges": "You have unsaved changes. Save them, or tap Cancel to discard them.",
 };
