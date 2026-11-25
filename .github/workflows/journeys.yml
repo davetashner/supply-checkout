@@ -143,7 +143,10 @@ jobs:
     name: Journey tests against prod
     needs: check
     if: github.ref == 'refs/heads/main' && needs.check.outputs.ready == 'true'
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest (26.04) yet: its WebKit names downloads with underscores, and reading the
+    # mailbox with `aws s3 cp` to stdout fails there (supply-checkout-tmze; back to latest in
+    # supply-checkout-cggd)
+    runs-on: ubuntu-24.04
     # About 15 minutes of tests, the browser install's 10-minute bound, cleanup and upload
     timeout-minutes: 45
     environment: production-journeys
