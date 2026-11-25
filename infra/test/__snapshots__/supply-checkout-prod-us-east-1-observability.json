@@ -4258,6 +4258,28 @@
               }
             ]
           }
+        ],
+        "ResourceTags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
         ]
       },
       "DependsOn": [
@@ -4357,6 +4379,28 @@
                 "SubscriptionType": "SNS"
               }
             ]
+          }
+        ],
+        "ResourceTags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
           }
         ]
       },
@@ -13285,7 +13329,7 @@
           "Fn::Join": [
             "",
             [
-              "{\"widgets\":[{\"type\":\"text\",\"width\":24,\"height\":3,\"x\":0,\"y\":0,\"properties\":{\"markdown\":\"# Supply Checkout prod\\n\\nRegions: us-east-1, us-west-2. Every line is labelled with its region.\\n\\nAlarms and thresholds: docs/journeys.md, *Alarms for blocked journeys*. Every other business metric is in the metrics console (SupplyCheckout, by Region).\"}},{\"type\":\"alarm\",\"width\":24,\"height\":4,\"x\":0,\"y\":3,\"properties\":{\"title\":\"Alarms\",\"alarms\":[\"",
+              "{\"widgets\":[{\"type\":\"text\",\"width\":24,\"height\":3,\"x\":0,\"y\":0,\"properties\":{\"markdown\":\"# Supply Checkout prod\\n\\nRegions: us-east-1, us-west-2. Every line is labelled with its region.\\n\\nAlarms and thresholds: docs/journeys.md, *Alarms for blocked journeys*. Every other business metric is in the metrics console (SupplyCheckout, by Region).\",\"background\":\"transparent\"}},{\"type\":\"alarm\",\"width\":24,\"height\":4,\"x\":0,\"y\":3,\"properties\":{\"title\":\"Alarms\",\"alarms\":[\"",
               {
                 "Fn::GetAtt": [
                   "JourneyAlarmsfunctionsfailing65AA3C89",
@@ -13681,7 +13725,7 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-east-1\",{\"label\":\"NeedsAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-east-1\",{\"label\":\"SecurityAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-west-2\",{\"label\":\"NeedsAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-west-2\",{\"label\":\"SecurityAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"text\",\"width\":12,\"height\":6,\"x\":12,\"y\":7,\"properties\":{\"markdown\":\"### Which event?\\n\\nNeedsAttention: `WelcomeEmailFailures`, `WelcomeEmailsRefused`, `PasswordResetHintsCapped`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures`, `EmailCodeVerifyFailures`, `SeatQuantityDrift`, `EntitlementDrift`, `TeamClosedNoticeFailures`, `TeamReopenedNoticeFailures`, `ReopenedTeamSubscriptionsEnded`, `ReopenResyncsLate`, `ReopenedTeamSubscriptionsUndecided`, `ClosedTeamRenewalsCharged`, `ClosedTeamSubscriptionsNotFound`, `StripeCustomersAlreadyDeleted`, `HeldTeamsPurged`, `LapseFailures`, `LapseClosuresHeld`, `LapseCheckoutOverdue`, `ReturnsDigestFailures`, `ReportFixedEmailFailures`, `ReceiptTrialCapReached` (the trial cap once a day).\\n\\nSecurityAttention: `SignOutRevokeFailures`, `SecurityNoticeFailures`.\\n\\nAn alarm in ALARM doesn't email again, so look at every metric, not just the first email's. Find it in the metrics console (SupplyCheckout, by Region), or in Logs Insights over the functions' log groups: `filter ispresent(NeedsAttention) or ispresent(SecurityAttention)`. What to do: docs/observability.md, *When Needs attention fires* and *When Security attention fires*.\"}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"API: requests, 4xx and 5xx\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-east-1\",{\"label\":\"NeedsAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-east-1\",{\"label\":\"SecurityAttention (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"NeedsAttention\",\"Region\",\"us-west-2\",{\"label\":\"NeedsAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityAttention\",\"Region\",\"us-west-2\",{\"label\":\"SecurityAttention (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"text\",\"width\":12,\"height\":6,\"x\":12,\"y\":7,\"properties\":{\"markdown\":\"### Which event?\\n\\nNeedsAttention: `WelcomeEmailFailures`, `WelcomeEmailsRefused`, `PasswordResetHintsCapped`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures`, `EmailCodeVerifyFailures`, `SeatQuantityDrift`, `EntitlementDrift`, `TeamClosedNoticeFailures`, `TeamReopenedNoticeFailures`, `ReopenedTeamSubscriptionsEnded`, `ReopenResyncsLate`, `ReopenedTeamSubscriptionsUndecided`, `ClosedTeamRenewalsCharged`, `ClosedTeamSubscriptionsNotFound`, `StripeCustomersAlreadyDeleted`, `HeldTeamsPurged`, `LapseFailures`, `LapseClosuresHeld`, `LapseCheckoutOverdue`, `ReturnsDigestFailures`, `ReportFixedEmailFailures`, `ReceiptTrialCapReached` (the trial cap once a day).\\n\\nSecurityAttention: `SignOutRevokeFailures`, `SecurityNoticeFailures`.\\n\\nAn alarm in ALARM doesn't email again, so look at every metric, not just the first email's. Find it in the metrics console (SupplyCheckout, by Region), or in Logs Insights over the functions' log groups: `filter ispresent(NeedsAttention) or ispresent(SecurityAttention)`. What to do: docs/observability.md, *When Needs attention fires* and *When Security attention fires*.\",\"background\":\"transparent\"}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"API: requests, 4xx and 5xx\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

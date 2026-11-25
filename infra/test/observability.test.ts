@@ -402,6 +402,7 @@ describe("cost alerts (supply-checkout-jxq)", () => {
         ...[50, 80, 100].map((Threshold) => ({ Notification: { NotificationType: "ACTUAL", ComparisonOperator: "GREATER_THAN", Threshold, ThresholdType: "PERCENTAGE" }, Subscribers: sns })),
         { Notification: { NotificationType: "FORECASTED", ComparisonOperator: "GREATER_THAN", Threshold: 100, ThresholdType: "PERCENTAGE" }, Subscribers: sns },
       ],
+      ResourceTags: expect.arrayContaining([{ Key: "app", Value: "supply-checkout" }, { Key: "component", Value: "observability" }]),
     });
     // Created after the topic's policy lets Budgets publish
     expect(budget.DependsOn).toEqual(expect.arrayContaining([p2, expect.stringMatching(/^AlarmTopicsP2Policy/)]));
@@ -425,6 +426,7 @@ describe("cost alerts (supply-checkout-jxq)", () => {
         ...[50, 80, 100].map((Threshold) => ({ Notification: { NotificationType: "ACTUAL", ComparisonOperator: "GREATER_THAN", Threshold, ThresholdType: "PERCENTAGE" }, Subscribers: sns })),
         { Notification: { NotificationType: "FORECASTED", ComparisonOperator: "GREATER_THAN", Threshold: 100, ThresholdType: "PERCENTAGE" }, Subscribers: sns },
       ],
+      ResourceTags: expect.arrayContaining([{ Key: "app", Value: "supply-checkout" }, { Key: "component", Value: "observability" }]),
     });
     expect(BEDROCK_BUDGET_SERVICES).toContain("Amazon Bedrock");
     expect(budget.DependsOn).toEqual(expect.arrayContaining([p2, expect.stringMatching(/^AlarmTopicsP2Policy/)]));
