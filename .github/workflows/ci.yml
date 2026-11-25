@@ -225,7 +225,9 @@ jobs:
     name: Tests (${{ matrix.project }}, ${{ matrix.build }} build)
     needs: changes
     if: needs.changes.outputs.beads_only != 'true'
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest (26.04) yet: its WebKit build names downloads with underscores and misreads
+    # a slanted barcode, so the tests stay on 24.04 until supply-checkout-cggd adapts them
+    runs-on: ubuntu-24.04
     # 20 minutes for the tests plus the browser install's 10-minute bound
     timeout-minutes: 30
     strategy:
@@ -243,13 +245,14 @@ jobs:
       # in CI" in docs/testing.md). On 2026-10-01 the Ubuntu mirror served WebKit's
       # OS packages so slowly that 'playwright install --with-deps webkit' ran into
       # the job's timeout. The browsers' key names the Playwright version, so a
-      # version bump starts fresh. These jobs hold no credentials, and a pull request's run can
+      # version bump starts fresh. It names the Ubuntu release too: Playwright downloads a build
+      # per release, and one built for 24.04 doesn't start on 26.04 (supply-checkout-8zcd). These jobs hold no credentials, and a pull request's run can
       # only save caches into its own branch's scope, never into main's.
       - name: Playwright version
         id: pw
         run: |
           echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
-          # The runner sets ImageOS (ubuntu24) in the shell, not in the env context
+          # The runner sets ImageOS (ubuntu24, ubuntu26) in the shell, not in the env context
           echo "image-os=$ImageOS" >> "$GITHUB_OUTPUT"
       # Edge is a system package installed under /opt, so it has nothing to cache here
       - name: Restore the Playwright browsers
@@ -258,7 +261,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-browsers-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ steps.pw.outputs.version }}
+          key: playwright-browsers-${{ runner.os }}-${{ runner.arch }}-${{ matrix.browser }}-${{ steps.pw.outputs.image-os }}-${{ steps.pw.outputs.version }}
       # The .deb files apt downloaded for the browser's OS packages, keyed by the
       # files' names (so by package versions). This restores the newest set for
       # the browser and Ubuntu release; apt downloads only what isn't in it.
