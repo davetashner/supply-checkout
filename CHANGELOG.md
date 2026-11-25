@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.23.1](https://github.com/davetashner/supply-checkout/compare/v1.23.0...v1.23.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **deps:** patch minimatch GHSA-g3hv-75wg-m249 in all three packages ([#848](https://github.com/davetashner/supply-checkout/issues/848)) ([930bc69](https://github.com/davetashner/supply-checkout/commit/930bc693f63c84e2be4b7f73c04c7d8909cd9795))
+* keep the item editor's unsaved changes from a drag or tap outside it ([#850](https://github.com/davetashner/supply-checkout/issues/850)) ([88e1395](https://github.com/davetashner/supply-checkout/commit/88e1395e040c0f46cfb4beebd00afa8f275914b4))
+
 ## [1.23.0](https://github.com/davetashner/supply-checkout/compare/v1.22.1...v1.23.0) (2026-10-30)
 
 
