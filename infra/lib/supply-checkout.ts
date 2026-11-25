@@ -71,7 +71,7 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
 
   // AWS Solutions rules run on every synth. Findings fail the synth unless
   // acknowledged with Validations.of(construct).acknowledge({ id, reason }).
-  Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
+  addNagChecks(app);
   // Log retention, X-Ray tracing and metrics settings for every function and
   // log group, including ones added later (supply-checkout-7pe).
   Aspects.of(app).add(new ObservabilityDefaults(config), { priority: AspectPriority.MUTATING });
@@ -148,7 +148,7 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
 export function addBackupAccount(app: App, config: DeploymentConfig): BackupAccountStack {
   Tags.of(app).add("app", "supply-checkout");
   Tags.of(app).add("managed-by", "cdk");
-  Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
+  addNagChecks(app);
   return new BackupAccountStack(app, config, config.primaryRegion);
 }
 
@@ -162,7 +162,7 @@ export function addBackupAccount(app: App, config: DeploymentConfig): BackupAcco
 export function addGithubDeploy(app: App, config: DeploymentConfig, repository: GithubRepository): GithubDeployStack {
   Tags.of(app).add("app", "supply-checkout");
   Tags.of(app).add("managed-by", "cdk");
-  Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
+  addNagChecks(app);
   return new GithubDeployStack(app, config, config.primaryRegion, repository);
 }
 
@@ -175,6 +175,19 @@ export function addGithubDeploy(app: App, config: DeploymentConfig, repository: 
 export function addJourneys(app: App, config: DeploymentConfig, repository: GithubRepository): JourneysStack {
   Tags.of(app).add("app", "supply-checkout");
   Tags.of(app).add("managed-by", "cdk");
-  Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
+  addNagChecks(app);
   return new JourneysStack(app, config, config.primaryRegion, repository);
+}
+
+/**
+ * AWS Solutions rules for every app. aws-cdk-lib 2.278.0 added Node 26, so
+ * AwsSolutions-L1 flags every function on Node 24 (an LTS release); moving
+ * them to Node 26 is supply-checkout-4j8a, which removes the acknowledgement.
+ */
+function addNagChecks(app: App): void {
+  Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
+  Validations.of(app).acknowledge({
+    id: "AwsSolutions-L1",
+    reason: "Every function runs Node 24, an LTS release; the move to Node 26 is tracked in supply-checkout-4j8a.",
+  });
 }
