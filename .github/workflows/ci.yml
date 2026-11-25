@@ -225,7 +225,9 @@ jobs:
     name: Tests (${{ matrix.project }}, ${{ matrix.build }} build)
     needs: changes
     if: needs.changes.outputs.beads_only != 'true'
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest (26.04) yet: its WebKit build names downloads with underscores and misreads
+    # a slanted barcode, so the tests stay on 24.04 until supply-checkout-cggd adapts them
+    runs-on: ubuntu-24.04
     # 20 minutes for the tests plus the browser install's 10-minute bound
     timeout-minutes: 30
     strategy:
