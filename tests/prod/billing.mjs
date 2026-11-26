@@ -17,7 +17,7 @@ import { checkMe } from "../../scripts/journeys/lib/guards.mjs";
 import { recordKey } from "../../scripts/journeys/lib/runs.mjs";
 import { seal } from "../../scripts/journeys/lib/seal.mjs";
 import { formatScreen } from "../../scripts/journeys/lib/screen.mjs";
-import { isSandboxCheckoutUrl, isSandboxPortalUrl } from "../../scripts/journeys/lib/stripe-sandbox.mjs";
+import { isSandboxCheckoutUrl, isSandboxPortalUrl, portalSecret } from "../../scripts/journeys/lib/stripe-sandbox.mjs";
 import { freshTotp } from "../../scripts/journeys/lib/totp.mjs";
 import { modal } from "../ui/index.js";
 import { expect, managedLogin, readScreen, secretFill } from "./fixtures.mjs";
@@ -101,6 +101,9 @@ export async function teamNow(page, token, teamId) {
 const sandboxOnly = (harness, link) => {
   harness.masker.add(link);
   try { harness.masker.add(new URL(link).pathname); } catch {}
+  // A portal session's secret on its own too: Stripe now puts it in the query string (supply-checkout-1h36)
+  const secret = portalSecret(link);
+  if (secret) harness.masker.add(secret);
 };
 
 /**

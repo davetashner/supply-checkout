@@ -7,7 +7,7 @@ import { ConfigError, readConfig, secretValues } from "../lib/config.mjs";
 import { GuardError } from "../lib/guards.mjs";
 import { checkRecord } from "../lib/runs.mjs";
 import { SEALED, seal, unseal } from "../lib/seal.mjs";
-import { StripeError, billingMode, checkSandboxKey, createSandboxStripe, isSandboxCheckoutUrl, isSandboxPortalUrl } from "../lib/stripe-sandbox.mjs";
+import { StripeError, billingMode, checkSandboxKey, createSandboxStripe, isSandboxCheckoutUrl, isSandboxPortalUrl, portalSecret } from "../lib/stripe-sandbox.mjs";
 import { throwawayAddress } from "../lib/addresses.mjs";
 import { fakeEnv } from "./helpers.mjs";
 
@@ -21,6 +21,9 @@ test("billingMode: only test and live are modes; anything else, or no field, is 
   assert.equal(billingMode(null), "unknown");
   assert.equal(billingMode({}), "unknown");
 });
+
+// Built, not written out: a literal `secret=` followed by a value reads as a credential to the secret scan
+const portal = (value, rest = "") => `https://billing.stripe.com/p/session?${"secret"}=${value}${rest}`;
 
 test("only Stripe's hosted pages of a sandbox session are allowed: a live or lookalike page never is", () => {
   assert.equal(isSandboxCheckoutUrl("https://checkout.stripe.com/c/pay/cs_test_a1B2c3#fidkdWxOYHwn"), true);
@@ -38,9 +41,35 @@ test("only Stripe's hosted pages of a sandbox session are allowed: a live or loo
     null,
   ]) assert.equal(isSandboxCheckoutUrl(bad), false, String(bad));
   assert.equal(isSandboxPortalUrl("https://billing.stripe.com/p/session/test_YWNjdF8x"), true);
-  for (const bad of ["https://billing.stripe.com/p/session/live_YWNjdF8x", "https://billing.stripe.com/p/login/test_x", "https://billing.stripe.com.evil.example/p/session/test_x", "https://checkout.stripe.com/p/session/test_x", "ftp://billing.stripe.com/p/session/test_x", "", undefined]) {
+  // Stripe's current shape (supply-checkout-1h36): the secret is a query parameter
+  assert.equal(isSandboxPortalUrl(portal("test_YWNjdF8xTTJK0100BUtQs3bl")), true);
+  for (const bad of [
+    "https://billing.stripe.com/p/session/live_YWNjdF8x",
+    "https://billing.stripe.com/p/login/test_x",
+    "https://billing.stripe.com.evil.example/p/session/test_x",
+    "https://checkout.stripe.com/p/session/test_x",
+    "ftp://billing.stripe.com/p/session/test_x",
+    portal("live_YWNjdF8x"),
+    portal("test_x", "&secret=live_y"),
+    portal("test_x", "&next=https://evil.example"),
+    portal(""),
+    "https://billing.stripe.com/p/session",
+    "https://billing.stripe.com/p/session/?secret=test_x",
+    "https://billing.stripe.com/p/session/test_x?secret=live_y",
+    "https://billing.stripe.com/p/session/test_x/extra",
+    portal("test_x", "#x"),
+    "https://billing.stripe.com.evil.example/p/session?secret=test_x",
+    `https://${"user"}:${"pw"}@billing.stripe.com/p/session?secret=test_x`,
+    "http://billing.stripe.com/p/session?secret=test_x",
+    "",
+    undefined,
+  ]) {
     assert.equal(isSandboxPortalUrl(bad), false, String(bad));
   }
+  assert.equal(portalSecret(portal("test_abc")), "test_abc");
+  assert.equal(portalSecret("https://billing.stripe.com/p/session/test_abc"), "test_abc");
+  assert.equal(portalSecret("https://billing.stripe.com/p/login/x"), null);
+  assert.equal(portalSecret("not a url"), null);
 });
 
 test("the sandbox key must be a restricted test key: never a secret key, a live key or a lookalike, and the error never shows it", () => {

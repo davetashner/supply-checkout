@@ -37,12 +37,28 @@ export function isSandboxCheckoutUrl(link) {
   } catch { return false; }
 }
 
-/** Stripe's hosted Customer Portal page of a sandbox session, and nothing else. */
+const PORTAL_SECRET = /^test_[A-Za-z0-9_]+$/;
+
+/**
+ * Stripe's hosted Customer Portal page of a sandbox session, and nothing else. Stripe has two
+ * shapes (supply-checkout-1h36): `/p/session?secret=test_…`, its current one, with the secret as
+ * the only query parameter, and `/p/session/test_…`, its earlier one, with no query string.
+ */
 export function isSandboxPortalUrl(link) {
   try {
     const url = new URL(link);
-    return url.protocol === "https:" && url.hostname === "billing.stripe.com" && !url.username && !url.password && /^\/p\/session\/test_[A-Za-z0-9_]+$/.test(url.pathname);
+    if (url.protocol !== "https:" || url.hostname !== "billing.stripe.com" || url.username || url.password || url.hash) return false;
+    if (url.pathname === "/p/session") return [...url.searchParams.keys()].join() === "secret" && PORTAL_SECRET.test(url.searchParams.get("secret"));
+    return !url.search && url.pathname.startsWith("/p/session/") && PORTAL_SECRET.test(url.pathname.slice("/p/session/".length));
   } catch { return false; }
+}
+
+/** The secret of a portal URL, from either shape, or null: for masking it on its own. */
+export function portalSecret(link) {
+  try {
+    const url = new URL(link);
+    return url.searchParams.get("secret") || (url.pathname.startsWith("/p/session/") ? url.pathname.slice("/p/session/".length) : null);
+  } catch { return null; }
 }
 
 /** The key if it is a restricted sandbox key, else a GuardError that never shows the key. */
